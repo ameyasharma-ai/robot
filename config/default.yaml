@@ -1,0 +1,79 @@
+# Robot Core — Default Configuration
+
+llm:
+  provider: llama-server
+  base_url: "http://127.0.0.1:8080/v1"
+  model: "Qwen3.5-4B-Q4_K_M"
+  max_tokens: 300
+  context_window: 16384
+  enable_thinking: false
+  stream: true
+
+stt:
+  provider: whisper-server
+  url: "http://127.0.0.1:8081/inference"
+  language: "en"
+  temperature: 0.0
+
+tts:
+  provider: piper
+  model_path: "models/tts/en-us-lessac-medium.onnx"
+  sample_rate: 22050
+
+audio:
+  sample_rate: 16000
+  vad_frame_size: 512       # 32ms at 16kHz
+  silence_threshold_ms: 500
+  barge_in_frames: 10       # ~320ms consecutive speech
+  barge_in_confidence: 0.92
+  normal_confidence: 0.55
+  energy_threshold: 0.008
+  barge_in_energy: 0.04
+  pre_roll_ms: 500
+  playback_block_ms: 40
+  echo_guard_s: 1.0
+  barge_in_cooldown_s: 1.5
+
+memory:
+  provider: mem0
+  vector_store:
+    provider: qdrant
+    host: localhost
+    port: 6333
+    collection: robot_memory
+    embedding_dims: 768
+  llm:
+    provider: openai
+    base_url: "http://127.0.0.1:8080/v1"
+    model: "Qwen3.5-4B-Q4_K_M"
+    api_key: "not-needed"
+  embedder:
+    provider: openai
+    base_url: "http://127.0.0.1:8080/v1"
+    model: "Qwen3.5-4B-Q4_K_M"
+    api_key: "not-needed"
+
+history:
+  database_path: "data/database/conversations.db"
+
+personality:
+  default: "neo"
+  directory: "config/personalities"
+
+api:
+  host: "127.0.0.1"
+  port: 8888
+
+context_budget:
+  system_personality: 1500
+  tool_schemas: 2000
+  retrieved_memories: 2000
+  recent_conversation: 5000
+  world_state: 750
+  robot_state: 375
+  generation_headroom: 3500
+
+logging:
+  level: "INFO"
+  directory: "logs"
+  structured: true
