@@ -70,13 +70,13 @@ class AudioCapture:
         """
         raw = frame.flatten()
 
-        # High-pass / DC offset removal for VAD accuracy
-        self._dc_mean = 0.95 * self._dc_mean + 0.05 * np.mean(raw)
-        clean = raw - self._dc_mean
+        # Direct zero-mean centering for exact DC offset removal
+        frame_mean = float(np.mean(raw))
+        clean = raw - frame_mean
         rms = float(np.sqrt(np.mean(clean**2)))
 
-        # Update pre-roll buffer
-        self._pre_roll.extend(raw.tolist())
+        # Update pre-roll buffer with clean zero-centered audio
+        self._pre_roll.extend(clean.tolist())
 
         return clean, rms
 
