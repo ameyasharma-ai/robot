@@ -26,6 +26,7 @@ class VoiceActivityDetector:
         energy_threshold: float = 0.008,
         barge_in_energy: float = 0.04,
         echo_guard_energy: float = 0.02,
+        echo_coupling_ratio: float = 0.20,
     ) -> None:
         self.sample_rate = sample_rate
         self.normal_threshold = normal_threshold
@@ -34,6 +35,7 @@ class VoiceActivityDetector:
         self.energy_threshold = energy_threshold
         self.barge_in_energy = barge_in_energy
         self.echo_guard_energy = echo_guard_energy
+        self.echo_coupling_ratio = echo_coupling_ratio
 
         logger.info("loading_silero_vad")
         self._model = load_silero_vad()
@@ -60,10 +62,9 @@ class VoiceActivityDetector:
             (is_voice, speech_probability)
         """
         # When bot is playing, subtract acoustic speaker bleed from mic energy
-        # Laptop internal speaker to mic coupling is typically 0.10 - 0.25 (-12dB to -20dB)
         effective_rms = rms
         if is_bot_speaking and ref_rms > 0:
-            estimated_leakage = ref_rms * 0.25
+            estimated_leakage = ref_rms * self.echo_coupling_ratio
             effective_rms = max(0.0, rms - estimated_leakage)
 
         # Dynamic threshold selection based on duplex state

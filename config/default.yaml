@@ -30,6 +30,7 @@ audio:
   normal_confidence: 0.45
   energy_threshold: 0.003
   barge_in_energy: 0.035    # User voice near mic exceeds 0.035 after reference subtraction
+  echo_coupling_ratio: 0.20 # Measured acoustic leakage ratio from speakers to internal mic
   echo_guard_confidence: 0.80
   echo_guard_energy: 0.025
   pre_roll_ms: 600

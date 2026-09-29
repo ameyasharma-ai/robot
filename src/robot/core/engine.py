@@ -149,6 +149,7 @@ class RobotEngine:
             energy_threshold=audio_cfg.get("energy_threshold", 0.003),
             barge_in_energy=audio_cfg.get("barge_in_energy", 0.035),
             echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.025),
+            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.20),
         )
 
         # Tools
