@@ -16,18 +16,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ─── 1. Acoustic Echo Cancellation & Clean Mic Calibration ──────────
-echo "[AUDIO] Zeroing hardware mic boost and calibrating clean capture..."
+# ─── 1. Clean Hardware Mic Calibration ───────────────────────────────
+echo "[AUDIO] Calibrating clean hardware microphone capture (zero clipping)..."
+pactl unload-module module-echo-cancel 2>/dev/null || true
 amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
-amixer -c 1 sset 'Capture' 40 2>/dev/null || true
-pactl set-source-volume @DEFAULT_SOURCE@ 50% 2>/dev/null || true
-if ! pactl list sources short 2>/dev/null | grep -q echo-cancel-source; then
-    echo "[AEC] Loading PipeWire echo-cancel module..."
-    pactl load-module module-echo-cancel 2>/dev/null || true
-fi
-pactl set-default-source echo-cancel-source 2>/dev/null || true
-pactl set-default-sink echo-cancel-sink 2>/dev/null || true
-pactl set-source-volume echo-cancel-source 50% 2>/dev/null || true
+amixer -c 1 sset 'Capture' 20 2>/dev/null || true
+pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 25% 2>/dev/null || true
+pactl set-default-source alsa_input.pci-0000_05_00.6.analog-stereo 2>/dev/null || true
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
 if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
