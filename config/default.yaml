@@ -25,14 +25,14 @@ audio:
   vad_frame_size: 512       # 32ms at 16kHz
   silence_threshold_ms: 650
   barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
-  barge_in_frames: 4        # ~128ms consecutive speech required to interrupt
-  barge_in_confidence: 0.85 # High confidence required during playback
+  barge_in_frames: 2        # ~64ms consecutive speech required to interrupt
+  barge_in_confidence: 0.70 # Silero VAD confidence required during playback
   normal_confidence: 0.45
   energy_threshold: 0.003
-  barge_in_energy: 0.035    # User voice near mic exceeds 0.035 after reference subtraction
+  barge_in_energy: 0.012    # User voice near mic exceeds 0.012 after reference subtraction
   echo_coupling_ratio: 0.20 # Measured acoustic leakage ratio from speakers to internal mic
-  echo_guard_confidence: 0.80
-  echo_guard_energy: 0.025
+  echo_guard_confidence: 0.75
+  echo_guard_energy: 0.010
   pre_roll_ms: 600
   playback_block_ms: 30
   echo_guard_s: 0.4
