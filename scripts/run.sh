@@ -42,16 +42,22 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
 fi
 
 # ─── 3. whisper-server (port 8081) ───────────────────────────────────
+WHISPER_BIN=""
+if [ -f "/home/ameya/whisper.cpp/build/bin/whisper-server" ]; then
+    WHISPER_BIN="/home/ameya/whisper.cpp/build/bin/whisper-server"
+elif [ -f "/home/ameya/whisper.cpp/build_vk/bin/whisper-server" ]; then
+    WHISPER_BIN="/home/ameya/whisper.cpp/build_vk/bin/whisper-server"
+fi
+
 if ! curl -s http://127.0.0.1:8081/load > /dev/null 2>&1; then
-    if [ -f "/home/ameya/whisper.cpp/build_vk/bin/whisper-server" ] && [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
+    if [ -n "$WHISPER_BIN" ] && [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
         echo "[STT] Starting whisper-server..."
-        /home/ameya/whisper.cpp/build_vk/bin/whisper-server \
+        "$WHISPER_BIN" \
             -m /home/ameya/whisper.cpp/models/ggml-small.bin \
             -t 4 \
             --host 127.0.0.1 \
             --port 8081 \
             --language en \
-            -sns \
             --no-speech-thold 0.5 > "$DIR/logs/whisper-server.log" 2>&1 &
 
         echo -n "[STT] Waiting for whisper-server..."
