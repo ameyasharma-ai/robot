@@ -23,6 +23,11 @@ class AudioPlayer:
         self.block_ms = block_ms
         self._stream: sd.OutputStream | None = None
         self._stream_sr: int | None = None
+        self._is_playing: bool = False
+
+    @property
+    def is_playing(self) -> bool:
+        return self._is_playing
 
     def _ensure_stream(self, sample_rate: int) -> sd.OutputStream:
         if self._stream is None or sample_rate != self._stream_sr:
@@ -52,26 +57,30 @@ class AudioPlayer:
         """
         stream = self._ensure_stream(sample_rate)
         block_len = int(sample_rate * self.block_ms / 1000)
+        self._is_playing = True
 
-        for idx in range(0, len(audio), block_len):
-            if interrupt.is_set():
-                logger.info("playback_interrupted")
-                try:
-                    stream.abort()
-                    stream.start()
-                except Exception:
-                    pass
-                return False
-            chunk = audio[idx : idx + block_len]
-            if chunk.ndim == 1:
-                chunk = chunk.reshape(-1, 1)
-            stream.write(chunk)
-            await asyncio.sleep(self.block_ms * 0.001 * 0.875)  # Slight under-sleep for smooth flow
-
-        return True
+        try:
+            for idx in range(0, len(audio), block_len):
+                if interrupt.is_set():
+                    logger.info("playback_interrupted")
+                    try:
+                        stream.abort()
+                        stream.start()
+                    except Exception:
+                        pass
+                    return False
+                chunk = audio[idx : idx + block_len]
+                if chunk.ndim == 1:
+                    chunk = chunk.reshape(-1, 1)
+                stream.write(chunk)
+                await asyncio.sleep(self.block_ms * 0.001 * 0.875)  # Slight under-sleep for smooth flow
+            return True
+        finally:
+            self._is_playing = False
 
     def stop(self) -> None:
         """Immediately stop and release the output stream."""
+        self._is_playing = False
         if self._stream:
             try:
                 self._stream.stop()

@@ -176,13 +176,17 @@ class RobotEngine:
         loop = asyncio.get_running_loop()
         audio_queue = await self.capture.start(loop)
 
+        audio_cfg = self.config.get("audio", {})
+        barge_in_active = audio_cfg.get("barge_in_enabled", False)
+        barge_status = "\033[32mActive\033[0m" if barge_in_active else "\033[33mDeaf during speech (no self-interruption)\033[0m"
+
         print("\n" + "=" * 58)
-        print("🤖  \033[1;35mROBOT CORE ONLINE — FULL-DUPLEX LIVE\033[0m")
+        print("🤖  \033[1;35mROBOT CORE ONLINE — LIVE PIPELINE\033[0m")
         print("=" * 58)
         print(f" • \033[1mSession\033[0m:     {self._session_id}")
         print(f" • \033[1mPersona\033[0m:     {self.personalities.active.name if self.personalities.active else 'neo'}")
         print(f" • \033[1mServices\033[0m:    LLM: \033[32m✔\033[0m  STT: \033[32m✔\033[0m  TTS: \033[32m✔\033[0m")
-        print(f" • \033[1mBarge-in\033[0m:    Active (interrupt anytime to cut bot off)")
+        print(f" • \033[1mBarge-in\033[0m:    {barge_status}")
         print("=" * 58)
         print("🎙️  \033[2mListening for speech...\033[0m\n")
 
@@ -232,9 +236,10 @@ class RobotEngine:
             sample_rate * audio_cfg.get("silence_threshold_ms", 500) / 1000
             / audio_cfg.get("vad_frame_size", 512)
         )
+        barge_in_enabled = audio_cfg.get("barge_in_enabled", False)
         barge_in_required = audio_cfg.get("barge_in_frames", 10)
         barge_in_cooldown = audio_cfg.get("barge_in_cooldown_s", 1.5)
-        echo_guard_s = audio_cfg.get("echo_guard_s", 1.0)
+        echo_guard_s = audio_cfg.get("echo_guard_s", 0.4)
 
         audio_buffer: list[float] = []
         is_speaking = False
@@ -246,15 +251,25 @@ class RobotEngine:
             frame = await audio_queue.get()
             clean_chunk, rms = self.capture.process_frame(frame)
 
+            # When the robot is speaking, if barge-in is disabled, stay completely deaf to all input
+            if self._is_speaking or self.player.is_playing:
+                if not barge_in_enabled:
+                    # Drop frame and reset capture buffer to avoid picking up bot's voice
+                    is_speaking = False
+                    audio_buffer = []
+                    silence_frames = 0
+                    barge_in_consecutive = 0
+                    continue
+
             in_echo_guard = (time.time() - self._speech_ended_ts) < echo_guard_s
 
             is_voice, prob = self.vad.detect(
-                clean_chunk, rms, self._is_speaking, in_echo_guard
+                clean_chunk, rms, (self._is_speaking or self.player.is_playing), in_echo_guard
             )
 
             if is_voice:
-                if self._is_speaking:
-                    # Barge-in detection
+                if self._is_speaking or self.player.is_playing:
+                    # Barge-in detection (only reached if barge_in_enabled is True)
                     if (time.time() - last_barge_in_time) < barge_in_cooldown:
                         barge_in_consecutive = 0
                     else:
