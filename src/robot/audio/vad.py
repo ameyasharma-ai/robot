@@ -63,15 +63,18 @@ class VoiceActivityDetector:
         Returns:
             (is_voice, speech_probability)
         """
-        # Decay max reference envelope over time (~200ms decay)
-        self._max_ref_rms = max(ref_rms, self._max_ref_rms * 0.85)
+        # Decay max reference envelope over time (~90ms decay)
+        self._max_ref_rms = max(ref_rms, self._max_ref_rms * 0.70)
 
         # Dynamic threshold selection based on duplex state
         if is_bot_speaking:
             threshold = self.barge_in_threshold
-            # Physical speaker bleed at high volume scales with max reference envelope
-            # User voice must cleanly exceed the physical acoustic envelope
-            min_rms = max(self.barge_in_energy, self._max_ref_rms * 0.40 + 0.010)
+            # Acoustic speaker bleed scales directly with playback reference envelope.
+            # During playback, microphone captures (speaker_bleed + user_voice).
+            # To allow barge-in, mic RMS must exceed the acoustic speaker bleed
+            # plus a minimal excess energy threshold corresponding to speech.
+            expected_bleed = self._max_ref_rms * self.echo_coupling_ratio
+            min_rms = max(0.005, expected_bleed) + self.barge_in_energy
         elif in_echo_guard:
             threshold = self.echo_guard_threshold
             min_rms = self.echo_guard_energy

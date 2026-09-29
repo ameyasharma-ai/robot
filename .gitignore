@@ -24,6 +24,8 @@ env/
 models/tts/*.onnx
 models/stt/*.bin
 models/llm/
+models/vision/*.pt
+models/vision/*.onnx
 
 # Runtime data
 data/

@@ -52,6 +52,15 @@ class AudioCapture:
             callback=self._audio_callback,
         )
         self._stream.start()
+
+        # Enforce clean hardware capture gain (boost 0)
+        # to prevent PipeWire auto-gain resets from clipping mic audio
+        try:
+            import subprocess
+            subprocess.run(["amixer", "-c", "1", "sset", "Internal Mic Boost", "0"], capture_output=True)
+        except Exception:
+            pass
+
         logger.info("capture_started", sample_rate=self.sample_rate, frame_size=self.frame_size)
         return self._queue
 

@@ -98,3 +98,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             family="personality",
         )
     )
+
+    # --- Perception & Camera Tools ---
+    from robot.tools.builtins.perception import register_perception_tools
+    register_perception_tools(engine)

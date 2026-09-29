@@ -24,9 +24,11 @@ from robot.audio import AudioCapture, AudioPlayer, VoiceActivityDetector
 from robot.core.context import ContextEngine
 from robot.core.events import EventBus, Events
 from robot.core.state import RobotMode, StateManager
+from robot.expression import AsusAuraLighting
 from robot.llm import ClauseChunker, LlamaServerLLM
 from robot.memory import MemoryManager
 from robot.personality import PersonalityManager
+from robot.perception import CameraCapture, PerceptionEngine
 from robot.services import HealthMonitor
 from robot.stt import WhisperServerSTT
 from robot.telemetry import Telemetry, Timer, get_logger, setup_logging
@@ -144,17 +146,42 @@ class RobotEngine:
         self.vad = VoiceActivityDetector(
             sample_rate=audio_cfg.get("sample_rate", 16000),
             normal_threshold=audio_cfg.get("normal_confidence", 0.45),
-            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.85),
-            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.80),
+            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.65),
+            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.70),
             energy_threshold=audio_cfg.get("energy_threshold", 0.003),
-            barge_in_energy=audio_cfg.get("barge_in_energy", 0.035),
-            echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.025),
-            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.20),
+            barge_in_energy=audio_cfg.get("barge_in_energy", 0.008),
+            echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.008),
+            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.16),
         )
 
         # Tools
         self.tool_router = ToolRouter(self.tool_registry)
+
+        # Vision & Physical Perception
+        vision_cfg = self.config.get("vision", {})
+        if vision_cfg.get("enabled", True):
+            camera = CameraCapture(
+                device_index=vision_cfg.get("camera_index", 0),
+                width=vision_cfg.get("width", 640),
+                height=vision_cfg.get("height", 480),
+                fps=vision_cfg.get("fps", 30),
+            )
+            self.perception = PerceptionEngine(
+                camera=camera,
+                yunet_model_path=vision_cfg.get("yunet_model_path", "models/vision/face_detection_yunet.onnx"),
+                target_fps=vision_cfg.get("perception_fps", 5.0),
+                enable_motion=vision_cfg.get("enable_motion", True),
+            )
+        else:
+            self.perception = None
+
         register_builtin_tools(self)
+
+        # Expression & RGB lighting (ASUS ROG Strix)
+        expr_cfg = self.config.get("expression", {})
+        lighting_cfg = expr_cfg.get("lighting", {})
+        self.lighting = AsusAuraLighting(enabled=lighting_cfg.get("enabled", True))
+        self.lighting.attach(self.state, self.player)
 
         # Health monitoring
         self.health.register("stt", self.stt)
@@ -188,6 +215,8 @@ class RobotEngine:
         print(f" • \033[1mPersona\033[0m:     {self.personalities.active.name if self.personalities.active else 'neo'}")
         print(f" • \033[1mServices\033[0m:    LLM: \033[32m✔\033[0m  STT: \033[32m✔\033[0m  TTS: \033[32m✔\033[0m")
         print(f" • \033[1mBarge-in\033[0m:    {barge_status}")
+        print(f" • \033[1mLighting\033[0m:    \033[32mROG Aura (Active DBus Sync)\033[0m")
+        print(f" • \033[1mDisplay UI\033[0m:  \033[1;36mhttp://127.0.0.1:8888\033[0m (Face + Dev Console)")
         print("=" * 58)
         print("🎙️  \033[2mListening for speech...\033[0m\n")
 
@@ -197,7 +226,11 @@ class RobotEngine:
             asyncio.create_task(self._tts_player_loop()),
             asyncio.create_task(self.health.start()),
             asyncio.create_task(self._run_api()),
+            asyncio.create_task(self.lighting.start()),
         ]
+
+        if self.perception is not None:
+            tasks.append(asyncio.create_task(self.perception.start()))
 
         try:
             await asyncio.gather(*tasks)
@@ -206,6 +239,9 @@ class RobotEngine:
         finally:
             await self.capture.stop()
             self.player.stop()
+            await self.lighting.stop()
+            if self.perception is not None:
+                await self.perception.stop()
 
     async def _run_api(self) -> None:
         """Start the FastAPI server."""
@@ -238,8 +274,8 @@ class RobotEngine:
             / audio_cfg.get("vad_frame_size", 512)
         )
         barge_in_enabled = audio_cfg.get("barge_in_enabled", False)
-        barge_in_required = audio_cfg.get("barge_in_frames", 10)
-        barge_in_cooldown = audio_cfg.get("barge_in_cooldown_s", 1.5)
+        barge_in_required = audio_cfg.get("barge_in_frames", 2)
+        barge_in_cooldown = audio_cfg.get("barge_in_cooldown_s", 0.3)
         echo_guard_s = audio_cfg.get("echo_guard_s", 0.4)
 
         audio_buffer: list[float] = []
@@ -391,6 +427,10 @@ class RobotEngine:
             recent = await self.memory.get_recent_conversation(self._session_id, 10)
 
         # Build context
+        world_state_compact = None
+        if self.perception is not None:
+            world_state_compact = self.perception.world_state.to_compact()
+
         with Timer(self.telemetry, "CONTEXT_BUILD_LATENCY"):
             messages = self.context.build_messages(
                 system_prompt=system_prompt,
@@ -398,6 +438,7 @@ class RobotEngine:
                 recent_conversation=recent,
                 memories=memories,
                 robot_state=self.state.state.to_compact(),
+                world_state=world_state_compact,
             )
 
         # Stream LLM

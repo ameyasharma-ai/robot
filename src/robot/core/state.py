@@ -81,12 +81,24 @@ class StateManager:
         self._lock = asyncio.Lock()
         self._listeners: list = []
 
+    def subscribe(self, listener) -> None:
+        """Register a callback for state changes: fn(old_mode, new_mode)."""
+        self._listeners.append(listener)
+
     async def set_mode(self, mode: RobotMode) -> None:
         async with self._lock:
             old = self.state.mode
             self.state.mode = mode
             if old != mode:
                 logger.info("mode_change", old=old.value, new=mode.value)
+                for listener in self._listeners:
+                    try:
+                        if asyncio.iscoroutinefunction(listener):
+                            asyncio.create_task(listener(old, mode))
+                        else:
+                            listener(old, mode)
+                    except Exception as e:
+                        logger.error("state_listener_error", error=str(e))
 
     async def update_service_health(
         self, name: str, healthy: bool, error: str | None = None, latency_ms: float = 0.0

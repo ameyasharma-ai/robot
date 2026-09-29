@@ -17,12 +17,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── 1. Clean Hardware Mic Calibration ───────────────────────────────
-echo "[AUDIO] Calibrating clean hardware microphone capture (zero clipping)..."
+echo "[AUDIO] Calibrating clean hardware microphone capture (35% volume)..."
 pactl unload-module module-echo-cancel 2>/dev/null || true
-pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 25% 2>/dev/null || true
+pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 35% 2>/dev/null || true
 pactl set-default-source alsa_input.pci-0000_05_00.6.analog-stereo 2>/dev/null || true
 amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
-amixer -c 1 sset 'Capture' 20 2>/dev/null || true
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
 if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
@@ -113,9 +112,25 @@ if ! curl -s http://127.0.0.1:6333/healthz > /dev/null 2>&1; then
     fi
 fi
 
-# ─── 5. Launch Robot Core ────────────────────────────────────────────
+# ─── 5. Launch Robot Core & Display UI ──────────────────────────────
 echo ""
 echo "🚀 Launching Robot Core..."
+
+# Launch browser display in background once server is up
+(
+    for i in $(seq 1 30); do
+        if curl -s http://127.0.0.1:8888/health > /dev/null 2>&1; then
+            if command -v xdg-open &>/dev/null; then
+                xdg-open "http://127.0.0.1:8888" >/dev/null 2>&1 &
+            elif command -v google-chrome &>/dev/null; then
+                google-chrome "http://127.0.0.1:8888" >/dev/null 2>&1 &
+            fi
+            break
+        fi
+        sleep 0.5
+    done
+) &
+
 if [ -f "$DIR/.venv/bin/python" ]; then
     exec "$DIR/.venv/bin/python" -m robot "$@"
 else

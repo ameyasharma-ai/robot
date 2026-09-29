@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Core — HUD & Face System</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/index.css">
+</head>
+<body class="mode-dual">
+    <!-- Top Navigation Header -->
+    <header class="top-nav">
+        <div class="brand">
+            <span class="brand-pulse"></span>
+            <span class="brand-title">ROBOT CORE</span>
+            <span class="brand-ver">v1.0.0-PROD</span>
+        </div>
+        <div class="persona-badge" id="personaBadge">
+            <span class="icon">👤</span> <span id="personaName">NEO</span>
+        </div>
+        <div class="header-center">
+            <div class="status-pill status-idle" id="globalStatusPill">
+                <span class="status-indicator"></span>
+                <span class="status-text" id="globalStatusText">IDLE</span>
+            </div>
+            <div class="telemetry-pill">
+                <span class="lbl">TTFT:</span> <span class="val" id="hudTtft">-- ms</span>
+            </div>
+            <div class="telemetry-pill">
+                <span class="lbl">E2E:</span> <span class="val" id="hudE2e">-- ms</span>
+            </div>
+        </div>
+        <div class="nav-controls">
+            <div class="view-switcher">
+                <button class="view-btn" id="btnViewFace" title="Face Only">FACE</button>
+                <button class="view-btn active" id="btnViewDual" title="Dual Mode (Face + Dev HUD)">DUAL</button>
+                <button class="view-btn" id="btnViewDev" title="Dev Console Only">CONSOLE</button>
+            </div>
+            <button class="fullscreen-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶</button>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="main-viewport">
+        <!-- LEFT: Robot Digital Face / Expression UI -->
+        <section class="face-panel" id="facePanel">
+            <div class="face-stage" id="faceStage">
+                <!-- Aura Ambient Glow -->
+                <div class="face-aura" id="faceAura"></div>
+
+                <!-- Eyes Container -->
+                <div class="eyes-wrapper" id="eyesWrapper">
+                    <div class="eye eye-left" id="eyeLeft">
+                        <div class="pupil" id="pupilLeft">
+                            <div class="pupil-glint"></div>
+                        </div>
+                        <div class="eyelid eyelid-top"></div>
+                        <div class="eyelid eyelid-bottom"></div>
+                        <div class="eye-glow"></div>
+                    </div>
+                    <div class="eye eye-right" id="eyeRight">
+                        <div class="pupil" id="pupilRight">
+                            <div class="pupil-glint"></div>
+                        </div>
+                        <div class="eyelid eyelid-top"></div>
+                        <div class="eyelid eyelid-bottom"></div>
+                        <div class="eye-glow"></div>
+                    </div>
+                </div>
+
+                <!-- Mouth / Audio Waveform Visualizer -->
+                <div class="mouth-wrapper" id="mouthWrapper">
+                    <div class="mouth-bar b1"></div>
+                    <div class="mouth-bar b2"></div>
+                    <div class="mouth-bar b3"></div>
+                    <div class="mouth-bar b4"></div>
+                    <div class="mouth-bar b5"></div>
+                    <div class="mouth-bar b6"></div>
+                    <div class="mouth-bar b7"></div>
+                    <div class="mouth-bar b8"></div>
+                    <div class="mouth-bar b9"></div>
+                </div>
+
+                <!-- Face Mood State Text -->
+                <div class="face-caption" id="faceCaption">OBSERVING ENVIRONMENT</div>
+
+                <!-- Interactive Speech Bubble -->
+                <div class="speech-bubble" id="speechBubble">
+                    <div class="bubble-tag" id="bubbleTag">ROBOT</div>
+                    <div class="bubble-content" id="bubbleContent">Ready for voice input.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT: Developer Console & Perception HUD -->
+        <section class="dev-panel" id="devPanel">
+            <!-- Vision & Physical World State HUD -->
+            <div class="card card-vision">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">👁️</span> CONTINUOUS PERCEPTION & WORLD STATE
+                    </div>
+                    <div class="card-badges">
+                        <span class="badge" id="hudLighting">LIGHT: NORMAL</span>
+                        <span class="badge" id="hudMotion">MOTION: NONE</span>
+                        <span class="badge badge-accent" id="hudPeople">PEOPLE: 0</span>
+                    </div>
+                </div>
+                <div class="vision-grid">
+                    <div class="camera-stream-box resizable-box" id="cameraBox">
+                        <img id="cameraImg" src="/camera/stream" alt="Live Camera 60 FPS Stream" onerror="this.src='/camera/snapshot'">
+                        <div class="stream-overlay">
+                            <span class="rec-dot"></span> LIVE 60 FPS | YUNET HUD
+                        </div>
+                        <div class="stream-ctrls">
+                            <button class="stream-size-btn" id="btnStreamReset" title="Reset Size">↺</button>
+                            <button class="stream-size-btn" id="btnStreamExpand" title="Expand View">⤢</button>
+                        </div>
+                        <div class="resize-handle" id="resizeHandle" title="Drag to Resize"></div>
+                    </div>
+                    <div class="world-state-yaml">
+                        <div class="sub-heading">WORLD STATE MODEL</div>
+                        <pre id="worldStateCode">Loading world state...</pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pipeline Metrics & Hardware Health -->
+            <div class="card card-metrics">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">⚡</span> LATENCY TARGETS & SERVICE HEALTH
+                    </div>
+                    <div class="health-dots" id="healthDots">
+                        <span class="h-dot h-stt" title="STT (Whisper)">STT</span>
+                        <span class="h-dot h-llm" title="LLM (Qwen 4B)">LLM</span>
+                        <span class="h-dot h-tts" title="TTS (Piper)">TTS</span>
+                        <span class="h-dot h-mem" title="Memory (Mem0)">MEM</span>
+                    </div>
+                </div>
+                <div class="metrics-grid">
+                    <div class="metric-box">
+                        <div class="m-lbl">STT LATENCY</div>
+                        <div class="m-val" id="metricStt">-- ms</div>
+                        <div class="m-bar"><div class="m-fill" id="barStt" style="width: 30%"></div></div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="m-lbl">LLM TTFT</div>
+                        <div class="m-val" id="metricTtft">-- ms</div>
+                        <div class="m-bar"><div class="m-fill" id="barTtft" style="width: 45%"></div></div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="m-lbl">TTS SYNTHESIS</div>
+                        <div class="m-val" id="metricTts">-- ms</div>
+                        <div class="m-bar"><div class="m-fill" id="barTts" style="width: 25%"></div></div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="m-lbl">END-TO-END</div>
+                        <div class="m-val" id="metricE2e">-- ms</div>
+                        <div class="m-bar"><div class="m-fill" id="barE2e" style="width: 50%"></div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Event Terminal Feed -->
+            <div class="card card-terminal">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">📜</span> LIVE TELEMETRY LOG
+                    </div>
+                    <div class="terminal-actions">
+                        <button class="term-btn" id="btnClearLog">CLEAR</button>
+                    </div>
+                </div>
+                <div class="terminal-body" id="terminalFeed">
+                    <div class="log-entry log-system">
+                        <span class="timestamp">[INIT]</span>
+                        <span class="tag">[SYSTEM]</span>
+                        <span class="msg">Connected to Robot Core API stream.</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

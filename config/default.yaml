@@ -25,18 +25,33 @@ audio:
   vad_frame_size: 512       # 32ms at 16kHz
   silence_threshold_ms: 650
   barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
-  barge_in_frames: 3        # ~96ms consecutive speech required to interrupt
-  barge_in_confidence: 0.80 # High confidence required during playback
+  barge_in_frames: 2        # ~64ms consecutive speech required to interrupt
+  barge_in_confidence: 0.65 # High confidence required during playback
   normal_confidence: 0.45
   energy_threshold: 0.003
-  barge_in_energy: 0.015    # User voice near mic exceeds threshold
-  echo_coupling_ratio: 0.20 # Measured acoustic leakage ratio from speakers to internal mic
-  echo_guard_confidence: 0.75
-  echo_guard_energy: 0.010
+  barge_in_energy: 0.008    # User voice near mic exceeds threshold
+  echo_coupling_ratio: 0.16 # Measured acoustic leakage ratio from speakers to internal mic
+  echo_guard_confidence: 0.70
+  echo_guard_energy: 0.008
   pre_roll_ms: 600
   playback_block_ms: 30
-  echo_guard_s: 0.4
-  barge_in_cooldown_s: 0.5
+  echo_guard_s: 0.35
+  barge_in_cooldown_s: 0.3
+
+expression:
+  lighting:
+    enabled: true
+    backend: "asusctl"   # Direct DBus to asusd with CLI fallback
+
+vision:
+  enabled: true
+  camera_index: 0
+  width: 640
+  height: 480
+  fps: 60
+  perception_fps: 30.0
+  yunet_model_path: "models/vision/face_detection_yunet.onnx"
+  enable_motion: true
 
 memory:
   provider: mem0

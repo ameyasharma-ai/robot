@@ -21,9 +21,10 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "websockets>=14.0",
 
-    # Audio
+    # Audio & Vision
     "sounddevice>=0.5.0",
     "numpy>=2.1.0",
+    "opencv-python-headless>=4.8.0",
 
     # VAD
     "silero-vad>=6.0",

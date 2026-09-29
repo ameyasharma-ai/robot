@@ -54,13 +54,14 @@ class ContextEngine:
         recent_conversation: list[dict] | None = None,
         memories: list[dict] | None = None,
         robot_state: dict | None = None,
+        world_state: dict | None = None,
         tool_results: list[dict] | None = None,
     ) -> list[dict]:
         """Assemble the complete message list for LLM inference.
 
         Optimizes context usage by:
         - Injecting only relevant memories (not all)
-        - Compacting robot state
+        - Compacting robot state and physical world state
         - Trimming conversation to budget
         """
         messages = []
@@ -73,7 +74,12 @@ class ContextEngine:
             state_str = _format_state(robot_state)
             system_parts.append(f"\n[Current State]\n{state_str}")
 
-        # 3. Retrieved memories
+        # 3. Physical World State (Perception)
+        if world_state:
+            world_str = _format_world_state(world_state)
+            system_parts.append(f"\n[Physical World State]\n{world_str}")
+
+        # 4. Retrieved memories
         if memories:
             mem_str = _format_memories(memories, self._budget["retrieved_memories"])
             if mem_str:
@@ -135,6 +141,38 @@ def _format_state(state: dict) -> str:
     for key, value in state.items():
         if value is not None:
             lines.append(f"  {key}: {value}")
+    return "\n".join(lines)
+
+
+def _format_world_state(world_state: dict) -> str:
+    """Format physical world state compactly for LLM context."""
+    lines = []
+    # People
+    people = world_state.get("people", [])
+    people_count = world_state.get("people_count", len(people))
+    lines.append(f"  people_present: {people_count}")
+    if people:
+        for idx, p in enumerate(people):
+            lines.append(
+                f"    - person_{idx+1}: pos={p.get('position', 'center')} "
+                f"distance={p.get('distance', 'medium')} "
+                f"attentive={p.get('looking_at_robot', True)}"
+            )
+
+    # Physical Objects (from continuous object detection & vision reasoning)
+    objects = world_state.get("objects", [])
+    objects_count = world_state.get("objects_count", len(objects))
+    lines.append(f"  objects_detected: {objects_count}")
+    if objects:
+        for obj in objects:
+            lines.append(
+                f"    - {obj.get('label')}: pos={obj.get('position', 'center')} "
+                f"conf={obj.get('confidence', 0.8)}"
+            )
+
+    lines.append(f"  motion_level: {world_state.get('motion', 'none')}")
+    lines.append(f"  room_lighting: {world_state.get('lighting', 'normal')}")
+    lines.append(f"  scene: {world_state.get('scene', 'indoor')}")
     return "\n".join(lines)
 
 

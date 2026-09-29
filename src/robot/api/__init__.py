@@ -93,6 +93,52 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         results = await engine.memory.search_history(query, limit)
         return {"results": results}
 
+    @app.get("/world-state")
+    async def get_world_state():
+        """Get the current physical world state (people, motion, lighting)."""
+        if hasattr(engine, "perception") and engine.perception:
+            return engine.perception.world_state.to_compact()
+        return {"error": "Perception subsystem not active"}
+
+    @app.get("/camera/snapshot")
+    async def get_camera_snapshot():
+        """Get the latest snapshot from the robot's camera with green perception polygons."""
+        if hasattr(engine, "perception") and engine.perception:
+            import cv2
+            from fastapi.responses import Response
+
+            frame = engine.perception.get_annotated_frame()
+            if frame is not None:
+                success, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                if success:
+                    return Response(content=enc.tobytes(), media_type="image/jpeg")
+            return Response(content=b"No frame available", status_code=503)
+        return Response(content=b"Camera not available", status_code=503)
+
+    @app.get("/camera/stream")
+    async def get_camera_stream():
+        """Ultra-low latency 60 FPS continuous MJPEG video stream with green polygons."""
+        from fastapi.responses import StreamingResponse
+        import asyncio
+        import cv2
+
+        async def frame_generator():
+            while True:
+                if hasattr(engine, "perception") and engine.perception:
+                    frame = engine.perception.get_annotated_frame()
+                    if frame is not None:
+                        success, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                        if success:
+                            yield (b"--frame\r\n"
+                                   b"Content-Type: image/jpeg\r\n\r\n" + enc.tobytes() + b"\r\n")
+                await asyncio.sleep(1.0 / 60.0)
+
+        return StreamingResponse(
+            frame_generator(),
+            media_type="multipart/x-mixed-replace; boundary=frame"
+        )
+
+
     @app.get("/telemetry")
     async def telemetry():
         return engine.telemetry.snapshot()
@@ -117,5 +163,19 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 await websocket.send_text(json.dumps(event))
         except WebSocketDisconnect:
             engine.events.off("*", forward_event)
+
+    # Static UI Files & Web HUD Display
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+        @app.get("/")
+        async def index():
+            """Serve the integrated Digital Face & Dev Console UI."""
+            return FileResponse(str(static_dir / "index.html"))
 
     return app
