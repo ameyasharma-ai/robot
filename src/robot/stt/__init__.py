@@ -81,7 +81,16 @@ class WhisperServerSTT(STTProvider):
 
     @staticmethod
     def _pcm_to_wav(pcm: np.ndarray, sample_rate: int) -> bytes:
-        """Convert float32 PCM to WAV bytes."""
+        """Convert float32 PCM to normalized WAV bytes."""
+        # 1. DC offset removal
+        pcm = pcm - np.mean(pcm)
+
+        # 2. Peak normalization (boost quiet speech up to target 0.9 peak without clipping)
+        peak = np.max(np.abs(pcm))
+        if peak > 1e-4:
+            gain = min(0.9 / peak, 8.0)  # Max 8x gain boost
+            pcm = pcm * gain
+
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)

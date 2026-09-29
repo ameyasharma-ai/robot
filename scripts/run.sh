@@ -8,7 +8,17 @@ cd "$DIR"
 
 echo "🤖 Robot Core — Starting up..."
 
-# ─── 1. Acoustic Echo Cancellation (PipeWire) ───────────────────────
+# ─── 0. Signal Trapping & Cleanup ────────────────────────────────────
+cleanup() {
+    echo ""
+    echo "🛑 Shutting down Robot Core..."
+    kill $(jobs -p) 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# ─── 1. Acoustic Echo Cancellation & Mic Gain Boost ──────────────────
+echo "[AUDIO] Calibrating microphone gain and echo cancellation..."
+pactl set-source-volume @DEFAULT_SOURCE@ 140% 2>/dev/null || true
 if ! pactl list sources short 2>/dev/null | grep -q echo-cancel-source; then
     echo "[AEC] Loading PipeWire echo-cancel module..."
     pactl load-module module-echo-cancel 2>/dev/null || true
