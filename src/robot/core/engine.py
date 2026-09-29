@@ -264,7 +264,11 @@ class RobotEngine:
             in_echo_guard = (time.time() - self._speech_ended_ts) < echo_guard_s
 
             is_voice, prob = self.vad.detect(
-                clean_chunk, rms, (self._is_speaking or self.player.is_playing), in_echo_guard
+                clean_chunk,
+                rms,
+                (self._is_speaking or self.player.is_playing),
+                in_echo_guard,
+                ref_rms=self.player.current_rms,
             )
 
             if is_voice:

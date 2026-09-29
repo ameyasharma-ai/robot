@@ -24,10 +24,15 @@ class AudioPlayer:
         self._stream: sd.OutputStream | None = None
         self._stream_sr: int | None = None
         self._is_playing: bool = False
+        self._current_rms: float = 0.0
 
     @property
     def is_playing(self) -> bool:
         return self._is_playing
+
+    @property
+    def current_rms(self) -> float:
+        return self._current_rms
 
     def _ensure_stream(self, sample_rate: int) -> sd.OutputStream:
         if self._stream is None or sample_rate != self._stream_sr:
@@ -70,6 +75,7 @@ class AudioPlayer:
                         pass
                     return False
                 chunk = audio[idx : idx + block_len]
+                self._current_rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
                 if chunk.ndim == 1:
                     chunk = chunk.reshape(-1, 1)
                 stream.write(chunk)
@@ -77,10 +83,12 @@ class AudioPlayer:
             return True
         finally:
             self._is_playing = False
+            self._current_rms = 0.0
 
     def stop(self) -> None:
         """Immediately stop and release the output stream."""
         self._is_playing = False
+        self._current_rms = 0.0
         if self._stream:
             try:
                 self._stream.stop()

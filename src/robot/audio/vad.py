@@ -45,22 +45,26 @@ class VoiceActivityDetector:
         rms: float,
         is_bot_speaking: bool = False,
         in_echo_guard: bool = False,
+        ref_rms: float = 0.0,
     ) -> tuple[bool, float]:
-        """Run VAD on a single audio frame.
+        """Run VAD on a single audio frame with reference echo subtraction.
 
         Args:
             chunk: Audio frame (float32, mono)
             rms: Pre-computed RMS energy of the frame
             is_bot_speaking: Whether the robot is currently playing TTS audio
             in_echo_guard: Whether we're in the post-speech echo guard window
+            ref_rms: Real-time RMS of the TTS audio currently being played through speakers
 
         Returns:
             (is_voice, speech_probability)
         """
-        if not isinstance(chunk, torch.Tensor):
-            chunk = torch.from_numpy(chunk)
-
-        prob = self._model(chunk, self.sample_rate).item()
+        # When bot is playing, subtract acoustic speaker bleed from mic energy
+        # Laptop internal speaker to mic coupling is typically 0.10 - 0.25 (-12dB to -20dB)
+        effective_rms = rms
+        if is_bot_speaking and ref_rms > 0:
+            estimated_leakage = ref_rms * 0.25
+            effective_rms = max(0.0, rms - estimated_leakage)
 
         # Dynamic threshold selection based on duplex state
         if is_bot_speaking:
@@ -73,5 +77,13 @@ class VoiceActivityDetector:
             threshold = self.normal_threshold
             min_rms = self.energy_threshold
 
-        is_voice = (prob > threshold) and (rms > min_rms)
+        # Fast path: if effective energy does not cross min_rms, it's just speaker bleed / silence
+        if effective_rms <= min_rms:
+            return False, 0.0
+
+        if not isinstance(chunk, torch.Tensor):
+            chunk = torch.from_numpy(chunk)
+
+        prob = self._model(chunk, self.sample_rate).item()
+        is_voice = prob > threshold
         return is_voice, prob

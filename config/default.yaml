@@ -24,12 +24,12 @@ audio:
   sample_rate: 16000
   vad_frame_size: 512       # 32ms at 16kHz
   silence_threshold_ms: 650
-  barge_in_enabled: false   # Completely deaf to its own voice while speaking (prevents self-interruption)
-  barge_in_frames: 5        # Consecutive speech frames required to interrupt (if barge-in enabled)
-  barge_in_confidence: 0.88 # High confidence required during playback
+  barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
+  barge_in_frames: 4        # ~128ms consecutive speech required to interrupt
+  barge_in_confidence: 0.85 # High confidence required during playback
   normal_confidence: 0.45
   energy_threshold: 0.003
-  barge_in_energy: 0.045    # User voice near mic exceeds 0.045
+  barge_in_energy: 0.035    # User voice near mic exceeds 0.035 after reference subtraction
   echo_guard_confidence: 0.80
   echo_guard_energy: 0.025
   pre_roll_ms: 600
