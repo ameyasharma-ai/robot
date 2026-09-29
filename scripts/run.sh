@@ -22,8 +22,8 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
         echo "[LLM] Starting llama-server on RTX 3050..."
         /home/ameya/llama.cpp/build/bin/llama-server \
             -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
-            -ngl 99 \
-            -c 4096 \
+            -ngl 24 \
+            -c 2048 \
             --host 127.0.0.1 \
             --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
 
