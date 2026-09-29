@@ -175,8 +175,15 @@ class RobotEngine:
         loop = asyncio.get_running_loop()
         audio_queue = await self.capture.start(loop)
 
-        logger.info("robot_online", session=self._session_id)
-        print("\n🤖 Robot Core Online — Listening...")
+        print("\n" + "=" * 58)
+        print("🤖  \033[1;35mROBOT CORE ONLINE — FULL-DUPLEX LIVE\033[0m")
+        print("=" * 58)
+        print(f" • \033[1mSession\033[0m:     {self._session_id}")
+        print(f" • \033[1mPersona\033[0m:     {self.personalities.active.name if self.personalities.active else 'neo'}")
+        print(f" • \033[1mServices\033[0m:    LLM: \033[32m✔\033[0m  STT: \033[32m✔\033[0m  TTS: \033[32m✔\033[0m")
+        print(f" • \033[1mBarge-in\033[0m:    Active (interrupt anytime to cut bot off)")
+        print("=" * 58)
+        print("🎙️  \033[2mListening for speech...\033[0m\n")
 
         tasks = [
             asyncio.create_task(self._mic_loop(audio_queue)),
@@ -252,6 +259,7 @@ class RobotEngine:
                     else:
                         barge_in_consecutive += 1
                         if barge_in_consecutive >= barge_in_required:
+                            print("\n⚡ \033[1;33m[BARGE-IN]\033[0m Interrupted bot playback!")
                             logger.info("barge_in_triggered")
                             self._interrupt_event.set()
                             barge_in_consecutive = 0
@@ -286,15 +294,16 @@ class RobotEngine:
                                 with Timer(self.telemetry, "STT_FINAL_LATENCY"):
                                     text = await self.stt.transcribe(audio_np, sample_rate)
                                 if text:
-                                    logger.info("stt_transcribed", text=text, rms=round(buf_rms, 4))
+                                    stt_ms = self.telemetry.get_metric("STT_FINAL_LATENCY").last
                                     if not self._is_self_echo(text):
+                                        print(f"\n💬 \033[1;36m[USER]\033[0m {text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                         self.telemetry.record(
                                             "STT_FINAL_LATENCY",
-                                            self.telemetry.get_metric("STT_FINAL_LATENCY").last,
+                                            stt_ms,
                                         )
                                         await self._speech_queue.put((text, end_time))
                                     else:
-                                        logger.info("filtered_self_echo", text=text)
+                                        print(f"🔇 \033[90m[ECHO FILTERED]\033[0m {text}")
 
                         audio_buffer = []
 
@@ -452,6 +461,11 @@ class RobotEngine:
             # Play
             self._is_speaking = True
             await self.state.set_mode(RobotMode.SPEAKING)
+
+            if timing_ref:
+                print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")
+            else:
+                print(f"   \033[32m...\033[0m {phrase}")
 
             completed = await self.player.play(audio, sr, interrupt)
 
