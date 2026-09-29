@@ -58,6 +58,8 @@ class AudioPlayer:
                 logger.info("playback_interrupted")
                 return False
             chunk = audio[idx : idx + block_len]
+            if chunk.ndim == 1:
+                chunk = chunk.reshape(-1, 1)
             stream.write(chunk)
             await asyncio.sleep(self.block_ms * 0.001 * 0.875)  # Slight under-sleep for smooth flow
 

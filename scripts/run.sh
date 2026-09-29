@@ -49,20 +49,27 @@ elif [ -f "/home/ameya/whisper.cpp/build_vk/bin/whisper-server" ]; then
     WHISPER_BIN="/home/ameya/whisper.cpp/build_vk/bin/whisper-server"
 fi
 
-if ! curl -s http://127.0.0.1:8081/load > /dev/null 2>&1; then
-    if [ -n "$WHISPER_BIN" ] && [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
-        echo "[STT] Starting whisper-server..."
+WHISPER_MODEL=""
+if [ -f "/home/ameya/whisper.cpp/models/ggml-base.bin" ]; then
+    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-base.bin"
+elif [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
+    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-small.bin"
+elif [ -f "/home/ameya/whisper.cpp/models/ggml-tiny.en.bin" ]; then
+    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-tiny.en.bin"
+fi
+
+if ! curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
+    if [ -n "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ]; then
+        echo "[STT] Starting whisper-server with $WHISPER_MODEL..."
         "$WHISPER_BIN" \
-            -m /home/ameya/whisper.cpp/models/ggml-small.bin \
+            -m "$WHISPER_MODEL" \
             -t 4 \
             --host 127.0.0.1 \
-            --port 8081 \
-            --language en \
-            --no-speech-thold 0.5 > "$DIR/logs/whisper-server.log" 2>&1 &
+            --port 8081 > "$DIR/logs/whisper-server.log" 2>&1 &
 
         echo -n "[STT] Waiting for whisper-server..."
-        for i in $(seq 1 20); do
-            if curl -s http://127.0.0.1:8081/load > /dev/null 2>&1; then
+        for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
                 break
             fi
             echo -n "."

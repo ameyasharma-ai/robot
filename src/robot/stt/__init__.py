@@ -121,7 +121,7 @@ class WhisperServerSTT(STTProvider):
     async def health_check(self) -> bool:
         try:
             base = self.url.rsplit("/", 1)[0]
-            resp = requests.get(f"{base}/load", timeout=3)
+            resp = requests.get(f"{base}/", timeout=3)
             return resp.status_code == 200
         except Exception:
             return False
