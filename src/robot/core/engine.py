@@ -143,11 +143,11 @@ class RobotEngine:
         self.player = AudioPlayer(block_ms=audio_cfg.get("playback_block_ms", 40))
         self.vad = VoiceActivityDetector(
             sample_rate=audio_cfg.get("sample_rate", 16000),
-            normal_threshold=audio_cfg.get("normal_confidence", 0.55),
-            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.92),
-            echo_guard_threshold=0.85,
-            energy_threshold=audio_cfg.get("energy_threshold", 0.008),
-            barge_in_energy=audio_cfg.get("barge_in_energy", 0.04),
+            normal_threshold=audio_cfg.get("normal_confidence", 0.40),
+            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.60),
+            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.60),
+            energy_threshold=audio_cfg.get("energy_threshold", 0.002),
+            barge_in_energy=audio_cfg.get("barge_in_energy", 0.006),
         )
 
         # Tools
@@ -262,6 +262,9 @@ class RobotEngine:
                             print("\n⚡ \033[1;33m[BARGE-IN]\033[0m Interrupted bot playback!")
                             logger.info("barge_in_triggered")
                             self._interrupt_event.set()
+                            self._is_speaking = False
+                            self._speech_ended_ts = time.time()
+                            self.player.stop()
                             barge_in_consecutive = 0
                             last_barge_in_time = time.time()
                             is_speaking = True

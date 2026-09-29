@@ -22,9 +22,10 @@ pactl set-source-volume @DEFAULT_SOURCE@ 70% 2>/dev/null || true
 if ! pactl list sources short 2>/dev/null | grep -q echo-cancel-source; then
     echo "[AEC] Loading PipeWire echo-cancel module..."
     pactl load-module module-echo-cancel 2>/dev/null || true
-    pactl set-default-source echo-cancel-source 2>/dev/null || true
-    pactl set-default-sink echo-cancel-sink 2>/dev/null || true
 fi
+pactl set-default-source echo-cancel-source 2>/dev/null || true
+pactl set-default-sink echo-cancel-sink 2>/dev/null || true
+pactl set-source-volume echo-cancel-source 70% 2>/dev/null || true
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
 if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then

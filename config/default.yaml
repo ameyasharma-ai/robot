@@ -24,15 +24,15 @@ audio:
   sample_rate: 16000
   vad_frame_size: 512       # 32ms at 16kHz
   silence_threshold_ms: 650
-  barge_in_frames: 4        # ~128ms consecutive speech for quick barge-in
-  barge_in_confidence: 0.75
-  normal_confidence: 0.45
-  energy_threshold: 0.003
-  barge_in_energy: 0.012
+  barge_in_frames: 2        # ~64ms consecutive speech for instantaneous barge-in
+  barge_in_confidence: 0.60
+  normal_confidence: 0.40
+  energy_threshold: 0.002
+  barge_in_energy: 0.006
   pre_roll_ms: 600
-  playback_block_ms: 40
-  echo_guard_s: 0.4
-  barge_in_cooldown_s: 0.6
+  playback_block_ms: 30
+  echo_guard_s: 0.25
+  barge_in_cooldown_s: 0.4
 
 memory:
   provider: mem0
