@@ -106,12 +106,9 @@ class WhisperServerSTT(STTProvider):
 
         files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
         data = {
-            "temperature": str(self.temperature),
+            "temperature": "0.0",
             "language": self.language,
-            "no_timestamps": "true",
-            "no_fallback": "true",
-            "suppress_non_speech_tokens": "true",
-            "prompt": "Voice conversation with a human user.",
+            "response_format": "json",
         }
 
         try:

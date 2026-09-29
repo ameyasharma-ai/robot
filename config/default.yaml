@@ -23,16 +23,16 @@ tts:
 audio:
   sample_rate: 16000
   vad_frame_size: 512       # 32ms at 16kHz
-  silence_threshold_ms: 500
-  barge_in_frames: 10       # ~320ms consecutive speech
-  barge_in_confidence: 0.92
-  normal_confidence: 0.55
-  energy_threshold: 0.008
-  barge_in_energy: 0.04
-  pre_roll_ms: 500
+  silence_threshold_ms: 650
+  barge_in_frames: 4        # ~128ms consecutive speech for quick barge-in
+  barge_in_confidence: 0.75
+  normal_confidence: 0.45
+  energy_threshold: 0.003
+  barge_in_energy: 0.012
+  pre_roll_ms: 600
   playback_block_ms: 40
-  echo_guard_s: 1.0
-  barge_in_cooldown_s: 1.5
+  echo_guard_s: 0.4
+  barge_in_cooldown_s: 0.6
 
 memory:
   provider: mem0

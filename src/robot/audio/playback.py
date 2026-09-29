@@ -56,6 +56,11 @@ class AudioPlayer:
         for idx in range(0, len(audio), block_len):
             if interrupt.is_set():
                 logger.info("playback_interrupted")
+                try:
+                    stream.abort()
+                    stream.start()
+                except Exception:
+                    pass
                 return False
             chunk = audio[idx : idx + block_len]
             if chunk.ndim == 1:

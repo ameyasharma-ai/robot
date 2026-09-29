@@ -278,19 +278,23 @@ class RobotEngine:
                         is_speaking = False
                         silence_frames = 0
 
-                        min_audio_len = int(sample_rate * 0.6)
+                        min_audio_len = int(sample_rate * 0.4)
                         if len(audio_buffer) >= min_audio_len:
                             audio_np = np.array(audio_buffer, dtype=np.float32)
                             buf_rms = float(np.sqrt(np.mean(audio_np**2)))
-                            if buf_rms > 0.012:
+                            if buf_rms > 0.003:
                                 with Timer(self.telemetry, "STT_FINAL_LATENCY"):
                                     text = await self.stt.transcribe(audio_np, sample_rate)
-                                if text and not self._is_self_echo(text):
-                                    self.telemetry.record(
-                                        "STT_FINAL_LATENCY",
-                                        self.telemetry.get_metric("STT_FINAL_LATENCY").last,
-                                    )
-                                    await self._speech_queue.put((text, end_time))
+                                if text:
+                                    logger.info("stt_transcribed", text=text, rms=round(buf_rms, 4))
+                                    if not self._is_self_echo(text):
+                                        self.telemetry.record(
+                                            "STT_FINAL_LATENCY",
+                                            self.telemetry.get_metric("STT_FINAL_LATENCY").last,
+                                        )
+                                        await self._speech_queue.put((text, end_time))
+                                    else:
+                                        logger.info("filtered_self_echo", text=text)
 
                         audio_buffer = []
 
