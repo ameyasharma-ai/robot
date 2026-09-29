@@ -37,6 +37,7 @@ class VoiceActivityDetector:
         self.echo_guard_energy = echo_guard_energy
         self.echo_coupling_ratio = echo_coupling_ratio
         self._learned_coupling = echo_coupling_ratio
+        self._max_ref_rms = 0.0
 
         logger.info("loading_silero_vad")
         self._model = load_silero_vad()
@@ -62,25 +63,15 @@ class VoiceActivityDetector:
         Returns:
             (is_voice, speech_probability)
         """
-        # Dynamically adapt acoustic coupling to any speaker volume changes
-        if is_bot_speaking and ref_rms > 0.03:
-            observed_ratio = rms / ref_rms
-            # Smoothly track true physical coupling up to 0.75
-            if 0.05 <= observed_ratio <= 0.75:
-                self._learned_coupling = 0.96 * self._learned_coupling + 0.04 * observed_ratio
-
-        coupling = max(self.echo_coupling_ratio, self._learned_coupling)
-
-        # When bot is playing, subtract acoustic speaker bleed from mic energy
-        effective_rms = rms
-        if is_bot_speaking and ref_rms > 0:
-            estimated_leakage = ref_rms * coupling
-            effective_rms = max(0.0, rms - estimated_leakage)
+        # Decay max reference envelope over time (~200ms decay)
+        self._max_ref_rms = max(ref_rms, self._max_ref_rms * 0.85)
 
         # Dynamic threshold selection based on duplex state
         if is_bot_speaking:
             threshold = self.barge_in_threshold
-            min_rms = self.barge_in_energy
+            # Physical speaker bleed at high volume scales with max reference envelope
+            # User voice must cleanly exceed the physical acoustic envelope
+            min_rms = max(self.barge_in_energy, self._max_ref_rms * 0.40 + 0.010)
         elif in_echo_guard:
             threshold = self.echo_guard_threshold
             min_rms = self.echo_guard_energy
@@ -88,8 +79,8 @@ class VoiceActivityDetector:
             threshold = self.normal_threshold
             min_rms = self.energy_threshold
 
-        # Fast path: if effective energy does not cross min_rms, it's just speaker bleed / silence
-        if effective_rms <= min_rms:
+        # Fast path: if microphone RMS doesn't exceed acoustic speaker bleed, reject
+        if rms <= min_rms:
             return False, 0.0
 
         if not isinstance(chunk, torch.Tensor):
