@@ -247,6 +247,7 @@ class RobotEngine:
         silence_frames = 0
         barge_in_consecutive = 0
         last_barge_in_time = 0.0
+        was_barge_in = False
 
         while True:
             frame = await audio_queue.get()
@@ -260,6 +261,7 @@ class RobotEngine:
                     audio_buffer = []
                     silence_frames = 0
                     barge_in_consecutive = 0
+                    was_barge_in = False
                     continue
 
             in_echo_guard = (time.time() - self._speech_ended_ts) < echo_guard_s
@@ -289,11 +291,13 @@ class RobotEngine:
                             barge_in_consecutive = 0
                             last_barge_in_time = time.time()
                             is_speaking = True
+                            was_barge_in = True
                             audio_buffer = list(self.capture.get_pre_roll())
                 else:
                     barge_in_consecutive = 0
                     if not is_speaking:
                         is_speaking = True
+                        was_barge_in = False
                         audio_buffer = list(self.capture.get_pre_roll())
                         await self.state.set_mode(RobotMode.LISTENING)
 
@@ -309,8 +313,10 @@ class RobotEngine:
                         end_time = time.time()
                         is_speaking = False
                         silence_frames = 0
+                        is_barge = was_barge_in
+                        was_barge_in = False
 
-                        min_audio_len = int(sample_rate * 0.4)
+                        min_audio_len = int(sample_rate * 0.3)
                         if len(audio_buffer) >= min_audio_len:
                             audio_np = np.array(audio_buffer, dtype=np.float32)
                             buf_rms = float(np.sqrt(np.mean(audio_np**2)))
@@ -319,7 +325,7 @@ class RobotEngine:
                                     text = await self.stt.transcribe(audio_np, sample_rate)
                                 if text:
                                     stt_ms = self.telemetry.get_metric("STT_FINAL_LATENCY").last
-                                    if not self._is_self_echo(text):
+                                    if not self._is_self_echo(text, is_barge_in=is_barge):
                                         print(f"\n💬 \033[1;36m[USER]\033[0m {text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                         self.telemetry.record(
                                             "STT_FINAL_LATENCY",
@@ -509,21 +515,34 @@ class RobotEngine:
 
     # ─── Echo Filter ─────────────────────────────────────────────────────
 
-    def _is_self_echo(self, user_text: str) -> bool:
-        """Detect if transcribed text is an echo of bot's own speech."""
+    def _is_self_echo(self, user_text: str, is_barge_in: bool = False) -> bool:
+        """Detect if transcribed text is an echo of bot's own speech.
+
+        If the user intentionally triggered a barge-in, never discard their utterance
+        unless it is an exact, 100% duplicate of the phrase that was interrupted.
+        """
         norm_user = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
         if not norm_user:
             return True
 
-        for phrase in self._last_bot_phrases[-6:]:
+        # If user explicitly interrupted, trust their speech unless it's pure bot playback
+        if is_barge_in:
+            for phrase in self._last_bot_phrases[-3:]:
+                norm_bot = re.sub(r"[^\w\s]", "", phrase.lower()).strip()
+                if norm_user == norm_bot:
+                    return True
+            return False
+
+        for phrase in self._last_bot_phrases[-4:]:
             norm_bot = re.sub(r"[^\w\s]", "", phrase.lower()).strip()
             if not norm_bot:
                 continue
-            if norm_user in norm_bot or norm_bot in norm_user:
+            if norm_user == norm_bot:
                 return True
+            # Require strong phrase alignment (>85% matching words and at least 3 words)
             u_words = set(norm_user.split())
             b_words = set(norm_bot.split())
-            if u_words and len(u_words & b_words) / len(u_words) >= 0.6:
+            if len(u_words) >= 3 and len(u_words & b_words) / len(u_words) >= 0.85:
                 return True
         return False
 
