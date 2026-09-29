@@ -16,11 +16,15 @@ graphify install
 
 ## Usage
 
+### In Antigravity Chat (Slash Command):
+- Type `/graphify` in the assistant prompt
+
+### In Terminal (CLI):
 ```bash
-/graphify .                    # Graph entire codebase
-/graphify src/robot            # Graph specific directory
-/graphify . --mode deep        # Deep relationship extraction
-/graphify query "how does the context engine work?"
+.venv/bin/graphify extract . --code-only       # Graph entire codebase
+.venv/bin/graphify update .                   # Update graph incrementally
+.venv/bin/graphify export html                # Generate interactive graph.html
+.venv/bin/graphify query "how does barge-in work?"
 ```
 
 ## Output
