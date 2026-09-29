@@ -36,6 +36,7 @@ class VoiceActivityDetector:
         self.barge_in_energy = barge_in_energy
         self.echo_guard_energy = echo_guard_energy
         self.echo_coupling_ratio = echo_coupling_ratio
+        self._learned_coupling = echo_coupling_ratio
 
         logger.info("loading_silero_vad")
         self._model = load_silero_vad()
@@ -49,7 +50,7 @@ class VoiceActivityDetector:
         in_echo_guard: bool = False,
         ref_rms: float = 0.0,
     ) -> tuple[bool, float]:
-        """Run VAD on a single audio frame with reference echo subtraction.
+        """Run VAD on a single audio frame with dynamic reference echo subtraction.
 
         Args:
             chunk: Audio frame (float32, mono)
@@ -61,10 +62,19 @@ class VoiceActivityDetector:
         Returns:
             (is_voice, speech_probability)
         """
+        # Dynamically adapt acoustic coupling to any speaker volume changes
+        if is_bot_speaking and ref_rms > 0.03:
+            observed_ratio = rms / ref_rms
+            # Smoothly track true physical coupling up to 0.75
+            if 0.05 <= observed_ratio <= 0.75:
+                self._learned_coupling = 0.96 * self._learned_coupling + 0.04 * observed_ratio
+
+        coupling = max(self.echo_coupling_ratio, self._learned_coupling)
+
         # When bot is playing, subtract acoustic speaker bleed from mic energy
         effective_rms = rms
         if is_bot_speaking and ref_rms > 0:
-            estimated_leakage = ref_rms * self.echo_coupling_ratio
+            estimated_leakage = ref_rms * coupling
             effective_rms = max(0.0, rms - estimated_leakage)
 
         # Dynamic threshold selection based on duplex state
