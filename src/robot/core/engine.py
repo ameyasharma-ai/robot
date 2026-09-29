@@ -143,11 +143,12 @@ class RobotEngine:
         self.player = AudioPlayer(block_ms=audio_cfg.get("playback_block_ms", 40))
         self.vad = VoiceActivityDetector(
             sample_rate=audio_cfg.get("sample_rate", 16000),
-            normal_threshold=audio_cfg.get("normal_confidence", 0.40),
-            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.60),
-            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.60),
-            energy_threshold=audio_cfg.get("energy_threshold", 0.002),
-            barge_in_energy=audio_cfg.get("barge_in_energy", 0.006),
+            normal_threshold=audio_cfg.get("normal_confidence", 0.45),
+            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.85),
+            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.80),
+            energy_threshold=audio_cfg.get("energy_threshold", 0.003),
+            barge_in_energy=audio_cfg.get("barge_in_energy", 0.035),
+            echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.025),
         )
 
         # Tools
@@ -471,11 +472,11 @@ class RobotEngine:
                 print(f"   \033[32m...\033[0m {phrase}")
 
             completed = await self.player.play(audio, sr, interrupt)
+            self._speech_ended_ts = time.time()
 
             if not completed:
                 # Interrupted — drain TTS queue
                 self._is_speaking = False
-                self._speech_ended_ts = time.time()
                 while not self._tts_queue.empty():
                     try:
                         leftover = self._tts_queue.get_nowait()
@@ -484,7 +485,7 @@ class RobotEngine:
                     except asyncio.QueueEmpty:
                         break
             elif self._tts_queue.empty():
-                self._speech_ended_ts = time.time()
+                self._is_speaking = False
 
     # ─── Echo Filter ─────────────────────────────────────────────────────
 
