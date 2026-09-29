@@ -8,10 +8,18 @@ import sys
 from robot.core.engine import RobotEngine
 
 
+import argparse
+
+
 def main() -> None:
     """Launch Robot Core."""
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config/default.yaml"
-    engine = RobotEngine(config_path=config_path)
+    parser = argparse.ArgumentParser(description="Robot Core — Local Humanoid Robot Brain")
+    parser.add_argument(
+        "-c", "--config", default="config/default.yaml", help="Path to config.yaml"
+    )
+    args = parser.parse_args()
+
+    engine = RobotEngine(config_path=args.config)
 
     try:
         asyncio.run(engine.run())

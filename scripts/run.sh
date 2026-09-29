@@ -18,41 +18,54 @@ fi
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
 if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
-    echo "[LLM] Starting llama-server on RTX 3050..."
-    CUDA_VISIBLE_DEVICES=0 /home/ameya/llama.cpp/build/bin/llama-server \
-        -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
-        -ngl 99 \
-        -c 16384 \
-        -fa \
-        --host 127.0.0.1 \
-        --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
+    if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
+        echo "[LLM] Starting llama-server on RTX 3050..."
+        /home/ameya/llama.cpp/build/bin/llama-server \
+            -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
+            -ngl 99 \
+            -c 4096 \
+            --host 127.0.0.1 \
+            --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
 
-    echo -n "[LLM] Waiting for llama-server..."
-    while ! curl -s http://127.0.0.1:8080/health | grep -q '"ok"'; do
-        echo -n "."
-        sleep 0.5
-    done
-    echo " ready"
+        echo -n "[LLM] Waiting for llama-server..."
+        for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:8080/health | grep -q '"ok"'; then
+                break
+            fi
+            echo -n "."
+            sleep 0.5
+        done
+        echo " ready"
+    else
+        echo "[LLM] llama-server binary or model not found at configured paths."
+    fi
 fi
 
-# ─── 3. whisper-server (Vulkan/CPU, port 8081) ──────────────────────
+# ─── 3. whisper-server (port 8081) ───────────────────────────────────
 if ! curl -s http://127.0.0.1:8081/load > /dev/null 2>&1; then
-    echo "[STT] Starting whisper-server..."
-    /home/ameya/whisper.cpp/build_vk/bin/whisper-server \
-        -m /home/ameya/whisper.cpp/models/ggml-small.bin \
-        -t 4 \
-        --host 127.0.0.1 \
-        --port 8081 \
-        --language en \
-        -sns \
-        --no-speech-thold 0.5 > "$DIR/logs/whisper-server.log" 2>&1 &
+    if [ -f "/home/ameya/whisper.cpp/build_vk/bin/whisper-server" ] && [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
+        echo "[STT] Starting whisper-server..."
+        /home/ameya/whisper.cpp/build_vk/bin/whisper-server \
+            -m /home/ameya/whisper.cpp/models/ggml-small.bin \
+            -t 4 \
+            --host 127.0.0.1 \
+            --port 8081 \
+            --language en \
+            -sns \
+            --no-speech-thold 0.5 > "$DIR/logs/whisper-server.log" 2>&1 &
 
-    echo -n "[STT] Waiting for whisper-server..."
-    while ! curl -s http://127.0.0.1:8081/load > /dev/null 2>&1; do
-        echo -n "."
-        sleep 0.5
-    done
-    echo " ready"
+        echo -n "[STT] Waiting for whisper-server..."
+        for i in $(seq 1 20); do
+            if curl -s http://127.0.0.1:8081/load > /dev/null 2>&1; then
+                break
+            fi
+            echo -n "."
+            sleep 0.5
+        done
+        echo " ready"
+    else
+        echo "[STT] whisper-server binary or model not found. STT will fall back gracefully or connect when started."
+    fi
 fi
 
 # ─── 4. Qdrant (for Mem0, port 6333) ────────────────────────────────
@@ -82,4 +95,8 @@ fi
 # ─── 5. Launch Robot Core ────────────────────────────────────────────
 echo ""
 echo "🚀 Launching Robot Core..."
-exec python -m robot "$@"
+if [ -f "$DIR/.venv/bin/python" ]; then
+    exec "$DIR/.venv/bin/python" -m robot "$@"
+else
+    exec python3 -m robot "$@"
+fi
