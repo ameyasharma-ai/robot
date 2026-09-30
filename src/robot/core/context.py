@@ -103,8 +103,20 @@ class ContextEngine:
                     "tool_call_id": tr.get("id", ""),
                 })
 
-        # 6. Current user input
-        messages.append({"role": "user", "content": user_text})
+        # 6. Current user input (with live camera visual grounding if user asks what is this / what do you see)
+        user_content = user_text
+        lower_user = user_text.lower()
+        if any(w in lower_user for w in ("what is this", "what is that", "what do you see", "who is here", "what are these", "describe what you see")):
+            if world_state and (world_state.get("objects") or world_state.get("people")):
+                detected_items = []
+                for o in world_state.get("objects", []):
+                    detected_items.append(f"{o.get('label')} at {o.get('position')}")
+                for p in world_state.get("people", []):
+                    detected_items.append(f"person ({p.get('distance')} range, {p.get('position')})")
+                if detected_items:
+                    user_content += f"\n[Visual Stream in Front of Robot]: Currently viewing {', '.join(detected_items)}."
+
+        messages.append({"role": "user", "content": user_content})
 
         token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages)
         logger.info(

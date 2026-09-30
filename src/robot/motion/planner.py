@@ -116,6 +116,13 @@ class MotionPlanner:
             ))
             plan.append(SemanticAction(action="idle", duration=0.3))
 
+        elif action.action in ("reset", "reset_position"):
+            plan.append(SemanticAction(
+                action="reset",
+                priority=ActionPriority.INTERRUPT,
+            ))
+            plan.append(SemanticAction(action="idle", duration=0.3))
+
         else:
             plan.append(action)
 
@@ -125,6 +132,10 @@ class MotionPlanner:
         """Extract semantic actions from natural language user commands."""
         text_lower = text.lower().strip()
         actions: list[dict[str, Any]] = []
+
+        # 0. Reset / Recenter / Default pose
+        if re.search(r"\b(reset|recenter|default pose|stand straight|straighten up|back to normal)\b", text_lower):
+            return [{"action": "reset"}]
 
         # 1. Stop / Freeze / Cancel
         if re.search(r"\b(stop|halt|freeze|cancel|pause)\b", text_lower):

@@ -103,6 +103,8 @@ def validate_action(action_dict: dict[str, Any]) -> tuple[bool, Optional[Semanti
         "speak_start",
         "speak_stop",
         "stop",
+        "reset",
+        "reset_position",
     }
     if name not in valid_actions:
         return False, None, f"Unknown action '{name}'. Valid: {sorted(list(valid_actions))}"
