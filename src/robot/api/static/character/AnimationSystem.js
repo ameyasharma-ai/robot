@@ -111,26 +111,43 @@ class AnimationSystem {
             const rightKnee = rig.getBone("rightLowerLeg");
             const hips = rig.getBone("hips");
 
-            const amp = 0.55 * (loc.direction || 1.0);
-            if (leftLeg) leftLeg.rotation.x = cycle * amp;
-            if (rightLeg) rightLeg.rotation.x = -cycle * amp;
+            const amp = 0.45 * (loc.direction || 1.0);
+            if (leftLeg && rig.initialRotations["leftUpperLeg"]) {
+                const initQ = rig.initialRotations["leftUpperLeg"];
+                leftLeg.quaternion.copy(initQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-cycle * amp, 0, 0)));
+            }
+            if (rightLeg && rig.initialRotations["rightUpperLeg"]) {
+                const initQ = rig.initialRotations["rightUpperLeg"];
+                rightLeg.quaternion.copy(initQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(cycle * amp, 0, 0)));
+            }
 
             // Knee flexion on back swing
-            if (leftKnee) leftKnee.rotation.x = Math.max(0, -cycle * 0.6);
-            if (rightKnee) rightKnee.rotation.x = Math.max(0, cycle * 0.6);
+            const leftFlex = Math.max(0, -cycle * 0.55);
+            const rightFlex = Math.max(0, cycle * 0.55);
+            if (leftKnee && rig.initialRotations["leftLowerLeg"]) {
+                const initQ = rig.initialRotations["leftLowerLeg"];
+                leftKnee.quaternion.copy(initQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-leftFlex, 0, 0)));
+            }
+            if (rightKnee && rig.initialRotations["rightLowerLeg"]) {
+                const initQ = rig.initialRotations["rightLowerLeg"];
+                rightKnee.quaternion.copy(initQ).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-rightFlex, 0, 0)));
+            }
 
             // Pelvic bounce and counter-rotation
-            if (hips) {
-                hips.position.y = (rig.initialPositions["hips"]?.y || 1.0) + Math.abs(Math.cos(loc.progress * Math.PI * 2)) * 0.04;
-                hips.rotation.y = -cycle * 0.08;
+            if (hips && rig.initialPositions["hips"]) {
+                hips.position.y = (rig.initialPositions["hips"].y || 1.0) + Math.abs(Math.cos(loc.progress * Math.PI * 2)) * 0.03;
             }
 
             // Arm swinging if not gesturing
             if (!this.activeActions.upperBody) {
                 const lArm = rig.getBone("leftUpperArm");
                 const rArm = rig.getBone("rightUpperArm");
-                if (lArm) lArm.rotation.x = -cycle * 0.45;
-                if (rArm) rArm.rotation.x = cycle * 0.45;
+                if (lArm && rig.initialRotations["leftUpperArm"]) {
+                    lArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(cycle * 0.4, 0, 1.25)));
+                }
+                if (rArm && rig.initialRotations["rightUpperArm"]) {
+                    rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-cycle * 0.4, 0, -1.25)));
+                }
             }
 
             if (loc.duration && loc.progress * 0.5 >= loc.duration) {
@@ -139,6 +156,9 @@ class AnimationSystem {
                 this.resetLimb("rightUpperLeg");
                 this.resetLimb("leftLowerLeg");
                 this.resetLimb("rightLowerLeg");
+                if (hips && rig.initialPositions["hips"]) {
+                    hips.position.y = rig.initialPositions["hips"].y;
+                }
             }
         } else if (loc.type === "turn") {
             const rigRoot = rig.root;
@@ -191,24 +211,30 @@ class AnimationSystem {
                 kneeSnap = 0.65 * (1.0 - sub);
             }
 
-            if (kickLeg) kickLeg.rotation.x = legLift;
-            if (kickKnee) kickKnee.rotation.x = kneeSnap;
+            if (kickLeg && rig.initialRotations[isRight ? "rightUpperLeg" : "leftUpperLeg"]) {
+                const initQ = rig.initialRotations[isRight ? "rightUpperLeg" : "leftUpperLeg"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(-legLift, 0, 0));
+                kickLeg.quaternion.copy(initQ).multiply(deltaQ);
+            }
+            if (kickKnee && rig.initialRotations[isRight ? "rightLowerLeg" : "leftLowerLeg"]) {
+                const initQ = rig.initialRotations[isRight ? "rightLowerLeg" : "leftLowerLeg"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(-kneeSnap, 0, 0));
+                kickKnee.quaternion.copy(initQ).multiply(deltaQ);
+            }
 
             // Stabilize pelvic balance on supporting leg
-            if (hips) {
+            if (hips && rig.initialPositions["hips"]) {
                 const shiftSign = isRight ? 1 : -1;
-                hips.position.x = Math.sin(t * Math.PI) * 0.08 * shiftSign;
-                hips.rotation.z = Math.sin(t * Math.PI) * 0.05 * shiftSign;
+                hips.position.x = (rig.initialPositions["hips"].x || 0) + Math.sin(t * Math.PI) * 0.08 * shiftSign;
             }
         }
 
         if (t >= 1.0) {
             this.activeActions.lowerBody = null;
-            if (kickLeg) kickLeg.rotation.set(0, 0, 0);
-            if (kickKnee) kickKnee.rotation.set(0, 0, 0);
-            if (hips) {
-                hips.position.x = 0;
-                hips.rotation.z = 0;
+            this.resetLimb(isRight ? "rightUpperLeg" : "leftUpperLeg");
+            this.resetLimb(isRight ? "rightLowerLeg" : "leftLowerLeg");
+            if (hips && rig.initialPositions["hips"]) {
+                hips.position.x = rig.initialPositions["hips"].x || 0;
             }
         }
     }
@@ -227,36 +253,46 @@ class AnimationSystem {
         const sign = isRight ? 1 : -1;
 
         if (act.type === "raise_hand") {
-            // Smooth raise arm up in salutation / affirmation
             const ease = 0.5 - 0.5 * Math.cos(Math.min(1.0, t * 1.5) * Math.PI);
-            if (arm) {
-                arm.rotation.z = (Math.PI / 2.3 * sign) - (ease * Math.PI * 0.85 * sign);
-                arm.rotation.x = ease * 0.6;
+            if (arm && rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"]) {
+                const initQ = rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 0.8, 0, (ease * -1.8 * sign) + (sign * 1.25)));
+                arm.quaternion.copy(initQ).multiply(deltaQ);
             }
-            if (forearm) forearm.rotation.y = ease * 0.4 * sign;
+            if (forearm && rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"]) {
+                const initQ = rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ease * 0.4 * sign, 0));
+                forearm.quaternion.copy(initQ).multiply(deltaQ);
+            }
         } else if (act.type === "wave") {
-            // Raise hand then oscillate forearm
             const raiseProgress = Math.min(1.0, t * 2.5);
             const easeRaise = 0.5 - 0.5 * Math.cos(raiseProgress * Math.PI);
+            const waveCycles = (act.repetitions || 3) * 2;
+            const waveProgress = Math.max(0, (act.elapsed - 0.3) * 6.0);
+            const waveOsc = Math.sin(waveProgress * Math.PI);
 
-            if (arm) {
-                arm.rotation.z = (Math.PI / 2.3 * sign) - (easeRaise * Math.PI * 0.75 * sign);
-                arm.rotation.x = easeRaise * 0.4;
+            if (arm && rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"]) {
+                const initQ = rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(easeRaise * 0.6, 0, (easeRaise * -1.8 * sign) + (sign * 1.25)));
+                arm.quaternion.copy(initQ).multiply(deltaQ);
             }
-            if (forearm) {
-                const waveCycles = (act.repetitions || 3) * 2;
-                const waveProgress = Math.max(0, (act.elapsed - 0.3) * 6.0);
-                const waveOsc = Math.sin(waveProgress * Math.PI);
-                forearm.rotation.z = (0.5 + waveOsc * 0.35) * sign;
+            if (forearm && rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"]) {
+                const initQ = rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, (0.5 + waveOsc * 0.45) * sign));
+                forearm.quaternion.copy(initQ).multiply(deltaQ);
             }
         } else if (act.type === "point") {
-            // Direct pointing forward at target
             const ease = 0.5 - 0.5 * Math.cos(Math.min(1.0, t * 2.0) * Math.PI);
-            if (arm) {
-                arm.rotation.z = (Math.PI / 2.3 * sign) - (ease * Math.PI * 0.55 * sign);
-                arm.rotation.x = ease * 1.4; // point forward
+            if (arm && rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"]) {
+                const initQ = rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 1.5, 0, (ease * -0.5 * sign) + (sign * 1.25)));
+                arm.quaternion.copy(initQ).multiply(deltaQ);
             }
-            if (forearm) forearm.rotation.x = ease * 0.1;
+            if (forearm && rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"]) {
+                const initQ = rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 0.1, 0, 0));
+                forearm.quaternion.copy(initQ).multiply(deltaQ);
+            }
         }
 
         if (t >= 1.0) {

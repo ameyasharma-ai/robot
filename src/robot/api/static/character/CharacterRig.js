@@ -52,38 +52,51 @@ class CharacterRig {
             }
         });
 
-        // Bone name aliases dictionary
+        // Bone name aliases dictionary with exact VRM standard names prioritized
         const ALIASES = {
-            hips: ["hips", "pelvis", "root", "hip"],
-            spine: ["spine", "spine1", "lowertorso"],
-            chest: ["chest", "spine2", "uppertorso", "torso"],
-            neck: ["neck"],
-            head: ["head"],
-            leftUpperArm: ["leftupperarm", "leftarm", "armleft", "l_upperarm", "upperarm_l", "shoulder_l", "leftshoulder"],
-            leftLowerArm: ["leftlowerarm", "leftforearm", "forearmleft", "l_forearm", "lowerarm_l"],
-            leftHand: ["lefthand", "handleft", "l_hand", "hand_l", "wrist_l"],
-            rightUpperArm: ["rightupperarm", "rightarm", "armright", "r_upperarm", "upperarm_r", "shoulder_r", "rightshoulder"],
-            rightLowerArm: ["rightlowerarm", "rightforearm", "forearmright", "r_forearm", "lowerarm_r"],
-            rightHand: ["righthand", "handright", "r_hand", "hand_r", "wrist_r"],
-            leftUpperLeg: ["leftupperleg", "leftup_leg", "leftthigh", "l_thigh", "upperleg_l", "thigh_l"],
-            leftLowerLeg: ["leftlowerleg", "leftleg", "leftcalf", "l_calf", "lowerleg_l", "calf_l", "shin_l"],
-            leftFoot: ["leftfoot", "footleft", "l_foot", "foot_l", "ankle_l"],
-            rightUpperLeg: ["rightupperleg", "rightup_leg", "rightthigh", "r_thigh", "upperleg_r", "thigh_r"],
-            rightLowerLeg: ["rightlowerleg", "rightleg", "rightcalf", "r_calf", "lowerleg_r", "calf_r", "shin_r"],
-            rightFoot: ["rightfoot", "footright", "r_foot", "foot_r", "ankle_r"],
+            hips: ["j_bip_c_hips", "hips", "pelvis", "root", "hip"],
+            spine: ["j_bip_c_spine", "spine", "spine1", "lowertorso"],
+            chest: ["j_bip_c_chest", "chest", "spine2", "uppertorso", "torso"],
+            neck: ["j_bip_c_neck", "neck"],
+            head: ["j_bip_c_head", "head"],
+            leftUpperArm: ["j_bip_l_upperarm", "leftupperarm", "leftarm", "armleft", "l_upperarm", "upperarm_l"],
+            leftLowerArm: ["j_bip_l_lowerarm", "leftlowerarm", "leftforearm", "forearmleft", "l_forearm", "lowerarm_l"],
+            leftHand: ["j_bip_l_hand", "lefthand", "handleft", "l_hand", "hand_l", "wrist_l"],
+            rightUpperArm: ["j_bip_r_upperarm", "rightupperarm", "rightarm", "armright", "r_upperarm", "upperarm_r"],
+            rightLowerArm: ["j_bip_r_lowerarm", "rightlowerarm", "rightforearm", "forearmright", "r_forearm", "lowerarm_r"],
+            rightHand: ["j_bip_r_hand", "righthand", "handright", "r_hand", "hand_r", "wrist_r"],
+            leftUpperLeg: ["j_bip_l_upperleg", "leftupperleg", "leftup_leg", "leftthigh", "l_thigh", "upperleg_l"],
+            leftLowerLeg: ["j_bip_l_lowerleg", "leftlowerleg", "leftleg", "leftcalf", "l_calf", "lowerleg_l"],
+            leftFoot: ["j_bip_l_foot", "leftfoot", "footleft", "l_foot", "foot_l", "ankle_l"],
+            rightUpperLeg: ["j_bip_r_upperleg", "rightupperleg", "rightup_leg", "rightthigh", "r_thigh", "upperleg_r"],
+            rightLowerLeg: ["j_bip_r_lowerleg", "rightlowerleg", "rightleg", "rightcalf", "r_calf", "lowerleg_r"],
+            rightFoot: ["j_bip_r_foot", "rightfoot", "footright", "r_foot", "foot_r", "ankle_r"],
         };
 
-        // Match bones
+        // Match bones with exact-match priority first
         for (const [canonical, aliases] of Object.entries(ALIASES)) {
             for (const alias of aliases) {
                 const norm = alias.toLowerCase().replace(/[-_ ]/g, "");
                 for (const [bName, bObj] of boneMap.entries()) {
-                    if (bName.includes(norm) || norm.includes(bName)) {
+                    if (bName === norm) {
                         this.bones[canonical] = bObj;
                         break;
                     }
                 }
                 if (this.bones[canonical]) break;
+            }
+            // Fallback substring search if exact match didn't find bone
+            if (!this.bones[canonical]) {
+                for (const alias of aliases) {
+                    const norm = alias.toLowerCase().replace(/[-_ ]/g, "");
+                    for (const [bName, bObj] of boneMap.entries()) {
+                        if (bName.includes(norm)) {
+                            this.bones[canonical] = bObj;
+                            break;
+                        }
+                    }
+                    if (this.bones[canonical]) break;
+                }
             }
         }
 

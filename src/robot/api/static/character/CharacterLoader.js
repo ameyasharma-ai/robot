@@ -27,14 +27,19 @@ class CharacterLoader {
                     scene.scale.set(scaleFactor, scaleFactor, scaleFactor);
                 }
 
-                // VRM models by convention face negative-Z; rotate 180 degrees to face user / camera (+Z)
-                scene.rotation.y = Math.PI;
+                // Wrap scene in a container group and rotate to face front (+Z toward camera)
+                const avatarGroup = new THREE.Group();
+                avatarGroup.name = "VrmAvatarContainer";
+                avatarGroup.add(scene);
+
+                // Rotate model to face camera (+Z)
+                scene.rotation.y = 0; // The GLTF model is authored facing +Z or negative-Z; test front facing
 
                 // Adjust position so feet rest right on top of the holographic pedestal (y=0)
-                const newBbox = new THREE.Box3().setFromObject(scene);
-                scene.position.y = -newBbox.min.y;
+                const newBbox = new THREE.Box3().setFromObject(avatarGroup);
+                avatarGroup.position.y = -newBbox.min.y;
 
-                return { scene: scene, animations: gltf.animations || [], isProcedural: false };
+                return { scene: avatarGroup, animations: gltf.animations || [], isProcedural: false };
             } catch (e) {
                 console.warn("[CharacterLoader] GLB loading failed, falling back to procedural humanoid:", e);
             }

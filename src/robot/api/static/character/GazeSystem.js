@@ -166,6 +166,12 @@ class FacialSystem {
         if (this.mouthBar) {
             this.mouthBar.scale.set(1, 1, 1);
         }
+        // Reset VRM mouth blendshapes
+        if (this.rig) {
+            this.rig.setMorphWeight("Face_Blendshape.Fcl_MTH_A", 0);
+            this.rig.setMorphWeight("Face_Blendshape.Fcl_MTH_I", 0);
+            this.rig.setMorphWeight("Face_Blendshape.Fcl_MTH_O", 0);
+        }
     }
 
     update(delta) {
@@ -177,16 +183,21 @@ class FacialSystem {
             if (this.eyesVisor) {
                 this.eyesVisor.scale.y = 0.1; // blink slit
             }
+            if (this.rig) {
+                this.rig.setMorphWeight("Face_Blendshape.Fcl_EYE_Close", 1.0);
+            }
             setTimeout(() => {
                 if (this.eyesVisor) this.eyesVisor.scale.y = 1.0;
+                if (this.rig) {
+                    this.rig.setMorphWeight("Face_Blendshape.Fcl_EYE_Close", 0.0);
+                }
                 this.isBlinking = false;
             }, 110);
         }
 
-        // ─── 2. Lip-Sync & Mouth Modulation ─────────────────────────────────
+        // ─── 2. Lip-Sync & Mouth Modulation (Both procedural mesh and VRM blendshapes)
         if (this.speaking) {
             // Amplitude modulation synchronized to voice speech cadence
-            const freq = 14.0;
             const amp = Math.sin(performance.now() * 0.015) * 0.5 + 0.5;
             const jitter = (Math.random() * 0.3) + 0.7;
             const mouthScaleY = 1.0 + amp * jitter * 2.8;
@@ -194,6 +205,14 @@ class FacialSystem {
 
             if (this.mouthBar) {
                 this.mouthBar.scale.set(mouthScaleX, mouthScaleY, 1.0);
+            }
+
+            // Drive VRM 3D Face Blendshapes dynamically during speech
+            if (this.rig) {
+                const openAmount = amp * jitter * 0.85;
+                this.rig.setMorphWeight("Face_Blendshape.Fcl_MTH_A", openAmount);
+                this.rig.setMorphWeight("Face_Blendshape.Fcl_MTH_I", (1.0 - openAmount) * 0.4);
+                this.rig.setMorphWeight("Face_Blendshape.Fcl_MTH_O", openAmount * 0.5);
             }
         }
     }
