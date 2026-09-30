@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
 
 from robot.core.engine import RobotEngine
@@ -21,10 +22,31 @@ def main() -> None:
 
     engine = RobotEngine(config_path=args.config)
 
+    async def _runner() -> None:
+        loop = asyncio.get_running_loop()
+        engine_task = asyncio.create_task(engine.run())
+
+        def _handle_signal() -> None:
+            if not engine_task.done():
+                engine_task.cancel()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _handle_signal)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+        try:
+            await engine_task
+        except asyncio.CancelledError:
+            pass
+
     try:
-        asyncio.run(engine.run())
+        asyncio.run(_runner())
     except KeyboardInterrupt:
-        print("\n🤖 Robot Core shutting down.")
+        pass
+    finally:
+        print("\n🤖 Robot Core shut down cleanly.")
 
 
 if __name__ == "__main__":

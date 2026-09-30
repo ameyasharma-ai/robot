@@ -240,12 +240,19 @@ class RobotEngine:
 
         try:
             await asyncio.gather(*tasks)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, KeyboardInterrupt):
             logger.info("engine_shutting_down")
         finally:
+            if hasattr(self, "_api_server") and self._api_server:
+                self._api_server.should_exit = True
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             await self.capture.stop()
             self.player.stop()
             await self.lighting.stop()
+            await self.health.stop()
             if self.perception is not None:
                 await self.perception.stop()
 
@@ -265,7 +272,10 @@ class RobotEngine:
                 log_level="warning",
             )
             server = uvicorn.Server(config)
+            self._api_server = server
             await server.serve()
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             logger.error("api_server_error", error=str(e))
 
