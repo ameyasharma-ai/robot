@@ -56,6 +56,7 @@ class ContextEngine:
         robot_state: dict | None = None,
         world_state: dict | None = None,
         tool_results: list[dict] | None = None,
+        image_data_url: str | None = None,
     ) -> list[dict]:
         """Assemble the complete message list for LLM inference.
 
@@ -129,7 +130,16 @@ class ContextEngine:
                 else:
                     user_content += f"\n[Visual Stream in Front of Robot]: Camera is pointed forward, but no distinct object is currently recognized by YOLOv8. Ask user to hold the object clearly towards the camera."
 
-        messages.append({"role": "user", "content": user_content})
+        if image_data_url:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_content},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            })
+        else:
+            messages.append({"role": "user", "content": user_content})
 
         token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages)
         logger.info(

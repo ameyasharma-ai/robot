@@ -27,6 +27,9 @@ class CharacterLoader {
                     scene.scale.set(scaleFactor, scaleFactor, scaleFactor);
                 }
 
+                // VRM models by convention face negative-Z; rotate 180 degrees to face user / camera (+Z)
+                scene.rotation.y = Math.PI;
+
                 // Adjust position so feet rest right on top of the holographic pedestal (y=0)
                 const newBbox = new THREE.Box3().setFromObject(scene);
                 scene.position.y = -newBbox.min.y;

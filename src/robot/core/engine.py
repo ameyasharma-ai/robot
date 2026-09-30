@@ -464,6 +464,34 @@ class RobotEngine:
         if self.perception is not None:
             world_state_compact = self.perception.world_state.to_compact()
 
+        # Visual query image snapshot capture for multimodal LLM
+        image_data_url = None
+        lower_u = user_text.lower()
+        visual_triggers = (
+            "what is this", "what is that", "what do you see", "who is here",
+            "what are these", "describe what you see", "what am i holding",
+            "what's this", "what's that", "what i'm holding", "what im holding",
+            "look at this", "look at what i have", "can you see this", "what do i have",
+            "what object", "identify this", "check this out", "in my hand"
+        )
+        if any(w in lower_u for w in visual_triggers):
+            if self.perception is not None and self.perception.camera:
+                frame = self.perception.camera.get_latest_frame()
+                if frame is not None:
+                    try:
+                        import base64
+                        import cv2
+                        # Downscale to 480p JPEG for fast transmission
+                        h, w = frame.shape[:2]
+                        target_w, target_h = (480, int(480 * h / w)) if w > 480 else (w, h)
+                        small_frame = cv2.resize(frame, (target_w, target_h))
+                        ret, buffer = cv2.imencode(".jpg", small_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                        if ret:
+                            b64 = base64.b64encode(buffer).decode("utf-8")
+                            image_data_url = f"data:image/jpeg;base64,{b64}"
+                    except Exception as e:
+                        logger.debug("multimodal_image_encode_error", error=str(e))
+
         with Timer(self.telemetry, "CONTEXT_BUILD_LATENCY"):
             messages = self.context.build_messages(
                 system_prompt=system_prompt,
@@ -472,6 +500,7 @@ class RobotEngine:
                 memories=memories,
                 robot_state=self.state.state.to_compact(),
                 world_state=world_state_compact,
+                image_data_url=image_data_url,
             )
 
         # Stream LLM

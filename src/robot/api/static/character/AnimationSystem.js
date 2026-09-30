@@ -54,19 +54,20 @@ class AnimationSystem {
         const spine = rig.getBone("spine");
         const hips = rig.getBone("hips");
 
-        if (chest) {
-            // Subtle thoracic expansion and slight tilt
-            chest.rotation.x = breath * 0.035 * this.procedural.breathingIntensity;
-            chest.rotation.y = sway * 0.02;
+        if (chest && rig.initialRotations["chest"]) {
+            const deltaChest = new THREE.Quaternion().setFromEuler(new THREE.Euler(breath * 0.02 * this.procedural.breathingIntensity, sway * 0.015, 0));
+            chest.quaternion.copy(rig.initialRotations["chest"]).multiply(deltaChest);
         }
-        if (spine) {
-            spine.rotation.x = breath * 0.02 * this.procedural.breathingIntensity;
-            spine.rotation.z = sway * 0.025;
+        if (spine && rig.initialRotations["spine"]) {
+            const deltaSpine = new THREE.Quaternion().setFromEuler(new THREE.Euler(breath * 0.015 * this.procedural.breathingIntensity, 0, sway * 0.015));
+            spine.quaternion.copy(rig.initialRotations["spine"]).multiply(deltaSpine);
         }
         if (hips && !this.activeActions.locomotion && !this.activeActions.lowerBody) {
-            // Natural micro-bob and weight distribution
-            hips.position.y = (rig.initialPositions["hips"] ? rig.initialPositions["hips"].y : 1.0) + (breath * 0.008);
-            hips.rotation.z = -sway * 0.02;
+            hips.position.y = (rig.initialPositions["hips"] ? rig.initialPositions["hips"].y : 1.0) + (breath * 0.005);
+            if (rig.initialRotations["hips"]) {
+                const deltaHips = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -sway * 0.015));
+                hips.quaternion.copy(rig.initialRotations["hips"]).multiply(deltaHips);
+            }
         }
 
         // ─── Layer 2: Locomotion (Walk / Turn) ────────────────────────────────
@@ -86,13 +87,13 @@ class AnimationSystem {
             // Natural arm hanging with subtle harmonic breathing response
             const leftArm = rig.getBone("leftUpperArm");
             const rightArm = rig.getBone("rightUpperArm");
-            if (leftArm) {
-                leftArm.rotation.z = -Math.PI / 2.3 + (breath * 0.02);
-                leftArm.rotation.x = sway * 0.03;
+            if (leftArm && rig.initialRotations["leftUpperArm"]) {
+                const deltaArmL = new THREE.Quaternion().setFromEuler(new THREE.Euler(sway * 0.02, 0, 1.25 + breath * 0.015));
+                leftArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(deltaArmL);
             }
-            if (rightArm) {
-                rightArm.rotation.z = Math.PI / 2.3 - (breath * 0.02);
-                rightArm.rotation.x = -sway * 0.03;
+            if (rightArm && rig.initialRotations["rightUpperArm"]) {
+                const deltaArmR = new THREE.Quaternion().setFromEuler(new THREE.Euler(-sway * 0.02, 0, -1.25 - breath * 0.015));
+                rightArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(deltaArmR);
             }
         }
     }

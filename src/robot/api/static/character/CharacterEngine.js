@@ -37,10 +37,10 @@ class CharacterEngine {
         this.scene = new THREE.Scene();
         this.scene.background = null; // Transparent to blend seamlessly into UI
 
-        // 2. Camera Setup (Humanoid portrait/full-body framing)
-        this.camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 100);
-        this.camera.position.set(0, 1.25, 3.2);
-        this.camera.lookAt(0, 1.1, 0);
+        // 2. Camera Setup (Full-body framing including pedestal)
+        this.camera = new THREE.PerspectiveCamera(36, width / height, 0.1, 100);
+        this.camera.position.set(0, 0.95, 2.85);
+        this.camera.lookAt(0, 0.85, 0);
 
         // 3. Renderer Setup (WebGL2 with high-performance power preference)
         try {

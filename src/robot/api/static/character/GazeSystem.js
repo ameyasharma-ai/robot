@@ -87,13 +87,20 @@ class GazeSystem {
         const targetPitch = Math.max(-0.45, Math.min(0.45, Math.atan2(dy, dz)));
 
         // Distribute rotation 70% to head, 30% to neck for natural posture
+        // Apply rotation multiplicatively on top of the initial rest pose to avoid axis conflicts
+        const neckInit = this.rig.initialRotations["neck"];
+        const headInit = this.rig.initialRotations["head"];
+
+        const neckDelta = new THREE.Quaternion().setFromEuler(new THREE.Euler(targetPitch * 0.35, targetYaw * 0.35, 0, "YXZ"));
+        const headDelta = new THREE.Quaternion().setFromEuler(new THREE.Euler(targetPitch * 0.65, targetYaw * 0.65, 0, "YXZ"));
+
         if (neck) {
-            neck.rotation.y = THREE.MathUtils.lerp(neck.rotation.y, targetYaw * 0.35, delta * 6.0);
-            neck.rotation.x = THREE.MathUtils.lerp(neck.rotation.x, targetPitch * 0.35, delta * 6.0);
+            const targetNeckQ = neckInit ? neckInit.clone().multiply(neckDelta) : neckDelta;
+            neck.quaternion.slerp(targetNeckQ, Math.min(1.0, delta * 6.0));
         }
         if (head) {
-            head.rotation.y = THREE.MathUtils.lerp(head.rotation.y, targetYaw * 0.65, delta * 6.0);
-            head.rotation.x = THREE.MathUtils.lerp(head.rotation.x, targetPitch * 0.65, delta * 6.0);
+            const targetHeadQ = headInit ? headInit.clone().multiply(headDelta) : headDelta;
+            head.quaternion.slerp(targetHeadQ, Math.min(1.0, delta * 6.0));
         }
     }
 }
