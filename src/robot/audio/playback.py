@@ -45,7 +45,12 @@ class AudioPlayer:
         return max(self._recent_rms)
 
     def _ensure_stream(self, sample_rate: int) -> sd.OutputStream:
-        if self._stream is None or sample_rate != self._stream_sr:
+        needs_new = (
+            self._stream is None
+            or sample_rate != self._stream_sr
+            or not getattr(self._stream, "active", False)
+        )
+        if needs_new:
             if self._stream:
                 try:
                     self._stream.stop()
