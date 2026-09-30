@@ -24,6 +24,8 @@ class DetectedPerson:
     confidence: float = 0.0
     looking_at_robot: bool = True
     bbox: list[int] = field(default_factory=list)  # [x, y, w, h]
+    norm_x: float = 0.5  # Normalized 0..1 (left to right in frame)
+    norm_y: float = 0.5  # Normalized 0..1 (top to bottom in frame)
 
 
 @dataclass
@@ -55,6 +57,8 @@ class WorldState:
                 "position": p.position,
                 "distance": p.distance_estimate,
                 "looking_at_robot": p.looking_at_robot,
+                "norm_x": round(p.norm_x, 3),
+                "norm_y": round(p.norm_y, 3),
             })
 
         objects_summary = []

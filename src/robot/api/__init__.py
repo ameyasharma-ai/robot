@@ -139,6 +139,33 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         )
 
 
+    @app.post("/character/action")
+    async def post_character_action(action_req: dict[str, Any]):
+        """Execute semantic motion command on character."""
+        from robot.motion.actions import validate_action
+        from robot.motion.planner import MotionPlanner
+
+        valid, semantic_action, err = validate_action(action_req)
+        if not valid or semantic_action is None:
+            return {"error": err}
+
+        planner = MotionPlanner()
+        sequence = planner.plan_action(action_req)
+        serialized_seq = [a.to_dict() for a in sequence]
+
+        await engine.events.emit(
+            "character.action",
+            action=semantic_action.to_dict(),
+            sequence=serialized_seq,
+        )
+        return {"status": "ok", "action": semantic_action.to_dict(), "sequence": serialized_seq}
+
+    @app.post("/character/stop")
+    async def post_character_stop():
+        """Interrupt and smoothly stop character motion."""
+        await engine.events.emit("character.interrupt", interrupt=True)
+        return {"status": "stopped"}
+
     @app.get("/telemetry")
     async def telemetry():
         return engine.telemetry.snapshot()

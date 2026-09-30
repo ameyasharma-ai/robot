@@ -49,8 +49,9 @@ vision:
   width: 640
   height: 480
   fps: 60
-  perception_fps: 30.0
+  perception_fps: 5.0
   yunet_model_path: "models/vision/face_detection_yunet.onnx"
+  yolo_model_path: "models/vision/yolov8n.pt"
   enable_motion: true
 
 memory:

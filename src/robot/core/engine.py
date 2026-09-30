@@ -169,6 +169,7 @@ class RobotEngine:
             self.perception = PerceptionEngine(
                 camera=camera,
                 yunet_model_path=vision_cfg.get("yunet_model_path", "models/vision/face_detection_yunet.onnx"),
+                yolo_model_path=vision_cfg.get("yolo_model_path", "models/vision/yolov8n.pt"),
                 target_fps=vision_cfg.get("perception_fps", 5.0),
                 enable_motion=vision_cfg.get("enable_motion", True),
             )
@@ -194,6 +195,11 @@ class RobotEngine:
         # Initial health check
         health_results = await self.health.check_all()
         logger.info("initial_health", results=health_results)
+
+        # Bridge state changes to EventBus for WebSocket telemetry & 3D character UI
+        async def on_state_mode_change(old_mode, new_mode):
+            await self.events.emit("mode", mode=new_mode.value, old_mode=old_mode.value)
+        self.state.subscribe(on_state_mode_change)
 
         logger.info("engine_setup_complete")
 
@@ -324,6 +330,7 @@ class RobotEngine:
                             self._is_speaking = False
                             self._speech_ended_ts = time.time()
                             self.player.stop()
+                            await self.events.emit("barge_in", barge_in=True)
                             barge_in_consecutive = 0
                             last_barge_in_time = time.time()
                             is_speaking = True
@@ -367,6 +374,7 @@ class RobotEngine:
                                             "STT_FINAL_LATENCY",
                                             stt_ms,
                                         )
+                                        await self.events.emit("user_text", user_text=text, stt_ms=stt_ms)
                                         await self._speech_queue.put((text, end_time))
                                     else:
                                         print(f"🔇 \033[90m[ECHO FILTERED]\033[0m {text}")
@@ -383,6 +391,21 @@ class RobotEngine:
             logger.info("user_speech", text=user_text)
             await self.state.set_mode(RobotMode.THINKING)
             turn = await self.state.increment_turn()
+
+            # Parse for semantic character motions (e.g. "raise your right hand", "wave", "kick", "look at me", "walk forward")
+            from robot.motion.planner import MotionPlanner
+            mp = MotionPlanner()
+            detected_motions = mp.parse_natural_command(user_text)
+            for m in detected_motions:
+                try:
+                    plan = mp.plan_action(m)
+                    await self.events.emit(
+                        "character.action",
+                        action=m,
+                        sequence=[a.to_dict() for a in plan],
+                    )
+                except Exception as e:
+                    logger.debug("natural_motion_dispatch_error", error=str(e))
 
             # Create new interrupt event for this turn
             self._interrupt_event = asyncio.Event()
@@ -532,6 +555,7 @@ class RobotEngine:
             # Play
             self._is_speaking = True
             await self.state.set_mode(RobotMode.SPEAKING)
+            await self.events.emit("robot_phrase", robot_phrase=phrase)
 
             if timing_ref:
                 print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")

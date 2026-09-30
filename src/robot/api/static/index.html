@@ -44,9 +44,25 @@
 
     <!-- Main Container -->
     <main class="main-viewport">
-        <!-- LEFT: Robot Digital Face / Expression UI -->
+        <!-- LEFT: Robot Digital Face & 3D Character Avatar UI -->
         <section class="face-panel" id="facePanel">
-            <div class="face-stage" id="faceStage">
+            <!-- Avatar Display Tabs (3D Character vs Digital Visor) -->
+            <div class="avatar-tabs">
+                <button class="avatar-tab-btn active" id="tabBtn3D">⚡ 3D HUMANOID</button>
+                <button class="avatar-tab-btn" id="tabBtnFace">👁️ DIGITAL VISOR</button>
+            </div>
+
+            <!-- 3D Humanoid Character Canvas Container -->
+            <div class="character-container" id="characterContainer">
+                <div class="character-overlay-hud">
+                    <span class="char-hud-badge" id="charStateBadge">STATE: IDLE</span>
+                    <span class="char-hud-badge" id="charGazeBadge">GAZE: CAMERA</span>
+                    <span class="char-hud-badge" id="charActionBadge">MOTION: BASE IDLE</span>
+                </div>
+            </div>
+
+            <!-- Digital 2D Face / Waveform Stage -->
+            <div class="face-stage" id="faceStage" style="display: none;">
                 <!-- Aura Ambient Glow -->
                 <div class="face-aura" id="faceAura"></div>
 
@@ -85,12 +101,12 @@
 
                 <!-- Face Mood State Text -->
                 <div class="face-caption" id="faceCaption">OBSERVING ENVIRONMENT</div>
+            </div>
 
-                <!-- Interactive Speech Bubble -->
-                <div class="speech-bubble" id="speechBubble">
-                    <div class="bubble-tag" id="bubbleTag">ROBOT</div>
-                    <div class="bubble-content" id="bubbleContent">Ready for voice input.</div>
-                </div>
+            <!-- Interactive Speech Bubble -->
+            <div class="speech-bubble" id="speechBubble">
+                <div class="bubble-tag" id="bubbleTag">ROBOT</div>
+                <div class="bubble-content" id="bubbleContent">Ready for voice input.</div>
             </div>
         </section>
 
@@ -164,6 +180,45 @@
                 </div>
             </div>
 
+            <!-- 3D Humanoid Character Kinematics & Debug HUD -->
+            <div class="card card-character-debug">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">🤖</span> 3D CHARACTER KINEMATICS & DEBUG PANEL
+                    </div>
+                    <div class="card-badges">
+                        <span class="badge" id="hudCharGpu">GPU: AMD 680M / WebGL2</span>
+                        <span class="badge badge-accent" id="hudCharFps">FPS: 60 (16.6ms)</span>
+                    </div>
+                </div>
+                <div class="char-debug-content">
+                    <div class="char-metrics-row">
+                        <div class="char-m-item"><span class="k">STATE:</span> <span class="v" id="dbgCharState">IDLE</span></div>
+                        <div class="char-m-item"><span class="k">MOTION:</span> <span class="v" id="dbgCharMotion">PROCEDURAL IDLE</span></div>
+                        <div class="char-m-item"><span class="k">BONES:</span> <span class="v" id="dbgCharBones">17 HUMAN</span></div>
+                        <div class="char-m-item"><span class="k">IK:</span> <span class="v" id="dbgCharIK">ACTIVE (LOOK-AT)</span></div>
+                    </div>
+
+                    <div class="sub-heading" style="margin-top: 10px; margin-bottom: 6px;">MANDATORY INTEGRATION TEST ACTIONS</div>
+                    <div class="char-btn-grid">
+                        <button class="dbg-act-btn" data-act="idle">Idle</button>
+                        <button class="dbg-act-btn btn-primary" data-act="raise_hand" data-side="left">Raise Left Hand</button>
+                        <button class="dbg-act-btn btn-primary" data-act="raise_hand" data-side="right">Raise Right Hand</button>
+                        <button class="dbg-act-btn btn-primary" data-act="wave" data-side="right">Wave</button>
+                        <button class="dbg-act-btn btn-accent" data-act="kick" data-side="left">Kick Left</button>
+                        <button class="dbg-act-btn btn-accent" data-act="kick" data-side="right">Kick Right</button>
+                        <button class="dbg-act-btn" data-act="walk">Walk</button>
+                        <button class="dbg-act-btn" data-act="turn">Turn</button>
+                        <button class="dbg-act-btn" data-act="look_at">Look At User</button>
+                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="happy">Happy</button>
+                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="sad">Sad</button>
+                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="surprised">Surprised</button>
+                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="thinking">Thinking</button>
+                        <button class="dbg-act-btn btn-danger" data-act="stop">Stop</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Live Event Terminal Feed -->
             <div class="card card-terminal">
                 <div class="card-header">
@@ -185,6 +240,14 @@
         </section>
     </main>
 
+    <!-- Character Engine & Subsystems (Three.js & Modules) -->
+    <script src="/static/three.min.js"></script>
+    <script src="/static/GLTFLoader.js"></script>
+    <script src="/static/character/CharacterRig.js"></script>
+    <script src="/static/character/CharacterLoader.js"></script>
+    <script src="/static/character/AnimationSystem.js"></script>
+    <script src="/static/character/GazeSystem.js"></script>
+    <script src="/static/character/CharacterEngine.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

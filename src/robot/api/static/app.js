@@ -30,6 +30,16 @@ class RobotUI {
         this.cameraImg = document.getElementById("cameraImg");
         this.worldStateCode = document.getElementById("worldStateCode");
 
+        // 3D Character Elements
+        this.characterContainer = document.getElementById("characterContainer");
+        this.characterEngine = null;
+        this.charStateBadge = document.getElementById("charStateBadge");
+        this.charGazeBadge = document.getElementById("charGazeBadge");
+        this.charActionBadge = document.getElementById("charActionBadge");
+        this.dbgCharState = document.getElementById("dbgCharState");
+        this.dbgCharMotion = document.getElementById("dbgCharMotion");
+        this.dbgCharFps = document.getElementById("hudCharFps");
+
         // Metric DOM
         this.hudTtft = document.getElementById("hudTtft");
         this.hudE2e = document.getElementById("hudE2e");
@@ -43,9 +53,75 @@ class RobotUI {
         this.barE2e = document.getElementById("barE2e");
 
         this.initViewControls();
+        this.init3DCharacter();
         this.initBlinking();
         this.initWebsocket();
         this.startPollers();
+    }
+
+    init3DCharacter() {
+        if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
+            this.characterEngine = new CharacterEngine(this.characterContainer);
+            this.logEvent("3D-CORE", "3D Humanoid Character initialized on AMD 680M WebGL2.", "system");
+
+            // Update debug metrics every 500ms
+            setInterval(() => {
+                if (this.characterEngine && this.dbgCharFps) {
+                    this.dbgCharFps.textContent = `FPS: ${this.characterEngine.fps} (${this.characterEngine.frameTimeMs.toFixed(1)}ms)`;
+                }
+            }, 500);
+        }
+
+        // Avatar Tab Switcher (3D Humanoid vs 2D Visor)
+        const tab3D = document.getElementById("tabBtn3D");
+        const tabFace = document.getElementById("tabBtnFace");
+        if (tab3D && tabFace) {
+            tab3D.addEventListener("click", () => {
+                tab3D.classList.add("active");
+                tabFace.classList.remove("active");
+                if (this.characterContainer) this.characterContainer.style.display = "flex";
+                if (this.faceStage) this.faceStage.style.display = "none";
+                if (this.characterEngine) this.characterEngine.onResize();
+            });
+            tabFace.addEventListener("click", () => {
+                tabFace.classList.add("active");
+                tab3D.classList.remove("active");
+                if (this.characterContainer) this.characterContainer.style.display = "none";
+                if (this.faceStage) this.faceStage.style.display = "flex";
+            });
+        }
+
+        // Character Action Debug Buttons
+        document.querySelectorAll(".dbg-act-btn").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const act = btn.getAttribute("data-act");
+                const side = btn.getAttribute("data-side") || null;
+                const emo = btn.getAttribute("data-emo") || null;
+                this.executeSemanticAction({ action: act, side: side, emotion: emo });
+            });
+        });
+    }
+
+    async executeSemanticAction(actionObj) {
+        if (this.characterEngine) {
+            this.characterEngine.executeAction(actionObj);
+            if (this.charActionBadge) {
+                this.charActionBadge.textContent = `MOTION: ${(actionObj.action || "").toUpperCase()}`;
+            }
+            if (this.dbgCharMotion) {
+                this.dbgCharMotion.textContent = `${(actionObj.action || "").toUpperCase()} ${(actionObj.side || "")}`.trim();
+            }
+        }
+        this.logEvent("ACTION", `Action executed: ${JSON.stringify(actionObj)}`, "system");
+
+        // Also post to REST endpoint
+        try {
+            await fetch("/character/action", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(actionObj),
+            });
+        } catch (e) {}
     }
 
     initViewControls() {
@@ -178,23 +254,44 @@ class RobotUI {
         this.statusPill.className = `status-pill status-${mode}`;
         this.statusText.textContent = mode.toUpperCase();
 
-        // Update Face Caption
+        // Update Face Caption & 3D Character Posture / Expression
+        if (this.characterEngine) {
+            if (this.charStateBadge) this.charStateBadge.textContent = `STATE: ${mode.toUpperCase()}`;
+            if (this.dbgCharState) this.dbgCharState.textContent = mode.toUpperCase();
+        }
+
         switch (mode) {
             case "listening":
                 this.faceCaption.textContent = "LISTENING FOR VOICE";
                 this.stopMouthSpeaking();
+                if (this.characterEngine) {
+                    this.characterEngine.setEmotion("neutral");
+                    this.characterEngine.lookAt(0, 1.45, 2.0); // attentive forward lean
+                }
                 break;
             case "thinking":
                 this.faceCaption.textContent = "PROCESSING & REASONING";
                 this.stopMouthSpeaking();
+                if (this.characterEngine) {
+                    this.characterEngine.setEmotion("thinking");
+                    this.characterEngine.lookAt(0.3, 1.6, 2.2); // subtle contemplative head tilt
+                }
                 break;
             case "speaking":
                 this.faceCaption.textContent = "SYNTHESIZING & SPEAKING";
                 this.startMouthSpeaking();
+                if (this.characterEngine) {
+                    this.characterEngine.speakStart();
+                    this.characterEngine.setEmotion("happy");
+                }
                 break;
             default:
                 this.faceCaption.textContent = "OBSERVING ENVIRONMENT";
                 this.stopMouthSpeaking();
+                if (this.characterEngine) {
+                    this.characterEngine.speakStop();
+                    this.characterEngine.setEmotion("neutral");
+                }
                 break;
         }
     }
@@ -276,10 +373,47 @@ class RobotUI {
             this.bubbleTag.style.color = "var(--accent-emerald)";
             this.bubbleContent.textContent = data.robot_phrase;
             this.logEvent("ROBOT", data.robot_phrase, "robot");
+
+            // Trigger lip-sync on 3D character
+            if (this.characterEngine) {
+                this.characterEngine.speakStart();
+                setTimeout(() => {
+                    if (this.characterEngine && this.currentMode !== "speaking") {
+                        this.characterEngine.speakStop();
+                    }
+                }, Math.min(8000, data.robot_phrase.length * 80));
+            }
         }
 
         if (data.barge_in) {
             this.logEvent("BARGE-IN", "Interrupted bot playback via voice activity!", "barge");
+            if (this.characterEngine) {
+                this.characterEngine.stopMotion();
+            }
+        }
+
+        // Real-time Semantic Character Actions dispatched from Robot Core / LLM
+        if (data.event === "character.action" || data.action) {
+            const act = data.action;
+            if (act && this.characterEngine) {
+                this.characterEngine.executeAction(act);
+                if (this.charActionBadge) {
+                    this.charActionBadge.textContent = `MOTION: ${(act.action || "").toUpperCase()}`;
+                }
+                if (this.dbgCharMotion) {
+                    this.dbgCharMotion.textContent = `${(act.action || "").toUpperCase()} ${(act.side || "")}`.trim();
+                }
+                this.logEvent("CHAR", `Executing motion: ${act.action} (${act.side || "center"})`, "system");
+            }
+        }
+
+        if (data.event === "character.interrupt" || data.interrupt) {
+            if (this.characterEngine) {
+                this.characterEngine.stopMotion();
+                if (this.charActionBadge) this.charActionBadge.textContent = "MOTION: STOPPED";
+                if (this.dbgCharMotion) this.dbgCharMotion.textContent = "INTERRUPTED (IDLE)";
+            }
+            this.logEvent("CHAR", "Motion interrupted. Blending to neutral idle.", "barge");
         }
 
         if (data.metrics) {
@@ -341,6 +475,19 @@ class RobotUI {
                         document.getElementById("hudLighting").textContent = `LIGHT: ${(ws.lighting || "NORMAL").toUpperCase()}`;
                         document.getElementById("hudMotion").textContent = `MOTION: ${(ws.motion || "NONE").toUpperCase()}`;
                         document.getElementById("hudPeople").textContent = `PEOPLE: ${ws.people_count || 0}`;
+
+                        // Drive 3D Character Gaze & Look-At IK from OpenCV detected user position
+                        if (ws.people && ws.people.length > 0 && this.characterEngine) {
+                            const user = ws.people[0];
+                            const nx = user.norm_x !== undefined ? user.norm_x : 0.5;
+                            const ny = user.norm_y !== undefined ? user.norm_y : 0.5;
+                            this.characterEngine.setOpenCVUserFace(nx, ny);
+                            if (this.charGazeBadge) {
+                                this.charGazeBadge.textContent = `GAZE: USER (${user.position.toUpperCase()})`;
+                            }
+                        } else if (this.characterEngine && this.charGazeBadge) {
+                            this.charGazeBadge.textContent = "GAZE: CAMERA";
+                        }
                     }
                 }
             } catch (e) {}

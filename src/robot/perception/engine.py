@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 
 from robot.perception.camera import CameraCapture
-from robot.perception.world import DetectedPerson, WorldState
+from robot.perception.world import DetectedObject, DetectedPerson, WorldState
 from robot.telemetry import get_logger
 
 logger = get_logger("perception.engine")
@@ -33,11 +33,13 @@ class PerceptionEngine:
         self,
         camera: Optional[CameraCapture] = None,
         yunet_model_path: str = "models/vision/face_detection_yunet.onnx",
+        yolo_model_path: str = "models/vision/yolov8n.pt",
         target_fps: float = 5.0,
         enable_motion: bool = True,
     ) -> None:
         self.camera = camera or CameraCapture()
         self.yunet_model_path = yunet_model_path
+        self.yolo_model_path = yolo_model_path
         self.target_fps = target_fps
         self.enable_motion = enable_motion
 
@@ -45,10 +47,28 @@ class PerceptionEngine:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._detector: Optional[cv2.FaceDetectorYN] = None
+        self._yolo = None
         self._prev_gray: Optional[np.ndarray] = None
         self._last_yunet_size: tuple[int, int] = (0, 0)
         self._annotated_lock = threading.Lock()
         self._latest_annotated_frame: Optional[np.ndarray] = None
+
+    def _init_yolo(self) -> bool:
+        """Initialize lightweight YOLOv8 object detector."""
+        model_p = Path(self.yolo_model_path)
+        if not model_p.exists():
+            logger.warning("yolo_model_not_found", path=self.yolo_model_path)
+            return False
+
+        try:
+            from ultralytics import YOLO
+            self._yolo = YOLO(str(model_p))
+            logger.info("yolo_detector_initialized", model=self.yolo_model_path)
+            return True
+        except Exception as e:
+            logger.error("yolo_init_failed", error=str(e))
+            self._yolo = None
+            return False
 
     def get_annotated_frame(self) -> Optional[np.ndarray]:
         """Return the latest frame drawn with green polygons and perception overlays."""
@@ -88,6 +108,7 @@ class PerceptionEngine:
 
         self.camera.start()
         self._init_yunet()
+        self._init_yolo()
         self._running = True
         self._task = asyncio.create_task(self._perception_loop(), name="PerceptionEngineLoop")
         logger.info("perception_engine_started", target_fps=self.target_fps)
@@ -181,6 +202,10 @@ class PerceptionEngine:
                     box_h = int(face[3] / scale_h)
 
                     center_x = x + box_w / 2.0
+                    center_y = y + box_h / 2.0
+                    norm_x = max(0.0, min(1.0, center_x / max(1, w)))
+                    norm_y = max(0.0, min(1.0, center_y / max(1, h)))
+
                     if center_x < w * 0.35:
                         position = "left"
                     elif center_x > w * 0.65:
@@ -205,11 +230,77 @@ class PerceptionEngine:
                             confidence=round(conf, 2),
                             looking_at_robot=True,
                             bbox=[x, y, box_w, box_h],
+                            norm_x=round(norm_x, 3),
+                            norm_y=round(norm_y, 3),
                         )
                     )
 
-        # 4. Generate high-tech HUD annotated visual frame with green polygons & telemetry
+        # 4. Object Detection via YOLOv8
+        objects: list[DetectedObject] = []
+        if self._yolo is not None:
+            try:
+                # Fast downscaled inference on CPU
+                results = self._yolo.predict(
+                    frame,
+                    verbose=False,
+                    conf=0.35,
+                    imgsz=320,
+                    device="cpu"
+                )
+                if results and len(results) > 0:
+                    boxes = results[0].boxes
+                    names = results[0].names
+                    for box in boxes:
+                        cls_id = int(box.cls[0])
+                        label = names.get(cls_id, f"obj_{cls_id}")
+                        conf = float(box.conf[0])
+                        xyxy = box.xyxy[0].tolist()
+                        ox1, oy1, ox2, oy2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                        obw = max(1, ox2 - ox1)
+                        obh = max(1, oy2 - oy1)
+
+                        ocx = ox1 + obw / 2.0
+                        if ocx < w * 0.35:
+                            opos = "left"
+                        elif ocx > w * 0.65:
+                            opos = "right"
+                        else:
+                            opos = "center"
+
+                        objects.append(
+                            DetectedObject(
+                                label=label,
+                                confidence=round(conf, 2),
+                                bbox=[ox1, oy1, obw, obh],
+                                position=opos,
+                            )
+                        )
+            except Exception as e:
+                logger.debug("yolo_predict_error", error=str(e))
+
+        # 5. Generate high-tech HUD annotated visual frame with green polygons & telemetry
         annotated = frame.copy()
+
+        # Render Detected Objects (tactical green polygon and label)
+        for obj in objects:
+            ox, oy, obw, obh = obj.bbox
+            opts = np.array([
+                [ox, oy],
+                [ox + obw, oy],
+                [ox + obw, oy + obh],
+                [ox, oy + obh]
+            ], np.int32).reshape((-1, 1, 2))
+
+            # Cyan/Green polygon for general objects
+            cv2.polylines(annotated, [opts], isClosed=True, color=(0, 230, 180), thickness=2, lineType=cv2.LINE_AA)
+            cv2.circle(annotated, (ox + obw // 2, oy + obh // 2), 3, (0, 230, 180), -1)
+
+            # Object tag
+            obj_tag = f"{obj.label.upper()} {int(obj.confidence * 100)}%"
+            cv2.rectangle(annotated, (ox, max(0, oy - 20)), (ox + len(obj_tag) * 8 + 4, oy), (0, 30, 20), -1)
+            cv2.putText(annotated, obj_tag, (ox + 2, max(12, oy - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1, cv2.LINE_AA)
+
+        # Render Detected People (vibrant neon green with corner reticles)
         for p in people:
             x, y, bw, bh = p.bbox
             pts = np.array([
@@ -248,8 +339,8 @@ class PerceptionEngine:
             cv2.rectangle(annotated, (x, max(0, y - 22)), (x + len(tag_text) * 9, y), (0, 0, 0), -1)
             cv2.putText(annotated, tag_text, (x + 4, max(12, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 128), 1, cv2.LINE_AA)
 
-        # Global HUD overlay: FPS & Motion & Light
-        hud_info = f"PERCEPTION: 60 FPS | MOTION: {motion_level.upper()} | LIGHT: {lighting.upper()}"
+        # Global HUD overlay: FPS & Motion & Light & Objects
+        hud_info = f"PERCEPTION: 60 FPS | OBJ: {len(objects)} | PEOPLE: {len(people)} | MOTION: {motion_level.upper()} | LIGHT: {lighting.upper()}"
         cv2.putText(annotated, hud_info, (14, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
         with self._annotated_lock:
@@ -257,6 +348,7 @@ class PerceptionEngine:
 
         # Update WorldState
         self.world_state.people = people
+        self.world_state.objects = objects
         self.world_state.motion = motion_level
         self.world_state.motion_score = round(motion_score, 2)
         self.world_state.lighting = lighting

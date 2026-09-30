@@ -34,12 +34,15 @@ class EventBus:
             handlers.remove(handler)
 
     async def emit(self, event: str, **kwargs) -> None:
-        """Emit an event to all registered handlers."""
-        handlers = self._handlers.get(event, [])
+        """Emit an event to all registered handlers (including '*' wildcard)."""
+        handlers = list(self._handlers.get(event, []))
+        if event != "*":
+            handlers.extend(self._handlers.get("*", []))
         if not handlers:
             return
 
-        tasks = [asyncio.create_task(h(**kwargs)) for h in handlers]
+        payload = {"event": event, **kwargs} if event != "*" else kwargs
+        tasks = [asyncio.create_task(h(**payload)) for h in handlers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -80,3 +83,7 @@ class Events:
     SERVICE_UP = "service.up"
     SERVICE_DOWN = "service.down"
     PERSONALITY_CHANGED = "personality.changed"
+
+    # Character / Motion
+    CHARACTER_ACTION = "character.action"
+    CHARACTER_INTERRUPT = "character.interrupt"

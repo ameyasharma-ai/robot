@@ -102,3 +102,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Perception & Camera Tools ---
     from robot.tools.builtins.perception import register_perception_tools
     register_perception_tools(engine)
+
+    # --- Character & Motion Tools ---
+    from robot.tools.builtins.motion import register_motion_tools
+    register_motion_tools(engine)
