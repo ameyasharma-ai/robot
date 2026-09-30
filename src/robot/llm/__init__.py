@@ -72,6 +72,11 @@ class LlamaServerLLM(LLMProvider):
                 f"{self.base_url}/chat/completions",
                 json=payload,
             ) as response:
+                if response.status_code != 200:
+                    err_body = await response.aread()
+                    logger.error("llm_stream_error", status=response.status_code, body=err_body.decode("utf-8", errors="replace"))
+                    yield "I encountered an error connecting to my local inference model."
+                    return
                 async for line in response.aiter_lines():
                     if not line or line == "data: [DONE]":
                         continue
@@ -102,45 +107,55 @@ class LlamaServerLLM(LLMProvider):
 
 
 class ClauseChunker:
-    """Buffers LLM tokens and emits speakable phrases at natural boundaries.
+    """Buffers LLM tokens and emits speakable, complete sentences for TTS.
 
-    Optimization: Sends partial phrases to TTS as soon as a clause boundary
-    is detected, rather than waiting for the full response. This achieves
-    the whitepaper's streaming pipeline requirement.
+    Chunking on full sentence boundaries (.!?) prevents unnatural fragmentation
+    and awkward phrasing caused by mid-sentence comma cuts, while still achieving
+    streaming TTS with minimal TTFT.
     """
 
-    def __init__(self, min_words: int = 2, max_words: int = 12) -> None:
+    def __init__(self, min_words: int = 4, max_words: int = 24) -> None:
         self._buffer = ""
         self._min_words = min_words
         self._max_words = max_words
 
     def feed(self, token: str) -> str | None:
-        """Feed a token, return a phrase if a boundary is reached."""
+        """Feed a token, return a complete sentence if a boundary is reached."""
         self._buffer += token
 
-        # Check for terminal sentence boundary first (.!?)
-        sent_match = re.search(r"^(.*?[.!?])(?:\s+|$)", self._buffer, re.DOTALL)
-        if sent_match:
-            clause = sent_match.group(1).strip()
-            self._buffer = self._buffer[sent_match.end() :]
-            return clause
+        # Sentence terminal detection:
+        # Match from start of buffer up to a sentence terminator (. ! ?), followed by space or end
+        match = re.search(r"^(.*?[.!?]+[\"'\)\]]*)(?:\s+|$)", self._buffer, re.DOTALL)
+        if match:
+            candidate = match.group(1).strip()
+            # Guard against common abbreviations (e.g., Dr., Mr., etc.) or decimal numbers
+            last_word = candidate.split()[-1] if candidate.split() else ""
+            is_abbreviation = any(
+                last_word.lower().endswith(abbr)
+                for abbr in ("mr.", "mrs.", "ms.", "dr.", "prof.", "vs.", "etc.", "e.g.", "i.e.")
+            ) or (re.search(r"\d\.\d*$", last_word) is not None)
 
-        # Check for natural clause boundary (,;:—\n) if minimum words reached
-        clause_match = re.search(r"^(.*?[,;:—\n])(?:\s+|$)", self._buffer, re.DOTALL)
-        if clause_match:
-            clause = clause_match.group(1).strip()
-            if len(clause.split()) >= self._min_words:
-                self._buffer = self._buffer[clause_match.end() :]
-                return clause
+            if not is_abbreviation:
+                if len(candidate.split()) >= self._min_words or candidate.endswith(("!", "?")):
+                    self._buffer = self._buffer[match.end():]
+                    return candidate
 
-        # Safety fallback for long unpunctuated runs
+        # Fallback for unusually long continuous runs without terminal punctuation
         words = self._buffer.strip().split()
         if len(words) >= self._max_words:
+            # Look for a natural clause boundary (, ; — or newline) far enough into the buffer
+            clause_match = re.search(r"^(.*?[\n,;—])(?:\s+|$)", self._buffer, re.DOTALL)
+            if clause_match:
+                clause = clause_match.group(1).strip()
+                if len(clause.split()) >= self._min_words:
+                    self._buffer = self._buffer[clause_match.end():]
+                    return clause
+
             last_space = self._buffer.rfind(" ")
             if last_space != -1:
-                clause = self._buffer[:last_space].strip()
+                chunk = self._buffer[:last_space].strip()
                 self._buffer = self._buffer[last_space:].lstrip()
-                return clause
+                return chunk
 
         return None
 

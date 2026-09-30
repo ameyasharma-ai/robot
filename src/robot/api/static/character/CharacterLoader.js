@@ -17,12 +17,12 @@ class CharacterLoader {
                 });
                 const scene = gltf.scene;
 
-                // Compute bounding box and normalize scale to ~1.65m human height
+                // Compute bounding box and scale to ~1.32m (20% smaller for balanced framing)
                 const bbox = new THREE.Box3().setFromObject(scene);
                 const size = new THREE.Vector3();
                 bbox.getSize(size);
                 if (size.y > 0.05) {
-                    const targetHeight = 1.65;
+                    const targetHeight = 1.32;
                     const scaleFactor = targetHeight / size.y;
                     scene.scale.set(scaleFactor, scaleFactor, scaleFactor);
                 }
@@ -299,6 +299,9 @@ class CharacterLoader {
         // Natural Anatomical Resting Pose
         leftUpperArm.rotation.z = -Math.PI / 2.3;
         rightUpperArm.rotation.z = Math.PI / 2.3;
+
+        // Scale by 0.8 (20% smaller)
+        root.scale.set(0.8, 0.8, 0.8);
 
         return root;
     }

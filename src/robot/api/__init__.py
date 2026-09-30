@@ -32,8 +32,13 @@ class StatusResponse(BaseModel):
     mode: str
     personality: str
     turn_count: int
+    voice_enabled: bool = True
     services: dict[str, bool]
     telemetry: dict[str, Any]
+
+
+class VoiceModeRequest(BaseModel):
+    enabled: bool
 
 
 def create_app(engine: "RobotEngine") -> FastAPI:
@@ -55,21 +60,36 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             mode=state.mode.value,
             personality=state.active_personality,
             turn_count=state.turn_count,
+            voice_enabled=getattr(engine, "voice_enabled", True),
             services={
                 name: svc.healthy for name, svc in state.services.items()
             },
             telemetry=engine.telemetry.snapshot(),
         )
 
+    @app.post("/voice-mode")
+    async def set_voice_mode(req: VoiceModeRequest):
+        """Toggle voice/mic listening on or off for text-only chatting."""
+        engine.voice_enabled = bool(req.enabled)
+        await engine.events.emit("voice_mode_changed", voice_enabled=engine.voice_enabled)
+        return {"status": "ok", "voice_enabled": engine.voice_enabled}
+
     @app.get("/personalities")
     async def list_personalities():
-        return {"personalities": engine.personalities.list_personalities()}
+        engine.personalities.load_all()
+        return {
+            "personalities": engine.personalities.list_personalities(),
+            "active": engine.state.state.active_personality,
+        }
 
     @app.post("/personality/{name}")
     async def switch_personality(name: str):
+        if name not in engine.personalities.list_personalities():
+            engine.personalities.load_all()
         success = engine.personalities.set_active(name)
         if success:
             engine.state.state.active_personality = name
+            await engine.events.emit("personality_switched", personality=name)
             return {"status": "switched", "personality": name}
         return {"error": f"Personality '{name}' not found"}
 

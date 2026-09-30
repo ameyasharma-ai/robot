@@ -95,14 +95,21 @@ class ContextEngine:
             )
             messages.extend(trimmed)
 
-        # 5. Tool results from current turn
+        # 5. Tool results from current turn — inject as system context
+        # (llama.cpp doesn't support role:tool without a preceding tool_call,
+        #  so we inject as grounding context in the system message)
         if tool_results:
+            tool_parts = []
             for tr in tool_results:
-                messages.append({
-                    "role": "tool",
-                    "content": str(tr.get("result", tr.get("error", ""))),
-                    "tool_call_id": tr.get("id", ""),
-                })
+                tool_id = tr.get("id", "tool")
+                result_text = str(tr.get("result", tr.get("error", "")))
+                tool_parts.append(f"[{tool_id}]: {result_text}")
+            tool_block = "\n[Tool Results — use these to answer the user]\n" + "\n".join(tool_parts)
+            # Append to the system message
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] += "\n" + tool_block
+            else:
+                messages.insert(0, {"role": "system", "content": tool_block})
 
         # 6. Current user input (with live camera visual grounding if user asks what is this / what am I holding / what do you see)
         user_content = user_text
@@ -130,16 +137,8 @@ class ContextEngine:
                 else:
                     user_content += f"\n[Visual Stream in Front of Robot]: Camera is pointed forward, but no distinct object is currently recognized by YOLOv8. Ask user to hold the object clearly towards the camera."
 
-        if image_data_url:
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": user_content},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
-            })
-        else:
-            messages.append({"role": "user", "content": user_content})
+        # Always provide the complete textual visual grounding description in user message
+        messages.append({"role": "user", "content": user_content})
 
         token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages)
         logger.info(

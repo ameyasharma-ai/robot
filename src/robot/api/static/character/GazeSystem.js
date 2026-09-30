@@ -14,8 +14,8 @@ class GazeSystem {
         this.rig = rig;
 
         // Current and target look-at points in 3D world space
-        this.target = new THREE.Vector3(0, 1.45, 2.5); // Default: looking slightly forward/camera
-        this.current = new THREE.Vector3(0, 1.45, 2.5);
+        this.target = new THREE.Vector3(0, 1.15, 2.2); // Default: looking slightly forward/camera
+        this.current = new THREE.Vector3(0, 1.15, 2.2);
         this.smoothSpeed = 5.0; // Interpolation damping
 
         // OpenCV continuous tracking target (norm_x: 0..1, norm_y: 0..1)
@@ -44,8 +44,8 @@ class GazeSystem {
 
         // Convert camera normalized coordinates (0..1) to 3D world target
         // norm_x 0 = user to left of camera, 1 = user to right
-        const worldX = (normX - 0.5) * 1.6;
-        const worldY = 1.45 - (normY - 0.5) * 1.2;
+        const worldX = (normX - 0.5) * 1.5;
+        const worldY = 1.15 - (normY - 0.5) * 1.0;
         const worldZ = 2.0;
 
         this.setTarget(worldX, worldY, worldZ);
@@ -78,9 +78,9 @@ class GazeSystem {
         this.current.lerp(desired, Math.min(1.0, delta * this.smoothSpeed));
 
         // Compute Head & Neck orientation
-        // Calculate angle deltas from head rest position (assume head is ~ y=1.4)
+        // Calculate angle deltas from head rest position (assume head is ~ y=1.15)
         const dx = this.current.x;
-        const dy = this.current.y - 1.45;
+        const dy = this.current.y - 1.15;
         const dz = Math.max(0.5, this.current.z);
 
         const targetYaw = Math.max(-0.65, Math.min(0.65, -Math.atan2(dx, dz)));

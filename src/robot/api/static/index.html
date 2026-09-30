@@ -17,8 +17,14 @@
             <span class="brand-title">ROBOT CORE</span>
             <span class="brand-ver">v1.0.0-PROD</span>
         </div>
-        <div class="persona-badge" id="personaBadge">
-            <span class="icon">👤</span> <span id="personaName">NEO</span>
+        <div class="persona-selector-wrap" id="personaSelectorWrap">
+            <span class="persona-icon">👤</span>
+            <label for="personaSelect" class="sr-only">Personality</label>
+            <select class="persona-select" id="personaSelect" title="Switch AI Personality">
+                <option value="neo">CYPHER (Matrix Hacker Girl)</option>
+                <option value="aria">ARIA (Empathetic / Warm)</option>
+                <option value="glados">GLADOS (Sarcastic / Clinical)</option>
+            </select>
         </div>
         <div class="header-center">
             <div class="status-pill status-idle" id="globalStatusPill">
@@ -62,21 +68,11 @@
                 </div>
             </div>
 
-            <!-- Realistic 3D Model Stage (Rigged Standing Asian Female Character) -->
-            <div class="sketchfab-container" id="sketchfabContainer" style="display: none; width: 100%; height: 100%; position: relative;">
-                <iframe title="Rigged Standing Asian Female Character"
-                        style="width: 100%; height: 100%; border: none; border-radius: 16px;"
-                        frameborder="0"
-                        allowfullscreen
-                        mozallowfullscreen="true"
-                        webkitallowfullscreen="true"
-                        allow="autoplay; fullscreen; xr-spatial-tracking"
-                        xr-spatial-tracking
-                        execution-while-out-of-viewport
-                        execution-while-not-rendered
-                        web-share
-                        src="https://sketchfab.com/models/b31b024797194829af4637fbfb6838b7/embed?autostart=1&ui_theme=dark&ui_infos=0&ui_controls=0&ui_stop=0&ui_inspector=0&ui_watermark=0&ui_hint=0&ui_ar=0&ui_help=0&ui_settings=0&ui_vr=0&ui_fullscreen=0&ui_annotations=0&transparent=1">
-                </iframe>
+            <!-- Realistic 3D Model Stage (Same rig, portrait lighting, warm studio feel) -->
+            <div class="character-container realistic-character-container" id="realisticContainer" style="display: none;">
+                <div class="character-overlay-hud">
+                    <span class="char-hud-badge" style="background: rgba(30, 20, 15, 0.75); border-color: rgba(255, 232, 204, 0.3); color: #ffe8cc;">REALISTIC MODE</span>
+                </div>
             </div>
 
             <!-- Digital 2D Face / Waveform Stage -->
@@ -124,7 +120,19 @@
             <!-- Interactive Speech Bubble -->
             <div class="speech-bubble" id="speechBubble">
                 <div class="bubble-tag" id="bubbleTag">ROBOT</div>
-                <div class="bubble-content" id="bubbleContent">Ready for voice input.</div>
+                <div class="bubble-content" id="bubbleContent">Ready for voice or text input.</div>
+            </div>
+
+            <!-- Text Chat Input Bar & Voice Toggle -->
+            <div class="chat-input-bar" id="chatInputBar">
+                <button class="chat-tool-btn voice-toggle-btn active" id="btnVoiceToggle" title="Toggle Voice/Microphone (Active: Bot listens and speaks. Inactive: Text chat only)">
+                    <span class="voice-icon" id="voiceToggleIcon">🎙️</span>
+                    <span class="voice-label" id="voiceToggleLabel">VOICE ON</span>
+                </button>
+                <input type="text" class="chat-input" id="chatInput" placeholder="Type a message (Enter or click send)..." autocomplete="off" />
+                <button type="button" class="chat-send-btn" id="chatSendBtn" title="Send message">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
             </div>
         </section>
 
@@ -143,16 +151,11 @@
                     </div>
                 </div>
                 <div class="vision-grid">
-                    <div class="camera-stream-box resizable-box" id="cameraBox">
+                    <div class="camera-stream-box" id="cameraBox">
                         <img id="cameraImg" src="/camera/stream" alt="Live Camera 60 FPS Stream" onerror="this.src='/camera/snapshot'">
                         <div class="stream-overlay">
                             <span class="rec-dot"></span> LIVE 60 FPS | YUNET HUD
                         </div>
-                        <div class="stream-ctrls">
-                            <button class="stream-size-btn" id="btnStreamReset" title="Reset Size">↺</button>
-                            <button class="stream-size-btn" id="btnStreamExpand" title="Expand View">⤢</button>
-                        </div>
-                        <div class="resize-handle" id="resizeHandle" title="Drag to Resize"></div>
                     </div>
                     <div class="world-state-yaml">
                         <div class="sub-heading">WORLD STATE MODEL</div>
@@ -232,6 +235,7 @@
                         <button class="dbg-act-btn" data-act="set_emotion" data-emo="sad">Sad</button>
                         <button class="dbg-act-btn" data-act="set_emotion" data-emo="surprised">Surprised</button>
                         <button class="dbg-act-btn" data-act="set_emotion" data-emo="thinking">Thinking</button>
+                        <button class="dbg-act-btn btn-warning" data-act="reset">Reset Position</button>
                         <button class="dbg-act-btn btn-danger" data-act="stop">Stop</button>
                     </div>
                 </div>

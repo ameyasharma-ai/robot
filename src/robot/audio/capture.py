@@ -41,28 +41,84 @@ class AudioCapture:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.copy())
 
     async def start(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue[np.ndarray]:
-        """Start capturing audio, return queue of frames."""
+        """Start capturing audio, return queue of frames.
+
+        Tries the configured sample rate first (16 kHz), then falls back to
+        the device's native rate with software resampling. This prevents
+        crashes when PipeWire is down and ALSA rejects non-native rates.
+        """
         self._loop = loop
         self._queue = asyncio.Queue()
-        self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=self.frame_size,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
+
+        # Try sample rates in preference order
+        rates_to_try = [self.sample_rate]
+        try:
+            dev_info = sd.query_devices(sd.default.device[0], "input")
+            native_rate = int(dev_info.get("default_samplerate", 44100))
+            if native_rate != self.sample_rate:
+                rates_to_try.append(native_rate)
+        except Exception:
+            rates_to_try.extend([44100, 48000])
+
+        last_error = None
+        for rate in rates_to_try:
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=self.frame_size,
+                    callback=self._make_callback(rate),
+                )
+                self._stream.start()
+                if rate != self.sample_rate:
+                    logger.warning(
+                        "capture_rate_fallback",
+                        requested=self.sample_rate,
+                        actual=rate,
+                        msg="Using device native rate with software resample",
+                    )
+                    self._actual_rate = rate
+                else:
+                    self._actual_rate = self.sample_rate
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning("capture_rate_failed", rate=rate, error=str(e))
+                continue
+        else:
+            raise RuntimeError(
+                f"Could not open audio input at any sample rate. "
+                f"Last error: {last_error}. "
+                f"Try: systemctl --user restart pipewire wireplumber pipewire-pulse"
+            )
 
         # Enforce clean hardware capture gain (boost 0)
-        # to prevent PipeWire auto-gain resets from clipping mic audio
         try:
             import subprocess
             subprocess.run(["amixer", "-c", "1", "sset", "Internal Mic Boost", "0"], capture_output=True)
         except Exception:
             pass
 
-        logger.info("capture_started", sample_rate=self.sample_rate, frame_size=self.frame_size)
+        logger.info("capture_started", sample_rate=self._actual_rate, frame_size=self.frame_size)
         return self._queue
+
+    def _make_callback(self, actual_rate: int):
+        """Create an audio callback, with optional resampling if rates differ."""
+        need_resample = actual_rate != self.sample_rate
+
+        def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
+            if self._loop and self._queue:
+                data = indata.copy()
+                if need_resample:
+                    # Simple linear interpolation resample (low overhead)
+                    ratio = self.sample_rate / actual_rate
+                    n_out = int(len(data) * ratio)
+                    indices = np.linspace(0, len(data) - 1, n_out)
+                    data = np.interp(indices, np.arange(len(data)), data.flatten()).astype(np.float32).reshape(-1, 1)
+                self._loop.call_soon_threadsafe(self._queue.put_nowait, data)
+
+        return _callback
 
     async def stop(self) -> None:
         if self._stream:

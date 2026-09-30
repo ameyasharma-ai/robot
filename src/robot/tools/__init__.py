@@ -93,10 +93,11 @@ class ToolRouter:
 
     # Keyword-to-family mapping
     FAMILY_KEYWORDS: dict[str, list[str]] = {
-        "memory": ["remember", "recall", "forget", "memory", "preference", "favorite"],
+        "memory": ["remember", "recall", "forget", "memory", "preference", "favorite", "keep in mind", "store"],
         "history": ["said", "told", "conversation", "yesterday", "last time", "before"],
         "system": ["status", "health", "uptime", "service", "restart"],
         "personality": ["personality", "switch", "mode", "character"],
+        "web": ["search", "look up", "find online", "browse", "google", "duckduckgo", "who is", "what is", "latest", "news", "price", "release date", "current"],
     }
 
     def __init__(self, registry: ToolRegistry) -> None:

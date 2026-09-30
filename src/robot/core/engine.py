@@ -91,6 +91,7 @@ class RobotEngine:
         self._is_speaking = False
         self._speech_ended_ts = 0.0
         self._last_bot_phrases: list[str] = []
+        self.voice_enabled = True
 
     async def setup(self) -> None:
         """Initialize all subsystems."""
@@ -303,6 +304,16 @@ class RobotEngine:
 
         while True:
             frame = await audio_queue.get()
+
+            # If voice interaction is disabled (e.g. text-only mode via UI toggle), discard mic audio
+            if not self.voice_enabled:
+                is_speaking = False
+                audio_buffer = []
+                silence_frames = 0
+                barge_in_consecutive = 0
+                was_barge_in = False
+                continue
+
             clean_chunk, rms = self.capture.process_frame(frame)
 
             # When the robot is speaking, if barge-in is disabled, stay completely deaf to all input
@@ -341,6 +352,7 @@ class RobotEngine:
                             self._speech_ended_ts = time.time()
                             self.player.stop()
                             await self.events.emit("barge_in", barge_in=True)
+                            await self.state.set_mode(RobotMode.LISTENING)
                             barge_in_consecutive = 0
                             last_barge_in_time = time.time()
                             is_speaking = True
@@ -443,7 +455,12 @@ class RobotEngine:
         end_of_speech_time: float,
         interrupt: asyncio.Event,
     ) -> str:
-        """Stream LLM response to TTS as phrases form."""
+        """Stream LLM response to TTS as phrases form.
+
+        Implements proactive tool execution: detects user intent for web search,
+        memory write/recall, etc., executes the tool BEFORE calling the LLM, and
+        injects tool results into context so the model speaks grounded answers.
+        """
         # Get personality
         personality = self.personalities.active
         system_prompt = personality.system_prompt if personality else ""
@@ -492,6 +509,58 @@ class RobotEngine:
                     except Exception as e:
                         logger.debug("multimodal_image_encode_error", error=str(e))
 
+        # ─── Proactive Tool Execution ───────────────────────────────────────
+        # Detect user intent and execute tools BEFORE calling the LLM so results
+        # are injected into context. This is more reliable than relying on the
+        # local 4B model to emit tool_call tokens in streaming mode.
+        tool_results = []
+        selected_tool_names = self.tool_router.select_tools(user_text)
+        logger.debug("tool_router_selected", tools=selected_tool_names, user_text=user_text[:80])
+
+        # Proactive web search: if user is asking for current/real-world facts
+        web_keywords = ["search", "look up", "find online", "google", "duckduckgo",
+                        "latest", "news", "price", "release date", "current",
+                        "who is", "how much", "when did", "when will", "where is"]
+        if any(kw in lower_u for kw in web_keywords):
+            web_tool = self.tool_registry.get("web.search")
+            if web_tool:
+                try:
+                    logger.info("proactive_tool_exec", tool="web.search", query=user_text[:60])
+                    result = await self.permissions.execute(
+                        web_tool, {"query": user_text, "max_results": 3}
+                    )
+                    if "result" in result and result["result"]:
+                        snippets = []
+                        for r in result["result"]:
+                            if "error" not in r:
+                                snippets.append(f"• {r.get('title', '')}: {r.get('snippet', '')} ({r.get('url', '')})")
+                        if snippets:
+                            tool_results.append({
+                                "id": "web_search_proactive",
+                                "result": "[Live Web Search Results]\n" + "\n".join(snippets),
+                            })
+                            logger.info("proactive_web_search_ok", results=len(snippets))
+                except Exception as e:
+                    logger.warning("proactive_web_search_error", error=str(e))
+
+        # Proactive memory write: if user says "remember that..."
+        memory_write_triggers = ["remember that", "remember this", "keep in mind",
+                                 "don't forget", "store this", "save this"]
+        if any(trig in lower_u for trig in memory_write_triggers) and self.memory:
+            mem_tool = self.tool_registry.get("memory.write")
+            if mem_tool:
+                try:
+                    result = await self.permissions.execute(mem_tool, {"fact": user_text})
+                    if "result" in result:
+                        tool_results.append({
+                            "id": "memory_write_proactive",
+                            "result": result["result"],
+                        })
+                        logger.info("proactive_memory_write_ok", fact=user_text[:60])
+                except Exception as e:
+                    logger.warning("proactive_memory_write_error", error=str(e))
+
+        # ─── Build Messages with Tool Results ───────────────────────────────
         with Timer(self.telemetry, "CONTEXT_BUILD_LATENCY"):
             messages = self.context.build_messages(
                 system_prompt=system_prompt,
@@ -501,7 +570,21 @@ class RobotEngine:
                 robot_state=self.state.state.to_compact(),
                 world_state=world_state_compact,
                 image_data_url=image_data_url,
+                tool_results=tool_results if tool_results else None,
             )
+
+        # If we have an image and the LLM explicitly supports multimodal (mmproj loaded),
+        # convert the last user message to OpenAI vision content blocks
+        llm_is_multimodal = self.config.get("llm", {}).get("multimodal", False)
+        if llm_is_multimodal and image_data_url and messages:
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i].get("role") == "user" and isinstance(messages[i].get("content"), str):
+                    text_content = messages[i]["content"]
+                    messages[i]["content"] = [
+                        {"type": "text", "text": text_content},
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                    ]
+                    break
 
         # Stream LLM
         chunker = ClauseChunker()
@@ -509,6 +592,7 @@ class RobotEngine:
         ttft_recorded = False
         timing_ref = None
         t_llm_start = time.perf_counter()
+        collected_tool_calls = []
 
         try:
             async for token in self.llm.stream_chat(messages, max_tokens=self.config["llm"].get("max_tokens", 300)):
@@ -516,7 +600,13 @@ class RobotEngine:
                     break
 
                 if token.startswith("__TOOL_CALL__"):
-                    # Handle tool calls (future expansion)
+                    # Parse and collect tool calls emitted by the model
+                    try:
+                        import json as _json
+                        tc_data = _json.loads(token[len("__TOOL_CALL__"):])
+                        collected_tool_calls.extend(tc_data if isinstance(tc_data, list) else [tc_data])
+                    except Exception:
+                        pass
                     continue
 
                 if not ttft_recorded:
@@ -534,6 +624,55 @@ class RobotEngine:
                     await self._tts_queue.put((phrase, interrupt, timing_ref))
                     timing_ref = None
 
+            # If the model emitted tool calls, execute them and do a second-pass generation
+            if collected_tool_calls and not interrupt.is_set() and not full_response.strip():
+                second_pass_results = []
+                for tc in collected_tool_calls:
+                    func_info = tc.get("function", tc)
+                    tool_name = func_info.get("name", "")
+                    try:
+                        import json as _json
+                        args = _json.loads(func_info.get("arguments", "{}")) if isinstance(func_info.get("arguments"), str) else func_info.get("arguments", {})
+                    except Exception:
+                        args = {}
+
+                    tool_def = self.tool_registry.get(tool_name)
+                    if tool_def:
+                        try:
+                            result = await self.permissions.execute(tool_def, args)
+                            second_pass_results.append({
+                                "id": tc.get("id", tool_name),
+                                "result": str(result.get("result", result.get("error", ""))),
+                            })
+                        except Exception as e:
+                            second_pass_results.append({"id": tc.get("id", tool_name), "error": str(e)})
+
+                if second_pass_results:
+                    # Rebuild messages with tool results for second-pass
+                    messages_2 = self.context.build_messages(
+                        system_prompt=system_prompt,
+                        user_text=user_text,
+                        recent_conversation=recent,
+                        memories=memories,
+                        robot_state=self.state.state.to_compact(),
+                        world_state=world_state_compact,
+                        tool_results=second_pass_results,
+                    )
+                    chunker2 = ClauseChunker()
+                    async for token2 in self.llm.stream_chat(messages_2, max_tokens=self.config["llm"].get("max_tokens", 300)):
+                        if interrupt.is_set():
+                            break
+                        if token2.startswith("__TOOL_CALL__"):
+                            continue
+                        full_response += token2
+                        phrase2 = chunker2.feed(token2)
+                        if phrase2 and not interrupt.is_set():
+                            await self._tts_queue.put((phrase2, interrupt, timing_ref))
+                            timing_ref = None
+                    remainder2 = chunker2.flush()
+                    if remainder2 and not interrupt.is_set():
+                        await self._tts_queue.put((remainder2, interrupt, timing_ref))
+
             # Flush remaining
             remainder = chunker.flush()
             if remainder and not interrupt.is_set():
@@ -542,12 +681,14 @@ class RobotEngine:
             if not interrupt.is_set() and full_response:
                 logger.info("bot_response", text=full_response.strip()[:100])
 
-            # Sentinel to mark end of turn
-            await self._tts_queue.put(None)
+            # Sentinel to mark normal end of turn (only if not interrupted)
+            if not interrupt.is_set():
+                await self._tts_queue.put(None)
 
         except Exception as e:
             logger.error("llm_stream_error", error=str(e))
-            await self._tts_queue.put(None)
+            if not interrupt.is_set():
+                await self._tts_queue.put(None)
 
         e2e = (time.perf_counter() - t_llm_start) * 1000
         self.telemetry.record("LLM_GENERATION_LATENCY", e2e)
@@ -562,7 +703,9 @@ class RobotEngine:
             if item is None:
                 self._is_speaking = False
                 self._speech_ended_ts = time.time()
-                await self.state.set_mode(RobotMode.IDLE)
+                # If an interruption occurred and switched state to LISTENING, don't clobber it to IDLE
+                if self.state.state.mode != RobotMode.LISTENING:
+                    await self.state.set_mode(RobotMode.IDLE)
                 continue
 
             phrase, interrupt, timing_ref = item

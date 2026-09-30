@@ -2,10 +2,13 @@
  * CharacterEngine — Central humanoid 3D visual avatar engine.
  * Native WebGL2/WebGPU rendering surface integrated directly into browser interface.
  * Operates on integrated GPU (AMD Radeon 680M) without touching the discrete RTX 3050.
+ *
+ * Supports multiple instances: one for animated 3D humanoid, one for realistic model.
+ * Pass `options.variant = "realistic"` for portrait-style warm lighting and no cyber stage.
  */
 
 class CharacterEngine {
-    constructor(containerElement) {
+    constructor(containerElement, options = {}) {
         this.container = containerElement;
         this.scene = null;
         this.camera = null;
@@ -17,6 +20,10 @@ class CharacterEngine {
         this.animationSystem = null;
         this.gazeSystem = null;
         this.facialSystem = null;
+
+        // Options
+        this.modelUrl = options.modelUrl || "/static/models/avatar.glb";
+        this.variant = options.variant || "animated"; // "animated" | "realistic"
 
         // Diagnostics
         this.fps = 60;
@@ -37,10 +44,18 @@ class CharacterEngine {
         this.scene = new THREE.Scene();
         this.scene.background = null; // Transparent to blend seamlessly into UI
 
-        // 2. Camera Setup (Designer framing: full body + elevated holographic pedestal)
-        this.camera = new THREE.PerspectiveCamera(34, width / height, 0.1, 100);
-        this.camera.position.set(0, 0.90, 3.10);
-        this.camera.lookAt(0, 0.78, 0);
+        // 2. Camera Setup — variant-dependent framing
+        if (this.variant === "realistic") {
+            // Portrait-style camera: tighter framing, slightly higher angle
+            this.camera = new THREE.PerspectiveCamera(30, width / height, 0.1, 100);
+            this.camera.position.set(0, 0.65, 2.6);
+            this.camera.lookAt(0, 0.55, 0);
+        } else {
+            // Default animated: full body + holographic pedestal
+            this.camera = new THREE.PerspectiveCamera(34, width / height, 0.1, 100);
+            this.camera.position.set(0, 0.60, 2.95);
+            this.camera.lookAt(0, 0.52, 0);
+        }
 
         // 3. Renderer Setup (WebGL2 with high-performance power preference)
         try {
@@ -62,7 +77,7 @@ class CharacterEngine {
             return;
         }
 
-        // 4. Studio & Futuristic Lighting Rig
+        // 4. Lighting & Stage (variant-dependent)
         this._setupLighting();
 
         // 5. Load Humanoid Avatar
@@ -76,53 +91,140 @@ class CharacterEngine {
     }
 
     _setupLighting() {
-        // Soft ambient rim illumination
-        const ambient = new THREE.AmbientLight(0xffffff, 0.65);
-        this.scene.add(ambient);
+        if (this.variant === "realistic") {
+            // ─── Realistic Portrait Lighting ───────────────────────────────────
+            // Warm three-point studio setup for natural skin rendering
+            const ambient = new THREE.AmbientLight(0xfff5eb, 0.55);
+            this.scene.add(ambient);
 
-        // Key light (Cyan tinted futuristic rim)
-        const keyLight = new THREE.DirectionalLight(0x00f2fe, 1.1);
-        keyLight.position.set(2, 4, 3);
-        keyLight.castShadow = true;
-        keyLight.shadow.mapSize.width = 1024;
-        keyLight.shadow.mapSize.height = 1024;
-        keyLight.shadow.bias = -0.001;
-        this.scene.add(keyLight);
+            // Key light: warm directional (simulates softbox at 45° upper-right)
+            const keyLight = new THREE.DirectionalLight(0xfff0e0, 1.2);
+            keyLight.position.set(2.5, 3.5, 3);
+            keyLight.castShadow = true;
+            keyLight.shadow.mapSize.width = 1024;
+            keyLight.shadow.mapSize.height = 1024;
+            keyLight.shadow.bias = -0.001;
+            this.scene.add(keyLight);
 
-        // Fill light (Deep blue/violet)
-        const fillLight = new THREE.DirectionalLight(0x9d4edd, 0.7);
-        fillLight.position.set(-2, 2, 2);
-        this.scene.add(fillLight);
+            // Fill light: soft blue-ish from left (adds dimension and separation)
+            const fillLight = new THREE.DirectionalLight(0xc8ddf0, 0.6);
+            fillLight.position.set(-2, 2, 2);
+            this.scene.add(fillLight);
 
-        // Ground reflection / holographic pedestal disk
-        const pedestalGeo = new THREE.CylinderGeometry(0.85, 0.85, 0.04, 32);
-        const pedestalMat = new THREE.MeshStandardMaterial({
-            color: 0x0a101d,
-            roughness: 0.2,
-            metalness: 0.8,
-            emissive: 0x00f2fe,
-            emissiveIntensity: 0.15,
-        });
-        const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
-        pedestal.position.set(0, -0.02, 0);
-        pedestal.receiveShadow = true;
-        this.scene.add(pedestal);
+            // Rim/back light: subtle warm edge light for hair/shoulder separation
+            const rimLight = new THREE.DirectionalLight(0xffe8cc, 0.45);
+            rimLight.position.set(0, 3, -2);
+            this.scene.add(rimLight);
 
-        // Pedestal holographic neon border ring
-        const ringGeo = new THREE.TorusGeometry(0.86, 0.015, 12, 48);
-        const ringMat = new THREE.MeshStandardMaterial({
-            color: 0x00f2fe,
-            emissive: 0x00f2fe,
-            emissiveIntensity: 0.8,
-        });
-        const ring = new THREE.Mesh(ringGeo, ringMat);
-        ring.rotation.x = Math.PI / 2;
-        ring.position.set(0, 0, 0);
-        this.scene.add(ring);
+            // Subtle ground reflection (point light from below, very soft)
+            const groundBounce = new THREE.PointLight(0xe8e0d8, 0.2, 5);
+            groundBounce.position.set(0, -0.5, 1);
+            this.scene.add(groundBounce);
+
+            // ─── Elegant Minimal Stage (subtle glass-like disc) ───────────────
+            const discGeo = new THREE.CylinderGeometry(0.52, 0.55, 0.018, 48);
+            const discMat = new THREE.MeshStandardMaterial({
+                color: 0x1a1a2e,
+                roughness: 0.15,
+                metalness: 0.7,
+                transparent: true,
+                opacity: 0.6,
+            });
+            const disc = new THREE.Mesh(discGeo, discMat);
+            disc.position.set(0, -0.009, 0);
+            disc.receiveShadow = true;
+            this.scene.add(disc);
+
+            // Thin accent ring
+            const ringGeo = new THREE.TorusGeometry(0.53, 0.004, 16, 64);
+            const ringMat = new THREE.MeshStandardMaterial({
+                color: 0xffe8cc,
+                emissive: 0xffe8cc,
+                emissiveIntensity: 0.3,
+                roughness: 0.1,
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.rotation.x = Math.PI / 2;
+            ring.position.set(0, 0.002, 0);
+            this.scene.add(ring);
+        } else {
+            // ─── Animated Cyber Lighting (original) ───────────────────────────
+            // Soft ambient rim illumination
+            const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+            this.scene.add(ambient);
+
+            // Key light (Cyan tinted futuristic rim)
+            const keyLight = new THREE.DirectionalLight(0x00f2fe, 1.1);
+            keyLight.position.set(2, 4, 3);
+            keyLight.castShadow = true;
+            keyLight.shadow.mapSize.width = 1024;
+            keyLight.shadow.mapSize.height = 1024;
+            keyLight.shadow.bias = -0.001;
+            this.scene.add(keyLight);
+
+            // Fill light (Deep blue/violet)
+            const fillLight = new THREE.DirectionalLight(0x9d4edd, 0.7);
+            fillLight.position.set(-2, 2, 2);
+            this.scene.add(fillLight);
+
+            // Sleek cybernetic multi-tier holographic pedestal
+            const pedestalBaseGeo = new THREE.CylinderGeometry(0.62, 0.65, 0.035, 48);
+            const pedestalBaseMat = new THREE.MeshStandardMaterial({
+                color: 0x050811,
+                roughness: 0.35,
+                metalness: 0.85,
+                emissive: 0x00f2fe,
+                emissiveIntensity: 0.08,
+            });
+            const pedestalBase = new THREE.Mesh(pedestalBaseGeo, pedestalBaseMat);
+            pedestalBase.position.set(0, -0.018, 0);
+            pedestalBase.receiveShadow = true;
+            this.scene.add(pedestalBase);
+
+            // Core platform stage
+            const coreGeo = new THREE.CylinderGeometry(0.55, 0.58, 0.025, 48);
+            const coreMat = new THREE.MeshStandardMaterial({
+                color: 0x091224,
+                roughness: 0.2,
+                metalness: 0.9,
+                emissive: 0x0080ff,
+                emissiveIntensity: 0.15,
+            });
+            const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+            coreMesh.position.set(0, 0.005, 0);
+            coreMesh.receiveShadow = true;
+            this.scene.add(coreMesh);
+
+            // Outer glowing cyber ring
+            const outerRingGeo = new THREE.TorusGeometry(0.63, 0.009, 16, 64);
+            const outerRingMat = new THREE.MeshStandardMaterial({
+                color: 0x00f2fe,
+                emissive: 0x00f2fe,
+                emissiveIntensity: 0.85,
+                roughness: 0.1,
+            });
+            const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
+            outerRing.rotation.x = Math.PI / 2;
+            outerRing.position.set(0, 0.002, 0);
+            this.scene.add(outerRing);
+
+            // Inner glowing focus ring
+            const innerRingGeo = new THREE.TorusGeometry(0.53, 0.006, 16, 64);
+            const innerRingMat = new THREE.MeshStandardMaterial({
+                color: 0x00f5a0,
+                emissive: 0x00f5a0,
+                emissiveIntensity: 0.9,
+                roughness: 0.1,
+            });
+            const innerRing = new THREE.Mesh(innerRingGeo, innerRingMat);
+            innerRing.rotation.x = Math.PI / 2;
+            innerRing.position.set(0, 0.018, 0);
+            this.scene.add(innerRing);
+        }
     }
 
     async _loadCharacter() {
-        const { scene, isProcedural } = await this.loader.load("/static/models/avatar.glb");
+        const { scene, isProcedural } = await this.loader.load(this.modelUrl);
         this.scene.add(scene);
 
         // Bind CharacterRig
@@ -134,7 +236,7 @@ class CharacterEngine {
         this.facialSystem = new FacialSystem(this.rig);
 
         this.isLoaded = true;
-        console.log("[CharacterEngine] Humanoid character system online!");
+        console.log(`[CharacterEngine:${this.variant}] Humanoid character system online!`);
     }
 
     onResize() {
@@ -182,6 +284,23 @@ class CharacterEngine {
     idle() {
         if (this.animationSystem) this.animationSystem.interrupt();
         if (this.facialSystem) this.facialSystem.setEmotion("neutral");
+    }
+
+    reset() {
+        if (this.animationSystem) this.animationSystem.interrupt();
+        if (this.rig) {
+            this.rig.resetPose();
+            if (this.rig.root) {
+                this.rig.root.rotation.set(0, 0, 0);
+            }
+        }
+        if (this.gazeSystem) {
+            this.gazeSystem.setTarget(0, 1.15, 2.2);
+        }
+        if (this.facialSystem) {
+            this.facialSystem.setEmotion("neutral");
+            this.facialSystem.stopSpeaking();
+        }
     }
 
     raiseHand(side = "right", duration = 1.2) {
@@ -257,11 +376,25 @@ class CharacterEngine {
         const leftKnee = this.rig.getBone("leftLowerLeg");
         const rightKnee = this.rig.getBone("rightLowerLeg");
 
-        if (hips) hips.position.y = 0.6;
-        if (leftLeg) leftLeg.rotation.x = Math.PI / 2.2;
-        if (rightLeg) rightLeg.rotation.x = Math.PI / 2.2;
-        if (leftKnee) leftKnee.rotation.x = -Math.PI / 2.2;
-        if (rightKnee) rightKnee.rotation.x = -Math.PI / 2.2;
+        if (hips && this.rig.initialPositions["hips"]) {
+            hips.position.y = this.rig.initialPositions["hips"].y * 0.65;
+        }
+        if (leftLeg && this.rig.initialRotations["leftUpperLeg"]) {
+            const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2.3, 0, 0));
+            leftLeg.quaternion.copy(this.rig.initialRotations["leftUpperLeg"]).multiply(delta);
+        }
+        if (rightLeg && this.rig.initialRotations["rightUpperLeg"]) {
+            const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2.3, 0, 0));
+            rightLeg.quaternion.copy(this.rig.initialRotations["rightUpperLeg"]).multiply(delta);
+        }
+        if (leftKnee && this.rig.initialRotations["leftLowerLeg"]) {
+            const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2.2, 0, 0));
+            leftKnee.quaternion.copy(this.rig.initialRotations["leftLowerLeg"]).multiply(delta);
+        }
+        if (rightKnee && this.rig.initialRotations["rightLowerLeg"]) {
+            const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2.2, 0, 0));
+            rightKnee.quaternion.copy(this.rig.initialRotations["rightLowerLeg"]).multiply(delta);
+        }
     }
 
     stand() {
@@ -344,6 +477,10 @@ class CharacterEngine {
                 break;
             case "idle":
                 this.idle();
+                break;
+            case "reset":
+            case "reset_position":
+                this.reset();
                 break;
             default:
                 console.warn(`[CharacterEngine] Unknown semantic action: ${act}`);

@@ -186,6 +186,24 @@ class ConversationHistory:
                 ended_at TEXT,
                 turn_count INTEGER DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT,
+                fact TEXT NOT NULL,
+                user_id TEXT DEFAULT 'user',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+                fact,
+                content=facts,
+                content_rowid=id
+            );
+
+            CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+                INSERT INTO facts_fts(rowid, fact) VALUES (new.id, new.fact);
+            END;
         """
         )
         self._conn.commit()
@@ -258,6 +276,51 @@ class ConversationHistory:
         rows = cursor.fetchall()
         return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in reversed(rows)]
 
+    async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
+        """Store a durable fact in SQLite."""
+        if not self._conn:
+            return
+        await asyncio.to_thread(
+            self._conn.execute,
+            """INSERT INTO facts (key, fact, user_id, created_at) VALUES (?, ?, ?, ?)""",
+            (key, fact, user_id, datetime.now(timezone.utc).isoformat()),
+        )
+        await asyncio.to_thread(self._conn.commit)
+
+    async def search_facts(self, query: str, limit: int = 5) -> list[dict]:
+        """Search persistent facts using FTS5 and LIKE fallback."""
+        if not self._conn:
+            return []
+        # Try FTS5 first
+        clean_q = "".join(c for c in query if c.isalnum() or c.isspace()).strip()
+        if clean_q:
+            try:
+                cursor = await asyncio.to_thread(
+                    self._conn.execute,
+                    """SELECT f.id, f.fact, f.created_at FROM facts_fts ft
+                       JOIN facts f ON f.id = ft.rowid
+                       WHERE ft.fact MATCH ?
+                       ORDER BY f.id DESC LIMIT ?""",
+                    (clean_q, limit),
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
+            except Exception:
+                pass
+
+        # Fallback to LIKE search or recent facts
+        like_pattern = f"%{clean_q}%" if clean_q else "%"
+        cursor = await asyncio.to_thread(
+            self._conn.execute,
+            """SELECT id, fact, created_at FROM facts
+               WHERE fact LIKE ?
+               ORDER BY id DESC LIMIT ?""",
+            (like_pattern, limit),
+        )
+        rows = cursor.fetchall()
+        return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
+
     async def health_check(self) -> bool:
         return self._conn is not None
 
@@ -297,6 +360,12 @@ class MemoryManager:
             session_id, "assistant", bot_text, personality, turn_number
         )
 
+        # Also store user statements that declare preferences or facts into SQLite facts
+        lower_u = user_text.lower()
+        remember_triggers = ["remember that", "remember this", "keep in mind that", "i like", "my favorite", "i am", "my name is", "i love", "my phone is"]
+        if any(trig in lower_u for trig in remember_triggers):
+            await self.history.add_fact(user_text, user_id="user")
+
         # Mem0 semantic memory (extract facts/preferences)
         messages = [
             {"role": "user", "content": user_text},
@@ -304,9 +373,26 @@ class MemoryManager:
         ]
         await self.mem0.add(messages, user_id="user")
 
+    async def add_memory(self, fact: str, user_id: str = "user") -> None:
+        """Explicitly add a durable memory."""
+        await self.history.add_fact(fact, user_id=user_id)
+        if self.mem0._initialized:
+            await self.mem0.add([{"role": "user", "content": fact}], user_id=user_id)
+
     async def get_relevant_memories(self, query: str, limit: int = 5) -> list[dict]:
         """Retrieve relevant memories for context injection."""
-        return await self.mem0.search(query, limit=limit)
+        mem0_results = await self.mem0.search(query, limit=limit)
+        sqlite_facts = await self.history.search_facts(query, limit=limit)
+        
+        # Merge results, prioritizing SQLite facts if mem0 is empty or offline
+        combined = list(sqlite_facts)
+        seen_texts = set(f.get("memory", "") for f in combined)
+        for m in mem0_results:
+            txt = m.get("memory", m.get("text", ""))
+            if txt and txt not in seen_texts:
+                combined.append(m)
+                seen_texts.add(txt)
+        return combined[:limit]
 
     async def get_recent_conversation(
         self, session_id: str, limit: int = 20

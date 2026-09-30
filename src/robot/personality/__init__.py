@@ -36,15 +36,24 @@ class PersonalityManager:
     """Loads and manages personality definitions from YAML files."""
 
     def __init__(self, personality_dir: str = "config/personalities") -> None:
-        self._dir = Path(personality_dir)
+        p = Path(personality_dir)
+        if not p.is_absolute():
+            # Try current directory first, then robot root
+            p = (Path.cwd() / p).resolve()
+        self._dir = p
         self._personalities: dict[str, Personality] = {}
         self._active: str = ""
 
     def load_all(self) -> None:
         """Load all personality YAML files from the configured directory."""
         if not self._dir.exists():
-            logger.warning("personality_dir_missing", path=str(self._dir))
-            return
+            # Fallback to local package config if cwd differs
+            fallback = Path(__file__).resolve().parent.parent.parent.parent / "config" / "personalities"
+            if fallback.exists():
+                self._dir = fallback
+            else:
+                logger.warning("personality_dir_missing", path=str(self._dir))
+                return
 
         for yaml_file in self._dir.glob("*.yaml"):
             try:

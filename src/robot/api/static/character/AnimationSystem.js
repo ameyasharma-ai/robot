@@ -85,14 +85,17 @@ class AnimationSystem {
             this._updateUpperBody(delta);
         } else {
             // Natural arm hanging with subtle harmonic breathing response
+            // For VRM canonical bones (T-pose extending out along X):
+            // Left arm rotates down with negative Z (-1.25 rad)
+            // Right arm rotates down with positive Z (+1.25 rad)
             const leftArm = rig.getBone("leftUpperArm");
             const rightArm = rig.getBone("rightUpperArm");
             if (leftArm && rig.initialRotations["leftUpperArm"]) {
-                const deltaArmL = new THREE.Quaternion().setFromEuler(new THREE.Euler(sway * 0.02, 0, 1.25 + breath * 0.015));
+                const deltaArmL = new THREE.Quaternion().setFromEuler(new THREE.Euler(sway * 0.02, 0, -1.25 + breath * 0.015));
                 leftArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(deltaArmL);
             }
             if (rightArm && rig.initialRotations["rightUpperArm"]) {
-                const deltaArmR = new THREE.Quaternion().setFromEuler(new THREE.Euler(-sway * 0.02, 0, -1.25 - breath * 0.015));
+                const deltaArmR = new THREE.Quaternion().setFromEuler(new THREE.Euler(-sway * 0.02, 0, 1.25 - breath * 0.015));
                 rightArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(deltaArmR);
             }
         }
@@ -250,18 +253,23 @@ class AnimationSystem {
         const forearm = rig.getBone(isRight ? "rightLowerArm" : "leftLowerArm");
         const hand = rig.getBone(isRight ? "rightHand" : "leftHand");
 
-        const sign = isRight ? 1 : -1;
+        // In VRM T-pose:
+        // Left arm hangs at Z = -1.25 rad. Lifting up = rotating towards 0 or positive Z.
+        // Right arm hangs at Z = +1.25 rad. Lifting up = rotating towards 0 or negative Z.
+        const armHangZ = isRight ? 1.25 : -1.25;
 
         if (act.type === "raise_hand") {
             const ease = 0.5 - 0.5 * Math.cos(Math.min(1.0, t * 1.5) * Math.PI);
             if (arm && rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"]) {
                 const initQ = rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"];
-                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 0.8, 0, (ease * -1.8 * sign) + (sign * 1.25)));
+                // Lift arm forward and up
+                const targetZ = armHangZ * (1.0 - ease) + (isRight ? -0.4 : 0.4) * ease;
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 1.2, 0, targetZ));
                 arm.quaternion.copy(initQ).multiply(deltaQ);
             }
             if (forearm && rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"]) {
                 const initQ = rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"];
-                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ease * 0.4 * sign, 0));
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, ease * (isRight ? -0.6 : 0.6)));
                 forearm.quaternion.copy(initQ).multiply(deltaQ);
             }
         } else if (act.type === "wave") {
@@ -273,35 +281,45 @@ class AnimationSystem {
 
             if (arm && rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"]) {
                 const initQ = rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"];
-                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(easeRaise * 0.6, 0, (easeRaise * -1.8 * sign) + (sign * 1.25)));
+                const targetZ = armHangZ * (1.0 - easeRaise) + (isRight ? -0.5 : 0.5) * easeRaise;
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(easeRaise * 0.9, 0, targetZ));
                 arm.quaternion.copy(initQ).multiply(deltaQ);
             }
             if (forearm && rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"]) {
                 const initQ = rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"];
-                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, (0.5 + waveOsc * 0.45) * sign));
+                const waveAngle = (0.7 + waveOsc * 0.4) * (isRight ? -1 : 1);
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, waveAngle));
                 forearm.quaternion.copy(initQ).multiply(deltaQ);
             }
         } else if (act.type === "point") {
             const ease = 0.5 - 0.5 * Math.cos(Math.min(1.0, t * 2.0) * Math.PI);
             if (arm && rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"]) {
                 const initQ = rig.initialRotations[isRight ? "rightUpperArm" : "leftUpperArm"];
-                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 1.5, 0, (ease * -0.5 * sign) + (sign * 1.25)));
+                const targetZ = armHangZ * (1.0 - ease) + (isRight ? -0.1 : 0.1) * ease;
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 1.5, 0, targetZ));
                 arm.quaternion.copy(initQ).multiply(deltaQ);
             }
             if (forearm && rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"]) {
                 const initQ = rig.initialRotations[isRight ? "rightLowerArm" : "leftLowerArm"];
-                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 0.1, 0, 0));
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0));
                 forearm.quaternion.copy(initQ).multiply(deltaQ);
             }
         }
 
+        // Keep the contralateral (other) arm hanging down naturally during gesture
+        const otherArm = rig.getBone(isRight ? "leftUpperArm" : "rightUpperArm");
+        const otherInit = rig.initialRotations[isRight ? "leftUpperArm" : "rightUpperArm"];
+        if (otherArm && otherInit) {
+            const otherZ = isRight ? -1.25 : 1.25;
+            const deltaOther = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, otherZ));
+            otherArm.quaternion.copy(otherInit).multiply(deltaOther);
+        }
+
         if (t >= 1.0) {
-            // Hold or return to idle smoothly
-            if (act.type === "wave" || act.type === "point") {
-                this.activeActions.upperBody = null;
-                this.resetLimb(isRight ? "rightUpperArm" : "leftUpperArm");
-                this.resetLimb(isRight ? "rightLowerArm" : "leftLowerArm");
-            }
+            // Return to idle smoothly after duration
+            this.activeActions.upperBody = null;
+            this.resetLimb(isRight ? "rightUpperArm" : "leftUpperArm");
+            this.resetLimb(isRight ? "rightLowerArm" : "leftLowerArm");
         }
     }
 

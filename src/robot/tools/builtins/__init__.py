@@ -14,6 +14,27 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     """Register all built-in tools with the engine's tool registry."""
 
     # --- Memory Tools ---
+    async def memory_write(fact: str) -> str:
+        await engine.memory.add_memory(fact, user_id="user")
+        return f"Successfully remembered: '{fact}'"
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="memory.write",
+            description="Store and remember an important fact, preference, or detail about the user for future turns",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "fact": {"type": "string", "description": "The exact fact or preference to remember"},
+                },
+                "required": ["fact"],
+            },
+            handler=memory_write,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="memory",
+        )
+    )
+
     async def memory_search(query: str, limit: int = 5) -> Any:
         return await engine.memory.get_relevant_memories(query, limit)
 
@@ -32,6 +53,48 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=memory_search,
             permission_level=PermissionLevel.READ_ONLY,
             family="memory",
+        )
+    )
+
+    # --- Web Search Tools (DuckDuckGo) ---
+    async def web_search(query: str, max_results: int = 3) -> list[dict]:
+        """Perform a live DuckDuckGo web search for current real-world knowledge."""
+        try:
+            from ddgs import DDGS
+            import asyncio
+
+            def _search():
+                results = DDGS().text(query, max_results=max_results)
+                return list(results) if results else []
+
+            results = await asyncio.to_thread(_search)
+            return [
+                {
+                    "title": r.get("title", ""),
+                    "snippet": r.get("body", ""),
+                    "url": r.get("href", ""),
+                }
+                for r in results
+            ]
+        except Exception as e:
+            return [{"error": f"Search failed: {str(e)}"}]
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="web.search",
+            description="Search the web using DuckDuckGo for live facts, current events, products (e.g. latest iPhone), or online information",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query to look up on the web"},
+                    "max_results": {"type": "integer", "description": "Maximum search results to return", "default": 3},
+                },
+                "required": ["query"],
+            },
+            handler=web_search,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="web",
+            timeout_s=20.0,
         )
     )
 

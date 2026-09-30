@@ -22,6 +22,7 @@ class RobotUI {
         this.faceCaption = document.getElementById("faceCaption");
         this.statusPill = document.getElementById("globalStatusPill");
         this.statusText = document.getElementById("globalStatusText");
+        this.personaSelect = document.getElementById("personaSelect");
         this.personaName = document.getElementById("personaName");
         this.bubbleTag = document.getElementById("bubbleTag");
         this.bubbleContent = document.getElementById("bubbleContent");
@@ -53,35 +54,159 @@ class RobotUI {
         this.barE2e = document.getElementById("barE2e");
 
         this.initViewControls();
+        this.initPersonalitySelector();
         this.init3DCharacter();
+        this.initTextChat();
         this.initBlinking();
         this.initWebsocket();
         this.startPollers();
     }
 
+    initTextChat() {
+        const input = document.getElementById("chatInput");
+        const btn = document.getElementById("chatSendBtn");
+        const voiceBtn = document.getElementById("btnVoiceToggle");
+        const voiceIcon = document.getElementById("voiceToggleIcon");
+        const voiceLabel = document.getElementById("voiceToggleLabel");
+        this.voiceEnabled = true;
+
+        if (voiceBtn) {
+            const updateVoiceUI = (enabled) => {
+                this.voiceEnabled = enabled;
+                if (enabled) {
+                    voiceBtn.classList.remove("muted");
+                    voiceBtn.classList.add("active");
+                    if (voiceIcon) voiceIcon.textContent = "🎙️";
+                    if (voiceLabel) voiceLabel.textContent = "VOICE ON";
+                    voiceBtn.title = "Voice interaction is ON. Click to mute mic and switch to text-only mode.";
+                } else {
+                    voiceBtn.classList.remove("active");
+                    voiceBtn.classList.add("muted");
+                    if (voiceIcon) voiceIcon.textContent = "🔇";
+                    if (voiceLabel) voiceLabel.textContent = "VOICE MUTED";
+                    voiceBtn.title = "Voice interaction is MUTED. Text chat only. Click to enable mic.";
+                }
+            };
+
+            voiceBtn.addEventListener("click", async () => {
+                const targetState = !this.voiceEnabled;
+                updateVoiceUI(targetState);
+                try {
+                    const res = await fetch("/voice-mode", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ enabled: targetState }),
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        updateVoiceUI(data.voice_enabled);
+                        this.logEvent("AUDIO", `Voice interaction ${data.voice_enabled ? "ENABLED" : "MUTED (Text-only chat active)"}`, "system");
+                    }
+                } catch (e) {
+                    console.error("Failed to toggle voice mode:", e);
+                }
+            });
+            this.updateVoiceUI = updateVoiceUI;
+        }
+
+        if (!input || !btn) return;
+
+        const sendMessage = async () => {
+            const text = input.value.trim();
+            if (!text) return;
+
+            // Show user message in bubble
+            this.bubbleTag.textContent = "USER (TEXT)";
+            this.bubbleTag.style.color = "var(--primary-cyan)";
+            this.bubbleContent.textContent = text;
+            this.logEvent("USER", text, "user");
+
+            // Clear input and disable while processing
+            input.value = "";
+            btn.classList.add("sending");
+            input.disabled = true;
+            this.setRobotMode("thinking");
+
+            try {
+                const resp = await fetch("/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text }),
+                });
+                const data = await resp.json();
+                const response = data.response || data.error || "No response.";
+
+                // Show robot response
+                this.bubbleTag.textContent = "ROBOT RESPONSE";
+                this.bubbleTag.style.color = "var(--accent-emerald)";
+                this.bubbleContent.textContent = response;
+                this.logEvent("ROBOT", response, "robot");
+                this.setRobotMode("speaking");
+
+                // Trigger lip-sync on all 3D engines
+                this._forEachEngine((eng) => {
+                    eng.speakStart();
+                    setTimeout(() => eng.speakStop(), Math.min(8000, response.length * 80));
+                });
+
+                // Return to idle after speech completes
+                setTimeout(() => this.setRobotMode("idle"), Math.min(10000, response.length * 80 + 1000));
+            } catch (err) {
+                this.bubbleContent.textContent = `Error: ${err.message}`;
+                this.logEvent("ERROR", err.message, "system");
+                this.setRobotMode("idle");
+            } finally {
+                btn.classList.remove("sending");
+                input.disabled = false;
+                input.focus();
+            }
+        };
+
+        btn.addEventListener("click", (e) => {
+            e.preventDefault();
+            sendMessage();
+        });
+
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    }
+
     init3DCharacter() {
+        // ─── Animated 3D Character Engine (Cyber variant) ──────────────────
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
-            this.characterEngine = new CharacterEngine(this.characterContainer);
-            this.logEvent("3D-CORE", "3D Humanoid Character initialized on AMD 680M WebGL2.", "system");
+            this.characterEngine = new CharacterEngine(this.characterContainer, {
+                variant: "animated",
+                modelUrl: "/static/models/avatar.glb",
+            });
+            this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 
             // Update debug metrics every 500ms
             setInterval(() => {
-                if (this.characterEngine && this.dbgCharFps) {
-                    this.dbgCharFps.textContent = `FPS: ${this.characterEngine.fps} (${this.characterEngine.frameTimeMs.toFixed(1)}ms)`;
+                const eng = this._activeCharEngine();
+                if (eng && this.dbgCharFps) {
+                    this.dbgCharFps.textContent = `FPS: ${eng.fps} (${eng.frameTimeMs.toFixed(1)}ms)`;
                 }
             }, 500);
         }
+
+        // ─── Realistic 3D Character Engine (created lazily on tab click) ───
+        this.realisticContainer = document.getElementById("realisticContainer");
+        this.realisticEngine = null;
+        this._activeTab = "3d"; // "3d" | "realistic" | "face"
 
         // Avatar Tab Switcher (3D Humanoid vs Realistic Girl vs 2D Visor)
         const tab3D = document.getElementById("tabBtn3D");
         const tabRealGirl = document.getElementById("tabBtnRealGirl");
         const tabFace = document.getElementById("tabBtnFace");
-        const sketchfabContainer = document.getElementById("sketchfabContainer");
 
         const resetTabs = () => {
             [tab3D, tabRealGirl, tabFace].forEach(t => t && t.classList.remove("active"));
             if (this.characterContainer) this.characterContainer.style.display = "none";
-            if (sketchfabContainer) sketchfabContainer.style.display = "none";
+            if (this.realisticContainer) this.realisticContainer.style.display = "none";
             if (this.faceStage) this.faceStage.style.display = "none";
         };
 
@@ -91,13 +216,27 @@ class RobotUI {
                 tab3D.classList.add("active");
                 if (this.characterContainer) this.characterContainer.style.display = "flex";
                 if (this.characterEngine) this.characterEngine.onResize();
+                this._activeTab = "3d";
             });
         }
+
         if (tabRealGirl) {
             tabRealGirl.addEventListener("click", () => {
                 resetTabs();
                 tabRealGirl.classList.add("active");
-                if (sketchfabContainer) sketchfabContainer.style.display = "block";
+                if (this.realisticContainer) this.realisticContainer.style.display = "flex";
+                this._activeTab = "realistic";
+
+                // Lazy-init the realistic engine on first tab click
+                if (!this.realisticEngine && typeof CharacterEngine !== "undefined" && this.realisticContainer) {
+                    this.realisticEngine = new CharacterEngine(this.realisticContainer, {
+                        variant: "realistic",
+                        modelUrl: "/static/models/avatar.glb",
+                    });
+                    this.logEvent("3D-REAL", "Realistic 3D character initialized (portrait lighting).", "system");
+                } else if (this.realisticEngine) {
+                    this.realisticEngine.onResize();
+                }
             });
         }
         if (tabFace) {
@@ -105,10 +244,11 @@ class RobotUI {
                 resetTabs();
                 tabFace.classList.add("active");
                 if (this.faceStage) this.faceStage.style.display = "flex";
+                this._activeTab = "face";
             });
         }
 
-        // Character Action Debug Buttons
+        // Character Action Debug Buttons — dispatch to the active engine
         document.querySelectorAll(".dbg-act-btn").forEach((btn) => {
             btn.addEventListener("click", () => {
                 const act = btn.getAttribute("data-act");
@@ -119,15 +259,26 @@ class RobotUI {
         });
     }
 
+    /** Returns whichever CharacterEngine is currently visible, or the animated one as default */
+    _activeCharEngine() {
+        if (this._activeTab === "realistic" && this.realisticEngine) return this.realisticEngine;
+        return this.characterEngine;
+    }
+
+    /** Execute a callback on every initialized CharacterEngine */
+    _forEachEngine(fn) {
+        if (this.characterEngine) fn(this.characterEngine);
+        if (this.realisticEngine) fn(this.realisticEngine);
+    }
+
     async executeSemanticAction(actionObj) {
-        if (this.characterEngine) {
-            this.characterEngine.executeAction(actionObj);
-            if (this.charActionBadge) {
-                this.charActionBadge.textContent = `MOTION: ${(actionObj.action || "").toUpperCase()}`;
-            }
-            if (this.dbgCharMotion) {
-                this.dbgCharMotion.textContent = `${(actionObj.action || "").toUpperCase()} ${(actionObj.side || "")}`.trim();
-            }
+        // Dispatch to ALL initialized character engines (animated + realistic)
+        this._forEachEngine((eng) => eng.executeAction(actionObj));
+        if (this.charActionBadge) {
+            this.charActionBadge.textContent = `MOTION: ${(actionObj.action || "").toUpperCase()}`;
+        }
+        if (this.dbgCharMotion) {
+            this.dbgCharMotion.textContent = `${(actionObj.action || "").toUpperCase()} ${(actionObj.side || "")}`.trim();
         }
         this.logEvent("ACTION", `Action executed: ${JSON.stringify(actionObj)}`, "system");
 
@@ -228,6 +379,48 @@ class RobotUI {
         }
     }
 
+    async initPersonalitySelector() {
+        if (!this.personaSelect) return;
+
+        // Fetch available personalities and current active
+        try {
+            const res = await fetch("/personalities");
+            if (res.ok) {
+                const data = await res.json();
+                if (data.personalities && Array.isArray(data.personalities)) {
+                    this.personaSelect.innerHTML = "";
+                    data.personalities.forEach((p) => {
+                        const opt = document.createElement("option");
+                        opt.value = p;
+                        const label = p === "neo" ? "NEO (Confident / Direct)"
+                                    : p === "aria" ? "ARIA (Empathetic / Warm)"
+                                    : p === "glados" ? "GLADOS (Sarcastic / Clinical)"
+                                    : p.toUpperCase();
+                        opt.textContent = label;
+                        this.personaSelect.appendChild(opt);
+                    });
+                }
+                if (data.active) {
+                    this.personaSelect.value = data.active;
+                    if (this.personaName) this.personaName.textContent = data.active.toUpperCase();
+                }
+            }
+        } catch (e) {}
+
+        this.personaSelect.addEventListener("change", async (e) => {
+            const chosen = e.target.value;
+            try {
+                const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
+                if (switchRes.ok) {
+                    this.logEvent("PERSONA", `Personality switched to ${chosen.toUpperCase()}`, "system");
+                    if (this.personaName) this.personaName.textContent = chosen.toUpperCase();
+                }
+            } catch (err) {
+                this.logEvent("ERROR", `Failed to switch personality: ${err.message}`, "error");
+            }
+        });
+    }
+
     setView(mode) {
         document.body.className = `mode-${mode}`;
         document.querySelectorAll(".view-btn").forEach(btn => btn.classList.remove("active"));
@@ -271,44 +464,42 @@ class RobotUI {
         this.statusPill.className = `status-pill status-${mode}`;
         this.statusText.textContent = mode.toUpperCase();
 
-        // Update Face Caption & 3D Character Posture / Expression
-        if (this.characterEngine) {
-            if (this.charStateBadge) this.charStateBadge.textContent = `STATE: ${mode.toUpperCase()}`;
-            if (this.dbgCharState) this.dbgCharState.textContent = mode.toUpperCase();
-        }
+        // Update Face Caption & 3D Character Posture / Expression (all engines)
+        if (this.charStateBadge) this.charStateBadge.textContent = `STATE: ${mode.toUpperCase()}`;
+        if (this.dbgCharState) this.dbgCharState.textContent = mode.toUpperCase();
 
         switch (mode) {
             case "listening":
                 this.faceCaption.textContent = "LISTENING FOR VOICE";
                 this.stopMouthSpeaking();
-                if (this.characterEngine) {
-                    this.characterEngine.setEmotion("neutral");
-                    this.characterEngine.lookAt(0, 1.45, 2.0); // attentive forward lean
-                }
+                this._forEachEngine((eng) => {
+                    eng.setEmotion("neutral");
+                    eng.lookAt(0, 1.45, 2.0);
+                });
                 break;
             case "thinking":
                 this.faceCaption.textContent = "PROCESSING & REASONING";
                 this.stopMouthSpeaking();
-                if (this.characterEngine) {
-                    this.characterEngine.setEmotion("thinking");
-                    this.characterEngine.lookAt(0.3, 1.6, 2.2); // subtle contemplative head tilt
-                }
+                this._forEachEngine((eng) => {
+                    eng.setEmotion("thinking");
+                    eng.lookAt(0.3, 1.6, 2.2);
+                });
                 break;
             case "speaking":
                 this.faceCaption.textContent = "SYNTHESIZING & SPEAKING";
                 this.startMouthSpeaking();
-                if (this.characterEngine) {
-                    this.characterEngine.speakStart();
-                    this.characterEngine.setEmotion("happy");
-                }
+                this._forEachEngine((eng) => {
+                    eng.speakStart();
+                    eng.setEmotion("happy");
+                });
                 break;
             default:
                 this.faceCaption.textContent = "OBSERVING ENVIRONMENT";
                 this.stopMouthSpeaking();
-                if (this.characterEngine) {
-                    this.characterEngine.speakStop();
-                    this.characterEngine.setEmotion("neutral");
-                }
+                this._forEachEngine((eng) => {
+                    eng.speakStop();
+                    eng.setEmotion("neutral");
+                });
                 break;
         }
     }
@@ -391,29 +582,28 @@ class RobotUI {
             this.bubbleContent.textContent = data.robot_phrase;
             this.logEvent("ROBOT", data.robot_phrase, "robot");
 
-            // Trigger lip-sync on 3D character
-            if (this.characterEngine) {
-                this.characterEngine.speakStart();
+            // Trigger lip-sync on ALL 3D character engines
+            this._forEachEngine((eng) => {
+                eng.speakStart();
                 setTimeout(() => {
-                    if (this.characterEngine && this.currentMode !== "speaking") {
-                        this.characterEngine.speakStop();
+                    if (this.currentMode !== "speaking") {
+                        eng.speakStop();
                     }
                 }, Math.min(8000, data.robot_phrase.length * 80));
-            }
+            });
         }
 
         if (data.barge_in) {
             this.logEvent("BARGE-IN", "Interrupted bot playback via voice activity!", "barge");
-            if (this.characterEngine) {
-                this.characterEngine.stopMotion();
-            }
+            this._forEachEngine((eng) => eng.stopMotion());
+            this.setRobotMode("listening");
         }
 
         // Real-time Semantic Character Actions dispatched from Robot Core / LLM
         if (data.event === "character.action" || data.action) {
             const act = data.action;
-            if (act && this.characterEngine) {
-                this.characterEngine.executeAction(act);
+            if (act) {
+                this._forEachEngine((eng) => eng.executeAction(act));
                 if (this.charActionBadge) {
                     this.charActionBadge.textContent = `MOTION: ${(act.action || "").toUpperCase()}`;
                 }
@@ -425,11 +615,9 @@ class RobotUI {
         }
 
         if (data.event === "character.interrupt" || data.interrupt) {
-            if (this.characterEngine) {
-                this.characterEngine.stopMotion();
-                if (this.charActionBadge) this.charActionBadge.textContent = "MOTION: STOPPED";
-                if (this.dbgCharMotion) this.dbgCharMotion.textContent = "INTERRUPTED (IDLE)";
-            }
+            this._forEachEngine((eng) => eng.stopMotion());
+            if (this.charActionBadge) this.charActionBadge.textContent = "MOTION: STOPPED";
+            if (this.dbgCharMotion) this.dbgCharMotion.textContent = "INTERRUPTED (IDLE)";
             this.logEvent("CHAR", "Motion interrupted. Blending to neutral idle.", "barge");
         }
 
@@ -467,7 +655,16 @@ class RobotUI {
                 if (res.ok) {
                     const data = await res.json();
                     if (data.mode) this.setRobotMode(data.mode);
-                    if (data.personality) this.personaName.textContent = data.personality.toUpperCase();
+                    if (data.voice_enabled !== undefined && this.updateVoiceUI && this.voiceEnabled !== data.voice_enabled) {
+                        this.updateVoiceUI(data.voice_enabled);
+                    }
+                    if (data.personality) {
+                        const pUpper = data.personality.toUpperCase();
+                        if (this.personaName) this.personaName.textContent = pUpper;
+                        if (this.personaSelect && document.activeElement !== this.personaSelect && this.personaSelect.value !== data.personality) {
+                            this.personaSelect.value = data.personality;
+                        }
+                    }
                     if (data.telemetry) {
                         const t = data.telemetry;
                         const metrics = {};
@@ -481,7 +678,7 @@ class RobotUI {
             } catch (e) {}
         }, 1200);
 
-        // Poll World State & Perception every 1.5 seconds
+        // Poll World State & Perception at 4Hz (250ms) for responsive face tracking
         setInterval(async () => {
             try {
                 const res = await fetch("/world-state");

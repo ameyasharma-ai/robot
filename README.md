@@ -49,6 +49,18 @@
           + FTS   assistant
 ```
 
+## 🚀 Month 0 Iteration — Base
+
+This release marks the completed **Month 0 Base Iteration** of Robot Core:
+- **Full-Duplex Voice Engine**: Silero VAD + real-time barge-in cancellation and speaker echo isolation calibrated for physical laptop hardware.
+- **Streaming Sentence TTS Chunker**: Coherent, whole-sentence streaming synthesis via Piper ONNX TTS with minimal TTFT and natural cadence.
+- **Hot-Swappable Multi-Persona System**: Matrix hacker girl **Cypher** (sharp, street-smart operator), **Aria** (empathetic companion), and **GLaDOS** (clinical sarcasm).
+- **Physical World State & Perception**: Continuous 60 FPS camera perception with YuNet face tracking and YOLOv8 object recognition with spatial HUD telemetry.
+- **Dual 3D Humanoid Engine & Digital HUD**: WebGL2 humanoid avatar (cyber/anime & realistic portrait modes) with interactive semantic IK actions (wave, kick, raise hand, head tracking) and text/voice dual-mode console.
+- **Proactive Agentic Tools & Memory**: Live DuckDuckGo web search, conversation history FTS, and long-term semantic memory retrieval.
+
+---
+
 ## Key Features
 
 - **Full-duplex voice** with barge-in interruption (< 200ms)
