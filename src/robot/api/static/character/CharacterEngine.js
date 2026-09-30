@@ -122,7 +122,7 @@ class CharacterEngine {
     }
 
     async _loadCharacter() {
-        const { scene, isProcedural } = await this.loader.load();
+        const { scene, isProcedural } = await this.loader.load("/static/models/avatar.glb");
         this.scene.add(scene);
 
         // Bind CharacterRig

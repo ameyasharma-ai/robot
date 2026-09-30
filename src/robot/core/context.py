@@ -103,18 +103,31 @@ class ContextEngine:
                     "tool_call_id": tr.get("id", ""),
                 })
 
-        # 6. Current user input (with live camera visual grounding if user asks what is this / what do you see)
+        # 6. Current user input (with live camera visual grounding if user asks what is this / what am I holding / what do you see)
         user_content = user_text
         lower_user = user_text.lower()
-        if any(w in lower_user for w in ("what is this", "what is that", "what do you see", "who is here", "what are these", "describe what you see")):
-            if world_state and (world_state.get("objects") or world_state.get("people")):
+        visual_triggers = (
+            "what is this", "what is that", "what do you see", "who is here",
+            "what are these", "describe what you see", "what am i holding",
+            "what's this", "what's that", "what i'm holding", "what im holding",
+            "look at this", "look at what i have", "can you see this", "what do i have",
+            "what object", "identify this", "check this out", "in my hand"
+        )
+        if any(w in lower_user for w in visual_triggers):
+            if world_state:
                 detected_items = []
                 for o in world_state.get("objects", []):
+                    # Filter out redundant generic 'person' when user is asking about an object being held
+                    if o.get("label") == "person" and len(world_state.get("objects", [])) > 1:
+                        continue
                     detected_items.append(f"{o.get('label')} at {o.get('position')}")
                 for p in world_state.get("people", []):
                     detected_items.append(f"person ({p.get('distance')} range, {p.get('position')})")
+                
                 if detected_items:
-                    user_content += f"\n[Visual Stream in Front of Robot]: Currently viewing {', '.join(detected_items)}."
+                    user_content += f"\n[Visual Stream in Front of Robot]: Live camera actively detects: {', '.join(detected_items)}."
+                else:
+                    user_content += f"\n[Visual Stream in Front of Robot]: Camera is pointed forward, but no distinct object is currently recognized by YOLOv8. Ask user to hold the object clearly towards the camera."
 
         messages.append({"role": "user", "content": user_content})
 

@@ -9,18 +9,31 @@ class CharacterLoader {
         this.loader = (typeof THREE.GLTFLoader !== "undefined") ? new THREE.GLTFLoader() : null;
     }
 
-    /**
-     * Load GLB/VRM or fallback to procedural humanoid
-     */
     async load(url = null) {
         if (url && this.loader) {
             try {
                 const gltf = await new Promise((resolve, reject) => {
                     this.loader.load(url, resolve, undefined, reject);
                 });
-                return { scene: gltf.scene, animations: gltf.animations || [], isProcedural: false };
+                const scene = gltf.scene;
+
+                // Compute bounding box and normalize scale to ~1.65m human height
+                const bbox = new THREE.Box3().setFromObject(scene);
+                const size = new THREE.Vector3();
+                bbox.getSize(size);
+                if (size.y > 0.05) {
+                    const targetHeight = 1.65;
+                    const scaleFactor = targetHeight / size.y;
+                    scene.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                }
+
+                // Adjust position so feet rest right on top of the holographic pedestal (y=0)
+                const newBbox = new THREE.Box3().setFromObject(scene);
+                scene.position.y = -newBbox.min.y;
+
+                return { scene: scene, animations: gltf.animations || [], isProcedural: false };
             } catch (e) {
-                console.warn("[CharacterLoader] GLB loading failed or url not provided, generating procedural humanoid:", e);
+                console.warn("[CharacterLoader] GLB loading failed, falling back to procedural humanoid:", e);
             }
         }
         // Build robust procedural rigged humanoid avatar
