@@ -49,7 +49,19 @@ Legend:
 
 ## 3. Active ToDos (Work In Progress & Prioritized Backlog)
 
-### 🔴 High Priority
+### 🔴 High Priority (Tomorrow's Immediate Execution Plan)
+- [ ] **1. Guarantee LLM TTFT < 500ms** (Strict target < 300ms maintained; monitor KV cache reuse, continuous single-slot lock, and compact prompt budgeting).
+- [ ] **2. Guarantee TTS Latency < 150ms** (Ensure eager clause chunking and Piper AVX2 ONNX synthesis stay under 100ms for opening audio).
+- [ ] **3. Guarantee STT Latency < 150ms** (Ensure `whisper.cpp` Vulkan dev 0 with `ggml-tiny.en.bin` stays between 65–100ms on 16kHz speech streams).
+- [ ] **4. Full Stable Diffusion (SD) Implementation** (Finalize local/async image generation service, prompt routing, non-blocking queueing without starving RTX 3050 VRAM).
+- [ ] **5. Benchmark and Test Other Tools** (Run comprehensive latency, timeout, and accuracy tests for `system.time`, `web.search`, memory tools, and motion commands).
+- [ ] **6. Fix Mem0 Integration** (Eliminate remaining spaCy model warnings by configuring lightweight tokenizer or installing missing NLP extras; optimize embedding cache and ensure zero-delay fact storage).
+- [ ] **7. Fix and Enhance Dashboard** (Verify WebSocket live telemetry, span waterfall display, avatar rendering stability, and HUD controls).
+- [ ] **8. Improve System Prompt** (Refine personality system prompts for natural conversational turn-taking, crisp responses, and strict avoiding of robotic formatting).
+- [ ] **9. Fix Avatar Movements** (Smooth out 3D VRM procedural gestures, blink rate, breathing cycles, and 4Hz Look-At face-tracking IK jitter).
+- [ ] **10. Full Regression & System Integrity Check** (Run end-to-end tests, verify all daemon runners, audio devices, and ensure zero regressions across the codebase).
+
+### 🟡 Medium Priority
 - [ ] **Physical Hardware Integration**:
   - Test and calibrate real physical servos over serial (`/dev/ttyUSB0` or `/dev/ttyACM0`) using `src/robot/motion/serial_bridge.py`.
   - Add failsafe torque disconnect on unexpected stall current.
