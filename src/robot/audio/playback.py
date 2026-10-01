@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+import threading
 
 import numpy as np
 import sounddevice as sd
@@ -26,6 +27,7 @@ class AudioPlayer:
         self._stream_sr: int | None = None
         self._is_playing: bool = False
         self._current_rms: float = 0.0
+        self._lock = threading.Lock()
         # Rolling buffer of recent block RMS values (covers ~120ms acoustic travel)
         self._recent_rms: deque[float] = deque(maxlen=3)
         self._energy_callbacks: list = []
@@ -45,24 +47,30 @@ class AudioPlayer:
         return max(self._recent_rms)
 
     def _ensure_stream(self, sample_rate: int) -> sd.OutputStream:
-        needs_new = (
-            self._stream is None
-            or sample_rate != self._stream_sr
-            or not getattr(self._stream, "active", False)
-        )
-        if needs_new:
-            if self._stream:
+        with self._lock:
+            needs_new = (
+                self._stream is None
+                or sample_rate != self._stream_sr
+                or getattr(self._stream, "closed", True)
+            )
+            if needs_new:
+                if self._stream is not None:
+                    try:
+                        self._stream.stop()
+                        self._stream.close()
+                    except Exception:
+                        pass
+                self._stream = sd.OutputStream(
+                    samplerate=sample_rate, channels=1, dtype="float32", latency="low"
+                )
+                self._stream.start()
+                self._stream_sr = sample_rate
+            elif self._stream.stopped:
                 try:
-                    self._stream.stop()
-                    self._stream.close()
+                    self._stream.start()
                 except Exception:
                     pass
-            self._stream = sd.OutputStream(
-                samplerate=sample_rate, channels=1, dtype="float32", latency="low"
-            )
-            self._stream.start()
-            self._stream_sr = sample_rate
-        return self._stream
+            return self._stream
 
     async def play(
         self,
@@ -83,11 +91,6 @@ class AudioPlayer:
             for idx in range(0, len(audio), block_len):
                 if interrupt.is_set():
                     logger.info("playback_interrupted")
-                    try:
-                        if self._stream is not None:
-                            self._stream.abort()
-                    except Exception:
-                        pass
                     return False
 
                 chunk = audio[idx : idx + block_len]
@@ -103,12 +106,19 @@ class AudioPlayer:
                     chunk = chunk.reshape(-1, 1)
 
                 try:
-                    # Guard write call against concurrent stop() from barge-in
-                    if self._stream is None or interrupt.is_set():
+                    if interrupt.is_set():
                         return False
-                    # Run blocking ALSA write in thread so event loop stays responsive
-                    await asyncio.to_thread(self._stream.write, chunk)
-                except (sd.PortAudioError, Exception) as exc:
+                    
+                    def _write_block():
+                        with self._lock:
+                            if self._stream is not None and not interrupt.is_set():
+                                try:
+                                    self._stream.write(chunk)
+                                except Exception as e:
+                                    logger.debug("stream_write_error", error=str(e))
+
+                    await asyncio.to_thread(_write_block)
+                except Exception as exc:
                     logger.debug("audio_write_aborted_or_interrupted", error=str(exc))
                     return False
             return True
@@ -118,22 +128,29 @@ class AudioPlayer:
             self._recent_rms.clear()
 
     def stop(self) -> None:
-        """Immediately stop and release the output stream."""
+        """Immediately stop playback without crashing underlying ALSA mmap buffers."""
         self._is_playing = False
         self._current_rms = 0.0
         self._recent_rms.clear()
-        stream = self._stream
-        self._stream = None
-        self._stream_sr = None
-        if stream is not None:
-            try:
-                stream.abort()
-            except Exception:
-                pass
-            try:
-                stream.close()
-            except Exception:
-                pass
+        with self._lock:
+            if self._stream is not None:
+                try:
+                    self._stream.stop()
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        """Release PortAudio resources on shutdown."""
+        self.stop()
+        with self._lock:
+            stream = self._stream
+            self._stream = None
+            self._stream_sr = None
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
     def __del__(self) -> None:
-        self.stop()
+        self.close()

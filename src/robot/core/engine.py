@@ -25,8 +25,11 @@ from robot.core.context import ContextEngine
 from robot.core.events import EventBus, Events
 from robot.core.state import RobotMode, StateManager
 from robot.expression import AsusAuraLighting
+from robot.image import ImageGenerationService
 from robot.llm import ClauseChunker, LlamaServerLLM
 from robot.memory import MemoryManager
+from robot.observability import ObservabilityHub
+from robot.observability.models import SpanStatus
 from robot.personality import PersonalityManager
 from robot.perception import CameraCapture, PerceptionEngine
 from robot.services import HealthMonitor
@@ -85,8 +88,6 @@ class RobotEngine:
 
         # Observability & Metrics
         obs_cfg = self.config.get("observability", {})
-        from robot.observability import ObservabilityHub
-        from robot.observability.models import SpanStatus
         self.observability = ObservabilityHub(
             event_bus=self.events,
             max_history=obs_cfg.get("max_trace_history", 250),
@@ -95,7 +96,6 @@ class RobotEngine:
 
         # Image Generation Service
         img_cfg = self.config.get("image", {})
-        from robot.image import ImageGenerationService
         self.image_service = ImageGenerationService(
             output_dir=img_cfg.get("output_dir", "data/images"),
             max_concurrent=img_cfg.get("max_concurrent_jobs", 1),
@@ -236,10 +236,21 @@ class RobotEngine:
         health_results = await self.health.check_all()
         logger.info("initial_health", results=health_results)
 
-        # Bridge state changes to EventBus for WebSocket telemetry & 3D character UI
-        async def on_state_mode_change(old_mode, new_mode):
-            await self.events.emit("mode", mode=new_mode.value, old_mode=old_mode.value)
-        self.state.subscribe(on_state_mode_change)
+        # Warm up LLM and prefill active personality KV-cache on RTX 3050
+        try:
+            pers = self.personalities.active
+            sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
+            warmup_messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": "hello"},
+            ]
+            t_w0 = time.perf_counter()
+            async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1):
+                pass
+            w_ms = (time.perf_counter() - t_w0) * 1000
+            logger.info("llm_kv_cache_warmed", duration_ms=round(w_ms, 1))
+        except Exception as e:
+            logger.debug("llm_warmup_failed", error=str(e))
 
         logger.info("engine_setup_complete")
 
@@ -548,10 +559,10 @@ class RobotEngine:
             with Timer(self.telemetry, "MEMORY_RETRIEVAL_LATENCY"):
                 memories = await self.memory.get_relevant_memories(user_text)
 
-        # Get recent conversation
+        # Get recent conversation (keep to last 3 turns / 6 messages max for low TTFT)
         recent = []
         if self.memory:
-            recent = await self.memory.get_recent_conversation(self._session_id, 10)
+            recent = await self.memory.get_recent_conversation(self._session_id, 3)
 
         # Build context
         world_state_compact = None

@@ -97,13 +97,18 @@ class Mem0Provider:
         messages: list[dict],
         user_id: str = "user",
         metadata: dict | None = None,
+        infer: bool = False,
     ) -> dict | None:
-        """Store a memory from conversation messages."""
+        """Store a memory from conversation messages without LLM token explosion."""
         if not self._initialized or not self._memory:
             return None
         try:
             result = await asyncio.to_thread(
-                self._memory.add, messages, user_id=user_id, metadata=metadata or {}
+                self._memory.add,
+                messages,
+                user_id=user_id,
+                metadata=metadata or {},
+                infer=infer,
             )
             logger.info("memory_stored", user_id=user_id)
             return result
@@ -117,25 +122,59 @@ class Mem0Provider:
         user_id: str = "user",
         limit: int = 5,
     ) -> list[dict]:
-        """Search memories relevant to a query."""
+        """Search memories relevant to a query using Mem0 filters."""
         if not self._initialized or not self._memory:
             return []
         try:
-            results = await asyncio.to_thread(
-                self._memory.search, query, user_id=user_id, limit=limit
+            raw = await asyncio.to_thread(
+                self._memory.search,
+                query,
+                filters={"user_id": user_id},
+                top_k=limit,
             )
-            logger.info("memory_searched", query=query[:50], results=len(results))
-            return results
+            # In Mem0 v1.1+, search returns {'results': [...]}. Handle both dict and list.
+            if isinstance(raw, dict):
+                results = raw.get("results", [])
+            elif isinstance(raw, list):
+                results = raw
+            else:
+                results = []
+
+            # Ensure all items in results are dictionaries
+            cleaned = []
+            for item in results:
+                if isinstance(item, dict):
+                    cleaned.append(item)
+                elif isinstance(item, str):
+                    cleaned.append({"memory": item})
+            logger.info("memory_searched", query=query[:50], results=len(cleaned))
+            return cleaned
         except Exception as e:
             logger.error("memory_search_failed", error=str(e))
             return []
 
     async def get_all(self, user_id: str = "user") -> list[dict]:
-        """Get all memories for a user."""
+        """Get all memories for a user using Mem0 filters."""
         if not self._initialized or not self._memory:
             return []
         try:
-            return await asyncio.to_thread(self._memory.get_all, user_id=user_id)
+            raw = await asyncio.to_thread(
+                self._memory.get_all, filters={"user_id": user_id}
+            )
+            if isinstance(raw, dict):
+                results = raw.get("results", [])
+            elif isinstance(raw, list):
+                results = raw
+            else:
+                results = []
+
+            cleaned = []
+            for item in results:
+                if isinstance(item, dict):
+                    cleaned.append(item)
+                elif isinstance(item, str):
+                    cleaned.append({"memory": item})
+            return cleaned
         except Exception as e:
             logger.error("memory_get_all_failed", error=str(e))
             return []
@@ -396,13 +435,27 @@ class MemoryManager:
         sqlite_facts = await self.history.search_facts(query, limit=limit)
         
         # Merge results, prioritizing SQLite facts if mem0 is empty or offline
-        combined = list(sqlite_facts)
-        seen_texts = set(f.get("memory", "") for f in combined)
-        for m in mem0_results:
-            txt = m.get("memory", m.get("text", ""))
-            if txt and txt not in seen_texts:
-                combined.append(m)
-                seen_texts.add(txt)
+        combined = []
+        seen_texts = set()
+
+        for source_list in (sqlite_facts, mem0_results):
+            if not isinstance(source_list, list):
+                continue
+            for item in source_list:
+                if isinstance(item, dict):
+                    txt = item.get("memory", item.get("text", "")).strip()
+                    m_dict = item
+                elif isinstance(item, str):
+                    txt = item.strip()
+                    m_dict = {"memory": txt}
+                else:
+                    txt = str(item).strip()
+                    m_dict = {"memory": txt}
+
+                if txt and txt not in seen_texts:
+                    combined.append(m_dict)
+                    seen_texts.add(txt)
+
         return combined[:limit]
 
     async def get_recent_conversation(

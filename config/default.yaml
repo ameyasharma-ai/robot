@@ -23,7 +23,7 @@ tts:
 audio:
   sample_rate: 16000
   vad_frame_size: 512       # 32ms at 16kHz
-  silence_threshold_ms: 190 # Ultra-low latency voice turnaround (<200ms silence detection)
+  silence_threshold_ms: 150 # Ultra-low latency voice turnaround (<160ms silence detection)
   barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
   barge_in_frames: 4        # ~128ms consecutive speech required to interrupt
   barge_in_confidence: 0.92 # High confidence required during playback to prevent self-interruption
@@ -82,13 +82,13 @@ api:
   port: 8888
 
 context_budget:
-  system_personality: 1500
-  tool_schemas: 2000
-  retrieved_memories: 2000
-  recent_conversation: 5000
-  world_state: 750
-  robot_state: 375
-  generation_headroom: 3500
+  system_personality: 400
+  tool_schemas: 800
+  retrieved_memories: 300
+  recent_conversation: 600
+  world_state: 250
+  robot_state: 150
+  generation_headroom: 300
 
 logging:
   level: "INFO"

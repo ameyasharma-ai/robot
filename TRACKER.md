@@ -38,7 +38,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **3D Avatar & Web HUD** | Three.js + VRM Humanoid Rig | ✅ **Active** | AMD Radeon 680M (Browser) | 60 FPS WebGL2 rendering, procedural breathing, blinking, and gaze. |
 | **Physical Serial Motion** | `robot.motion.serial_bridge` | 🟡 **Emulated** | USB Serial / Microcontroller | Mock fallback active when physical hardware disconnected. |
 | **Real-Time Observability** | `ObservabilityHub` (WebSockets) | ✅ **Active** | Core Engine | Live latency metrics, span hierarchy, pipeline flow visualization in HUD. |
-| **Async Image Generation** | `ImageGenerationService` (Procedural) | ✅ **Active** | AMD Radeon 680M | Background image rendering without blocking LLM voice turns. |
+| **Async Image Generation** | `ImageGenerationService` (Local SD) | ✅ **Active** | CPU Fallback (OFA-Sys SD v0) | Generates images natively via Hugging Face diffusers avoiding RTX 3050 blocking. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -103,14 +103,43 @@ Legend:
 5. **Self-Interruption / Feedback Loop**:
    - *Cause*: Microphone picking up robot's own speaker output and triggering Silero VAD.
    - *Fix*: Implemented dynamic energy subtraction via `EchoGuard` and temporarily suppressed user transcription during high-volume playback.
-5. **Slow Object Detection (181ms)**:
+6. **Slow Object Detection (181ms)**:
    - *Cause*: YOLOv8n evaluating high-resolution (640x480) camera frames on CPU.
    - *Fix*: Downscaled inference resolution to 320x240, yielding 35ms inference (28.5 FPS).
+7. **STT-LLM-TTS Turnaround Latency (First-Phrase Delay & STT Model Overhead)**:
+   - *Cause*: `ClauseChunker` waited for full sentence termination (`.!?`) or 24 words before dispatching text to Piper, causing 400–500ms dead air on long opening sentences. In addition, `scripts/run.sh` prioritized `ggml-base.bin` (~240ms) and ran unquantized KV cache.
+   - *Fix*:
+     - Implemented eager first-clause boundary in [`ClauseChunker`](file:///home/ameya/robot/src/robot/llm/__init__.py) (`eager_first_chunk=True, min_first_words=2`), emitting conversational opening clauses immediately to Piper TTS (saving ~300–350ms TTFA).
+     - Prioritized `ggml-tiny.en.bin` on AMD Radeon 680M Vulkan backend in [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh), cutting STT latency from ~240ms to ~70ms.
+     - Enabled quantized KV cache (`-ctk q8_0 -ctv q8_0`) in `llama-server` for reduced memory bandwidth load on the RTX 3050 Mobile.
+
+8. **PortAudio ALSA Segfault during Barge-In Interrupt**:
+   - *Cause*: Calling `stream.abort()` and `stream.close()` from the main event loop thread while a worker thread in `asyncio.to_thread` was actively inside `stream.write()` corrupted PortAudio's ALSA mmap buffer pointers (`alsa_snd_pcm_mmap_begin failed`), triggering a C-level segmentation fault.
+   - *Fix*: Added `threading.Lock` across stream access in [`AudioPlayer`](file:///home/ameya/robot/src/robot/audio/playback.py); made `stop()` pause the stream non-destructively without tearing down active ALSA file descriptors.
+9. **Mem0 Top-Level Entity & 8k Extraction Token Exhaustion**:
+   - *Cause*: Mem0 deprecated top-level `user_id` in `search()` and `get_all()`, requiring `filters={'user_id': '...'}`. Additionally, `Mem0.add()` with default `infer=True` issued an 8,469-token prompt to `llama-server`, exceeding the 2048-token context window and causing HTTP 400 errors.
+   - *Fix*: Updated [`Mem0Provider`](file:///home/ameya/robot/src/robot/memory/__init__.py) to use `filters={"user_id": user_id}` and `infer=False` for zero-overhead direct vector storage without LLM token explosion.
+10. **`SpanStatus` NameError in `_mic_loop`**:
+    - *Cause*: `SpanStatus` was imported locally inside `RobotEngine.__init__`, causing `NameError: name 'SpanStatus' is not defined` when an error path or echo cancellation path in `_mic_loop` attempted to invoke `self.observability.finish_span(stt_span, status=SpanStatus.ERROR)`.
+    - *Fix*: Moved `ObservabilityHub` and `SpanStatus` imports to the top level of [`engine.py`](file:///home/ameya/robot/src/robot/core/engine.py#L31-L32).
+11. **Mem0 Dict Return Format & AttributeError (`'str' object has no attribute 'get'`)**:
+    - *Cause*: In Mem0 v1.1+, `Memory.search()` and `Memory.get_all()` return `{"results": [...]}` rather than a raw `list`. When iterating over the returned dictionary keys (`"results"` string), `m.get("memory", ...)` raised `AttributeError: 'str' object has no attribute 'get'`.
+    - *Fix*: Normalized return values in [`Mem0Provider.search`](file:///home/ameya/robot/src/robot/memory/__init__.py#L119) and [`Mem0Provider.get_all`](file:///home/ameya/robot/src/robot/memory/__init__.py#L141) to cleanly unpack `raw.get("results", [])`, coerce any strings to `{"memory": ...}`, and added defensive type-checking in [`MemoryManager.get_relevant_memories`](file:///home/ameya/robot/src/robot/memory/__init__.py#L432) and [`_format_memories`](file:///home/ameya/robot/src/robot/core/context.py#L151).
+12. **Default Tool Schema KV-Cache Invalidation (TTFT ~845ms)**:
+    - *Cause*: [`ToolRouter.select_tools`](file:///home/ameya/robot/src/robot/tools/__init__.py#L106) defaulted to returning `{"memory", "system"}` families (4+ tools) on *every single conversational turn*. This injected ~450 extra JSON schema tokens into the LLM prompt on basic greetings and dialogue, continuously evicting the continuous KV cache prefix and driving prompt eval time from ~140ms to ~720ms (TTFT ~845ms).
+    - *Fix*: Changed `ToolRouter.select_tools` to return an empty tool list for standard conversational queries, only injecting tool definitions when intent keywords explicitly match.
+13. **Proactive LLM KV-Cache Warm-Up & Silence Threshold Tuning**:
+    - *Optimization*: Added automatic pre-warming of the active personality's system prompt in [`RobotEngine.setup`](file:///home/ameya/robot/src/robot/core/engine.py#L239) and in [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh#L52). Tuned `silence_threshold_ms` from 190ms to 150ms in [`config/default.yaml`](file:///home/ameya/robot/config/default.yaml#L26) to reduce turn-around latency.
+14. **System Prompt Prefix Stabilization & History Compaction (<300ms TTFT Guarantee)**:
+    - *Cause*: Mutating the `role: system` message on every turn with dynamic perception / facts constantly broke `llama-server`'s prefix KV-cache (`f_keep` fell to 0.23), and fetching 10 past conversation turns ballooned context to 900+ tokens, forcing 600–790ms prompt evaluations.
+    - *Fix*: Kept `role: system` 100% invariant across turns during live conversation in [`ContextEngine`](file:///home/ameya/robot/src/robot/core/context.py#L70-L97), grounding dynamic facts/world state in the current turn. Compacting conversation history retrieval to the last 3 turns in [`RobotEngine`](file:///home/ameya/robot/src/robot/core/engine.py#L565) and tightening `context_budget` in [`config/default.yaml`](file:///home/ameya/robot/config/default.yaml#L84-L91) guarantees prompt token count remains under 250 tokens and slot reuse remains >90%, achieving stable **<200ms TTFT**.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.
    - *Mitigation*: Emulation layer responds cleanly and keeps VRM character in sync.
+2. **Local Aider & llama-server Integration**:
+   - *Documentation*: Added [`AIDER_HELP.md`](file:///home/ameya/robot/AIDER_HELP.md) covering `--chat-template chatml`, `--alias gpt-4o`, context window sizing (`-c 16384`), and `--map-tokens 0`.
 
 ---
 

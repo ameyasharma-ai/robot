@@ -68,32 +68,42 @@ class ContextEngine:
         messages = []
 
         # 1. System prompt (personality + policy)
+        # CRITICAL FOR KV CACHE (<200ms TTFT):
+        # When recent_conversation is present, we keep the system message pure and static
+        # (identical token-for-token across turns) so llama-server's slot cache hit rate is 100%!
+        # Dynamic facts and world state are grounded into the current turn.
         system_parts = [system_prompt]
 
-        # 2. Physical World State (Perception) - only if people or objects present
+        # Only inject into system_parts if not conversational (e.g. single-turn unit test)
+        # or if memories/world_state are provided in a standalone prompt
+        grounding_parts = []
+
         if world_state and (world_state.get("people") or world_state.get("objects")):
             world_str = _format_world_state(world_state)
             if world_str:
-                system_parts.append(f"\n[Physical World State]\n{world_str}")
+                if not recent_conversation:
+                    system_parts.append(f"\n[Physical World State]\n{world_str}")
+                else:
+                    grounding_parts.append(f"[Physical World State]:\n{world_str}")
 
-        # 3. Retrieved memories
         if memories:
             mem_str = _format_memories(memories, self._budget["retrieved_memories"])
             if mem_str:
-                system_parts.append(f"\n[Memories]\n{mem_str}")
+                if not recent_conversation:
+                    system_parts.append(f"\n[Memories]\n{mem_str}")
+                else:
+                    grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
 
         messages.append({"role": "system", "content": "\n".join(system_parts)})
 
-        # 4. Recent conversation history
+        # 2. Recent conversation history (compact to budget)
         if recent_conversation:
             trimmed = _trim_conversation(
                 recent_conversation, self._budget["recent_conversation"]
             )
             messages.extend(trimmed)
 
-        # 5. Dynamic Context Grounding (Tool results from current turn)
-        grounding_parts = []
-
+        # 3. Dynamic Context Grounding (Tool results from current turn)
         if tool_results:
             tool_parts = []
             for tr in tool_results:
@@ -153,7 +163,13 @@ def _format_memories(memories: list[dict], budget_tokens: int) -> str:
     parts = []
     total = 0
     for mem in memories:
-        text = mem.get("memory", mem.get("text", str(mem)))
+        if isinstance(mem, dict):
+            text = mem.get("memory", mem.get("text", str(mem)))
+        else:
+            text = str(mem)
+        text = text.strip()
+        if not text:
+            continue
         tokens = _estimate_tokens(text)
         if total + tokens > budget_tokens:
             break

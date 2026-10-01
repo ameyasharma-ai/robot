@@ -114,10 +114,19 @@ class ClauseChunker:
     streaming TTS with minimal TTFT.
     """
 
-    def __init__(self, min_words: int = 4, max_words: int = 24) -> None:
+    def __init__(
+        self,
+        min_words: int = 4,
+        max_words: int = 24,
+        eager_first_chunk: bool = True,
+        min_first_words: int = 2,
+    ) -> None:
         self._buffer = ""
         self._min_words = min_words
         self._max_words = max_words
+        self.eager_first_chunk = eager_first_chunk
+        self.min_first_words = min_first_words
+        self._first_chunk_emitted = False
 
     def feed(self, token: str) -> str | None:
         """Feed a token, return a complete sentence if a boundary is reached."""
@@ -139,7 +148,18 @@ class ClauseChunker:
                 # Any sentence terminal (. ! ?) with at least 1 word can be a complete utterance
                 if len(candidate.split()) >= 1:
                     self._buffer = self._buffer[match.end():]
+                    self._first_chunk_emitted = True
                     return candidate
+
+        # Eager first-clause cut for conversational responsiveness (<100ms first audio)
+        if self.eager_first_chunk and not self._first_chunk_emitted:
+            clause_match = re.search(r"^(.*?[,;:\n—])(?:\s+|$)", self._buffer, re.DOTALL)
+            if clause_match:
+                clause = clause_match.group(1).strip()
+                if len(clause.split()) >= self.min_first_words:
+                    self._buffer = self._buffer[clause_match.end():]
+                    self._first_chunk_emitted = True
+                    return clause
 
         # Fallback for unusually long continuous runs without terminal punctuation
         words = self._buffer.strip().split()
@@ -150,12 +170,14 @@ class ClauseChunker:
                 clause = clause_match.group(1).strip()
                 if len(clause.split()) >= self._min_words:
                     self._buffer = self._buffer[clause_match.end():]
+                    self._first_chunk_emitted = True
                     return clause
 
             last_space = self._buffer.rfind(" ")
             if last_space != -1:
                 chunk = self._buffer[:last_space].strip()
                 self._buffer = self._buffer[last_space:].lstrip()
+                self._first_chunk_emitted = True
                 return chunk
 
         return None
@@ -164,4 +186,5 @@ class ClauseChunker:
         """Flush remaining buffer content."""
         remainder = self._buffer.strip()
         self._buffer = ""
+        self._first_chunk_emitted = False
         return remainder if remainder else None

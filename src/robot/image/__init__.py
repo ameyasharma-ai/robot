@@ -39,6 +39,8 @@ class ImageJob:
     seed: int = -1
     model: str = "default"
     provider: str = "fast_procedural"
+    backend: str = "cpu"
+    device: str = "CPU"
     status: JobStatus = JobStatus.QUEUED
     progress: int = 0
     created_at: float = field(default_factory=time.time)
@@ -181,7 +183,8 @@ class ImageGenerationService:
         self.default_width = default_width
         self.default_height = default_height
 
-        self.provider: ImageProvider = FastProceduralImageProvider(output_dir=str(self.output_dir))
+        from robot.image.sd_provider import LocalStableDiffusionProvider
+        self.provider: ImageProvider = LocalStableDiffusionProvider(output_dir=str(self.output_dir))
         self._jobs: dict[str, ImageJob] = {}
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._queue: asyncio.Queue[ImageJob] = asyncio.Queue()

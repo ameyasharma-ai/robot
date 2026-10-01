@@ -113,8 +113,10 @@ class ToolRouter:
                 selected_families.add(family)
 
         if not selected_families:
-            # Default: memory + system for general queries
-            selected_families = {"memory", "system"}
+            # General conversation: Do NOT inject tool schemas by default.
+            # Injecting 4+ tool schemas adds 400+ tokens on every turn, evicts KV cache,
+            # and increases TTFT by 400-500ms.
+            return []
 
         tool_names = []
         for family in selected_families:

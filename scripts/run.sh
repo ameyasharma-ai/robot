@@ -31,6 +31,8 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
             -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
             -ngl 99 \
             -fa on \
+            -ctk q8_0 \
+            -ctv q8_0 \
             -c 2048 \
             -np 1 \
             -b 2048 \
@@ -47,6 +49,12 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
             sleep 0.5
         done
         echo " ready"
+        # Warm up system prompt KV cache slot immediately
+        echo -n "[LLM] Warming up KV cache slot..."
+        curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"Qwen3.5-4B-Q4_K_M","messages":[{"role":"system","content":"You are Cypher, a sharp, cynical, street-smart hacker girl from the Matrix embodied in this robotic frame."},{"role":"user","content":"init"}],"max_tokens":1}' > /dev/null 2>&1 || true
+        echo " warmed"
     else
         echo "[LLM] llama-server binary or model not found at configured paths."
     fi
@@ -61,10 +69,10 @@ elif [ -f "/home/ameya/whisper.cpp/build/bin/whisper-server" ]; then
 fi
 
 WHISPER_MODEL=""
-if [ -f "/home/ameya/whisper.cpp/models/ggml-base.bin" ]; then
-    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-base.bin"
-elif [ -f "/home/ameya/whisper.cpp/models/ggml-tiny.en.bin" ]; then
+if [ -f "/home/ameya/whisper.cpp/models/ggml-tiny.en.bin" ]; then
     WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-tiny.en.bin"
+elif [ -f "/home/ameya/whisper.cpp/models/ggml-base.bin" ]; then
+    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-base.bin"
 elif [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
     WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-small.bin"
 fi

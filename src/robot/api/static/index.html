@@ -306,7 +306,23 @@
                     </div>
                     <div class="image-preview-area" id="imgPreviewArea">
                         <div class="img-placeholder" id="imgPlaceholder">Generated images render non-blockingly without competing with RTX 3050 Qwen VRAM.</div>
+                        <div id="imgGeneratingStatus" style="display: none; padding: 10px; color: var(--text-secondary); text-align: left; font-family: monospace;">
+                            <div>Generating...</div>
+                            <div id="imgGenStep">Step 0/0</div>
+                            <div id="imgGenBackend">Backend: --</div>
+                            <div id="imgGenDevice">Device: --</div>
+                            <div id="imgGenElapsed">Elapsed: 0.0s</div>
+                        </div>
                         <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none; max-width: 100%; border-radius: 6px;" />
+                        <div id="imgMetaBlock" style="display: none; padding: 10px; color: var(--text-secondary); text-align: left; font-family: monospace;">
+                            <div style="font-weight: bold; margin-bottom: 5px; color: var(--primary-cyan);">Metadata:</div>
+                            <div>Model: <span id="metaModel">--</span></div>
+                            <div>Backend: <span id="metaBackend">--</span></div>
+                            <div>Device: <span id="metaDevice">--</span></div>
+                            <div>Generation time: <span id="metaTime">--</span></div>
+                            <div>Resolution: <span id="metaRes">--</span></div>
+                            <div>Steps: <span id="metaSteps">--</span></div>
+                        </div>
                     </div>
                 </div>
             </div>

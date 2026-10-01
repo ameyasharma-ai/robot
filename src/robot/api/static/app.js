@@ -847,38 +847,67 @@ class RobotUI {
     }
 
     updateImageJobsUI(jobs) {
-        const grid = document.getElementById("imageResultGrid");
         const badge = document.getElementById("imgJobBadge");
         const btnCancel = document.getElementById("btnCancelImage");
-        if (!grid) return;
+        const previewImg = document.getElementById("imgPreviewImg");
+        const placeholder = document.getElementById("imgPlaceholder");
+        const genStatus = document.getElementById("imgGeneratingStatus");
+        const metaBlock = document.getElementById("imgMetaBlock");
 
-        let activeJob = jobs.find(j => j.status === "queued" || j.status === "generating");
+        let activeJob = jobs.find(j => j.status === "queued" || j.status === "running");
+        let completedJob = [...jobs].reverse().find(j => j.status === "completed" || j.status === "COMPLETED");
+        if (!activeJob && jobs.length > 0) activeJob = jobs[jobs.length - 1]; // Use last job if none active
+
         this.activeImageJob = activeJob ? activeJob.job_id : null;
         
-        if (activeJob) {
+        if (activeJob && (activeJob.status === "queued" || activeJob.status === "running" || activeJob.status === "QUEUED" || activeJob.status === "RUNNING")) {
             badge.textContent = `STATUS: ${activeJob.status.toUpperCase()}`;
             if (btnCancel) btnCancel.disabled = false;
+            
+            // Show generating status
+            placeholder.style.display = "none";
+            previewImg.style.display = "none";
+            metaBlock.style.display = "none";
+            genStatus.style.display = "block";
+            
+            document.getElementById("imgGenStep").textContent = `Step ${Math.floor((activeJob.progress / 100) * activeJob.steps)}/${activeJob.steps}`;
+            document.getElementById("imgGenBackend").textContent = `Backend: ${activeJob.backend || '--'}`;
+            document.getElementById("imgGenDevice").textContent = `Device: ${activeJob.device || '--'}`;
+            const elapsed = activeJob.started_at ? ((Date.now() / 1000) - activeJob.started_at).toFixed(1) : 0.0;
+            document.getElementById("imgGenElapsed").textContent = `Elapsed: ${elapsed}s`;
+            
+            const pbar = document.getElementById("imgProgressBar");
+            const pwrap = document.getElementById("imgProgressWrap");
+            if (pbar && pwrap) {
+                pwrap.style.display = "block";
+                pbar.style.width = `${activeJob.progress}%`;
+            }
         } else {
             badge.textContent = "STATUS: READY";
             if (btnCancel) btnCancel.disabled = true;
+            genStatus.style.display = "none";
+            
+            const pwrap = document.getElementById("imgProgressWrap");
+            if (pwrap) pwrap.style.display = "none";
+            
+            if (completedJob && completedJob.output_path) {
+                placeholder.style.display = "none";
+                previewImg.style.display = "block";
+                previewImg.src = completedJob.output_path;
+                
+                metaBlock.style.display = "block";
+                document.getElementById("metaModel").textContent = completedJob.model || '--';
+                document.getElementById("metaBackend").textContent = completedJob.backend || '--';
+                document.getElementById("metaDevice").textContent = completedJob.device || '--';
+                document.getElementById("metaTime").textContent = `${(completedJob.duration_s || 0).toFixed(2)}s`;
+                document.getElementById("metaRes").textContent = `${completedJob.width}x${completedJob.height}`;
+                document.getElementById("metaSteps").textContent = completedJob.steps || '--';
+            } else {
+                placeholder.style.display = "block";
+                previewImg.style.display = "none";
+                metaBlock.style.display = "none";
+            }
         }
-
-        let html = '';
-        for (const job of jobs) {
-            let overlay = '';
-            if (job.status === "queued") overlay = '<div class="img-overlay">QUEUED</div>';
-            else if (job.status === "generating") overlay = '<div class="img-overlay">GENERATING...</div>';
-            else if (job.status === "failed") overlay = '<div class="img-overlay error">FAILED</div>';
-            else if (job.status === "cancelled") overlay = '<div class="img-overlay">CANCELLED</div>';
-
-            const imgSrc = job.result_path ? `/${job.result_path}` : '';
-            html += `<div class="img-card">
-                        ${job.result_path ? `<img src="${imgSrc}" alt="${job.prompt}" />` : `<div class="img-placeholder"></div>`}
-                        ${overlay}
-                        <div class="img-prompt">${job.prompt}</div>
-                     </div>`;
-        }
-        grid.innerHTML = html;
     }
 }
 
