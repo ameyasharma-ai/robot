@@ -91,11 +91,10 @@ class ToolRouter:
     user intent to tool families rather than dumping all schemas.
     """
 
-    # Keyword-to-family mapping
     FAMILY_KEYWORDS: dict[str, list[str]] = {
         "memory": ["remember", "recall", "forget", "memory", "preference", "favorite", "keep in mind", "store"],
         "history": ["said", "told", "conversation", "yesterday", "last time", "before"],
-        "system": ["status", "health", "uptime", "service", "restart"],
+        "system": ["status", "health", "uptime", "service", "restart", "time", "date", "clock", "day of week", "what time", "what day"],
         "personality": ["personality", "switch", "mode", "character"],
         "web": ["search", "look up", "find online", "browse", "google", "duckduckgo", "who is", "what is", "latest", "news", "price", "release date", "current"],
     }

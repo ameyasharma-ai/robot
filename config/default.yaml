@@ -5,7 +5,7 @@ llm:
   base_url: "http://127.0.0.1:8080/v1"
   model: "Qwen3.5-4B-Q4_K_M"
   max_tokens: 300
-  context_window: 16384
+  context_window: 2048
   enable_thinking: false
   stream: true
 
@@ -18,25 +18,25 @@ stt:
 tts:
   provider: piper
   model_path: "models/tts/en-us-lessac-medium.onnx"
-  sample_rate: 22050
+  sample_rate: 16000
 
 audio:
   sample_rate: 16000
   vad_frame_size: 512       # 32ms at 16kHz
-  silence_threshold_ms: 650
+  silence_threshold_ms: 190 # Ultra-low latency voice turnaround (<200ms silence detection)
   barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
-  barge_in_frames: 4        # ~128ms consecutive speech required to interrupt (prevents transient speaker spikes)
-  barge_in_confidence: 0.90 # High confidence required during playback to prevent self-interruption
-  normal_confidence: 0.45
-  energy_threshold: 0.003
-  barge_in_energy: 0.025    # User voice speaking clearly over laptop speaker playback
-  echo_coupling_ratio: 0.35 # Measured acoustic leakage ratio from laptop chassis speakers to internal mic
-  echo_guard_confidence: 0.80
-  echo_guard_energy: 0.015
-  pre_roll_ms: 600
-  playback_block_ms: 30
-  echo_guard_s: 0.50 
-  barge_in_cooldown_s: 0.5
+  barge_in_frames: 4        # ~128ms consecutive speech required to interrupt
+  barge_in_confidence: 0.92 # High confidence required during playback to prevent self-interruption
+  normal_confidence: 0.50
+  energy_threshold: 0.005
+  barge_in_energy: 0.035    # User voice speaking clearly over laptop speaker playback
+  echo_coupling_ratio: 0.45 # Measured acoustic leakage ratio from laptop chassis speakers to internal mic
+  echo_guard_confidence: 0.85
+  echo_guard_energy: 0.020
+  pre_roll_ms: 300
+  playback_block_ms: 25
+  echo_guard_s: 0.35 
+  barge_in_cooldown_s: 0.35
 
 expression:
   lighting:
@@ -46,9 +46,9 @@ expression:
 vision:
   enabled: true
   camera_index: 0
-  width: 640
-  height: 480
-  fps: 60
+  width: 320
+  height: 240
+  fps: 30
   perception_fps: 5.0
   yunet_model_path: "models/vision/face_detection_yunet.onnx"
   yolo_model_path: "models/vision/yolov8n.pt"
@@ -58,20 +58,17 @@ memory:
   provider: mem0
   vector_store:
     provider: qdrant
-    host: localhost
-    port: 6333
+    path: "data/memory/qdrant"
     collection: robot_memory
-    embedding_dims: 768
+    embedding_dims: 384
   llm:
     provider: openai
     base_url: "http://127.0.0.1:8080/v1"
     model: "Qwen3.5-4B-Q4_K_M"
     api_key: "not-needed"
   embedder:
-    provider: openai
-    base_url: "http://127.0.0.1:8080/v1"
-    model: "Qwen3.5-4B-Q4_K_M"
-    api_key: "not-needed"
+    provider: fastembed
+    model: "BAAI/bge-small-en-v1.5"
 
 history:
   database_path: "data/database/conversations.db"

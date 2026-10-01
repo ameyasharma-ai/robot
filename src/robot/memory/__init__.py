@@ -35,19 +35,38 @@ class Mem0Provider:
         try:
             from mem0 import Memory
 
+            vector_store_cfg = self._config.get("vector_store", {})
+            provider = vector_store_cfg.get("provider", "qdrant")
+            host = vector_store_cfg.get("host")
+            path = vector_store_cfg.get("path", "data/memory/qdrant")
+
+            qdrant_subconfig = {
+                "collection_name": vector_store_cfg.get("collection", "robot_memory"),
+                "embedding_model_dims": vector_store_cfg.get("embedding_dims", 768),
+            }
+            if host:
+                qdrant_subconfig["host"] = host
+                qdrant_subconfig["port"] = vector_store_cfg.get("port", 6333)
+            else:
+                qdrant_subconfig["path"] = path
+
+            embedder_cfg = self._config.get("embedder", {})
+            embedder_provider = embedder_cfg.get("provider", "fastembed")
+            if embedder_provider == "fastembed":
+                embedder_subconfig = {
+                    "model": embedder_cfg.get("model", "BAAI/bge-small-en-v1.5"),
+                }
+            else:
+                embedder_subconfig = {
+                    "model": embedder_cfg.get("model", "Qwen3.5-4B-Q4_K_M"),
+                    "openai_base_url": embedder_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
+                    "api_key": embedder_cfg.get("api_key", "not-needed"),
+                }
+
             mem0_config = {
                 "vector_store": {
-                    "provider": self._config.get("vector_store", {}).get("provider", "qdrant"),
-                    "config": {
-                        "host": self._config.get("vector_store", {}).get("host", "localhost"),
-                        "port": self._config.get("vector_store", {}).get("port", 6333),
-                        "collection_name": self._config.get("vector_store", {}).get(
-                            "collection", "robot_memory"
-                        ),
-                        "embedding_model_dims": self._config.get("vector_store", {}).get(
-                            "embedding_dims", 768
-                        ),
-                    },
+                    "provider": provider,
+                    "config": qdrant_subconfig,
                 },
                 "llm": {
                     "provider": self._config.get("llm", {}).get("provider", "openai"),
@@ -60,16 +79,8 @@ class Mem0Provider:
                     },
                 },
                 "embedder": {
-                    "provider": self._config.get("embedder", {}).get("provider", "openai"),
-                    "config": {
-                        "model": self._config.get("embedder", {}).get(
-                            "model", "Qwen3.5-4B-Q4_K_M"
-                        ),
-                        "openai_base_url": self._config.get("embedder", {}).get(
-                            "base_url", "http://127.0.0.1:8080/v1"
-                        ),
-                        "api_key": self._config.get("embedder", {}).get("api_key", "not-needed"),
-                    },
+                    "provider": embedder_provider,
+                    "config": embedder_subconfig,
                 },
             }
 

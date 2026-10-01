@@ -20,13 +20,13 @@ class VoiceActivityDetector:
     def __init__(
         self,
         sample_rate: int = 16000,
-        normal_threshold: float = 0.55,
+        normal_threshold: float = 0.50,
         barge_in_threshold: float = 0.92,
         echo_guard_threshold: float = 0.85,
-        energy_threshold: float = 0.008,
-        barge_in_energy: float = 0.04,
+        energy_threshold: float = 0.005,
+        barge_in_energy: float = 0.035,
         echo_guard_energy: float = 0.02,
-        echo_coupling_ratio: float = 0.20,
+        echo_coupling_ratio: float = 0.45,
     ) -> None:
         self.sample_rate = sample_rate
         self.normal_threshold = normal_threshold

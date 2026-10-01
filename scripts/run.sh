@@ -26,11 +26,15 @@ amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
 if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
     if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
-        echo "[LLM] Starting llama-server on RTX 3050..."
+        echo "[LLM] Starting llama-server (100% offload to RTX 3050, FlashAttention)..."
         /home/ameya/llama.cpp/build/bin/llama-server \
             -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
-            -ngl 24 \
+            -ngl 99 \
+            -fa on \
             -c 2048 \
+            -np 1 \
+            -b 2048 \
+            -ub 2048 \
             --host 127.0.0.1 \
             --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
 
@@ -48,28 +52,30 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
     fi
 fi
 
-# ─── 3. whisper-server (port 8081) ───────────────────────────────────
+# ─── 3. whisper-server (AMD Radeon 680M Vulkan, port 8081) ──────────
 WHISPER_BIN=""
-if [ -f "/home/ameya/whisper.cpp/build/bin/whisper-server" ]; then
-    WHISPER_BIN="/home/ameya/whisper.cpp/build/bin/whisper-server"
-elif [ -f "/home/ameya/whisper.cpp/build_vk/bin/whisper-server" ]; then
+if [ -f "/home/ameya/whisper.cpp/build_vk/bin/whisper-server" ]; then
     WHISPER_BIN="/home/ameya/whisper.cpp/build_vk/bin/whisper-server"
+elif [ -f "/home/ameya/whisper.cpp/build/bin/whisper-server" ]; then
+    WHISPER_BIN="/home/ameya/whisper.cpp/build/bin/whisper-server"
 fi
 
 WHISPER_MODEL=""
 if [ -f "/home/ameya/whisper.cpp/models/ggml-base.bin" ]; then
     WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-base.bin"
-elif [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
-    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-small.bin"
 elif [ -f "/home/ameya/whisper.cpp/models/ggml-tiny.en.bin" ]; then
     WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-tiny.en.bin"
+elif [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
+    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-small.bin"
 fi
 
 if ! curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
     if [ -n "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ]; then
-        echo "[STT] Starting whisper-server with $WHISPER_MODEL..."
+        echo "[STT] Starting whisper-server on AMD Radeon 680M iGPU (Vulkan dev 0) with $WHISPER_MODEL..."
         "$WHISPER_BIN" \
             -m "$WHISPER_MODEL" \
+            -dev 0 \
+            -fa \
             -t 4 \
             --host 127.0.0.1 \
             --port 8081 > "$DIR/logs/whisper-server.log" 2>&1 &
@@ -88,29 +94,9 @@ if ! curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
     fi
 fi
 
-# ─── 4. Qdrant (for Mem0, port 6333) ────────────────────────────────
-if ! curl -s http://127.0.0.1:6333/healthz > /dev/null 2>&1; then
-    if command -v docker &> /dev/null; then
-        echo "[MEM] Starting Qdrant vector store..."
-        docker run -d --rm \
-            -p 6333:6333 \
-            -v "$DIR/data/memory/qdrant:/qdrant/storage" \
-            --name robot-qdrant \
-            qdrant/qdrant 2>/dev/null || true
-
-        echo -n "[MEM] Waiting for Qdrant..."
-        for i in $(seq 1 20); do
-            if curl -s http://127.0.0.1:6333/healthz > /dev/null 2>&1; then
-                break
-            fi
-            echo -n "."
-            sleep 0.5
-        done
-        echo " ready"
-    else
-        echo "[MEM] Docker not found — Mem0 will use in-memory storage"
-    fi
-fi
+# ─── 4. Mem0 Vector Storage ─────────────────────────────────────────
+mkdir -p "$DIR/data/memory/qdrant"
+echo "[MEM] Persistent embedded Qdrant storage ready at data/memory/qdrant"
 
 # ─── 5. Launch Robot Core & Display UI ──────────────────────────────
 echo ""

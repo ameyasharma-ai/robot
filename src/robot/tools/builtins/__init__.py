@@ -56,28 +56,144 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    # --- Web Search Tools (DuckDuckGo) ---
-    async def web_search(query: str, max_results: int = 3) -> list[dict]:
-        """Perform a live DuckDuckGo web search for current real-world knowledge."""
-        try:
-            from ddgs import DDGS
-            import asyncio
+    # --- Web Search Tools (Ultra-fast Multi-engine) ---
+    async def web_search(query: str, max_results: int = 4) -> list[dict]:
+        """Perform an ultra-fast, extensive web search with multi-engine failover."""
+        import asyncio
+        import html as html_lib
+        import json
+        import re
+        import urllib.parse
+        import urllib.request
 
-            def _search():
-                results = DDGS().text(query, max_results=max_results)
-                return list(results) if results else []
+        # Clean search query: strip natural language conversational filler
+        clean_q = query.strip()
+        lower_q = clean_q.lower()
+        for prefix in [
+            "search for", "search online for", "search the web for",
+            "search about", "look up", "find online", "find out about",
+            "find out", "google", "tell me about", "what is", "who is",
+            "what happened in", "search"
+        ]:
+            if lower_q.startswith(prefix) and len(clean_q) > len(prefix) + 3:
+                clean_q = clean_q[len(prefix):].strip(" ?:.,!")
+                break
 
-            results = await asyncio.to_thread(_search)
-            return [
-                {
-                    "title": r.get("title", ""),
-                    "snippet": r.get("body", ""),
-                    "url": r.get("href", ""),
-                }
-                for r in results
-            ]
-        except Exception as e:
-            return [{"error": f"Search failed: {str(e)}"}]
+        def _execute_search():
+            # 1. Primary Engine: DuckDuckGo Lite with paired Title, URL, and Snippet extraction
+            try:
+                url = "https://lite.duckduckgo.com/lite/"
+                data = urllib.parse.urlencode({"q": clean_q}).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                        "Referer": "https://lite.duckduckgo.com/",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=3.5) as resp:
+                    page_html = resp.read().decode("utf-8", errors="ignore")
+
+                if "result-snippet" in page_html:
+                    link_pattern = re.compile(
+                        r'<a[^>]+href=[\x27\"]([^\x27\"]+)[\x27\"][^>]*class=[\x27\"]result-link[\x27\"][^>]*>(.*?)</a>',
+                        re.DOTALL,
+                    )
+                    snippet_pattern = re.compile(
+                        r'<td class=[\x27\"]result-snippet[\x27\"]>(.*?)</td>',
+                        re.DOTALL,
+                    )
+                    links = link_pattern.findall(page_html)
+                    snippets = snippet_pattern.findall(page_html)
+
+                    results = []
+                    for i in range(min(len(snippets), max_results)):
+                        clean_snip = html_lib.unescape(re.sub(r"<[^>]+>", "", snippets[i])).strip()
+                        if i < len(links):
+                            u, t = links[i]
+                            clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", t)).strip()
+                        else:
+                            clean_title = clean_q
+                            u = "https://duckduckgo.com"
+                        if clean_snip:
+                            results.append({"title": clean_title, "snippet": clean_snip, "url": u})
+                    if results:
+                        return results
+            except Exception:
+                pass
+
+            # 2. Secondary Engine: Bing News & Web RSS (ultra-fast, highly current, no bot wall)
+            try:
+                bing_url = f"https://www.bing.com/news/search?q={urllib.parse.quote(clean_q)}&format=rss"
+                req = urllib.request.Request(
+                    bing_url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    xml_data = resp.read().decode("utf-8", errors="ignore")
+
+                items = re.findall(r"<item>(.*?)</item>", xml_data, re.DOTALL)
+                if items:
+                    bing_results = []
+                    for item in items[:max_results]:
+                        title_m = re.search(r"<title>(.*?)</title>", item, re.DOTALL)
+                        link_m = re.search(r"<link>(.*?)</link>", item, re.DOTALL)
+                        desc_m = re.search(r"<description>(.*?)</description>", item, re.DOTALL)
+
+                        t = html_lib.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
+                        d = html_lib.unescape(re.sub(r"<[^>]+>", "", desc_m.group(1))).strip() if desc_m else ""
+                        u = link_m.group(1).strip() if link_m else ""
+                        if d or t:
+                            bing_results.append({"title": t, "snippet": d, "url": u})
+                    if bing_results:
+                        return bing_results
+            except Exception:
+                pass
+
+            # 3. Tertiary Engine: DuckDuckGo Instant Answers API
+            try:
+                api_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(clean_q)}&format=json&no_html=1&skip_disambig=1"
+                req = urllib.request.Request(api_url, headers={"User-Agent": "RobotCore/1.0"})
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                results = []
+                if data.get("AbstractText"):
+                    results.append({
+                        "title": data.get("Heading", clean_q),
+                        "snippet": data.get("AbstractText"),
+                        "url": data.get("AbstractURL", ""),
+                    })
+                if data.get("Answer"):
+                    results.append({"title": "Direct Answer", "snippet": data.get("Answer"), "url": ""})
+                for rel in data.get("RelatedTopics", [])[:max_results]:
+                    if isinstance(rel, dict) and rel.get("Text"):
+                        results.append({
+                            "title": rel.get("Text").split(" - ")[0],
+                            "snippet": rel.get("Text"),
+                            "url": rel.get("FirstURL", ""),
+                        })
+                if results:
+                    return results[:max_results]
+            except Exception:
+                pass
+
+            # 4. Quaternary Engine: ddgs library with strict limit
+            try:
+                from ddgs import DDGS
+                res = list(DDGS().text(clean_q, max_results=max_results))
+                if res:
+                    return [
+                        {"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")}
+                        for r in res
+                    ]
+            except Exception:
+                pass
+
+            return [{"error": f"No web search results could be retrieved for '{clean_q}'."}]
+
+        return await asyncio.to_thread(_execute_search)
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -132,6 +248,33 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             description="Get current robot state, service health, and telemetry metrics",
             parameters={"type": "object", "properties": {}},
             handler=system_status,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="system",
+        )
+    )
+
+    async def get_current_time(timezone_str: str | None = None) -> dict:
+        """Get exact current time, date, day of week, and timezone."""
+        import datetime
+        now = datetime.datetime.now().astimezone()
+        return {
+            "current_time": now.strftime("%I:%M:%S %p"),
+            "current_date": now.strftime("%A, %B %d, %Y"),
+            "timezone": str(now.tzinfo),
+            "iso": now.isoformat(),
+        }
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="system.time",
+            description="Get the current real-world time, date, day of week, and timezone",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "timezone_str": {"type": "string", "description": "Optional timezone name (e.g. UTC, Asia/Kolkata)"},
+                },
+            },
+            handler=get_current_time,
             permission_level=PermissionLevel.READ_ONLY,
             family="system",
         )

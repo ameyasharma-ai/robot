@@ -70,21 +70,17 @@ class ContextEngine:
         # 1. System prompt (personality + policy)
         system_parts = [system_prompt]
 
-        # 2. Robot state (compact)
-        if robot_state:
-            state_str = _format_state(robot_state)
-            system_parts.append(f"\n[Current State]\n{state_str}")
-
-        # 3. Physical World State (Perception)
-        if world_state:
+        # 2. Physical World State (Perception) - only if people or objects present
+        if world_state and (world_state.get("people") or world_state.get("objects")):
             world_str = _format_world_state(world_state)
-            system_parts.append(f"\n[Physical World State]\n{world_str}")
+            if world_str:
+                system_parts.append(f"\n[Physical World State]\n{world_str}")
 
-        # 4. Retrieved memories
+        # 3. Retrieved memories
         if memories:
             mem_str = _format_memories(memories, self._budget["retrieved_memories"])
             if mem_str:
-                system_parts.append(f"\n[Relevant Memories]\n{mem_str}")
+                system_parts.append(f"\n[Memories]\n{mem_str}")
 
         messages.append({"role": "system", "content": "\n".join(system_parts)})
 
@@ -95,23 +91,18 @@ class ContextEngine:
             )
             messages.extend(trimmed)
 
-        # 5. Tool results from current turn — inject as system context
-        # (llama.cpp doesn't support role:tool without a preceding tool_call,
-        #  so we inject as grounding context in the system message)
+        # 5. Dynamic Context Grounding (Tool results from current turn)
+        grounding_parts = []
+
         if tool_results:
             tool_parts = []
             for tr in tool_results:
                 tool_id = tr.get("id", "tool")
                 result_text = str(tr.get("result", tr.get("error", "")))
                 tool_parts.append(f"[{tool_id}]: {result_text}")
-            tool_block = "\n[Tool Results — use these to answer the user]\n" + "\n".join(tool_parts)
-            # Append to the system message
-            if messages and messages[0].get("role") == "system":
-                messages[0]["content"] += "\n" + tool_block
-            else:
-                messages.insert(0, {"role": "system", "content": tool_block})
+            grounding_parts.append("[Tool Results — use these to answer]:\n" + "\n".join(tool_parts))
 
-        # 6. Current user input (with live camera visual grounding if user asks what is this / what am I holding / what do you see)
+        # 4. Current user input (with live camera visual grounding if user asks what is this / what am I holding / what do you see)
         user_content = user_text
         lower_user = user_text.lower()
         visual_triggers = (
@@ -125,7 +116,6 @@ class ContextEngine:
             if world_state:
                 detected_items = []
                 for o in world_state.get("objects", []):
-                    # Filter out redundant generic 'person' when user is asking about an object being held
                     if o.get("label") == "person" and len(world_state.get("objects", [])) > 1:
                         continue
                     detected_items.append(f"{o.get('label')} at {o.get('position')}")
@@ -133,9 +123,12 @@ class ContextEngine:
                     detected_items.append(f"person ({p.get('distance')} range, {p.get('position')})")
                 
                 if detected_items:
-                    user_content += f"\n[Visual Stream in Front of Robot]: Live camera actively detects: {', '.join(detected_items)}."
+                    grounding_parts.append(f"[Visual Stream in Front of Robot]: Live camera actively detects: {', '.join(detected_items)}.")
                 else:
-                    user_content += f"\n[Visual Stream in Front of Robot]: Camera is pointed forward, but no distinct object is currently recognized by YOLOv8. Ask user to hold the object clearly towards the camera."
+                    grounding_parts.append("[Visual Stream in Front of Robot]: Camera is pointed forward, but no distinct object is currently recognized by YOLOv8. Ask user to hold the object clearly towards the camera.")
+
+        if grounding_parts:
+            user_content = "\n\n".join(grounding_parts) + "\n\n" + user_content
 
         # Always provide the complete textual visual grounding description in user message
         messages.append({"role": "user", "content": user_content})

@@ -50,18 +50,22 @@ class PiperTTS(TTSProvider):
         self._voice = piper.PiperVoice.load(model_path)
         logger.info("piper_loaded")
 
+    def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
+        chunks = []
+        sr = 16000
+        for chunk in self._voice.synthesize(text):
+            chunks.append(chunk.audio_float_array)
+            if chunk.sample_rate:
+                sr = chunk.sample_rate
+        if not chunks:
+            return np.array([], dtype=np.float32), sr
+        if len(chunks) == 1:
+            return chunks[0], sr
+        return np.concatenate(chunks), sr
+
     async def synthesize(self, text: str) -> tuple[np.ndarray, int]:
-        bio = io.BytesIO()
-        with wave.open(bio, "wb") as wf:
-            self._voice.synthesize_wav(text, wf)
-        bio.seek(0)
-
-        with wave.open(bio, "rb") as wf:
-            sr = wf.getframerate()
-            frames = wf.readframes(wf.getnframes())
-            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-
-        return audio, sr
+        import asyncio
+        return await asyncio.to_thread(self._synthesize_sync, text)
 
     async def health_check(self) -> bool:
         return self._voice is not None

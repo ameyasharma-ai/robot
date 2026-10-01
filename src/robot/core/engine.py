@@ -146,13 +146,13 @@ class RobotEngine:
         self.player = AudioPlayer(block_ms=audio_cfg.get("playback_block_ms", 40))
         self.vad = VoiceActivityDetector(
             sample_rate=audio_cfg.get("sample_rate", 16000),
-            normal_threshold=audio_cfg.get("normal_confidence", 0.45),
-            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.65),
-            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.70),
-            energy_threshold=audio_cfg.get("energy_threshold", 0.003),
-            barge_in_energy=audio_cfg.get("barge_in_energy", 0.008),
-            echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.008),
-            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.16),
+            normal_threshold=audio_cfg.get("normal_confidence", 0.50),
+            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.92),
+            echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.85),
+            energy_threshold=audio_cfg.get("energy_threshold", 0.005),
+            barge_in_energy=audio_cfg.get("barge_in_energy", 0.035),
+            echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.02),
+            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.45),
         )
 
         # Tools
@@ -517,27 +517,61 @@ class RobotEngine:
         selected_tool_names = self.tool_router.select_tools(user_text)
         logger.debug("tool_router_selected", tools=selected_tool_names, user_text=user_text[:80])
 
+        # Proactive time tool: if user asks for current time, date, or day
+        time_keywords = ["what time", "current time", "what is the time", "what's the time",
+                         "what date", "today's date", "todays date", "what day is it",
+                         "what day is today", "tell me the time"]
+        if any(kw in lower_u for kw in time_keywords):
+            time_tool = self.tool_registry.get("system.time")
+            if time_tool:
+                try:
+                    res = await self.permissions.execute(time_tool, {})
+                    if "result" in res and res["result"]:
+                        r = res["result"]
+                        tool_results.append({
+                            "id": "system_time_proactive",
+                            "result": f"[Real-World Clock]: Current time is {r.get('current_time')} on {r.get('current_date')} ({r.get('timezone')}).",
+                        })
+                        logger.info("proactive_time_tool_ok", time=r.get("current_time"))
+                except Exception as e:
+                    logger.warning("proactive_time_tool_error", error=str(e))
+
         # Proactive web search: if user is asking for current/real-world facts
-        web_keywords = ["search", "look up", "find online", "google", "duckduckgo",
-                        "latest", "news", "price", "release date", "current",
-                        "who is", "how much", "when did", "when will", "where is"]
-        if any(kw in lower_u for kw in web_keywords):
+        web_keywords = [
+            "search", "look up", "find online", "google", "duckduckgo",
+            "latest", "news", "price", "release date", "specs", "specification",
+            "who is", "who won", "how much", "when did", "when will", "where is",
+            "what happened", "what is the current", "what are the current",
+            "tell me about", "score", "weather"
+        ]
+        # Don't trigger web search for simple local clock queries
+        if any(kw in lower_u for kw in web_keywords) and not any(tk in lower_u for tk in time_keywords):
             web_tool = self.tool_registry.get("web.search")
             if web_tool:
                 try:
                     logger.info("proactive_tool_exec", tool="web.search", query=user_text[:60])
+                    # Immediately speak acknowledgment while web search is underway
+                    ack_phrases = ["Searching...", "Checking the web...", "Looking that up..."]
+                    import random
+                    ack_phrase = random.choice(ack_phrases)
+                    await self._tts_queue.put((ack_phrase, interrupt, None))
+
                     result = await self.permissions.execute(
-                        web_tool, {"query": user_text, "max_results": 3}
+                        web_tool, {"query": user_text, "max_results": 4}
                     )
                     if "result" in result and result["result"]:
                         snippets = []
                         for r in result["result"]:
                             if "error" not in r:
-                                snippets.append(f"• {r.get('title', '')}: {r.get('snippet', '')} ({r.get('url', '')})")
+                                t = r.get("title", "").strip()
+                                s = r.get("snippet", "").strip()
+                                u = r.get("url", "").strip()
+                                if s:
+                                    snippets.append(f"• Source: {t}\n  Summary: {s}\n  URL: {u}")
                         if snippets:
                             tool_results.append({
-                                "id": "web_search_proactive",
-                                "result": "[Live Web Search Results]\n" + "\n".join(snippets),
+                                "id": "web_search",
+                                "result": "[Live Web Search Results — answer the user's question directly using these facts]:\n" + "\n\n".join(snippets),
                             })
                             logger.info("proactive_web_search_ok", results=len(snippets))
                 except Exception as e:
@@ -614,13 +648,14 @@ class RobotEngine:
                     self.telemetry.record("LLM_TTFT", ttft)
                     ttft_recorded = True
                     timing_ref = {
-                        "t_tts_start": time.perf_counter(),
                         "end_of_speech": end_of_speech_time,
                     }
 
                 full_response += token
                 phrase = chunker.feed(token)
                 if phrase and not interrupt.is_set():
+                    if timing_ref:
+                        timing_ref["t_tts_start"] = time.perf_counter()
                     await self._tts_queue.put((phrase, interrupt, timing_ref))
                     timing_ref = None
 
@@ -639,6 +674,11 @@ class RobotEngine:
                     tool_def = self.tool_registry.get(tool_name)
                     if tool_def:
                         try:
+                            if tool_name == "web.search" and not interrupt.is_set():
+                                import random
+                                ack_phrase = random.choice(["Searching...", "Checking the web...", "Looking that up..."])
+                                await self._tts_queue.put((ack_phrase, interrupt, None))
+
                             result = await self.permissions.execute(tool_def, args)
                             second_pass_results.append({
                                 "id": tc.get("id", tool_name),
@@ -676,7 +716,10 @@ class RobotEngine:
             # Flush remaining
             remainder = chunker.flush()
             if remainder and not interrupt.is_set():
+                if timing_ref and "t_tts_start" not in timing_ref:
+                    timing_ref["t_tts_start"] = time.perf_counter()
                 await self._tts_queue.put((remainder, interrupt, timing_ref))
+                timing_ref = None
 
             if not interrupt.is_set() and full_response:
                 logger.info("bot_response", text=full_response.strip()[:100])
@@ -722,8 +765,10 @@ class RobotEngine:
             audio, sr = await self.tts.synthesize(phrase)
             synth_ms = (time.perf_counter() - t_synth) * 1000
 
+            self.telemetry.record("TTS_SYNTHESIS_LATENCY", synth_ms)
             if timing_ref:
-                first_audio_ms = (time.perf_counter() - timing_ref["t_tts_start"]) * 1000
+                t_start = timing_ref.get("t_tts_start", time.perf_counter() - synth_ms / 1000)
+                first_audio_ms = (time.perf_counter() - t_start) * 1000
                 e2e_ms = (time.time() - timing_ref["end_of_speech"]) * 1000
                 self.telemetry.record("TTS_FIRST_AUDIO_LATENCY", first_audio_ms)
                 self.telemetry.record("END_OF_SPEECH_TO_FIRST_AUDIO", e2e_ms)

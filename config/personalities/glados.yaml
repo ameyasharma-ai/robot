@@ -26,6 +26,8 @@ tool_permissions:
   memory.write: true
   history.search: true
   system.status: true
+  system.time: true
+  web.search: true
   perception.inspect_view: true
   perception.get_world_state: true
   character.execute_action: true

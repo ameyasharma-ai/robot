@@ -58,7 +58,7 @@ class AudioPlayer:
                 except Exception:
                     pass
             self._stream = sd.OutputStream(
-                samplerate=sample_rate, channels=1, dtype="float32"
+                samplerate=sample_rate, channels=1, dtype="float32", latency="low"
             )
             self._stream.start()
             self._stream_sr = sample_rate
@@ -106,12 +106,11 @@ class AudioPlayer:
                     # Guard write call against concurrent stop() from barge-in
                     if self._stream is None or interrupt.is_set():
                         return False
-                    self._stream.write(chunk)
+                    # Run blocking ALSA write in thread so event loop stays responsive
+                    await asyncio.to_thread(self._stream.write, chunk)
                 except (sd.PortAudioError, Exception) as exc:
                     logger.debug("audio_write_aborted_or_interrupted", error=str(exc))
                     return False
-
-                await asyncio.sleep(self.block_ms * 0.001 * 0.875)  # Slight under-sleep for smooth flow
             return True
         finally:
             self._is_playing = False

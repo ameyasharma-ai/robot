@@ -78,6 +78,7 @@ class WhisperServerSTT(STTProvider):
         self.url = url
         self.language = language
         self.temperature = temperature
+        self._session = requests.Session()
 
     @staticmethod
     def _pcm_to_wav(pcm: np.ndarray, sample_rate: int) -> bytes:
@@ -112,7 +113,11 @@ class WhisperServerSTT(STTProvider):
         }
 
         try:
-            resp = requests.post(self.url, files=files, data=data, timeout=10)
+            import asyncio
+            def _do_post():
+                return self._session.post(self.url, files=files, data=data, timeout=5)
+
+            resp = await asyncio.to_thread(_do_post)
             if resp.status_code == 200:
                 raw = resp.json().get("text", "").strip()
                 cleaned = clean_transcript(raw)
@@ -126,8 +131,9 @@ class WhisperServerSTT(STTProvider):
 
     async def health_check(self) -> bool:
         try:
+            import asyncio
             base = self.url.rsplit("/", 1)[0]
-            resp = requests.get(f"{base}/", timeout=3)
+            resp = await asyncio.to_thread(self._session.get, f"{base}/", timeout=2)
             return resp.status_code == 200
         except Exception:
             return False

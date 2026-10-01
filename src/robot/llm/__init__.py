@@ -136,7 +136,8 @@ class ClauseChunker:
             ) or (re.search(r"\d\.\d*$", last_word) is not None)
 
             if not is_abbreviation:
-                if len(candidate.split()) >= self._min_words or candidate.endswith(("!", "?")):
+                # Any sentence terminal (. ! ?) with at least 1 word can be a complete utterance
+                if len(candidate.split()) >= 1:
                     self._buffer = self._buffer[match.end():]
                     return candidate
 
