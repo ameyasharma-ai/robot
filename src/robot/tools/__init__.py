@@ -97,6 +97,7 @@ class ToolRouter:
         "system": ["status", "health", "uptime", "service", "restart", "time", "date", "clock", "day of week", "what time", "what day"],
         "personality": ["personality", "switch", "mode", "character"],
         "web": ["search", "look up", "find online", "browse", "google", "duckduckgo", "who is", "what is", "latest", "news", "price", "release date", "current"],
+        "image": ["generate image", "generate an image", "draw", "picture", "create image", "paint", "illustration", "generate picture", "photo", "render image", "image of"],
     }
 
     def __init__(self, registry: ToolRegistry) -> None:

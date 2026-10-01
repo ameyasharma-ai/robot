@@ -83,6 +83,45 @@ class RobotEngine:
         # Health
         self.health = HealthMonitor(self.state)
 
+        # Observability & Metrics
+        obs_cfg = self.config.get("observability", {})
+        from robot.observability import ObservabilityHub
+        from robot.observability.models import SpanStatus
+        self.observability = ObservabilityHub(
+            event_bus=self.events,
+            max_history=obs_cfg.get("max_trace_history", 250),
+            redact=obs_cfg.get("redact_sensitive_data", True),
+        )
+
+        # Image Generation Service
+        img_cfg = self.config.get("image", {})
+        from robot.image import ImageGenerationService
+        self.image_service = ImageGenerationService(
+            output_dir=img_cfg.get("output_dir", "data/images"),
+            max_concurrent=img_cfg.get("max_concurrent_jobs", 1),
+            default_width=img_cfg.get("default_width", 512),
+            default_height=img_cfg.get("default_height", 512),
+        )
+
+        # Connect image service events to observability
+        self.image_service.on_event(
+            lambda event_type, job: self.observability.emit_event(
+                event_type=event_type,
+                trace_id=job.trace_id,
+                component="IMAGE",
+                operation="GENERATE",
+                status=job.status.value,
+                duration_ms=job.duration_s * 1000,
+                metadata={
+                    "job_id": job.job_id,
+                    "prompt": job.prompt,
+                    "progress": job.progress,
+                    "output_path": job.output_path,
+                    "error": job.error,
+                },
+            )
+        )
+
         # Runtime state
         self._session_id = str(uuid.uuid4())[:8]
         self._interrupt_event = asyncio.Event()
@@ -227,6 +266,9 @@ class RobotEngine:
         print("=" * 58)
         print("🎙️  \033[2mListening for speech...\033[0m\n")
 
+        # Start background image processing queue
+        self.image_service.start()
+
         tasks = [
             asyncio.create_task(self._mic_loop(audio_queue)),
             asyncio.create_task(self._response_loop()),
@@ -244,6 +286,7 @@ class RobotEngine:
         except (asyncio.CancelledError, KeyboardInterrupt):
             logger.info("engine_shutting_down")
         finally:
+            self.image_service.stop()
             if hasattr(self, "_api_server") and self._api_server:
                 self._api_server.should_exit = True
             for t in tasks:
@@ -351,6 +394,8 @@ class RobotEngine:
                             self._is_speaking = False
                             self._speech_ended_ts = time.time()
                             self.player.stop()
+                            # Propagate cancellation to observability traces
+                            self.observability.cancel_active_traces()
                             await self.events.emit("barge_in", barge_in=True)
                             await self.state.set_mode(RobotMode.LISTENING)
                             barge_in_consecutive = 0
@@ -386,10 +431,30 @@ class RobotEngine:
                             audio_np = np.array(audio_buffer, dtype=np.float32)
                             buf_rms = float(np.sqrt(np.mean(audio_np**2)))
                             if buf_rms > 0.003:
+                                # Start a new trace for this user interaction
+                                trace = self.observability.start_trace(
+                                    name="voice_turn",
+                                    metadata={"barge_in": is_barge, "rms": round(buf_rms, 4)},
+                                )
+                                self.observability.set_pipeline_node("MIC", "COMPLETED")
+                                self.observability.set_pipeline_node("VAD", "COMPLETED")
+
+                                stt_span = self.observability.start_span(
+                                    component="STT",
+                                    operation="TRANSCRIBE",
+                                    trace_id=trace.trace_id,
+                                    metadata={"audio_len_s": round(len(audio_buffer) / sample_rate, 2)},
+                                )
+
                                 with Timer(self.telemetry, "STT_FINAL_LATENCY"):
                                     text = await self.stt.transcribe(audio_np, sample_rate)
+
                                 if text:
                                     stt_ms = self.telemetry.get_metric("STT_FINAL_LATENCY").last
+                                    self.observability.finish_span(
+                                        stt_span,
+                                        metadata={"text": text, "latency_ms": round(stt_ms, 1)},
+                                    )
                                     if not self._is_self_echo(text, is_barge_in=is_barge):
                                         print(f"\n💬 \033[1;36m[USER]\033[0m {text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                         self.telemetry.record(
@@ -400,6 +465,10 @@ class RobotEngine:
                                         await self._speech_queue.put((text, end_time))
                                     else:
                                         print(f"🔇 \033[90m[ECHO FILTERED]\033[0m {text}")
+                                        self.observability.finish_trace(status=SpanStatus.CANCELLED)
+                                else:
+                                    self.observability.finish_span(stt_span, status=SpanStatus.ERROR)
+                                    self.observability.finish_trace(status=SpanStatus.ERROR)
 
                         audio_buffer = []
 
@@ -421,11 +490,16 @@ class RobotEngine:
             for m in detected_motions:
                 try:
                     plan = mp.plan_action(m)
+                    avatar_span = self.observability.start_span(
+                        component="AVATAR",
+                        operation=m.get("action", "motion").upper(),
+                    )
                     await self.events.emit(
                         "character.action",
                         action=m,
                         sequence=[a.to_dict() for a in plan],
                     )
+                    self.observability.finish_span(avatar_span)
                 except Exception as e:
                     logger.debug("natural_motion_dispatch_error", error=str(e))
 
@@ -436,6 +510,9 @@ class RobotEngine:
             full_response = await self._stream_response(
                 user_text, end_of_speech_time, self._interrupt_event
             )
+
+            # Finish turn trace
+            self.observability.finish_trace()
 
             # Store in memory
             if full_response and self.memory:
@@ -577,6 +654,38 @@ class RobotEngine:
                 except Exception as e:
                     logger.warning("proactive_web_search_error", error=str(e))
 
+        # Proactive image generation
+        image_triggers = ["generate an image", "generate image", "draw", "picture of", "create an image", "create image", "paint", "image of"]
+        if any(trig in lower_u for trig in image_triggers):
+            img_tool = self.tool_registry.get("image.generate")
+            if img_tool:
+                try:
+                    logger.info("proactive_tool_exec", tool="image.generate", query=user_text[:60])
+                    # Identify prompt part
+                    prompt = user_text
+                    for trig in image_triggers:
+                        if trig in lower_u:
+                            idx = lower_u.find(trig) + len(trig)
+                            prompt = user_text[idx:].strip(" of.:,")
+                            break
+                    if not prompt:
+                        prompt = user_text
+                        
+                    ack_phrases = ["I'm generating that image for you now...", "Drawing that up...", "Working on that picture..."]
+                    import random
+                    ack_phrase = random.choice(ack_phrases)
+                    await self._tts_queue.put((ack_phrase, interrupt, None))
+
+                    result = await self.permissions.execute(img_tool, {"prompt": prompt})
+                    if "result" in result:
+                        tool_results.append({
+                            "id": "image_generate_proactive",
+                            "result": "[System]: " + str(result.get("result", {}).get("message", "Image generation started.")),
+                        })
+                        logger.info("proactive_image_generate_ok", prompt=prompt)
+                except Exception as e:
+                    logger.warning("proactive_image_generate_error", error=str(e))
+
         # Proactive memory write: if user says "remember that..."
         memory_write_triggers = ["remember that", "remember this", "keep in mind",
                                  "don't forget", "store this", "save this"]
@@ -595,6 +704,7 @@ class RobotEngine:
                     logger.warning("proactive_memory_write_error", error=str(e))
 
         # ─── Build Messages with Tool Results ───────────────────────────────
+        context_span = self.observability.start_span("CONTEXT", "BUILD")
         with Timer(self.telemetry, "CONTEXT_BUILD_LATENCY"):
             messages = self.context.build_messages(
                 system_prompt=system_prompt,
@@ -606,6 +716,7 @@ class RobotEngine:
                 image_data_url=image_data_url,
                 tool_results=tool_results if tool_results else None,
             )
+        self.observability.finish_span(context_span, metadata={"msg_count": len(messages)})
 
         # If we have an image and the LLM explicitly supports multimodal (mmproj loaded),
         # convert the last user message to OpenAI vision content blocks
@@ -628,9 +739,24 @@ class RobotEngine:
         t_llm_start = time.perf_counter()
         collected_tool_calls = []
 
+        llm_span = self.observability.start_span(
+            component="LLM",
+            operation="GENERATE",
+            metadata={"model": self.config.get("llm", {}).get("model", "Qwen3.5-4B-Q4_K_M")},
+        )
+
+        tools_schema = None
+        if selected_tool_names:
+            tools_schema = self.tool_registry.get_schemas(selected_tool_names)
+
         try:
-            async for token in self.llm.stream_chat(messages, max_tokens=self.config["llm"].get("max_tokens", 300)):
+            async for token in self.llm.stream_chat(
+                messages, 
+                max_tokens=self.config["llm"].get("max_tokens", 300),
+                tools=tools_schema
+            ):
                 if interrupt.is_set():
+                    self.observability.finish_span(llm_span, status=SpanStatus.CANCELLED)
                     break
 
                 if token.startswith("__TOOL_CALL__"):
@@ -650,6 +776,13 @@ class RobotEngine:
                     timing_ref = {
                         "end_of_speech": end_of_speech_time,
                     }
+                    self.observability.emit_event(
+                        event_type="llm.first_token",
+                        component="LLM",
+                        operation="TTFT",
+                        duration_ms=ttft,
+                        metadata={"ttft_ms": round(ttft, 1)},
+                    )
 
                 full_response += token
                 phrase = chunker.feed(token)
@@ -658,6 +791,13 @@ class RobotEngine:
                         timing_ref["t_tts_start"] = time.perf_counter()
                     await self._tts_queue.put((phrase, interrupt, timing_ref))
                     timing_ref = None
+
+            if not interrupt.is_set():
+                gen_ms = (time.perf_counter() - t_llm_start) * 1000
+                self.observability.finish_span(
+                    llm_span,
+                    metadata={"response_len": len(full_response), "gen_ms": round(gen_ms, 1)},
+                )
 
             # If the model emitted tool calls, execute them and do a second-pass generation
             if collected_tool_calls and not interrupt.is_set() and not full_response.strip():
@@ -761,6 +901,11 @@ class RobotEngine:
                 self._last_bot_phrases.pop(0)
 
             # Synthesize
+            tts_span = self.observability.start_span(
+                component="TTS",
+                operation="SYNTHESIZE",
+                metadata={"phrase_len": len(phrase)},
+            )
             t_synth = time.perf_counter()
             audio, sr = await self.tts.synthesize(phrase)
             synth_ms = (time.perf_counter() - t_synth) * 1000
@@ -772,12 +917,20 @@ class RobotEngine:
                 e2e_ms = (time.time() - timing_ref["end_of_speech"]) * 1000
                 self.telemetry.record("TTS_FIRST_AUDIO_LATENCY", first_audio_ms)
                 self.telemetry.record("END_OF_SPEECH_TO_FIRST_AUDIO", e2e_ms)
+                self.observability.emit_event(
+                    event_type="tts.first_audio",
+                    component="TTS",
+                    operation="FIRST_AUDIO",
+                    duration_ms=first_audio_ms,
+                    metadata={"e2e_ms": round(e2e_ms, 1)},
+                )
                 logger.info(
                     "tts_timing",
                     synth_ms=round(synth_ms, 1),
                     first_audio_ms=round(first_audio_ms, 1),
                     e2e_ms=round(e2e_ms, 1),
                 )
+            self.observability.finish_span(tts_span, metadata={"synth_ms": round(synth_ms, 1)})
 
             # Play
             self._is_speaking = True

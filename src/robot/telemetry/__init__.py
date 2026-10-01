@@ -28,10 +28,11 @@ class EventTag(str, Enum):
 
 @dataclass
 class LatencyMetric:
-    """Accumulates latency samples for a named metric."""
+    """Accumulates latency samples for a named metric and computes statistics."""
 
     name: str
     samples: list[float] = field(default_factory=list)
+    target_ms: float | None = None
 
     def record(self, duration_ms: float) -> None:
         self.samples.append(duration_ms)
@@ -48,25 +49,75 @@ class LatencyMetric:
     def count(self) -> int:
         return len(self.samples)
 
+    def percentile(self, p: float) -> float:
+        """Calculate the p-th percentile (0 <= p <= 100)."""
+        if not self.samples:
+            return 0.0
+        sorted_s = sorted(self.samples)
+        k = (len(sorted_s) - 1) * (p / 100.0)
+        f = int(k)
+        c = min(f + 1, len(sorted_s) - 1)
+        d0 = sorted_s[f] * (c - k)
+        d1 = sorted_s[c] * (k - f)
+        return round(d0 + d1, 1)
+
+    @property
+    def p50(self) -> float:
+        return self.percentile(50.0)
+
+    @property
+    def p95(self) -> float:
+        return self.percentile(95.0)
+
+    @property
+    def p99(self) -> float:
+        return self.percentile(99.0)
+
+    @property
+    def status(self) -> str:
+        if self.target_ms is None or not self.samples:
+            return "N/A"
+        if self.p95 <= self.target_ms:
+            return "PASS"
+        elif self.p50 <= self.target_ms:
+            return "WARNING"
+        return "FAIL"
+
     def reset(self) -> None:
         self.samples.clear()
 
 
 class Telemetry:
-    """Central telemetry and metrics collector.
+    """Central telemetry and metrics collector with targets and percentile computation."""
 
-    Tracks all whitepaper-required latency metrics:
-    STT_FINAL_LATENCY, LLM_TTFT, TTS_FIRST_AUDIO_LATENCY,
-    END_OF_SPEECH_TO_FIRST_AUDIO, BARGE_IN_STOP_LATENCY, etc.
-    """
+    DEFAULT_TARGETS: dict[str, float] = {
+        "VAD_LATENCY": 30.0,
+        "STT_PARTIAL_LATENCY": 500.0,
+        "STT_FINAL_LATENCY": 300.0,
+        "LLM_TTFT": 400.0,
+        "LLM_GENERATION_LATENCY": 1200.0,
+        "TOOL_EXECUTION_LATENCY": 50.0,
+        "TTS_FIRST_AUDIO_LATENCY": 150.0,
+        "AVATAR_REACTION_LATENCY": 50.0,
+        "END_OF_SPEECH_TO_FIRST_AUDIO": 900.0,
+    }
 
-    def __init__(self) -> None:
+    def __init__(self, targets: dict[str, float] | None = None) -> None:
         self._metrics: dict[str, LatencyMetric] = {}
         self._logger = structlog.get_logger("telemetry")
+        self._targets = dict(self.DEFAULT_TARGETS)
+        if targets:
+            self._targets.update(targets)
+
+    def set_target(self, name: str, target_ms: float) -> None:
+        self._targets[name] = target_ms
+        if name in self._metrics:
+            self._metrics[name].target_ms = target_ms
 
     def _ensure_metric(self, name: str) -> LatencyMetric:
         if name not in self._metrics:
-            self._metrics[name] = LatencyMetric(name=name)
+            target = self._targets.get(name)
+            self._metrics[name] = LatencyMetric(name=name, target_ms=target)
         return self._metrics[name]
 
     def record(self, name: str, duration_ms: float) -> None:
@@ -79,7 +130,16 @@ class Telemetry:
 
     def snapshot(self) -> dict[str, dict]:
         return {
-            name: {"last": m.last, "avg": round(m.avg, 1), "count": m.count}
+            name: {
+                "last": round(m.last, 1),
+                "avg": round(m.avg, 1),
+                "p50": m.p50,
+                "p95": m.p95,
+                "p99": m.p99,
+                "target": m.target_ms,
+                "status": m.status,
+                "count": m.count,
+            }
             for name, m in self._metrics.items()
         }
 

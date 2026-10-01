@@ -1183,3 +1183,231 @@ body.mode-dev .face-panel { display: none; }
         grid-template-columns: repeat(2, 1fr);
     }
 }
+
+/* ─── Real-Time Pipeline Observability Flow ──────────────────────────────── */
+.card-pipeline .pipeline-flow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 10px 0;
+    overflow-x: auto;
+}
+
+.pipe-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    min-width: 58px;
+    transition: all 0.2s ease;
+}
+
+.pipe-node .node-name {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-dim);
+}
+
+.pipe-node .node-status {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    color: #64748b;
+    margin-top: 2px;
+}
+
+.pipe-node.running {
+    background: rgba(0, 242, 254, 0.12);
+    border-color: var(--primary-cyan);
+    box-shadow: 0 0 10px rgba(0, 242, 254, 0.3);
+}
+.pipe-node.running .node-status { color: var(--primary-cyan); font-weight: 700; }
+
+.pipe-node.completed {
+    background: rgba(0, 245, 160, 0.08);
+    border-color: var(--accent-emerald);
+}
+.pipe-node.completed .node-status { color: var(--accent-emerald); }
+
+.pipe-node.cancelled {
+    background: rgba(246, 211, 101, 0.08);
+    border-color: var(--accent-amber);
+}
+.pipe-node.cancelled .node-status { color: var(--accent-amber); }
+
+.pipe-node.error {
+    background: rgba(255, 87, 87, 0.1);
+    border-color: #ff5757;
+}
+.pipe-node.error .node-status { color: #ff5757; }
+
+.pipe-arrow {
+    color: rgba(255, 255, 255, 0.2);
+    font-size: 11px;
+    font-family: var(--font-mono);
+}
+
+/* ─── Trace Tree Box ──────────────────────────────────────────────────────── */
+.trace-tree-box {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.trace-span-line {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.04);
+}
+.trace-span-line .span-name { color: #cbd5e1; }
+.trace-span-line .span-dur { color: var(--primary-cyan); font-weight: 600; }
+
+.trace-empty-hint {
+    color: #64748b;
+    font-style: italic;
+    text-align: center;
+    padding: 12px 0;
+}
+
+/* ─── Hardware Grid ───────────────────────────────────────────────────────── */
+.hardware-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    padding: 6px 0;
+}
+
+.hw-item {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+.hw-lbl {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+}
+
+.hw-val {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--primary-cyan);
+}
+
+/* ─── Image Generation UI ─────────────────────────────────────────────────── */
+.image-gen-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 6px 0;
+}
+
+.image-input-row {
+    display: flex;
+    gap: 6px;
+}
+
+.img-prompt-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-family: var(--font-sans);
+    font-size: 12px;
+}
+
+.img-gen-btn, .img-cancel-btn {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: none;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.img-gen-btn {
+    background: linear-gradient(135deg, var(--primary-cyan), var(--accent-emerald));
+    color: #0b0f19;
+}
+.img-gen-btn:hover { opacity: 0.9; }
+
+.img-cancel-btn {
+    background: rgba(255, 87, 87, 0.15);
+    color: #ff5757;
+    border: 1px solid rgba(255, 87, 87, 0.3);
+}
+.img-cancel-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.image-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+}
+
+.image-controls-row select, .image-controls-row input {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #fff;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.img-progress-wrap {
+    flex: 1;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.img-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-cyan), var(--accent-emerald));
+    transition: width 0.15s ease;
+}
+
+.image-preview-area {
+    margin-top: 4px;
+    min-height: 100px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px dashed rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 8px;
+}
+
+.img-placeholder {
+    font-size: 11px;
+    color: #64748b;
+    font-style: italic;
+    text-align: center;
+}

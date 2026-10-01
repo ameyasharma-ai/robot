@@ -201,42 +201,112 @@
                 </div>
             </div>
 
-            <!-- 3D Humanoid Character Kinematics & Debug HUD -->
-            <div class="card card-character-debug">
+            <!-- Live Pipeline Observability & Execution Graph -->
+            <div class="card card-pipeline">
                 <div class="card-header">
                     <div class="card-title">
-                        <span class="icon">🤖</span> 3D CHARACTER KINEMATICS & DEBUG PANEL
+                        <span class="icon">🔄</span> REAL-TIME EXECUTION PIPELINE
                     </div>
                     <div class="card-badges">
-                        <span class="badge" id="hudCharGpu">GPU: AMD 680M / WebGL2</span>
-                        <span class="badge badge-accent" id="hudCharFps">FPS: 60 (16.6ms)</span>
+                        <span class="badge badge-accent" id="activeTraceBadge">TRACE: IDLE</span>
                     </div>
                 </div>
-                <div class="char-debug-content">
-                    <div class="char-metrics-row">
-                        <div class="char-m-item"><span class="k">STATE:</span> <span class="v" id="dbgCharState">IDLE</span></div>
-                        <div class="char-m-item"><span class="k">MOTION:</span> <span class="v" id="dbgCharMotion">PROCEDURAL IDLE</span></div>
-                        <div class="char-m-item"><span class="k">BONES:</span> <span class="v" id="dbgCharBones">17 HUMAN</span></div>
-                        <div class="char-m-item"><span class="k">IK:</span> <span class="v" id="dbgCharIK">ACTIVE (LOOK-AT)</span></div>
-                    </div>
+                <div class="pipeline-flow" id="pipelineFlow">
+                    <div class="pipe-node" id="nodeMic"><span class="node-name">MIC</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeVad"><span class="node-name">VAD</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeStt"><span class="node-name">STT</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeContext"><span class="node-name">CONTEXT</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeLlm"><span class="node-name">LLM</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeTools"><span class="node-name">TOOLS</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeTts"><span class="node-name">TTS</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeAvatar"><span class="node-name">AVATAR</span><span class="node-status">IDLE</span></div>
+                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-node" id="nodeImage"><span class="node-name">IMAGE</span><span class="node-status">IDLE</span></div>
+                </div>
+            </div>
 
-                    <div class="sub-heading" style="margin-top: 10px; margin-bottom: 6px;">MANDATORY INTEGRATION TEST ACTIONS</div>
-                    <div class="char-btn-grid">
-                        <button class="dbg-act-btn" data-act="idle">Idle</button>
-                        <button class="dbg-act-btn btn-primary" data-act="raise_hand" data-side="left">Raise Left Hand</button>
-                        <button class="dbg-act-btn btn-primary" data-act="raise_hand" data-side="right">Raise Right Hand</button>
-                        <button class="dbg-act-btn btn-primary" data-act="wave" data-side="right">Wave</button>
-                        <button class="dbg-act-btn btn-accent" data-act="kick" data-side="left">Kick Left</button>
-                        <button class="dbg-act-btn btn-accent" data-act="kick" data-side="right">Kick Right</button>
-                        <button class="dbg-act-btn" data-act="walk">Walk</button>
-                        <button class="dbg-act-btn" data-act="turn">Turn</button>
-                        <button class="dbg-act-btn" data-act="look_at">Look At User</button>
-                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="happy">Happy</button>
-                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="sad">Sad</button>
-                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="surprised">Surprised</button>
-                        <button class="dbg-act-btn" data-act="set_emotion" data-emo="thinking">Thinking</button>
-                        <button class="dbg-act-btn btn-warning" data-act="reset">Reset Position</button>
-                        <button class="dbg-act-btn btn-danger" data-act="stop">Stop</button>
+            <!-- Live Trace & Hierarchical Spans -->
+            <div class="card card-trace">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">🌲</span> EXECUTION TRACE & SPAN HIERARCHY
+                    </div>
+                    <div class="card-badges">
+                        <span class="badge" id="traceTotalDuration">DURATION: -- ms</span>
+                    </div>
+                </div>
+                <div class="trace-tree-box" id="traceTreeBox">
+                    <div class="trace-empty-hint">Waiting for voice turn or tool execution...</div>
+                </div>
+            </div>
+
+            <!-- System Hardware Resources (NVIDIA RTX 3050 + AMD Radeon 680M + CPU/RAM) -->
+            <div class="card card-hardware">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">📊</span> SYSTEM HARDWARE OBSERVABILITY
+                    </div>
+                    <div class="card-badges">
+                        <span class="badge" id="hwGpuDevice">NVIDIA RTX 3050 (Qwen Dedicated)</span>
+                    </div>
+                </div>
+                <div class="hardware-grid">
+                    <div class="hw-item">
+                        <div class="hw-lbl">CPU UTILIZATION</div>
+                        <div class="hw-val" id="hwCpuVal">-- %</div>
+                    </div>
+                    <div class="hw-item">
+                        <div class="hw-lbl">SYSTEM RAM</div>
+                        <div class="hw-val" id="hwRamVal">-- GB</div>
+                    </div>
+                    <div class="hw-item">
+                        <div class="hw-lbl">RTX 3050 VRAM</div>
+                        <div class="hw-val" id="hwVramVal">-- MB</div>
+                    </div>
+                    <div class="hw-item">
+                        <div class="hw-lbl">RTX 3050 TEMP</div>
+                        <div class="hw-val" id="hwTempVal">-- °C</div>
+                    </div>
+                    <div class="hw-item">
+                        <div class="hw-lbl">AMD 680M BUSY</div>
+                        <div class="hw-val" id="hwAmdVal">-- %</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Asynchronous Image Generation Subsystem -->
+            <div class="card card-image-gen">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">🎨</span> ASYNCHRONOUS IMAGE GENERATION
+                    </div>
+                    <div class="card-badges">
+                        <span class="badge" id="imgJobBadge">STATUS: READY</span>
+                    </div>
+                </div>
+                <div class="image-gen-content">
+                    <div class="image-input-row">
+                        <input type="text" class="img-prompt-input" id="imgPromptInput" placeholder="Enter image prompt (e.g. Cyberpunk humanoid robot in neon Tokyo)..." />
+                        <button class="img-gen-btn" id="btnGenImage">Generate</button>
+                        <button class="img-cancel-btn" id="btnCancelImage" disabled>Cancel</button>
+                    </div>
+                    <div class="image-controls-row">
+                        <label>Size: <select id="imgResSelect"><option value="512x512">512x512</option><option value="768x768">768x768</option><option value="1024x1024">1024x1024</option></select></label>
+                        <label>Steps: <input type="number" id="imgStepsInput" value="4" min="1" max="30" style="width: 50px;" /></label>
+                        <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
+                            <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>
+                        </div>
+                    </div>
+                    <div class="image-preview-area" id="imgPreviewArea">
+                        <div class="img-placeholder" id="imgPlaceholder">Generated images render non-blockingly without competing with RTX 3050 Qwen VRAM.</div>
+                        <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none; max-width: 100%; border-radius: 6px;" />
                     </div>
                 </div>
             </div>

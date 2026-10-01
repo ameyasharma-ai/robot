@@ -59,6 +59,7 @@ class RobotUI {
         this.initTextChat();
         this.initBlinking();
         this.initWebsocket();
+        this.initImageGen();
         this.startPollers();
     }
 
@@ -624,6 +625,10 @@ class RobotUI {
         if (data.metrics) {
             this.updateMetrics(data.metrics);
         }
+
+        if (data.event === "observability.event") {
+            this.handleObservabilityEvent(data);
+        }
     }
 
     updateMetrics(metrics) {
@@ -717,6 +722,163 @@ class RobotUI {
                 }, 1000);
             };
         }
+
+        setInterval(async () => {
+            try {
+                const res = await fetch("/observability/hardware");
+                if (res.ok) {
+                    const hw = await res.json();
+                    if (hw.cpu_percent !== undefined) document.getElementById("hwCpuVal").textContent = `${hw.cpu_percent.toFixed(1)} %`;
+                    if (hw.system_ram_gb !== undefined) document.getElementById("hwRamVal").textContent = `${hw.system_ram_gb.toFixed(1)} GB`;
+                    if (hw.gpu_vram_mb !== undefined) document.getElementById("hwVramVal").textContent = `${Math.round(hw.gpu_vram_mb)} MB`;
+                    if (hw.gpu_temp_c !== undefined) document.getElementById("hwTempVal").textContent = `${Math.round(hw.gpu_temp_c)} °C`;
+                    if (hw.amd_utilization !== undefined) document.getElementById("hwAmdVal").textContent = `${Math.round(hw.amd_utilization)} %`;
+                }
+            } catch (e) {}
+        }, 2000);
+
+        setInterval(async () => {
+            try {
+                const res = await fetch("/images/jobs");
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.jobs) {
+                        this.updateImageJobsUI(data.jobs);
+                    }
+                }
+            } catch (e) {}
+        }, 1000);
+    }
+
+    handleObservabilityEvent(evt) {
+        if (evt.type === "trace_updated" && evt.trace) {
+            this.renderTraceTree(evt.trace);
+            const total = evt.trace.total_latency_ms;
+            if (total) document.getElementById("traceTotalDuration").textContent = `DURATION: ${total.toFixed(1)} ms`;
+        }
+        if (evt.type === "pipeline_updated" && evt.pipeline) {
+            this.updatePipelineStatus(evt.pipeline);
+        }
+    }
+
+    updatePipelineStatus(pipeline) {
+        const nodes = ["mic", "vad", "stt", "context", "llm", "tools", "tts", "avatar", "image"];
+        for (const key of nodes) {
+            const el = document.getElementById(`node${key.charAt(0).toUpperCase() + key.slice(1)}`);
+            if (el) {
+                const status = pipeline[key];
+                el.className = "pipe-node";
+                el.querySelector(".node-status").textContent = (status || "IDLE").toUpperCase();
+                if (status === "active") {
+                    el.classList.add("active");
+                } else if (status === "done") {
+                    el.classList.add("done");
+                } else if (status === "error") {
+                    el.classList.add("error");
+                }
+            }
+        }
+    }
+
+    renderTraceTree(trace) {
+        const box = document.getElementById("traceTreeBox");
+        if (!trace || !trace.spans || trace.spans.length === 0) {
+            box.innerHTML = '<div class="trace-empty-hint">Waiting for voice turn or tool execution...</div>';
+            return;
+        }
+
+        let html = '<ul class="trace-tree">';
+        const renderSpan = (span, level = 0) => {
+            const duration = span.duration_ms ? `${span.duration_ms.toFixed(1)} ms` : (span.end_time ? "0 ms" : "...");
+            const indent = level * 15;
+            let statusClass = "span-ok";
+            if (!span.end_time) statusClass = "span-active";
+            if (span.error) statusClass = "span-error";
+            
+            html += `<li class="span-item" style="padding-left: ${indent}px;">
+                        <span class="span-name ${statusClass}">${span.name}</span>
+                        <span class="span-dur">${duration}</span>
+                    </li>`;
+            
+            if (span.children) {
+                for (const child of span.children) renderSpan(child, level + 1);
+            }
+        };
+
+        for (const span of trace.spans) renderSpan(span);
+        html += '</ul>';
+        box.innerHTML = html;
+        document.getElementById("activeTraceBadge").textContent = `TRACE: ${trace.trace_id.substring(0,8)}`;
+    }
+
+    initImageGen() {
+        const btnGen = document.getElementById("btnGenImage");
+        const btnCancel = document.getElementById("btnCancelImage");
+        const input = document.getElementById("imgPromptInput");
+
+        if (btnGen && input) {
+            btnGen.addEventListener("click", async () => {
+                const prompt = input.value.trim();
+                if (!prompt) return;
+                try {
+                    const res = await fetch("/images/generate", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ prompt: prompt, steps: 8 })
+                    });
+                    if (res.ok) {
+                        input.value = "";
+                        this.logEvent("IMAGE", `Generation job submitted: ${prompt}`, "system");
+                    }
+                } catch (e) {
+                    console.error("Image gen failed", e);
+                }
+            });
+        }
+
+        if (btnCancel) {
+            btnCancel.addEventListener("click", async () => {
+                if (this.activeImageJob) {
+                    await fetch(`/images/cancel/${this.activeImageJob}`, { method: "POST" });
+                    this.logEvent("IMAGE", `Cancelled job ${this.activeImageJob}`, "system");
+                }
+            });
+        }
+    }
+
+    updateImageJobsUI(jobs) {
+        const grid = document.getElementById("imageResultGrid");
+        const badge = document.getElementById("imgJobBadge");
+        const btnCancel = document.getElementById("btnCancelImage");
+        if (!grid) return;
+
+        let activeJob = jobs.find(j => j.status === "queued" || j.status === "generating");
+        this.activeImageJob = activeJob ? activeJob.job_id : null;
+        
+        if (activeJob) {
+            badge.textContent = `STATUS: ${activeJob.status.toUpperCase()}`;
+            if (btnCancel) btnCancel.disabled = false;
+        } else {
+            badge.textContent = "STATUS: READY";
+            if (btnCancel) btnCancel.disabled = true;
+        }
+
+        let html = '';
+        for (const job of jobs) {
+            let overlay = '';
+            if (job.status === "queued") overlay = '<div class="img-overlay">QUEUED</div>';
+            else if (job.status === "generating") overlay = '<div class="img-overlay">GENERATING...</div>';
+            else if (job.status === "failed") overlay = '<div class="img-overlay error">FAILED</div>';
+            else if (job.status === "cancelled") overlay = '<div class="img-overlay">CANCELLED</div>';
+
+            const imgSrc = job.result_path ? `/${job.result_path}` : '';
+            html += `<div class="img-card">
+                        ${job.result_path ? `<img src="${imgSrc}" alt="${job.prompt}" />` : `<div class="img-placeholder"></div>`}
+                        ${overlay}
+                        <div class="img-prompt">${job.prompt}</div>
+                     </div>`;
+        }
+        grid.innerHTML = html;
     }
 }
 

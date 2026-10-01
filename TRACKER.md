@@ -37,6 +37,8 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Mem0 Persistent Memory** | Mem0 + Qdrant + FastEmbed | ✅ **Active** | Local ONNX (CPU) | Uses `BAAI/bge-small-en-v1.5` (384-dim); no 501 llama-server error. |
 | **3D Avatar & Web HUD** | Three.js + VRM Humanoid Rig | ✅ **Active** | AMD Radeon 680M (Browser) | 60 FPS WebGL2 rendering, procedural breathing, blinking, and gaze. |
 | **Physical Serial Motion** | `robot.motion.serial_bridge` | 🟡 **Emulated** | USB Serial / Microcontroller | Mock fallback active when physical hardware disconnected. |
+| **Real-Time Observability** | `ObservabilityHub` (WebSockets) | ✅ **Active** | Core Engine | Live latency metrics, span hierarchy, pipeline flow visualization in HUD. |
+| **Async Image Generation** | `ImageGenerationService` (Procedural) | ✅ **Active** | AMD Radeon 680M | Background image rendering without blocking LLM voice turns. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.

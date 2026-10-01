@@ -29,5 +29,7 @@ tool_permissions:
   perception.get_world_state: true
   character.execute_action: true
   character.stop: true
+  image.generate: true
+  image.cancel: true
 
 memory_namespace: default

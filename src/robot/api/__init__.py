@@ -190,9 +190,81 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     async def telemetry():
         return engine.telemetry.snapshot()
 
+    # ─── Observability & Traces API ──────────────────────────────────────────
+    @app.get("/observability/traces")
+    async def get_traces(limit: int = 15):
+        """Get recent execution traces with spans and latencies."""
+        if hasattr(engine, "observability") and engine.observability:
+            return {
+                "traces": engine.observability.get_recent_traces(limit),
+                "pipeline": engine.observability.pipeline_state,
+            }
+        return {"traces": [], "pipeline": {}}
+
+    @app.get("/observability/hardware")
+    async def get_hardware_metrics():
+        """Get live CPU, RAM, RTX 3050 VRAM/Temp, and AMD 680M utilization."""
+        if hasattr(engine, "observability") and engine.observability:
+            return engine.observability.get_hardware_metrics()
+        return {}
+
+    @app.get("/observability/pipeline")
+    async def get_pipeline_state():
+        """Get live status of all pipeline components."""
+        if hasattr(engine, "observability") and engine.observability:
+            return engine.observability.pipeline_state
+        return {}
+
+    # ─── Image Generation API ────────────────────────────────────────────────
+    class ImageGenRequest(BaseModel):
+        prompt: str
+        width: int | None = 512
+        height: int | None = 512
+        steps: int | None = 4
+        seed: int | None = -1
+
+    @app.post("/images/generate")
+    async def api_generate_image(req: ImageGenRequest):
+        """Asynchronously submit an image generation job."""
+        if not hasattr(engine, "image_service") or not engine.image_service:
+            return {"error": "Image service not initialized"}
+        job = engine.image_service.submit_job(
+            prompt=req.prompt,
+            width=req.width,
+            height=req.height,
+            steps=req.steps or 4,
+            seed=req.seed or -1,
+            trace_id=getattr(engine.observability, "current_trace_id", None) if hasattr(engine, "observability") else None,
+        )
+        return {"status": "queued", "job": job.to_dict()}
+
+    @app.get("/images/jobs")
+    async def list_image_jobs(limit: int = 20):
+        """List recent image generation jobs."""
+        if hasattr(engine, "image_service") and engine.image_service:
+            return {"jobs": engine.image_service.list_jobs(limit)}
+        return {"jobs": []}
+
+    @app.post("/images/cancel/{job_id}")
+    async def cancel_image_job(job_id: str):
+        """Cancel an in-flight image generation job."""
+        if hasattr(engine, "image_service") and engine.image_service:
+            ok = await engine.image_service.cancel_job(job_id)
+            return {"cancelled": ok, "job_id": job_id}
+        return {"cancelled": False, "error": "Image service not initialized"}
+
+    # Mount /data/images for generated image previews
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
+
+    images_dir = Path("data/images")
+    images_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/data/images", StaticFiles(directory=str(images_dir)), name="images")
+
     @app.websocket("/ws/events")
+    @app.websocket("/ws/observability")
     async def event_stream(websocket: WebSocket):
-        """WebSocket stream for real-time telemetry events."""
+        """WebSocket stream for real-time telemetry and observability events."""
         await websocket.accept()
         import asyncio
         import json
@@ -212,9 +284,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             engine.events.off("*", forward_event)
 
     # Static UI Files & Web HUD Display
-    from pathlib import Path
     from fastapi.responses import FileResponse
-    from fastapi.staticfiles import StaticFiles
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():

@@ -312,3 +312,70 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Character & Motion Tools ---
     from robot.tools.builtins.motion import register_motion_tools
     register_motion_tools(engine)
+
+    # --- Image Generation Tools ---
+    async def generate_image(prompt: str, width: int = 512, height: int = 512, steps: int = 4) -> dict:
+        if not getattr(engine, "image_service", None):
+            return {"error": "Image generation service is not initialized"}
+        span = None
+        if getattr(engine, "observability", None):
+            span = engine.observability.start_span("IMAGE", "GENERATE", metadata={"prompt": prompt})
+
+        job = engine.image_service.submit_job(
+            prompt=prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            trace_id=getattr(engine.observability, "current_trace_id", None) if getattr(engine, "observability", None) else None,
+        )
+
+        if span and getattr(engine, "observability", None):
+            engine.observability.finish_span(span, metadata={"job_id": job.job_id})
+
+        return {
+            "status": "queued",
+            "job_id": job.job_id,
+            "message": f"Image generation started in background for '{prompt}'. Check dashboard or /images/jobs for status.",
+        }
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="image.generate",
+            description="Generate a realistic or stylized image from a prompt asynchronously in the background",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Visual prompt describing the image to generate"},
+                    "width": {"type": "integer", "description": "Image width in pixels (128-1024)", "default": 512},
+                    "height": {"type": "integer", "description": "Image height in pixels (128-1024)", "default": 512},
+                },
+                "required": ["prompt"],
+            },
+            handler=generate_image,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="image",
+        )
+    )
+
+    async def cancel_image(job_id: str) -> dict:
+        if not getattr(engine, "image_service", None):
+            return {"error": "Image generation service is not initialized"}
+        ok = await engine.image_service.cancel_job(job_id)
+        return {"cancelled": ok, "job_id": job_id}
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="image.cancel",
+            description="Cancel an in-progress or queued background image generation task",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Job ID returned by image.generate"},
+                },
+                "required": ["job_id"],
+            },
+            handler=cancel_image,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="image",
+        )
+    )

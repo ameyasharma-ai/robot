@@ -94,3 +94,32 @@ logging:
   level: "INFO"
   directory: "logs"
   structured: true
+
+latency:
+  vad_target_ms: 30
+  stt_partial_target_ms: 500
+  stt_final_target_ms: 300
+  llm_ttft_target_ms: 400
+  llm_generation_target_ms: 1200
+  tool_target_ms: 50
+  tts_first_audio_target_ms: 150
+  avatar_target_ms: 50
+  e2e_first_audio_target_ms: 900
+
+observability:
+  enabled: true
+  max_trace_history: 250
+  redact_sensitive_data: true
+  websocket_enabled: true
+
+image:
+  enabled: true
+  default_width: 512
+  default_height: 512
+  default_steps: 4
+  max_width: 1024
+  max_height: 1024
+  max_steps: 30
+  max_concurrent_jobs: 1
+  output_dir: "data/images"
+  provider: "fast_procedural"  # Fast local generator + diffusion fallback
