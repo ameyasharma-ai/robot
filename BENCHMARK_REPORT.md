@@ -62,15 +62,16 @@ Empirical benchmarks collected directly on this host system under live operating
 
 | Pipeline Stage | Underlying Technology | Model / Weight Version | Compute Device | Benchmark Metric | Measured Result |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Speech-to-Text (STT)** | `whisper.cpp` (`whisper-server` Vulkan) | `ggml-base.bin` / `ggml-tiny.en.bin` | **AMD Radeon 680M (Vulkan dev 0)** | Latency for speech segment | **~210–280 ms** |
-| **LLM Time-To-First-Token** | `llama-server` (FlashAttention) | `Qwen3.5-4B-Q4_K_M.gguf` | **NVIDIA RTX 3050 (100% offload, 0% RAM)** | TTFT (Prompt eval + 1st token) | **138–165 ms** (138.5 tok/s prompt eval) |
-| **LLM Generation Speed** | `llama-server` (FlashAttention) | `Qwen3.5-4B-Q4_K_M.gguf` | **NVIDIA RTX 3050 (100% offload, 0% RAM)** | Decoding Throughput | **47.0 tokens/sec** |
-| **Text-to-Speech (TTS)** | `piper` (ONNX Runtime) | `en-us-lessac-medium.onnx` | CPU (AVX2) | Latency for first phrase chunk | **84–105 ms** (RTF: **0.029**) |
+| **Speech-to-Text (STT)** | `whisper.cpp` (`whisper-server` Vulkan) | `ggml-tiny.en.bin` | **AMD Radeon 680M (Vulkan dev 0)** | Latency for speech segment | **92.1 ms** (Min: 64.3 ms) |
+| **Memory / Context Engine** | `Mem0` + Qdrant + FastEmbed | Local SQLite / Vector DB | Host CPU (ONNX / SQLite) | Semantic recall latency | **12.2 ms** warm (314.7 ms cold avg) |
+| **LLM Time-To-First-Token** | `llama-server` (FlashAttention, `-ctk q8_0`) | `Qwen3.5-4B-Q4_K_M.gguf` | **NVIDIA RTX 3050 (100% offload, 0% RAM)** | TTFT (Prompt eval + 1st token) | **138.2–174.5 ms** (Avg: **161.2 ms**) |
+| **LLM Generation Speed** | `llama-server` (FlashAttention) | `Qwen3.5-4B-Q4_K_M.gguf` | **NVIDIA RTX 3050 (100% offload, 0% RAM)** | Decoding Throughput | **48.0 tokens/sec** |
+| **Text-to-Speech (TTS)** | `piper` (ONNX Runtime) | `en-us-lessac-medium.onnx` | CPU (AVX2) | Latency for first clause chunk | **33.0 ms** (RTF: **0.031x**) |
 | **Face Detection** | OpenCV DNN `FaceDetectorYN` | `face_detection_yunet.onnx` | CPU (INT8) | Single frame inference | **17.0 ms** (**58.7 FPS**) |
-| **Object Detection** | Ultralytics YOLOv8 (imgsz=320) | `yolov8n.pt` (Nano) | CPU (Torch) | Single frame inference | **35.0 ms** (**28.5 FPS**, down from 181ms) |
+| **Object Detection** | Ultralytics YOLOv8 (imgsz=320) | `yolov8n.pt` (Nano) | CPU (Torch) | Single frame inference | **35.0 ms** (**28.5 FPS**) |
 | **3D Avatar Rendering** | Three.js WebGL2 Engine | VRM Humanoid Rig (17 Canonical Bones) | AMD Radeon 680M | Viewport Frame Rate | **60.0 FPS** (**16.6 ms**) |
-| **Turnaround Pause** | Tuned Silero VAD | Threshold 320ms | Host CPU | Silence detection threshold | **320 ms** (reduced from 650ms) |
-| **Total End-to-End Latency** | Full-duplex streaming loop | Turnaround + STT + TTFT + TTS (1st Chunk) | Distributed (RTX 3050 + AMD 680M + CPU) | Total turnaround time | **< 750 ms** (Target achieved: **< 0.8s**) |
+| **Turnaround Pause** | Tuned Silero VAD | 150 ms silence threshold | Host CPU | Speech completion confirmation | **150 ms** (configured) |
+| **Total End-to-End Latency** | Full-duplex streaming loop | Turnaround + STT + Context + TTFT + TTS (1st Chunk) | Heterogeneous (RTX 3050 + AMD 680M + CPU) | Spoken end-of-speech to first audio output | **~448 ms** warm / **750.9 ms** initial cold |
 
 ---
 
