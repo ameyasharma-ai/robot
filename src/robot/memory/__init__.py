@@ -59,7 +59,16 @@ class Mem0Provider:
 
             embedder_cfg = self._config.get("embedder", {})
             embedder_provider = embedder_cfg.get("provider", "fastembed")
+            cache_dir = embedder_cfg.get("cache_dir", "models/fastembed")
             if embedder_provider == "fastembed":
+                # Ensure fastembed always uses persistent local model directory instead of /tmp
+                resolved_cache = Path(cache_dir).resolve()
+                resolved_cache.mkdir(parents=True, exist_ok=True)
+                os.environ["FASTEMBED_CACHE_PATH"] = str(resolved_cache)
+                # If model files already exist locally, prevent redundant HF Hub network queries/downloads
+                if (resolved_cache / "models--Qdrant--bge-small-en-v1.5-onnx-Q").exists():
+                    os.environ["HF_HUB_OFFLINE"] = "1"
+
                 embedder_subconfig = {
                     "model": embedder_cfg.get("model", "BAAI/bge-small-en-v1.5"),
                 }

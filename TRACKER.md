@@ -70,6 +70,7 @@ Legend:
 - [x] **18. Clean Process & Memory Teardown on Ctrl+C**: Implemented process group shutdown, `pkill -f llama-server` and `pkill -f whisper-server`, `player.close()`, and `memory.close()` in `engine.py`, `__main__.py`, and `scripts/run.sh` to release 100% of GPU VRAM and system memory on SIGINT.
 - [x] **19. Real-Time Active Tool HUD Display**: Emitted `tool_executing` and `tool_completed` events via `PermissionManager` and rendered live badge in dashboard HUD (`TOOL: NONE` -> `TOOL: <NAME>`).
 - [x] **20. Mem0 FastEmbed Cold-Start Elimination & Vector Relevance Threshold**: Added memory pre-warmup to eliminate 4.5s Turn 1 cold-start and implemented `score_threshold: 0.78` filtering out irrelevant semantic noise to maintain KV cache prefix stability.
+- [x] **21. Persistent FastEmbed Local Storage & Zero Re-download**: Configured persistent `models/fastembed` directory and `HF_HUB_OFFLINE=1` when cached models exist, stopping FastEmbed from downloading `bge-small-en-v1.5` on every robot launch.
 
 ### 🟡 Medium Priority
 - [ ] **Physical Hardware Integration**:
@@ -208,6 +209,12 @@ Legend:
 28. **Active Tool Display in UI**:
     - *Cause*: Dashboard lacked visibility into which tool the engine was actively executing.
     - *Fix*: Wired `PermissionManager` to emit `tool_executing` and `tool_completed` events over `EventBus`, and added dynamic `#activeToolBadge` in the dashboard pipeline header showing current tool status (`TOOL: NONE`, `TOOL: WEB.SEARCH`, `TOOL: SYSTEM.TIME`, etc.).
+29. **FastEmbed Model Re-downloading on Startup**:
+    - *Cause*: FastEmbed defaults to storing downloaded HuggingFace models in system `/tmp/fastembed_cache`. Whenever system temp directories are cleared or rebooted, or when FastEmbed queries HuggingFace Hub for updates, it downloaded `bge-small-en-v1.5` files (`config.json`, `tokenizer.json`, `model_optimized.onnx`) over the network on launch.
+    - *Fix*:
+      - Cached all `bge-small-en-v1.5` model files permanently in `models/fastembed/`.
+      - Configured `cache_dir: "models/fastembed"` in `config/default.yaml`.
+      - Exported `FASTEMBED_CACHE_PATH` in `scripts/run.sh` and `src/robot/memory/__init__.py`, setting `HF_HUB_OFFLINE=1` when local files exist so startup is 100% offline and takes 0 seconds.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

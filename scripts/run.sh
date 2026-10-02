@@ -108,6 +108,10 @@ fi
 # ─── 4. Mem0 Vector Storage ─────────────────────────────────────────
 mkdir -p "$DIR/data/memory/qdrant"
 echo "[MEM] Persistent embedded Qdrant storage ready at data/memory/qdrant"
+export FASTEMBED_CACHE_PATH="$DIR/models/fastembed"
+if [ -d "$DIR/models/fastembed/models--Qdrant--bge-small-en-v1.5-onnx-Q" ]; then
+    export HF_HUB_OFFLINE=1
+fi
 
 # ─── 5. Launch Robot Core & Display UI ──────────────────────────────
 echo ""

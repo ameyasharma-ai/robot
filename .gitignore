@@ -26,6 +26,7 @@ models/stt/*.bin
 models/llm/
 models/vision/*.pt
 models/vision/*.onnx
+models/fastembed/
 
 # Runtime data
 data/
