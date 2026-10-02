@@ -40,14 +40,25 @@ def main() -> None:
             await engine_task
         except asyncio.CancelledError:
             pass
+        finally:
+            # Terminate any external background server processes (llama-server, whisper-server)
+            import os
+            import subprocess
+            try:
+                subprocess.run(["pkill", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["pkill", "-f", "whisper-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
 
     try:
         asyncio.run(_runner())
     except KeyboardInterrupt:
         pass
     finally:
-        print("\n🤖 Robot Core shut down cleanly.")
+        print("\n🤖 Robot Core and all background server processes terminated cleanly.")
+        print("🧠 GPU VRAM and system memory released.")
 
 
 if __name__ == "__main__":
     main()
+

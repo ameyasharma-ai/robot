@@ -66,36 +66,48 @@ class LlamaServerLLM(LLMProvider):
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                json=payload,
-            ) as response:
-                if response.status_code != 200:
-                    err_body = await response.aread()
-                    logger.error("llm_stream_error", status=response.status_code, body=err_body.decode("utf-8", errors="replace"))
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                    ) as response:
+                        if response.status_code != 200:
+                            err_body = await response.aread()
+                            logger.error("llm_stream_error", status=response.status_code, body=err_body.decode("utf-8", errors="replace"))
+                            yield "I encountered an error connecting to my local inference model."
+                            return
+                        async for line in response.aiter_lines():
+                            if not line or line == "data: [DONE]":
+                                continue
+                            if line.startswith("data: "):
+                                try:
+                                    data = json.loads(line[6:])
+                                    choice = data["choices"][0]
+
+                                    # Check for tool calls
+                                    if "tool_calls" in choice.get("delta", {}):
+                                        tool_calls = choice["delta"]["tool_calls"]
+                                        yield f"__TOOL_CALL__{json.dumps(tool_calls)}"
+                                        continue
+
+                                    token = choice["delta"].get("content", "")
+                                    if token:
+                                        yield token
+                                except (json.JSONDecodeError, KeyError, IndexError):
+                                    continue
+                return
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                if attempt < max_retries:
+                    logger.warning("llm_connection_retry", attempt=attempt, error=str(exc))
+                    await asyncio.sleep(0.3)
+                else:
+                    logger.error("llm_stream_connect_failed", error=str(exc))
                     yield "I encountered an error connecting to my local inference model."
                     return
-                async for line in response.aiter_lines():
-                    if not line or line == "data: [DONE]":
-                        continue
-                    if line.startswith("data: "):
-                        try:
-                            data = json.loads(line[6:])
-                            choice = data["choices"][0]
-
-                            # Check for tool calls
-                            if "tool_calls" in choice.get("delta", {}):
-                                tool_calls = choice["delta"]["tool_calls"]
-                                yield f"__TOOL_CALL__{json.dumps(tool_calls)}"
-                                continue
-
-                            token = choice["delta"].get("content", "")
-                            if token:
-                                yield token
-                        except (json.JSONDecodeError, KeyError, IndexError):
-                            continue
 
     async def health_check(self) -> bool:
         try:

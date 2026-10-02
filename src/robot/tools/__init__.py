@@ -132,8 +132,13 @@ class PermissionManager:
     The LLM proposes; the PermissionManager decides.
     """
 
-    def __init__(self, max_auto_level: PermissionLevel = PermissionLevel.HARMLESS_LOCAL) -> None:
+    def __init__(
+        self,
+        max_auto_level: PermissionLevel = PermissionLevel.HARMLESS_LOCAL,
+        event_bus: Any | None = None,
+    ) -> None:
         self._max_auto = max_auto_level
+        self._events = event_bus
 
     def check(self, tool: ToolDefinition) -> bool:
         """Check if a tool can be auto-executed without user confirmation."""
@@ -156,16 +161,26 @@ class PermissionManager:
         if not self.check(tool):
             return {"error": f"Permission denied: {tool.name} requires level {tool.permission_level.name}"}
 
+        if self._events:
+            await self._events.emit("tool_executing", tool=tool.name, arguments=arguments)
+
         try:
             result = await asyncio.wait_for(
                 tool.handler(**arguments),
                 timeout=tool.timeout_s,
             )
             logger.info("tool_executed", tool=tool.name)
+            if self._events:
+                await self._events.emit("tool_completed", tool=tool.name, result=str(result)[:100])
             return {"result": result}
         except asyncio.TimeoutError:
             logger.error("tool_timeout", tool=tool.name, timeout=tool.timeout_s)
+            if self._events:
+                await self._events.emit("tool_error", tool=tool.name, error=f"Timeout after {tool.timeout_s}s")
             return {"error": f"Tool timed out after {tool.timeout_s}s"}
         except Exception as e:
             logger.error("tool_error", tool=tool.name, error=str(e))
+            if self._events:
+                await self._events.emit("tool_error", tool=tool.name, error=str(e))
             return {"error": str(e)}
+

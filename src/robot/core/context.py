@@ -38,13 +38,13 @@ class ContextEngine:
 
     def __init__(self, budget: dict[str, int] | None = None) -> None:
         self._budget = budget or {
-            "system_personality": 1500,
-            "tool_schemas": 2000,
-            "retrieved_memories": 2000,
-            "recent_conversation": 5000,
-            "world_state": 750,
-            "robot_state": 375,
-            "generation_headroom": 3500,
+            "system_personality": 400,
+            "tool_schemas": 400,
+            "retrieved_memories": 300,
+            "recent_conversation": 450,
+            "world_state": 150,
+            "robot_state": 100,
+            "generation_headroom": 300,
         }
 
     def build_messages(
@@ -69,30 +69,21 @@ class ContextEngine:
 
         # 1. System prompt (personality + policy)
         # CRITICAL FOR KV CACHE (<200ms TTFT):
-        # When recent_conversation is present, we keep the system message pure and static
-        # (identical token-for-token across turns) so llama-server's slot cache hit rate is 100%!
-        # Dynamic facts and world state are grounded into the current turn.
+        # We keep the system message 100% pure, static and invariant across EVERY turn
+        # (identical token-for-token from turn 1 onwards) so llama-server's slot cache hit rate is 100%!
+        # Dynamic facts, world state, and tool results are grounded directly into the current turn.
         system_parts = [system_prompt]
-
-        # Only inject into system_parts if not conversational (e.g. single-turn unit test)
-        # or if memories/world_state are provided in a standalone prompt
         grounding_parts = []
 
         if world_state and (world_state.get("people") or world_state.get("objects")):
             world_str = _format_world_state(world_state)
             if world_str:
-                if not recent_conversation:
-                    system_parts.append(f"\n[Physical World State]\n{world_str}")
-                else:
-                    grounding_parts.append(f"[Physical World State]:\n{world_str}")
+                grounding_parts.append(f"[Physical World State]:\n{world_str}")
 
         if memories:
             mem_str = _format_memories(memories, self._budget["retrieved_memories"])
             if mem_str:
-                if not recent_conversation:
-                    system_parts.append(f"\n[Memories]\n{mem_str}")
-                else:
-                    grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
+                grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
 
         messages.append({"role": "system", "content": "\n".join(system_parts)})
 

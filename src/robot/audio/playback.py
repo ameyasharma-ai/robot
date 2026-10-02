@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from collections import deque
 import threading
 
 import numpy as np
 import sounddevice as sd
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*Setting the shape on a NumPy array.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="sounddevice")
 
 from robot.telemetry import get_logger
 

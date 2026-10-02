@@ -31,8 +31,9 @@ def test_context_with_memories():
         user_text="Hello",
         memories=memories,
     )
-    system_content = messages[0]["content"]
-    assert "Ameya" in system_content or "dark mode" in system_content
+    # Memories are grounded either in system prompt or dynamically in the turn
+    full_content = " ".join(m.get("content", "") for m in messages)
+    assert "Ameya" in full_content or "dark mode" in full_content
 
 
 def test_context_with_conversation():

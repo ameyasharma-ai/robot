@@ -56,13 +56,18 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    # --- Web Search Tools (Ultra-fast Multi-engine) ---
+    # Short-Lived in-memory search LRU cache (TTL: 10 minutes)
+    _search_cache: dict[str, tuple[float, list[dict]]] = {}
+    SEARCH_CACHE_TTL = 600.0
+
+    # --- Web Search Tools (Ultra-fast Multi-engine with LRU Cache) ---
     async def web_search(query: str, max_results: int = 4) -> list[dict]:
         """Perform an ultra-fast, extensive web search with multi-engine failover."""
         import asyncio
         import html as html_lib
         import json
         import re
+        import time as _time
         import urllib.parse
         import urllib.request
 
@@ -78,6 +83,13 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             if lower_q.startswith(prefix) and len(clean_q) > len(prefix) + 3:
                 clean_q = clean_q[len(prefix):].strip(" ?:.,!")
                 break
+
+        cache_key = f"{clean_q.lower()}::{max_results}"
+        now = _time.time()
+        if cache_key in _search_cache:
+            ts, cached_res = _search_cache[cache_key]
+            if now - ts < SEARCH_CACHE_TTL:
+                return cached_res
 
         def _execute_search():
             # 1. Primary Engine: DuckDuckGo Lite with paired Title, URL, and Snippet extraction
@@ -193,7 +205,10 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
 
             return [{"error": f"No web search results could be retrieved for '{clean_q}'."}]
 
-        return await asyncio.to_thread(_execute_search)
+        results = await asyncio.to_thread(_execute_search)
+        if results and isinstance(results, list) and "error" not in results[0]:
+            _search_cache[cache_key] = (_time.time(), results)
+        return results
 
     engine.tool_registry.register(
         ToolDefinition(

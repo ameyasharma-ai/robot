@@ -24,8 +24,8 @@ class LocalStableDiffusionProvider(ImageProvider):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.model_id = model_id
         self._pipe = None
-        self._backend = "cpu"
-        self._device = "CPU"
+        self._backend = "cpu+amd_opt"
+        self._device = "AMD Ryzen 7 6800H + Radeon 680M Platform"
         self._fallback = True
         self._model_loaded = False
         
@@ -60,7 +60,9 @@ class LocalStableDiffusionProvider(ImageProvider):
         import torch
         from diffusers import StableDiffusionPipeline
         
-        # Use CPU to strictly avoid NVIDIA
+        # Optimize multi-core execution for AMD Ryzen 7 6800H host platform
+        torch.set_num_threads(8)
+        torch.set_num_interop_threads(2)
         device = torch.device("cpu")
         
         # Download and load
@@ -70,9 +72,21 @@ class LocalStableDiffusionProvider(ImageProvider):
             safety_checker=None,
             requires_safety_checker=False,
         )
+        # Use DPMSolverMultistepScheduler with steps_offset=1 to eliminate diffusers warning and accelerate inference
+        try:
+            from diffusers import DPMSolverMultistepScheduler
+            self._pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+                self._pipe.scheduler.config,
+                steps_offset=1,
+            )
+        except Exception:
+            pass
         self._pipe = self._pipe.to(device)
+        # Enable attention slicing for minimal memory footprint and fast inference
+        if hasattr(self._pipe, "enable_attention_slicing"):
+            self._pipe.enable_attention_slicing()
         self._model_loaded = True
-        logger.info("sd_model_loaded")
+        logger.info("sd_model_loaded", backend=self._backend, device=self._device)
 
     async def generate(self, job: ImageJob, interrupt: asyncio.Event) -> str:
         job.backend = self._backend

@@ -37,6 +37,19 @@ class GazeSystem {
      * Update gaze from OpenCV detected user face coordinates
      */
     setOpenCVFace(normX, normY) {
+        // Apply deadband threshold (2%) to suppress camera noise / 4Hz face-box jitter
+        if (this.opencvTarget.active) {
+            const dx = Math.abs(normX - this.opencvTarget.norm_x);
+            const dy = Math.abs(normY - this.opencvTarget.norm_y);
+            if (dx < 0.02 && dy < 0.02) {
+                this.opencvTarget.lastSeen = performance.now();
+                return;
+            }
+            // Low-pass exponential smoothing on input coordinates (alpha = 0.4)
+            normX = this.opencvTarget.norm_x * 0.6 + normX * 0.4;
+            normY = this.opencvTarget.norm_y * 0.6 + normY * 0.4;
+        }
+
         this.opencvTarget.norm_x = normX;
         this.opencvTarget.norm_y = normY;
         this.opencvTarget.active = true;

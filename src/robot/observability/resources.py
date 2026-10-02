@@ -47,7 +47,7 @@ class SystemMetricsCollector:
                 "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
                 "--format=csv,noheader,nounits",
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=0.8)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=2.5)
             if res.returncode == 0 and res.stdout.strip():
                 parts = [p.strip() for p in res.stdout.strip().split(",")]
                 if len(parts) >= 4:
@@ -64,11 +64,15 @@ class SystemMetricsCollector:
         # 3. AMD Radeon 680M (Integrated GPU via sysfs)
         try:
             amd_busy = None
-            # Check DRM sysfs device paths
-            for path in [
-                "/sys/class/drm/card0/device/gpu_busy_percent",
+            # Check DRM sysfs device paths across all detected cards
+            candidates = [
+                "/sys/class/drm/card2/device/gpu_busy_percent",
                 "/sys/class/drm/card1/device/gpu_busy_percent",
-            ]:
+                "/sys/class/drm/card0/device/gpu_busy_percent",
+                "/sys/class/drm/renderD129/device/gpu_busy_percent",
+                "/sys/class/drm/renderD128/device/gpu_busy_percent",
+            ]
+            for path in candidates:
                 if os.path.exists(path):
                     try:
                         with open(path, "r") as f:

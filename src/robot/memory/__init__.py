@@ -31,8 +31,15 @@ class Mem0Provider:
         self._initialized = False
 
     async def initialize(self) -> None:
-        """Initialize Mem0 with local configuration."""
         try:
+            # Suppress spaCy missing warnings if spaCy NLP extra is not installed
+            try:
+                import mem0.utils.spacy_models as sm
+                sm._load_failed_full = True
+                sm._load_failed_lemma = True
+            except Exception:
+                pass
+
             from mem0 import Memory
 
             vector_store_cfg = self._config.get("vector_store", {})
@@ -140,10 +147,14 @@ class Mem0Provider:
             else:
                 results = []
 
-            # Ensure all items in results are dictionaries
+            score_threshold = float(self._config.get("score_threshold", 0.78))
             cleaned = []
             for item in results:
                 if isinstance(item, dict):
+                    # Filter out low-confidence semantic matches that dilute context
+                    score = item.get("score")
+                    if score is not None and score < score_threshold:
+                        continue
                     cleaned.append(item)
                 elif isinstance(item, str):
                     cleaned.append({"memory": item})
@@ -181,6 +192,20 @@ class Mem0Provider:
 
     async def health_check(self) -> bool:
         return self._initialized and self._memory is not None
+
+    async def close(self) -> None:
+        """Close vector store and embedder resources cleanly."""
+        if self._memory:
+            try:
+                # Close vector client (Qdrant) if open
+                vector_store = getattr(self._memory, "vector_store", None)
+                if vector_store:
+                    client = getattr(vector_store, "client", None)
+                    if client and hasattr(client, "close"):
+                        client.close()
+            except Exception:
+                pass
+        self._initialized = False
 
 
 class ConversationHistory:
@@ -374,6 +399,15 @@ class ConversationHistory:
     async def health_check(self) -> bool:
         return self._conn is not None
 
+    async def close(self) -> None:
+        """Close SQLite connection cleanly."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
 
 class MemoryManager:
     """Orchestrates Mem0 + SQLite for the whitepaper's memory architecture.
@@ -416,18 +450,19 @@ class MemoryManager:
         if any(trig in lower_u for trig in remember_triggers):
             await self.history.add_fact(user_text, user_id="user")
 
-        # Mem0 semantic memory (extract facts/preferences)
+        # Mem0 semantic memory (store fact without LLM extraction overhead to protect llama-server KV-cache)
         messages = [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": bot_text},
         ]
-        await self.mem0.add(messages, user_id="user")
+        await self.mem0.add(messages, user_id="user", infer=False)
 
     async def add_memory(self, fact: str, user_id: str = "user") -> None:
         """Explicitly add a durable memory."""
         await self.history.add_fact(fact, user_id=user_id)
         if self.mem0._initialized:
-            await self.mem0.add([{"role": "user", "content": fact}], user_id=user_id)
+            await self.mem0.add([{"role": "user", "content": fact}], user_id=user_id, infer=False)
+
 
     async def get_relevant_memories(self, query: str, limit: int = 5) -> list[dict]:
         """Retrieve relevant memories for context injection."""
@@ -467,3 +502,8 @@ class MemoryManager:
     async def search_history(self, query: str, limit: int = 10) -> list[dict]:
         """Full-text search across all conversations."""
         return await self.history.search(query, limit)
+
+    async def close(self) -> None:
+        """Cleanly close database and vector store handles."""
+        await self.history.close()
+        await self.mem0.close()

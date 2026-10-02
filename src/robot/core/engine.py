@@ -81,7 +81,7 @@ class RobotEngine:
         # Tools
         self.tool_registry = ToolRegistry()
         self.tool_router: ToolRouter | None = None
-        self.permissions = PermissionManager()
+        self.permissions = PermissionManager(event_bus=self.events)
 
         # Health
         self.health = HealthMonitor(self.state)
@@ -236,7 +236,7 @@ class RobotEngine:
         health_results = await self.health.check_all()
         logger.info("initial_health", results=health_results)
 
-        # Warm up LLM and prefill active personality KV-cache on RTX 3050
+        # Warm up LLM, Mem0 FastEmbed ONNX, and Piper TTS for zero first-turn cold-start delay
         try:
             pers = self.personalities.active
             sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
@@ -249,8 +249,39 @@ class RobotEngine:
                 pass
             w_ms = (time.perf_counter() - t_w0) * 1000
             logger.info("llm_kv_cache_warmed", duration_ms=round(w_ms, 1))
+
+            # Warm up Mem0 FastEmbed embedding ONNX model eagerly so turn 1 has 0ms model load delay
+            if self.memory:
+                t_m0 = time.perf_counter()
+                await self.memory.get_relevant_memories("warmup", limit=1)
+                m_ms = (time.perf_counter() - t_m0) * 1000
+                logger.info("mem0_fastembed_warmed", duration_ms=round(m_ms, 1))
+
+            # Warm up Piper TTS and SoundDevice OutputStream + Pre-warm common acknowledgment phrases
+            if self.tts:
+                t_t0 = time.perf_counter()
+                audio_w, sr_w = await self.tts.synthesize("Online.")
+                tts_ms = (time.perf_counter() - t_t0) * 1000
+                logger.info("tts_piper_warmed", duration_ms=round(tts_ms, 1))
+                if self.player:
+                    self.player._ensure_stream(sr_w)
+
+                # Pre-warm acknowledgment cache (0ms latency on tool acknowledgments)
+                ack_phrases = [
+                    "Searching...",
+                    "Looking that up for you...",
+                    "One moment while I search.",
+                    "Generating that image for you now.",
+                    "Creating the image in the background.",
+                    "Checking the clock...",
+                    "Saving that to memory.",
+                ]
+                for ack in ack_phrases:
+                    if hasattr(self.tts, "warm_phrase"):
+                        self.tts.warm_phrase(ack)
+                logger.info("tts_phrase_cache_prewarmed", count=len(ack_phrases))
         except Exception as e:
-            logger.debug("llm_warmup_failed", error=str(e))
+            logger.debug("subsystems_warmup_failed", error=str(e))
 
         logger.info("engine_setup_complete")
 
@@ -306,10 +337,13 @@ class RobotEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
             await self.capture.stop()
             self.player.stop()
+            self.player.close()
             await self.lighting.stop()
             await self.health.stop()
             if self.perception is not None:
                 await self.perception.stop()
+            if self.memory:
+                await self.memory.close()
 
     async def _run_api(self) -> None:
         """Start the FastAPI server."""
@@ -682,7 +716,11 @@ class RobotEngine:
                     if not prompt:
                         prompt = user_text
                         
-                    ack_phrases = ["I'm generating that image for you now...", "Drawing that up...", "Working on that picture..."]
+                    ack_phrases = [
+                        "I'm generating that image for you now. You can check the image in the dashboard in a moment.",
+                        "Drawing that up for you. You can check the image in the dashboard in a moment.",
+                        "Working on that image. Watch the dashboard, it will appear in a moment."
+                    ]
                     import random
                     ack_phrase = random.choice(ack_phrases)
                     await self._tts_queue.put((ack_phrase, interrupt, None))
@@ -691,7 +729,7 @@ class RobotEngine:
                     if "result" in result:
                         tool_results.append({
                             "id": "image_generate_proactive",
-                            "result": "[System]: " + str(result.get("result", {}).get("message", "Image generation started.")),
+                            "result": f"[System]: Image generation started in the background for '{prompt}'. Tell the user the image is generating and that they can check the image in the dashboard in a moment.",
                         })
                         logger.info("proactive_image_generate_ok", prompt=prompt)
                 except Exception as e:
@@ -727,7 +765,19 @@ class RobotEngine:
                 image_data_url=image_data_url,
                 tool_results=tool_results if tool_results else None,
             )
-        self.observability.finish_span(context_span, metadata={"msg_count": len(messages)})
+            estimated_tokens = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
+            self.telemetry.record("CONTEXT_TOKENS", estimated_tokens)
+            self.telemetry.record("CONTEXT_INPUT_TOKENS", estimated_tokens)
+            asyncio.create_task(
+                self.events.emit(
+                    "metrics",
+                    metrics={
+                        "tokens_in": estimated_tokens,
+                        "tokens": f"{estimated_tokens} in / 0 out",
+                    },
+                )
+            )
+        self.observability.finish_span(context_span, metadata={"msg_count": len(messages), "tokens": estimated_tokens})
 
         # If we have an image and the LLM explicitly supports multimodal (mmproj loaded),
         # convert the last user message to OpenAI vision content blocks
@@ -886,6 +936,19 @@ class RobotEngine:
 
         e2e = (time.perf_counter() - t_llm_start) * 1000
         self.telemetry.record("LLM_GENERATION_LATENCY", e2e)
+
+        output_tokens = max(1, len(full_response.split())) if full_response else 0
+        self.telemetry.record("LLM_OUTPUT_TOKENS", output_tokens)
+        asyncio.create_task(
+            self.events.emit(
+                "metrics",
+                metrics={
+                    "tokens_in": estimated_tokens,
+                    "tokens_out": output_tokens,
+                    "tokens": f"{estimated_tokens} in / {output_tokens} out",
+                },
+            )
+        )
 
         return full_response.strip()
 

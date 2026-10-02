@@ -55,12 +55,14 @@ def test_context_engine_injects_world_state():
     )
 
     assert len(messages) == 2
-    system_msg = messages[0]["content"]
-    assert "[Physical World State]" in system_msg
-    assert "people_present: 1" in system_msg
-    assert "pos=center" in system_msg
-    assert "motion_level: medium" in system_msg
-    assert "room_lighting: bright" in system_msg
+    # In live conversation and prompt evaluation, world state is grounded into the user prompt
+    # to keep the system prompt 100% invariant for KV cache reuse (<200ms TTFT)
+    full_context = " ".join(m["content"] for m in messages)
+    assert "[Physical World State]" in full_context
+    assert "people_present: 1" in full_context
+    assert "pos=center" in full_context
+    assert "motion_level: medium" in full_context
+    assert "room_lighting: bright" in full_context
 
 
 class DummyCamera(CameraCapture):

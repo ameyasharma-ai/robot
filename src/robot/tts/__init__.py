@@ -42,15 +42,25 @@ class TTSProvider:
 class PiperTTS(TTSProvider):
     """Piper ONNX TTS engine — local, low-latency voice synthesis.
 
-    Produces WAV audio from text using ONNX Runtime.
+    Produces WAV audio from text using ONNX Runtime with an in-memory
+    phrase cache for instant 0ms synthesis of repetitive/acknowledgment phrases.
     """
 
     def __init__(self, model_path: str) -> None:
         logger.info("loading_piper", model=model_path)
         self._voice = piper.PiperVoice.load(model_path)
         logger.info("piper_loaded")
+        self._phrase_cache: dict[str, tuple[np.ndarray, int]] = {}
+
+    def _normalize_key(self, text: str) -> str:
+        return text.strip().lower()
 
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
+        norm_key = self._normalize_key(text)
+        if norm_key in self._phrase_cache:
+            audio, sr = self._phrase_cache[norm_key]
+            return audio.copy(), sr
+
         chunks = []
         sr = 16000
         for chunk in self._voice.synthesize(text):
@@ -58,14 +68,30 @@ class PiperTTS(TTSProvider):
             if chunk.sample_rate:
                 sr = chunk.sample_rate
         if not chunks:
-            return np.array([], dtype=np.float32), sr
-        if len(chunks) == 1:
-            return chunks[0], sr
-        return np.concatenate(chunks), sr
+            res = (np.array([], dtype=np.float32), sr)
+        elif len(chunks) == 1:
+            res = (chunks[0], sr)
+        else:
+            res = (np.concatenate(chunks), sr)
+
+        # Cache short phrases (< 120 chars) in memory
+        if len(norm_key) < 120:
+            self._phrase_cache[norm_key] = res
+        return res
+
+    def warm_phrase(self, text: str) -> tuple[np.ndarray, int]:
+        """Pre-synthesize and store phrase in memory cache for 0ms instant playback."""
+        return self._synthesize_sync(text)
 
     async def synthesize(self, text: str) -> tuple[np.ndarray, int]:
+        norm_key = self._normalize_key(text)
+        if norm_key in self._phrase_cache:
+            audio, sr = self._phrase_cache[norm_key]
+            return audio.copy(), sr
+
         import asyncio
         return await asyncio.to_thread(self._synthesize_sync, text)
 
     async def health_check(self) -> bool:
         return self._voice is not None
+

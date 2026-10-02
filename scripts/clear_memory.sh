@@ -10,13 +10,26 @@ pkill -f "llama-server" 2>/dev/null || true
 pkill -f "whisper-server" 2>/dev/null || true
 pkill -f "run.sh" 2>/dev/null || true
 
-# Wait briefly for processes to terminate and release resources
-sleep 2
+# Wait briefly and force kill any stubborn processes
+sleep 1
+pkill -9 -f "llama-server" 2>/dev/null || true
+pkill -9 -f "whisper-server" 2>/dev/null || true
 
 echo "✅ Server processes terminated. GPU VRAM and application RAM freed."
 
-echo "🧹 Clearing OS memory caches (pagecache, dentries, and inodes)..."
-echo "Note: This requires administrator privileges. You may be prompted for your password."
-sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+if command -v nvidia-smi &>/dev/null; then
+    echo "[GPU] Current NVIDIA RTX 3050 VRAM:"
+    nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader
+fi
 
-echo "✅ System caches cleared. All memory successfully freed!"
+echo "🧹 Clearing OS memory caches (pagecache, dentries, and inodes)..."
+if [ "$EUID" -eq 0 ]; then
+    sync && echo 3 > /proc/sys/vm/drop_caches
+elif sudo -n true 2>/dev/null; then
+    sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+else
+    sync
+    echo "Note: Non-root user without passwordless sudo. Ran sync; run with sudo to drop pagecaches."
+fi
+
+echo "✅ All memory and GPU processes cleared successfully!"

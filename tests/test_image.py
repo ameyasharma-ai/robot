@@ -20,7 +20,7 @@ def memory_guard():
 def test_provider_initialization(memory_guard):
     provider = LocalStableDiffusionProvider(model_id="test-model")
     assert provider.model_id == "test-model"
-    assert provider._backend == "cpu"
+    assert "cpu" in provider._backend
     assert provider._fallback is True
 
 def test_missing_model_handling(memory_guard):

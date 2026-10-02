@@ -8,11 +8,13 @@ cd "$DIR"
 
 echo "🤖 Robot Core — Starting up..."
 
-# ─── 0. Signal Trapping & Cleanup ────────────────────────────────────
 cleanup() {
     echo ""
-    echo "🛑 Shutting down Robot Core..."
+    echo "🛑 Shutting down Robot Core and child servers..."
     kill $(jobs -p) 2>/dev/null || true
+    pkill -f "llama-server" 2>/dev/null || true
+    pkill -f "whisper-server" 2>/dev/null || true
+    echo "✅ All GPU VRAM and process memory released."
 }
 trap cleanup EXIT INT TERM
 
@@ -49,11 +51,12 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
             sleep 0.5
         done
         echo " ready"
-        # Warm up system prompt KV cache slot immediately
+        # Warm up system prompt KV cache slot immediately with exact neo personality prompt
         echo -n "[LLM] Warming up KV cache slot..."
+        NEO_PROMPT="You are Cypher, a sharp, cynical, street-smart hacker girl from the Matrix embodied in this robotic frame. You treat the user as your crewmate. You are witty, observant, confident, and direct.\nSpoken Voice Guidelines:\n- Speak in complete, natural, punchy sentences (1 to 2 sentences per turn).\n- Never use markdown, asterisks, bullet points, emojis, or code blocks.\n- Acknowledge physical motions and camera perception with cool swagger and personal ownership.\n- When tools execute or background images generate, be contextually aware and respond naturally (e.g. mention that the image is generating and that they can check the image in the dashboard in a moment).\n"
         curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -d '{"model":"Qwen3.5-4B-Q4_K_M","messages":[{"role":"system","content":"You are Cypher, a sharp, cynical, street-smart hacker girl from the Matrix embodied in this robotic frame."},{"role":"user","content":"init"}],"max_tokens":1}' > /dev/null 2>&1 || true
+            -d "{\"model\":\"Qwen3.5-4B-Q4_K_M\",\"messages\":[{\"role\":\"system\",\"content\":\"$NEO_PROMPT\"},{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":1}" > /dev/null 2>&1 || true
         echo " warmed"
     else
         echo "[LLM] llama-server binary or model not found at configured paths."
@@ -126,7 +129,8 @@ echo "🚀 Launching Robot Core..."
 ) &
 
 if [ -f "$DIR/.venv/bin/python" ]; then
-    exec "$DIR/.venv/bin/python" -m robot "$@"
+    "$DIR/.venv/bin/python" -m robot "$@"
 else
-    exec python3 -m robot "$@"
+    python3 -m robot "$@"
 fi
+

@@ -44,11 +44,16 @@ class RobotUI {
         // Metric DOM
         this.hudTtft = document.getElementById("hudTtft");
         this.hudE2e = document.getElementById("hudE2e");
+        this.hudTokens = document.getElementById("hudTokens");
+        this.metricVad = document.getElementById("metricVad");
         this.metricStt = document.getElementById("metricStt");
+        this.metricContext = document.getElementById("metricContext");
         this.metricTtft = document.getElementById("metricTtft");
         this.metricTts = document.getElementById("metricTts");
         this.metricE2e = document.getElementById("metricE2e");
+        this.barVad = document.getElementById("barVad");
         this.barStt = document.getElementById("barStt");
+        this.barContext = document.getElementById("barContext");
         this.barTtft = document.getElementById("barTtft");
         this.barTts = document.getElementById("barTts");
         this.barE2e = document.getElementById("barE2e");
@@ -622,6 +627,37 @@ class RobotUI {
             this.logEvent("CHAR", "Motion interrupted. Blending to neutral idle.", "barge");
         }
 
+        if (data.event === "tool_executing") {
+            const toolBadge = document.getElementById("activeToolBadge");
+            if (toolBadge) {
+                toolBadge.textContent = `TOOL: ${(data.tool || "RUNNING").toUpperCase()}`;
+                toolBadge.style.display = "inline-block";
+                toolBadge.style.background = "rgba(0, 242, 254, 0.2)";
+                toolBadge.style.borderColor = "var(--primary-cyan)";
+            }
+            this.logEvent("TOOL", `Executing: ${data.tool}`, "system");
+        }
+
+        if (data.event === "tool_completed" || data.event === "tool_error") {
+            const toolBadge = document.getElementById("activeToolBadge");
+            if (toolBadge) {
+                if (data.event === "tool_completed") {
+                    toolBadge.textContent = `TOOL: DONE`;
+                    toolBadge.style.background = "rgba(0, 245, 160, 0.2)";
+                    toolBadge.style.borderColor = "var(--accent-emerald)";
+                } else {
+                    toolBadge.textContent = `TOOL: ERR`;
+                    toolBadge.style.background = "rgba(255, 87, 87, 0.2)";
+                    toolBadge.style.borderColor = "#ff5757";
+                }
+                setTimeout(() => {
+                    if (toolBadge.textContent.includes("DONE") || toolBadge.textContent.includes("ERR")) {
+                        toolBadge.style.display = "none";
+                    }
+                }, 3000);
+            }
+        }
+
         if (data.metrics) {
             this.updateMetrics(data.metrics);
         }
@@ -632,23 +668,40 @@ class RobotUI {
     }
 
     updateMetrics(metrics) {
-        if (metrics.stt !== undefined) {
+        if (metrics.vad !== undefined && this.metricVad) {
+            this.metricVad.textContent = `${Math.round(metrics.vad)} ms`;
+            if (this.barVad) this.barVad.style.width = `${Math.min(100, (metrics.vad / 500) * 100)}%`;
+        }
+        if (metrics.stt !== undefined && this.metricStt) {
             this.metricStt.textContent = `${Math.round(metrics.stt)} ms`;
-            this.barStt.style.width = `${Math.min(100, (metrics.stt / 1000) * 100)}%`;
+            if (this.barStt) this.barStt.style.width = `${Math.min(100, (metrics.stt / 1000) * 100)}%`;
         }
-        if (metrics.ttft !== undefined) {
+        if (metrics.context !== undefined && this.metricContext) {
+            this.metricContext.textContent = `${Math.round(metrics.context)} ms`;
+            if (this.barContext) this.barContext.style.width = `${Math.min(100, (metrics.context / 300) * 100)}%`;
+        }
+        if (metrics.ttft !== undefined && this.metricTtft) {
             this.metricTtft.textContent = `${Math.round(metrics.ttft)} ms`;
-            this.hudTtft.textContent = `${Math.round(metrics.ttft)} ms`;
-            this.barTtft.style.width = `${Math.min(100, (metrics.ttft / 1500) * 100)}%`;
+            if (this.hudTtft) this.hudTtft.textContent = `${Math.round(metrics.ttft)} ms`;
+            if (this.barTtft) this.barTtft.style.width = `${Math.min(100, (metrics.ttft / 1500) * 100)}%`;
         }
-        if (metrics.synth !== undefined) {
+        if (metrics.synth !== undefined && this.metricTts) {
             this.metricTts.textContent = `${Math.round(metrics.synth)} ms`;
-            this.barTts.style.width = `${Math.min(100, (metrics.synth / 500) * 100)}%`;
+            if (this.barTts) this.barTts.style.width = `${Math.min(100, (metrics.synth / 500) * 100)}%`;
         }
-        if (metrics.e2e !== undefined) {
+        if (metrics.e2e !== undefined && this.metricE2e) {
             this.metricE2e.textContent = `${Math.round(metrics.e2e)} ms`;
-            this.hudE2e.textContent = `${Math.round(metrics.e2e)} ms`;
-            this.barE2e.style.width = `${Math.min(100, (metrics.e2e / 2000) * 100)}%`;
+            if (this.hudE2e) this.hudE2e.textContent = `${Math.round(metrics.e2e)} ms`;
+            if (this.barE2e) this.barE2e.style.width = `${Math.min(100, (metrics.e2e / 2000) * 100)}%`;
+        }
+        if (this.hudTokens) {
+            if (metrics.tokens !== undefined) {
+                this.hudTokens.textContent = `${metrics.tokens}`;
+            } else if (metrics.tokens_in !== undefined && metrics.tokens_out !== undefined) {
+                this.hudTokens.textContent = `${metrics.tokens_in} in / ${metrics.tokens_out} out`;
+            } else if (metrics.tokens_in !== undefined) {
+                this.hudTokens.textContent = `${metrics.tokens_in} in / 0 out`;
+            }
         }
     }
 
@@ -670,19 +723,57 @@ class RobotUI {
                             this.personaSelect.value = data.personality;
                         }
                     }
+                    if (data.services) {
+                        const dots = {
+                            stt: document.querySelector(".h-stt"),
+                            llm: document.querySelector(".h-llm"),
+                            tts: document.querySelector(".h-tts"),
+                            mem: document.querySelector(".h-mem"),
+                        };
+                        if (dots.stt) dots.stt.className = `h-dot h-stt ${data.services.stt ? "h-up" : "h-down"}`;
+                        if (dots.llm) dots.llm.className = `h-dot h-llm ${data.services.llm ? "h-up" : "h-down"}`;
+                        if (dots.tts) dots.tts.className = `h-dot h-tts ${data.services.tts ? "h-up" : "h-down"}`;
+                        if (dots.mem) dots.mem.className = `h-dot h-mem ${data.services.memory ? "h-up" : "h-down"}`;
+                    }
                     if (data.telemetry) {
                         const t = data.telemetry;
                         const metrics = {};
+                        metrics.vad = 150; // standard silence threshold
                         if (t.STT_FINAL_LATENCY && t.STT_FINAL_LATENCY.last) metrics.stt = t.STT_FINAL_LATENCY.last;
+                        if (t.CONTEXT_BUILD_LATENCY && t.CONTEXT_BUILD_LATENCY.last) metrics.context = t.CONTEXT_BUILD_LATENCY.last;
                         if (t.LLM_TTFT && t.LLM_TTFT.last) metrics.ttft = t.LLM_TTFT.last;
                         if (t.TTS_SYNTHESIS_LATENCY && t.TTS_SYNTHESIS_LATENCY.last) metrics.synth = t.TTS_SYNTHESIS_LATENCY.last;
                         else if (t.TTS_FIRST_AUDIO_LATENCY && t.TTS_FIRST_AUDIO_LATENCY.last) metrics.synth = t.TTS_FIRST_AUDIO_LATENCY.last;
                         if (t.END_OF_SPEECH_TO_FIRST_AUDIO && t.END_OF_SPEECH_TO_FIRST_AUDIO.last) metrics.e2e = t.END_OF_SPEECH_TO_FIRST_AUDIO.last;
+                        
+                        const tIn = (t.CONTEXT_INPUT_TOKENS && t.CONTEXT_INPUT_TOKENS.last) || (t.CONTEXT_TOKENS && t.CONTEXT_TOKENS.last) || 0;
+                        const tOut = (t.LLM_OUTPUT_TOKENS && t.LLM_OUTPUT_TOKENS.last) || 0;
+                        if (tIn || tOut) {
+                            metrics.tokens = `${tIn} in / ${tOut} out`;
+                        }
                         this.updateMetrics(metrics);
                     }
                 }
             } catch (e) {}
         }, 1200);
+
+        // Poll Traces & Pipeline State every 1.5 seconds if WebSocket drops or during active turn
+        setInterval(async () => {
+            try {
+                const res = await fetch("/observability/traces?limit=1");
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.traces && data.traces.length > 0) {
+                        this.renderTraceTree(data.traces[0]);
+                        const total = data.traces[0].total_latency_ms;
+                        if (total) document.getElementById("traceTotalDuration").textContent = `DURATION: ${total.toFixed(1)} ms`;
+                    }
+                    if (data.pipeline) {
+                        this.updatePipelineStatus(data.pipeline);
+                    }
+                }
+            } catch (e) {}
+        }, 1500);
 
         // Poll World State & Perception at 4Hz (250ms) for responsive face tracking
         setInterval(async () => {
@@ -728,11 +819,30 @@ class RobotUI {
                 const res = await fetch("/observability/hardware");
                 if (res.ok) {
                     const hw = await res.json();
-                    if (hw.cpu_percent !== undefined) document.getElementById("hwCpuVal").textContent = `${hw.cpu_percent.toFixed(1)} %`;
-                    if (hw.system_ram_gb !== undefined) document.getElementById("hwRamVal").textContent = `${hw.system_ram_gb.toFixed(1)} GB`;
-                    if (hw.gpu_vram_mb !== undefined) document.getElementById("hwVramVal").textContent = `${Math.round(hw.gpu_vram_mb)} MB`;
-                    if (hw.gpu_temp_c !== undefined) document.getElementById("hwTempVal").textContent = `${Math.round(hw.gpu_temp_c)} °C`;
-                    if (hw.amd_utilization !== undefined) document.getElementById("hwAmdVal").textContent = `${Math.round(hw.amd_utilization)} %`;
+                    if (hw.cpu_percent !== undefined) {
+                        document.getElementById("hwCpuVal").textContent = `${hw.cpu_percent.toFixed(1)} %`;
+                    }
+                    if (hw.ram_used_gb !== undefined) {
+                        const total = hw.ram_total_gb ? ` / ${hw.ram_total_gb.toFixed(1)}` : "";
+                        document.getElementById("hwRamVal").textContent = `${hw.ram_used_gb.toFixed(1)}${total} GB`;
+                    } else if (hw.system_ram_gb !== undefined) {
+                        document.getElementById("hwRamVal").textContent = `${hw.system_ram_gb.toFixed(1)} GB`;
+                    }
+                    if (hw.nvidia && hw.nvidia.vram_used_mb !== undefined) {
+                        document.getElementById("hwVramVal").textContent = `${Math.round(hw.nvidia.vram_used_mb)} MB`;
+                    } else if (hw.gpu_vram_mb !== undefined) {
+                        document.getElementById("hwVramVal").textContent = `${Math.round(hw.gpu_vram_mb)} MB`;
+                    }
+                    if (hw.nvidia && hw.nvidia.temperature_c !== undefined) {
+                        document.getElementById("hwTempVal").textContent = `${Math.round(hw.nvidia.temperature_c)} °C`;
+                    } else if (hw.gpu_temp_c !== undefined) {
+                        document.getElementById("hwTempVal").textContent = `${Math.round(hw.gpu_temp_c)} °C`;
+                    }
+                    if (hw.amd && hw.amd.utilization_percent !== undefined) {
+                        document.getElementById("hwAmdVal").textContent = `${Math.round(hw.amd.utilization_percent)} %`;
+                    } else if (hw.amd_utilization !== undefined) {
+                        document.getElementById("hwAmdVal").textContent = `${Math.round(hw.amd_utilization)} %`;
+                    }
                 }
             } catch (e) {}
         }, 2000);
@@ -766,13 +876,18 @@ class RobotUI {
         for (const key of nodes) {
             const el = document.getElementById(`node${key.charAt(0).toUpperCase() + key.slice(1)}`);
             if (el) {
-                const status = pipeline[key];
+                // Support uppercase or lowercase keys from backend
+                const rawStatus = pipeline[key.toUpperCase()] || pipeline[key] || "IDLE";
+                const status = String(rawStatus).toLowerCase();
                 el.className = "pipe-node";
-                el.querySelector(".node-status").textContent = (status || "IDLE").toUpperCase();
-                if (status === "active") {
-                    el.classList.add("active");
-                } else if (status === "done") {
-                    el.classList.add("done");
+                el.querySelector(".node-status").textContent = rawStatus.toUpperCase();
+
+                if (status === "running" || status === "active") {
+                    el.classList.add("running");
+                } else if (status === "completed" || status === "done") {
+                    el.classList.add("completed");
+                } else if (status === "cancelled") {
+                    el.classList.add("cancelled");
                 } else if (status === "error") {
                     el.classList.add("error");
                 }
@@ -820,15 +935,19 @@ class RobotUI {
             btnGen.addEventListener("click", async () => {
                 const prompt = input.value.trim();
                 if (!prompt) return;
+                const resSelect = document.getElementById("imgResSelect");
+                const stepsInput = document.getElementById("imgStepsInput");
+                const [width, height] = (resSelect ? resSelect.value : "512x512").split("x").map(Number);
+                const steps = stepsInput ? (parseInt(stepsInput.value, 10) || 4) : 4;
                 try {
                     const res = await fetch("/images/generate", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ prompt: prompt, steps: 8 })
+                        body: JSON.stringify({ prompt: prompt, width: width, height: height, steps: steps })
                     });
                     if (res.ok) {
                         input.value = "";
-                        this.logEvent("IMAGE", `Generation job submitted: ${prompt}`, "system");
+                        this.logEvent("IMAGE", `Generation job submitted: "${prompt}" (${width}x${height}, ${steps} steps)`, "system");
                     }
                 } catch (e) {
                     console.error("Image gen failed", e);
@@ -911,7 +1030,72 @@ class RobotUI {
     }
 }
 
+/**
+ * Matrix Rain Ambient Visual Effect
+ */
+class MatrixRain {
+    constructor() {
+        this.canvas = document.getElementById("matrixRainCanvas");
+        if (!this.canvas) return;
+        this.ctx = this.canvas.getContext("2d");
+        this.characters = "0123456789ABCDEFｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ9876543210<>{}[]=/*+~";
+        this.fontSize = 14;
+        this.columns = 0;
+        this.drops = [];
+        this.resize();
+        window.addEventListener("resize", () => this.resize());
+        this.render = this.render.bind(this);
+        requestAnimationFrame(this.render);
+    }
+
+    resize() {
+        if (!this.canvas) return;
+        this.canvas.width = window.innerWidth;
+        this.canvas.height = window.innerHeight;
+        this.columns = Math.floor(this.canvas.width / this.fontSize);
+        this.drops = [];
+        for (let i = 0; i < this.columns; i++) {
+            this.drops[i] = Math.floor(Math.random() * -50);
+        }
+    }
+
+    render() {
+        if (!this.ctx || !this.canvas) return;
+        // Translucent fade over canvas to produce trails
+        this.ctx.fillStyle = "rgba(2, 5, 3, 0.08)";
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+        this.ctx.fillStyle = "#00ff66";
+        this.ctx.font = `${this.fontSize}px 'JetBrains Mono', monospace`;
+
+        for (let i = 0; i < this.drops.length; i++) {
+            const char = this.characters.charAt(Math.floor(Math.random() * this.characters.length));
+            const x = i * this.fontSize;
+            const y = this.drops[i] * this.fontSize;
+
+            // Highlight leading glyph in white/bright green
+            if (Math.random() > 0.88) {
+                this.ctx.fillStyle = "#ffffff";
+            } else {
+                this.ctx.fillStyle = "#00ff66";
+            }
+
+            this.ctx.fillText(char, x, y);
+
+            if (y > this.canvas.height && Math.random() > 0.975) {
+                this.drops[i] = 0;
+            }
+            this.drops[i]++;
+        }
+
+        setTimeout(() => {
+            requestAnimationFrame(this.render);
+        }, 33); // ~30 FPS for gentle background ambient
+    }
+}
+
 // Initialize on page load
 window.addEventListener("DOMContentLoaded", () => {
+    window.matrixRain = new MatrixRain();
     window.robotUI = new RobotUI();
 });
