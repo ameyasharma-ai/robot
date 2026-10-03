@@ -85,34 +85,64 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def inspect_view() -> dict[str, Any]:
-        """Deep visual inspection of current scene, objects, and people."""
+    async def what_do_you_see() -> dict[str, Any]:
+        """Perform visual inspection through the camera to report what the robot sees."""
         if not hasattr(engine, "perception") or not engine.perception:
-            return {"error": "Perception subsystem not active"}
+            return {
+                "summary": "Camera perception system is currently inactive.",
+                "people": [],
+                "objects": [],
+                "motion": "none",
+                "lighting": "normal",
+            }
 
         ws = engine.perception.world_state.to_compact()
         people_desc = []
         for p in ws.get("people", []):
-            people_desc.append(f"Person at {p.get('position')} ({p.get('distance')} range)")
+            dist = p.get("distance", "mid")
+            pos = p.get("position", "center")
+            people_desc.append(f"Person at {pos} ({dist} distance)")
 
         obj_desc = []
         for o in ws.get("objects", []):
-            obj_desc.append(f"{o.get('label')} at {o.get('position')}")
+            lbl = o.get("label", "item")
+            pos = o.get("position", "center")
+            obj_desc.append(f"{lbl} at {pos}")
 
+        details = []
+        if people_desc:
+            details.append("People detected: " + ", ".join(people_desc))
+        if obj_desc:
+            details.append("Objects detected: " + ", ".join(obj_desc))
+        if not details:
+            details.append("No distinct people or objects clearly recognized in the immediate camera frame. Suggest the user hold the object directly toward the camera.")
+
+        summary = f"Visual camera feed: {'; '.join(details)}. Ambient lighting: {ws.get('lighting', 'normal')}. Motion: {ws.get('motion', 'none')}."
         return {
-            "summary": f"Detected {len(people_desc)} people and {len(obj_desc)} physical objects in camera view.",
+            "summary": summary,
             "people": people_desc,
             "objects": obj_desc,
-            "motion": ws.get("motion"),
-            "lighting": ws.get("lighting"),
+            "lighting": ws.get("lighting", "normal"),
+            "motion": ws.get("motion", "none"),
         }
 
     engine.tool_registry.register(
         ToolDefinition(
-            name="perception.inspect_view",
-            description="Perform a visual inspection through the camera to identify what objects, people, and scene conditions are in front of the robot.",
+            name="perception.what_do_you_see",
+            description="Look through the physical camera and inspect the surroundings: identifies people, faces, objects being held or placed in front of the robot, distance, lighting, and movement. Call this tool when asked 'what do you see', 'what am I holding', 'what is this', 'who is here', or 'look around'.",
             parameters={"type": "object", "properties": {}},
-            handler=inspect_view,
+            handler=what_do_you_see,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="perception",
+        )
+    )
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="perception.inspect_view",
+            description="Alias for perception.what_do_you_see. Inspect current camera view for objects, people, and scene conditions.",
+            parameters={"type": "object", "properties": {}},
+            handler=what_do_you_see,
             permission_level=PermissionLevel.READ_ONLY,
             family="perception",
         )

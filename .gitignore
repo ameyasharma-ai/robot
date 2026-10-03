@@ -21,11 +21,14 @@ env/
 *~
 
 # Models (large binary files)
+*.gguf
+models/
 models/tts/*.onnx
 models/stt/*.bin
 models/llm/
 models/vision/*.pt
 models/vision/*.onnx
+models/vision/*.gguf
 models/fastembed/
 
 # Runtime data

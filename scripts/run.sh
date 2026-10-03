@@ -2,6 +2,7 @@
 # Robot Core — Production launcher
 # Starts infrastructure services and launches the voice pipeline.
 set -e
+export PYTHONWARNINGS="ignore::DeprecationWarning"
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
@@ -29,9 +30,22 @@ amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
 if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
     if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
         echo "[LLM] Starting llama-server (100% offload to RTX 3050, FlashAttention)..."
+        MMPROJ_ARG=""
+        NGL=99
+        MULTIMODAL_ENABLED=$(grep -E '^\s*multimodal:\s*true' "$DIR/config/default.yaml" || true)
+        if [ -n "$MULTIMODAL_ENABLED" ] && [ -f "$DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf" ]; then
+            echo "[LLM] Enabling multimodal vision projector ($DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf)..."
+            MMPROJ_ARG="--mmproj $DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf --mmproj-offload"
+            NGL=28
+        fi
+
+        pkill -9 -f "llama-server" 2>/dev/null || true
+        sleep 0.5
+
         /home/ameya/llama.cpp/build/bin/llama-server \
             -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
-            -ngl 99 \
+            $MMPROJ_ARG \
+            -ngl $NGL \
             -fa on \
             -ctk q8_0 \
             -ctv q8_0 \
@@ -43,14 +57,21 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
             --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
 
         echo -n "[LLM] Waiting for llama-server..."
-        for i in $(seq 1 30); do
+        READY=0
+        for i in $(seq 1 40); do
             if curl -s http://127.0.0.1:8080/health | grep -q '"ok"'; then
+                READY=1
                 break
             fi
             echo -n "."
             sleep 0.5
         done
-        echo " ready"
+        if [ "$READY" -eq 1 ]; then
+            echo " ready"
+        else
+            echo " FAILED (Check logs/llama-server.log)"
+            exit 1
+        fi
         # Warm up system prompt KV cache slot immediately with exact neo personality prompt
         echo -n "[LLM] Warming up KV cache slot..."
         NEO_PROMPT="You are Cypher, a sharp, cynical, street-smart hacker girl from the Matrix embodied in this robotic frame. You treat the user as your crewmate. You are witty, observant, confident, and direct.\nSpoken Voice Guidelines:\n- Speak in complete, natural, punchy sentences (1 to 2 sentences per turn).\n- Never use markdown, asterisks, bullet points, emojis, or code blocks.\n- Acknowledge physical motions and camera perception with cool swagger and personal ownership.\n- When tools execute or background images generate, be contextually aware and respond naturally (e.g. mention that the image is generating and that they can check the image in the dashboard in a moment).\n"

@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*Setting the shape on a NumPy array.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="sounddevice")
 
 from robot.core.engine import RobotEngine
 

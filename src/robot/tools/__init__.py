@@ -12,6 +12,14 @@ from enum import IntEnum
 from typing import Any, Callable, Coroutine
 
 from robot.telemetry import get_logger
+from robot.tools.coordinator import (
+    CoordinatorState,
+    HoldingStatus,
+    ToolCategory,
+    ToolContextState,
+    ToolConversationCoordinator,
+    ToolExecutionStatus,
+)
 
 logger = get_logger("tools")
 
@@ -92,12 +100,14 @@ class ToolRouter:
     """
 
     FAMILY_KEYWORDS: dict[str, list[str]] = {
-        "memory": ["remember", "recall", "forget", "memory", "preference", "favorite", "keep in mind", "store"],
-        "history": ["said", "told", "conversation", "yesterday", "last time", "before"],
+        "memory": ["remember", "recall", "forget", "memory", "preference", "favorite", "crush", "keep in mind", "store", "who is", "who's", "what is my", "did i tell you", "what was"],
+        "history": ["said", "told", "conversation", "yesterday", "last time", "before", "earlier"],
         "system": ["status", "health", "uptime", "service", "restart", "time", "date", "clock", "day of week", "what time", "what day"],
         "personality": ["personality", "switch", "mode", "character"],
-        "web": ["search", "look up", "find online", "browse", "google", "duckduckgo", "who is", "what is", "latest", "news", "price", "release date", "current"],
+        "web": ["search", "look up", "find online", "browse", "google", "duckduckgo", "latest", "news", "price", "release date", "current"],
         "image": ["generate image", "generate an image", "draw", "picture", "create image", "paint", "illustration", "generate picture", "photo", "render image", "image of"],
+        "motion": ["wave", "raise your hand", "raise hand", "kick", "walk", "turn", "point", "sit", "stand", "dance", "move", "gesture", "look at", "stop motion", "reset pose", "body", "nod", "motion"],
+        "perception": ["what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that", "look at this", "look around", "look at me", "who is here", "who is this", "camera", "snapshot", "inspect", "can you see", "do you see", "see", "what am i holding", "what i am holding", "view"],
     }
 
     def __init__(self, registry: ToolRegistry) -> None:
@@ -113,15 +123,13 @@ class ToolRouter:
                 selected_families.add(family)
 
         if not selected_families:
-            # General conversation: Do NOT inject tool schemas by default.
-            # Injecting 4+ tool schemas adds 400+ tokens on every turn, evicts KV cache,
-            # and increases TTFT by 400-500ms.
             return []
 
         tool_names = []
         for family in selected_families:
             for tool in self._registry.get_family(family):
-                tool_names.append(tool.name)
+                if tool.name not in tool_names:
+                    tool_names.append(tool.name)
 
         return tool_names
 

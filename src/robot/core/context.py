@@ -103,31 +103,8 @@ class ContextEngine:
                 tool_parts.append(f"[{tool_id}]: {result_text}")
             grounding_parts.append("[Tool Results — use these to answer]:\n" + "\n".join(tool_parts))
 
-        # 4. Current user input (with live camera visual grounding if user asks what is this / what am I holding / what do you see)
+        # 4. Current user input
         user_content = user_text
-        lower_user = user_text.lower()
-        visual_triggers = (
-            "what is this", "what is that", "what do you see", "who is here",
-            "what are these", "describe what you see", "what am i holding",
-            "what's this", "what's that", "what i'm holding", "what im holding",
-            "look at this", "look at what i have", "can you see this", "what do i have",
-            "what object", "identify this", "check this out", "in my hand"
-        )
-        if any(w in lower_user for w in visual_triggers):
-            if world_state:
-                detected_items = []
-                for o in world_state.get("objects", []):
-                    if o.get("label") == "person" and len(world_state.get("objects", [])) > 1:
-                        continue
-                    detected_items.append(f"{o.get('label')} at {o.get('position')}")
-                for p in world_state.get("people", []):
-                    detected_items.append(f"person ({p.get('distance')} range, {p.get('position')})")
-                
-                if detected_items:
-                    grounding_parts.append(f"[Visual Stream in Front of Robot]: Live camera actively detects: {', '.join(detected_items)}.")
-                else:
-                    grounding_parts.append("[Visual Stream in Front of Robot]: Camera is pointed forward, but no distinct object is currently recognized by YOLOv8. Ask user to hold the object clearly towards the camera.")
-
         if grounding_parts:
             user_content = "\n\n".join(grounding_parts) + "\n\n" + user_content
 

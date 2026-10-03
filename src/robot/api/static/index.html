@@ -24,6 +24,7 @@
             <label for="personaSelect" class="sr-only">Personality</label>
             <select class="persona-select" id="personaSelect" title="Switch AI Personality">
                 <option value="neo">CYPHER (Matrix Hacker Girl)</option>
+                <option value="luna">LUNA (Devoted Girlfriend)</option>
                 <option value="aria">ARIA (Empathetic / Warm)</option>
                 <option value="glados">GLADOS (Sarcastic / Clinical)</option>
             </select>
@@ -57,69 +58,13 @@
     <main class="main-viewport">
         <!-- LEFT: Robot Digital Face & 3D Character Avatar UI -->
         <section class="face-panel" id="facePanel">
-            <!-- Avatar Display Tabs (3D Character vs Digital Visor) -->
-            <div class="avatar-tabs">
-                <button class="avatar-tab-btn active" id="tabBtn3D">⚡ 3D HUMANOID</button>
-                <button class="avatar-tab-btn" id="tabBtnRealGirl">💃 REALISTIC MODEL</button>
-                <button class="avatar-tab-btn" id="tabBtnFace">👁️ DIGITAL VISOR</button>
-            </div>
-
-            <!-- 3D Humanoid Character Canvas Container -->
+            <!-- 3D Humanoid Character Canvas Container (Animated Model) -->
             <div class="character-container" id="characterContainer">
                 <div class="character-overlay-hud">
                     <span class="char-hud-badge" id="charStateBadge">STATE: IDLE</span>
                     <span class="char-hud-badge" id="charGazeBadge">GAZE: CAMERA</span>
                     <span class="char-hud-badge" id="charActionBadge">MOTION: BASE IDLE</span>
                 </div>
-            </div>
-
-            <!-- Realistic 3D Model Stage (Same rig, portrait lighting, warm studio feel) -->
-            <div class="character-container realistic-character-container" id="realisticContainer" style="display: none;">
-                <div class="character-overlay-hud">
-                    <span class="char-hud-badge" style="background: rgba(30, 20, 15, 0.75); border-color: rgba(255, 232, 204, 0.3); color: #ffe8cc;">REALISTIC MODE</span>
-                </div>
-            </div>
-
-            <!-- Digital 2D Face / Waveform Stage -->
-            <div class="face-stage" id="faceStage" style="display: none;">
-                <!-- Aura Ambient Glow -->
-                <div class="face-aura" id="faceAura"></div>
-
-                <!-- Eyes Container -->
-                <div class="eyes-wrapper" id="eyesWrapper">
-                    <div class="eye eye-left" id="eyeLeft">
-                        <div class="pupil" id="pupilLeft">
-                            <div class="pupil-glint"></div>
-                        </div>
-                        <div class="eyelid eyelid-top"></div>
-                        <div class="eyelid eyelid-bottom"></div>
-                        <div class="eye-glow"></div>
-                    </div>
-                    <div class="eye eye-right" id="eyeRight">
-                        <div class="pupil" id="pupilRight">
-                            <div class="pupil-glint"></div>
-                        </div>
-                        <div class="eyelid eyelid-top"></div>
-                        <div class="eyelid eyelid-bottom"></div>
-                        <div class="eye-glow"></div>
-                    </div>
-                </div>
-
-                <!-- Mouth / Audio Waveform Visualizer -->
-                <div class="mouth-wrapper" id="mouthWrapper">
-                    <div class="mouth-bar b1"></div>
-                    <div class="mouth-bar b2"></div>
-                    <div class="mouth-bar b3"></div>
-                    <div class="mouth-bar b4"></div>
-                    <div class="mouth-bar b5"></div>
-                    <div class="mouth-bar b6"></div>
-                    <div class="mouth-bar b7"></div>
-                    <div class="mouth-bar b8"></div>
-                    <div class="mouth-bar b9"></div>
-                </div>
-
-                <!-- Face Mood State Text -->
-                <div class="face-caption" id="faceCaption">OBSERVING ENVIRONMENT</div>
             </div>
 
             <!-- Interactive Speech Bubble -->
@@ -228,28 +173,41 @@
                         <span class="icon">🔄</span> REAL-TIME EXECUTION PIPELINE
                     </div>
                     <div class="card-badges">
+                        <span class="badge badge-accent" id="coordinatorBadge" style="display: none;">COORDINATOR: IDLE</span>
                         <span class="badge badge-accent" id="activeToolBadge" style="display: none;">TOOL: NONE</span>
                         <span class="badge badge-accent" id="activeTraceBadge">TRACE: IDLE</span>
                     </div>
                 </div>
                 <div class="pipeline-flow" id="pipelineFlow">
                     <div class="pipe-node" id="nodeMic"><span class="node-name">MIC</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowMic">→</div>
                     <div class="pipe-node" id="nodeVad"><span class="node-name">VAD</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowVad">→</div>
                     <div class="pipe-node" id="nodeStt"><span class="node-name">STT</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowStt">→</div>
                     <div class="pipe-node" id="nodeContext"><span class="node-name">CONTEXT</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowContext">→</div>
                     <div class="pipe-node" id="nodeLlm"><span class="node-name">LLM</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowLlm">→</div>
                     <div class="pipe-node" id="nodeTools"><span class="node-name">TOOLS</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowTools">→</div>
                     <div class="pipe-node" id="nodeTts"><span class="node-name">TTS</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowTts">→</div>
                     <div class="pipe-node" id="nodeAvatar"><span class="node-name">AVATAR</span><span class="node-status">IDLE</span></div>
-                    <div class="pipe-arrow">→</div>
+                    <div class="pipe-arrow" id="arrowAvatar">→</div>
                     <div class="pipe-node" id="nodeImage"><span class="node-name">IMAGE</span><span class="node-status">IDLE</span></div>
+                </div>
+                <!-- Dual Concurrent Streams (Stream A: Holding LLM | Stream B: Tool) -->
+                <div class="parallel-streams" id="parallelStreams" style="display: none;">
+                    <div class="stream-box stream-holding" id="streamHoldingBox">
+                        <div class="stream-title">STREAM A: HOLDING LLM</div>
+                        <div class="stream-status" id="holdingStreamStatus">WAITING...</div>
+                    </div>
+                    <div class="stream-connector">⚡ CONCURRENT ⚡</div>
+                    <div class="stream-box stream-tool" id="streamToolBox">
+                        <div class="stream-title">STREAM B: TOOL EXECUTION</div>
+                        <div class="stream-status" id="toolStreamStatus">RUNNING</div>
+                    </div>
                 </div>
             </div>
 
@@ -320,7 +278,7 @@
                     </div>
                     <div class="image-controls-row">
                         <label>Size: <select id="imgResSelect"><option value="512x512">512x512</option><option value="768x768">768x768</option><option value="1024x1024">1024x1024</option></select></label>
-                        <label>Steps: <input type="number" id="imgStepsInput" value="4" min="1" max="30" style="width: 50px;" /></label>
+                        <label>Steps: <input type="number" id="imgStepsInput" value="15" min="12" max="20" style="width: 50px;" title="Inference steps (12-20)" /></label>
                         <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
                             <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>
                         </div>

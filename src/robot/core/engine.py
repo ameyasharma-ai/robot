@@ -35,11 +35,49 @@ from robot.perception import CameraCapture, PerceptionEngine
 from robot.services import HealthMonitor
 from robot.stt import WhisperServerSTT
 from robot.telemetry import Telemetry, Timer, get_logger, setup_logging
-from robot.tools import PermissionManager, ToolRegistry, ToolRouter
+from robot.tools import (
+    CoordinatorState,
+    PermissionManager,
+    ToolCategory,
+    ToolConversationCoordinator,
+    ToolRegistry,
+    ToolRouter,
+)
 from robot.tools.builtins import register_builtin_tools
 from robot.tts import PiperTTS
 
 logger = get_logger("engine")
+
+
+def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
+    """Extract and strip predefined motion markers from LLM output for synchronized audio-motion execution.
+    
+    Supports:
+    - [motion: wave] or [motion: raise_hand left]
+    - Natural stage directions like *waves*, *raises right hand*, *points*, *kicks*
+    """
+    import re
+    if not text:
+        return text, None
+
+    # 1. Explicit bracket marker: [motion: wave] or [action: raise_hand left]
+    m = re.search(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", text, re.IGNORECASE)
+    if m:
+        act = m.group(1).lower()
+        side = m.group(2).lower() if m.group(2) else "right"
+        cleaned = re.sub(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", "", text, flags=re.IGNORECASE).strip()
+        return cleaned, {"action": act, "side": side}
+
+    # 2. Asterisk stage directions: *waves*, *raises hand*, *points*
+    m2 = re.search(r"\*(waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?)\*", text, re.IGNORECASE)
+    if m2:
+        raw_act = m2.group(1).lower()
+        act = "wave" if "wave" in raw_act else ("raise_hand" if "hand" in raw_act else ("point" if "point" in raw_act else ("kick" if "kick" in raw_act else ("nod" if "nod" in raw_act else "idle"))))
+        side = "left" if "left" in raw_act else "right"
+        cleaned = re.sub(r"\*(.*?)\*", "", text).strip()
+        return cleaned, {"action": act, "side": side}
+
+    return text, None
 
 
 class RobotEngine:
@@ -104,8 +142,10 @@ class RobotEngine:
         )
 
         # Connect image service events to observability
-        self.image_service.on_event(
-            lambda event_type, job: self.observability.emit_event(
+        def _on_image_event(event_type, job):
+            node_state = "RUNNING" if event_type in ("image.started", "image.queued") else ("COMPLETED" if event_type == "image.completed" else "IDLE")
+            self.observability.set_pipeline_node("IMAGE", node_state)
+            self.observability.emit_event(
                 event_type=event_type,
                 trace_id=job.trace_id,
                 component="IMAGE",
@@ -120,7 +160,8 @@ class RobotEngine:
                     "error": job.error,
                 },
             )
-        )
+
+        self.image_service.on_event(_on_image_event)
 
         # Runtime state
         self._session_id = str(uuid.uuid4())[:8]
@@ -131,6 +172,8 @@ class RobotEngine:
         self._speech_ended_ts = 0.0
         self._last_bot_phrases: list[str] = []
         self.voice_enabled = True
+        self._pending_motion: dict | None = None
+        self.tool_coordinator: ToolConversationCoordinator | None = None
 
     async def setup(self) -> None:
         """Initialize all subsystems."""
@@ -196,6 +239,7 @@ class RobotEngine:
 
         # Tools
         self.tool_router = ToolRouter(self.tool_registry)
+        self.tool_coordinator = ToolConversationCoordinator(self, self.config)
 
         # Vision & Physical Perception
         vision_cfg = self.config.get("vision", {})
@@ -528,26 +572,6 @@ class RobotEngine:
             await self.state.set_mode(RobotMode.THINKING)
             turn = await self.state.increment_turn()
 
-            # Parse for semantic character motions (e.g. "raise your right hand", "wave", "kick", "look at me", "walk forward")
-            from robot.motion.planner import MotionPlanner
-            mp = MotionPlanner()
-            detected_motions = mp.parse_natural_command(user_text)
-            for m in detected_motions:
-                try:
-                    plan = mp.plan_action(m)
-                    avatar_span = self.observability.start_span(
-                        component="AVATAR",
-                        operation=m.get("action", "motion").upper(),
-                    )
-                    await self.events.emit(
-                        "character.action",
-                        action=m,
-                        sequence=[a.to_dict() for a in plan],
-                    )
-                    self.observability.finish_span(avatar_span)
-                except Exception as e:
-                    logger.debug("natural_motion_dispatch_error", error=str(e))
-
             # Create new interrupt event for this turn
             self._interrupt_event = asyncio.Event()
 
@@ -559,14 +583,17 @@ class RobotEngine:
             # Finish turn trace
             self.observability.finish_trace()
 
-            # Store in memory
+            # Store in memory isolated by personality workspace
             if full_response and self.memory:
+                active_pers = self.personalities.active
+                ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
                 await self.memory.store_turn(
                     self._session_id,
                     user_text,
                     full_response,
                     self.state.state.active_personality,
                     turn,
+                    namespace=ns,
                 )
 
             await self.state.set_mode(RobotMode.IDLE)
@@ -586,12 +613,13 @@ class RobotEngine:
         # Get personality
         personality = self.personalities.active
         system_prompt = personality.system_prompt if personality else ""
+        ns = getattr(personality, "memory_namespace", "default")
 
-        # Retrieve relevant memories
+        # Retrieve relevant memories isolated by personality workspace
         memories = []
         if self.memory:
             with Timer(self.telemetry, "MEMORY_RETRIEVAL_LATENCY"):
-                memories = await self.memory.get_relevant_memories(user_text)
+                memories = await self.memory.get_relevant_memories(user_text, user_id=ns)
 
         # Get recent conversation (keep to last 3 turns / 6 messages max for low TTFT)
         recent = []
@@ -603,154 +631,15 @@ class RobotEngine:
         if self.perception is not None:
             world_state_compact = self.perception.world_state.to_compact()
 
-        # Visual query image snapshot capture for multimodal LLM
+        # Visual query image snapshot (set only if explicit image data provided)
         image_data_url = None
-        lower_u = user_text.lower()
-        visual_triggers = (
-            "what is this", "what is that", "what do you see", "who is here",
-            "what are these", "describe what you see", "what am i holding",
-            "what's this", "what's that", "what i'm holding", "what im holding",
-            "look at this", "look at what i have", "can you see this", "what do i have",
-            "what object", "identify this", "check this out", "in my hand"
-        )
-        if any(w in lower_u for w in visual_triggers):
-            if self.perception is not None and self.perception.camera:
-                frame = self.perception.camera.get_latest_frame()
-                if frame is not None:
-                    try:
-                        import base64
-                        import cv2
-                        # Downscale to 480p JPEG for fast transmission
-                        h, w = frame.shape[:2]
-                        target_w, target_h = (480, int(480 * h / w)) if w > 480 else (w, h)
-                        small_frame = cv2.resize(frame, (target_w, target_h))
-                        ret, buffer = cv2.imencode(".jpg", small_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                        if ret:
-                            b64 = base64.b64encode(buffer).decode("utf-8")
-                            image_data_url = f"data:image/jpeg;base64,{b64}"
-                    except Exception as e:
-                        logger.debug("multimodal_image_encode_error", error=str(e))
 
-        # ─── Proactive Tool Execution ───────────────────────────────────────
-        # Detect user intent and execute tools BEFORE calling the LLM so results
-        # are injected into context. This is more reliable than relying on the
-        # local 4B model to emit tool_call tokens in streaming mode.
+        # ─── Autonomous LLM Tool Selection ──────────────────────────────────
+        # Provide tools to the LLM so it can autonomously decide when and how
+        # to invoke tools with structured arguments, and read the outputs.
         tool_results = []
         selected_tool_names = self.tool_router.select_tools(user_text)
         logger.debug("tool_router_selected", tools=selected_tool_names, user_text=user_text[:80])
-
-        # Proactive time tool: if user asks for current time, date, or day
-        time_keywords = ["what time", "current time", "what is the time", "what's the time",
-                         "what date", "today's date", "todays date", "what day is it",
-                         "what day is today", "tell me the time"]
-        if any(kw in lower_u for kw in time_keywords):
-            time_tool = self.tool_registry.get("system.time")
-            if time_tool:
-                try:
-                    res = await self.permissions.execute(time_tool, {})
-                    if "result" in res and res["result"]:
-                        r = res["result"]
-                        tool_results.append({
-                            "id": "system_time_proactive",
-                            "result": f"[Real-World Clock]: Current time is {r.get('current_time')} on {r.get('current_date')} ({r.get('timezone')}).",
-                        })
-                        logger.info("proactive_time_tool_ok", time=r.get("current_time"))
-                except Exception as e:
-                    logger.warning("proactive_time_tool_error", error=str(e))
-
-        # Proactive web search: if user is asking for current/real-world facts
-        web_keywords = [
-            "search", "look up", "find online", "google", "duckduckgo",
-            "latest", "news", "price", "release date", "specs", "specification",
-            "who is", "who won", "how much", "when did", "when will", "where is",
-            "what happened", "what is the current", "what are the current",
-            "tell me about", "score", "weather"
-        ]
-        # Don't trigger web search for simple local clock queries
-        if any(kw in lower_u for kw in web_keywords) and not any(tk in lower_u for tk in time_keywords):
-            web_tool = self.tool_registry.get("web.search")
-            if web_tool:
-                try:
-                    logger.info("proactive_tool_exec", tool="web.search", query=user_text[:60])
-                    # Immediately speak acknowledgment while web search is underway
-                    ack_phrases = ["Searching...", "Checking the web...", "Looking that up..."]
-                    import random
-                    ack_phrase = random.choice(ack_phrases)
-                    await self._tts_queue.put((ack_phrase, interrupt, None))
-
-                    result = await self.permissions.execute(
-                        web_tool, {"query": user_text, "max_results": 4}
-                    )
-                    if "result" in result and result["result"]:
-                        snippets = []
-                        for r in result["result"]:
-                            if "error" not in r:
-                                t = r.get("title", "").strip()
-                                s = r.get("snippet", "").strip()
-                                u = r.get("url", "").strip()
-                                if s:
-                                    snippets.append(f"• Source: {t}\n  Summary: {s}\n  URL: {u}")
-                        if snippets:
-                            tool_results.append({
-                                "id": "web_search",
-                                "result": "[Live Web Search Results — answer the user's question directly using these facts]:\n" + "\n\n".join(snippets),
-                            })
-                            logger.info("proactive_web_search_ok", results=len(snippets))
-                except Exception as e:
-                    logger.warning("proactive_web_search_error", error=str(e))
-
-        # Proactive image generation
-        image_triggers = ["generate an image", "generate image", "draw", "picture of", "create an image", "create image", "paint", "image of"]
-        if any(trig in lower_u for trig in image_triggers):
-            img_tool = self.tool_registry.get("image.generate")
-            if img_tool:
-                try:
-                    logger.info("proactive_tool_exec", tool="image.generate", query=user_text[:60])
-                    # Identify prompt part
-                    prompt = user_text
-                    for trig in image_triggers:
-                        if trig in lower_u:
-                            idx = lower_u.find(trig) + len(trig)
-                            prompt = user_text[idx:].strip(" of.:,")
-                            break
-                    if not prompt:
-                        prompt = user_text
-                        
-                    ack_phrases = [
-                        "I'm generating that image for you now. You can check the image in the dashboard in a moment.",
-                        "Drawing that up for you. You can check the image in the dashboard in a moment.",
-                        "Working on that image. Watch the dashboard, it will appear in a moment."
-                    ]
-                    import random
-                    ack_phrase = random.choice(ack_phrases)
-                    await self._tts_queue.put((ack_phrase, interrupt, None))
-
-                    result = await self.permissions.execute(img_tool, {"prompt": prompt})
-                    if "result" in result:
-                        tool_results.append({
-                            "id": "image_generate_proactive",
-                            "result": f"[System]: Image generation started in the background for '{prompt}'. Tell the user the image is generating and that they can check the image in the dashboard in a moment.",
-                        })
-                        logger.info("proactive_image_generate_ok", prompt=prompt)
-                except Exception as e:
-                    logger.warning("proactive_image_generate_error", error=str(e))
-
-        # Proactive memory write: if user says "remember that..."
-        memory_write_triggers = ["remember that", "remember this", "keep in mind",
-                                 "don't forget", "store this", "save this"]
-        if any(trig in lower_u for trig in memory_write_triggers) and self.memory:
-            mem_tool = self.tool_registry.get("memory.write")
-            if mem_tool:
-                try:
-                    result = await self.permissions.execute(mem_tool, {"fact": user_text})
-                    if "result" in result:
-                        tool_results.append({
-                            "id": "memory_write_proactive",
-                            "result": result["result"],
-                        })
-                        logger.info("proactive_memory_write_ok", fact=user_text[:60])
-                except Exception as e:
-                    logger.warning("proactive_memory_write_error", error=str(e))
 
         # ─── Build Messages with Tool Results ───────────────────────────────
         context_span = self.observability.start_span("CONTEXT", "BUILD")
@@ -778,6 +667,22 @@ class RobotEngine:
                 )
             )
         self.observability.finish_span(context_span, metadata={"msg_count": len(messages), "tokens": estimated_tokens})
+
+        # ─── Fast Intent Router (Phase 24) ──────────────────────────────────
+        if self.tool_coordinator and not interrupt.is_set():
+            fast_route_res = self.tool_coordinator.fast_route(user_text)
+            if fast_route_res is not None:
+                f_tool, f_args, f_cat = fast_route_res
+                logger.info("fast_router_matched", tool=f_tool, category=f_cat.value)
+                return await self.tool_coordinator.coordinate(
+                    tool_name=f_tool,
+                    tool_args=f_args,
+                    category=f_cat,
+                    user_text=user_text,
+                    end_of_speech_time=end_of_speech_time,
+                    interrupt=interrupt,
+                    messages=messages,
+                )
 
         # If we have an image and the LLM explicitly supports multimodal (mmproj loaded),
         # convert the last user message to OpenAI vision content blocks
@@ -821,13 +726,15 @@ class RobotEngine:
                     break
 
                 if token.startswith("__TOOL_CALL__"):
-                    # Parse and collect tool calls emitted by the model
                     try:
                         import json as _json
                         tc_data = _json.loads(token[len("__TOOL_CALL__"):])
-                        collected_tool_calls.extend(tc_data if isinstance(tc_data, list) else [tc_data])
-                    except Exception:
-                        pass
+                        if isinstance(tc_data, list):
+                            collected_tool_calls.extend(tc_data)
+                        elif isinstance(tc_data, dict):
+                            collected_tool_calls.append(tc_data)
+                    except Exception as e:
+                        logger.warning("tool_call_parse_error", error=str(e))
                     continue
 
                 if not ttft_recorded:
@@ -846,12 +753,33 @@ class RobotEngine:
                     )
 
                 full_response += token
-                phrase = chunker.feed(token)
-                if phrase and not interrupt.is_set():
-                    if timing_ref:
-                        timing_ref["t_tts_start"] = time.perf_counter()
-                    await self._tts_queue.put((phrase, interrupt, timing_ref))
-                    timing_ref = None
+                # Only stream phrases to TTS if the model is not emitting inline tool calls
+                if "<tool_call>" not in full_response:
+                    phrase = chunker.feed(token)
+                    if phrase and not interrupt.is_set():
+                        clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
+                        act_to_sync = inline_act or self._pending_motion
+                        self._pending_motion = None
+                        if clean_phrase:
+                            if timing_ref:
+                                timing_ref["t_tts_start"] = time.perf_counter()
+                            await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
+                            timing_ref = None
+
+            # Check if model output inline <tool_call> tags
+            if not collected_tool_calls and "<tool_call>" in full_response:
+                import re
+                import json as _json
+                for match in re.findall(r"<tool_call>\s*({.*?})\s*</tool_call>", full_response, re.DOTALL):
+                    try:
+                        parsed = _json.loads(match)
+                        collected_tool_calls.append({
+                            "id": f"call_{len(collected_tool_calls)}_{int(time.time()*1000)}",
+                            "type": "function",
+                            "function": parsed if "name" in parsed else {"name": parsed.get("function", ""), "arguments": parsed.get("parameters", {})},
+                        })
+                    except Exception:
+                        pass
 
             if not interrupt.is_set():
                 gen_ms = (time.perf_counter() - t_llm_start) * 1000
@@ -860,67 +788,41 @@ class RobotEngine:
                     metadata={"response_len": len(full_response), "gen_ms": round(gen_ms, 1)},
                 )
 
-            # If the model emitted tool calls, execute them and do a second-pass generation
-            if collected_tool_calls and not interrupt.is_set() and not full_response.strip():
-                second_pass_results = []
-                for tc in collected_tool_calls:
-                    func_info = tc.get("function", tc)
-                    tool_name = func_info.get("name", "")
-                    try:
-                        import json as _json
-                        args = _json.loads(func_info.get("arguments", "{}")) if isinstance(func_info.get("arguments"), str) else func_info.get("arguments", {})
-                    except Exception:
-                        args = {}
+            # If the model autonomously proposed tool calls, coordinate holding conversation and execution
+            if collected_tool_calls and not interrupt.is_set():
+                tc = collected_tool_calls[0]
+                func_info = tc.get("function", tc)
+                tool_name = func_info.get("name", "")
+                try:
+                    import json as _json
+                    raw_args = func_info.get("arguments", "{}")
+                    args = _json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except Exception:
+                    args = {}
 
-                    tool_def = self.tool_registry.get(tool_name)
-                    if tool_def:
-                        try:
-                            if tool_name == "web.search" and not interrupt.is_set():
-                                import random
-                                ack_phrase = random.choice(["Searching...", "Checking the web...", "Looking that up..."])
-                                await self._tts_queue.put((ack_phrase, interrupt, None))
-
-                            result = await self.permissions.execute(tool_def, args)
-                            second_pass_results.append({
-                                "id": tc.get("id", tool_name),
-                                "result": str(result.get("result", result.get("error", ""))),
-                            })
-                        except Exception as e:
-                            second_pass_results.append({"id": tc.get("id", tool_name), "error": str(e)})
-
-                if second_pass_results:
-                    # Rebuild messages with tool results for second-pass
-                    messages_2 = self.context.build_messages(
-                        system_prompt=system_prompt,
+                if self.tool_coordinator:
+                    return await self.tool_coordinator.coordinate(
+                        tool_name=tool_name,
+                        tool_args=args,
+                        category=ToolCategory.LLM_REQUIRED,
                         user_text=user_text,
-                        recent_conversation=recent,
-                        memories=memories,
-                        robot_state=self.state.state.to_compact(),
-                        world_state=world_state_compact,
-                        tool_results=second_pass_results,
+                        end_of_speech_time=end_of_speech_time,
+                        interrupt=interrupt,
+                        messages=messages,
                     )
-                    chunker2 = ClauseChunker()
-                    async for token2 in self.llm.stream_chat(messages_2, max_tokens=self.config["llm"].get("max_tokens", 300)):
-                        if interrupt.is_set():
-                            break
-                        if token2.startswith("__TOOL_CALL__"):
-                            continue
-                        full_response += token2
-                        phrase2 = chunker2.feed(token2)
-                        if phrase2 and not interrupt.is_set():
-                            await self._tts_queue.put((phrase2, interrupt, timing_ref))
-                            timing_ref = None
-                    remainder2 = chunker2.flush()
-                    if remainder2 and not interrupt.is_set():
-                        await self._tts_queue.put((remainder2, interrupt, timing_ref))
 
-            # Flush remaining
-            remainder = chunker.flush()
-            if remainder and not interrupt.is_set():
-                if timing_ref and "t_tts_start" not in timing_ref:
-                    timing_ref["t_tts_start"] = time.perf_counter()
-                await self._tts_queue.put((remainder, interrupt, timing_ref))
-                timing_ref = None
+            # Flush remaining tokens only if no tool call pass was executed
+            if not collected_tool_calls:
+                remainder = chunker.flush()
+                if remainder and not interrupt.is_set():
+                    clean_rem, in_act = _extract_motion_from_phrase(remainder)
+                    act_to_sync = in_act or self._pending_motion
+                    self._pending_motion = None
+                    if clean_rem:
+                        if timing_ref and "t_tts_start" not in timing_ref:
+                            timing_ref["t_tts_start"] = time.perf_counter()
+                        await self._tts_queue.put((clean_rem, interrupt, timing_ref, act_to_sync))
+                        timing_ref = None
 
             if not interrupt.is_set() and full_response:
                 logger.info("bot_response", text=full_response.strip()[:100])
@@ -965,7 +867,11 @@ class RobotEngine:
                     await self.state.set_mode(RobotMode.IDLE)
                 continue
 
-            phrase, interrupt, timing_ref = item
+            if len(item) == 4:
+                phrase, interrupt, timing_ref, motion_action = item
+            else:
+                phrase, interrupt, timing_ref = item
+                motion_action = None
 
             if interrupt.is_set() or not phrase or not self.tts:
                 continue
@@ -980,8 +886,14 @@ class RobotEngine:
                 operation="SYNTHESIZE",
                 metadata={"phrase_len": len(phrase)},
             )
+            # Get active personality voice parameters
+            pers = self.personalities.active
+            tts_cfg = pers.tts_settings if pers else {}
+            speed = float(tts_cfg.get("speed", 1.0))
+            pitch = float(tts_cfg.get("pitch", 1.0))
+
             t_synth = time.perf_counter()
-            audio, sr = await self.tts.synthesize(phrase)
+            audio, sr = await self.tts.synthesize(phrase, speed=speed, pitch=pitch)
             synth_ms = (time.perf_counter() - t_synth) * 1000
 
             self.telemetry.record("TTS_SYNTHESIS_LATENCY", synth_ms)
@@ -1010,6 +922,26 @@ class RobotEngine:
             self._is_speaking = True
             await self.state.set_mode(RobotMode.SPEAKING)
             await self.events.emit("robot_phrase", robot_phrase=phrase)
+
+            # Trigger avatar motion tightly synchronized with speech playback
+            if motion_action and not interrupt.is_set():
+                try:
+                    from robot.motion.planner import MotionPlanner
+                    mp = MotionPlanner()
+                    plan = mp.plan_action(motion_action)
+                    avatar_span = self.observability.start_span(
+                        component="AVATAR",
+                        operation=motion_action.get("action", "motion").upper(),
+                    )
+                    await self.events.emit(
+                        "character.action",
+                        action=motion_action,
+                        sequence=[a.to_dict() for a in plan],
+                    )
+                    self.observability.finish_span(avatar_span)
+                    logger.info("audio_synced_motion_dispatched", action=motion_action)
+                except Exception as e:
+                    logger.debug("audio_synced_motion_error", error=str(e))
 
             if timing_ref:
                 print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")
@@ -1072,18 +1004,24 @@ class RobotEngine:
         if not self.llm:
             return "LLM not available"
 
+        print(f"\n💬 \033[1;36m[USER (TEXT)]\033[0m {text}")
+        await self.events.emit("user_text", user_text=text, stt_ms=0.0)
+
         turn = await self.state.increment_turn()
         interrupt = asyncio.Event()  # No interrupt for text
 
         response = await self._stream_response(text, time.time(), interrupt)
 
         if self.memory:
+            active_pers = self.personalities.active
+            ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
             await self.memory.store_turn(
                 self._session_id,
                 text,
                 response,
                 self.state.state.active_personality,
                 turn,
+                namespace=ns,
             )
 
         return response

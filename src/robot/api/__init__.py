@@ -71,6 +71,12 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     async def set_voice_mode(req: VoiceModeRequest):
         """Toggle voice/mic listening on or off for text-only chatting."""
         engine.voice_enabled = bool(req.enabled)
+        # Physically pause/resume mic stream to free audio hardware and ensure no audio is captured
+        if hasattr(engine, "capture") and engine.capture:
+            if engine.voice_enabled:
+                engine.capture.resume()
+            else:
+                engine.capture.pause()
         await engine.events.emit("voice_mode_changed", voice_enabled=engine.voice_enabled)
         return {"status": "ok", "voice_enabled": engine.voice_enabled}
 
@@ -280,7 +286,11 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             while True:
                 event = await queue.get()
                 await websocket.send_text(json.dumps(event))
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, asyncio.CancelledError):
+            pass
+        except Exception:
+            pass
+        finally:
             engine.events.off("*", forward_event)
 
     # Static UI Files & Web HUD Display

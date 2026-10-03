@@ -150,6 +150,11 @@ class FacialSystem {
                 case "happy":
                     mat.emissive.setHex(0x00f5a0); // Vibrant Emerald
                     break;
+                case "love":
+                case "affectionate":
+                case "shy":
+                    mat.emissive.setHex(0xff69b4); // Rose Pink / Blush
+                    break;
                 case "thinking":
                     mat.emissive.setHex(0xf6d365); // Amber Gold
                     break;
@@ -165,6 +170,13 @@ class FacialSystem {
                 default:
                     mat.emissive.setHex(0x00f2fe); // Cyber Cyan
                     break;
+            }
+        }
+        if (this.rig) {
+            if (this.currentEmotion === "love" || this.currentEmotion === "affectionate" || this.currentEmotion === "happy") {
+                this.rig.setMorphWeight("Face_Blendshape.Fcl_EYE_Joy", 0.7);
+            } else {
+                this.rig.setMorphWeight("Face_Blendshape.Fcl_EYE_Joy", 0.0);
             }
         }
     }

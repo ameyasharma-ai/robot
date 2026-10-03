@@ -80,9 +80,36 @@ class AnimationSystem {
             this._updateLowerBody(delta);
         }
 
-        // ─── Layer 4: Upper Body Gestures (Raise Hand, Wave, Point) ──────────
+        // ─── Layer 4: Upper Body Gestures (Raise Hand, Wave, Point, or Expressive Speaking) ──────────
         if (this.activeActions.upperBody) {
             this._updateUpperBody(delta);
+        } else if (this.isSpeaking) {
+            // Expressive conversational gestures while speaking
+            // Modulate right forearm & spine with cadence of speech
+            const speakCycle = Math.sin(this.time * 4.2);
+            const speakCycleSlow = Math.sin(this.time * 2.1);
+            const leftArm = rig.getBone("leftUpperArm");
+            const rightArm = rig.getBone("rightUpperArm");
+            const rightForearm = rig.getBone("rightLowerArm");
+            const leftForearm = rig.getBone("leftLowerArm");
+
+            if (leftArm && rig.initialRotations["leftUpperArm"]) {
+                const deltaArmL = new THREE.Quaternion().setFromEuler(new THREE.Euler(sway * 0.05 + speakCycleSlow * 0.04, 0, -1.15 + breath * 0.02));
+                leftArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(deltaArmL);
+            }
+            if (rightArm && rig.initialRotations["rightUpperArm"]) {
+                // Lift right arm slightly forward and gesture with subtle harmonic pulse
+                const deltaArmR = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.25 + speakCycleSlow * 0.12, speakCycle * 0.06, 0.95 + speakCycle * 0.08));
+                rightArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(deltaArmR);
+            }
+            if (rightForearm && rig.initialRotations["rightLowerArm"]) {
+                const deltaForearmR = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.45 - speakCycle * 0.22));
+                rightForearm.quaternion.copy(rig.initialRotations["rightLowerArm"]).multiply(deltaForearmR);
+            }
+            if (leftForearm && rig.initialRotations["leftLowerArm"]) {
+                const deltaForearmL = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.18 + speakCycleSlow * 0.1));
+                leftForearm.quaternion.copy(rig.initialRotations["leftLowerArm"]).multiply(deltaForearmL);
+            }
         } else {
             // Natural arm hanging with subtle harmonic breathing response
             // For VRM canonical bones (T-pose extending out along X):
@@ -90,6 +117,9 @@ class AnimationSystem {
             // Right arm rotates down with positive Z (+1.25 rad)
             const leftArm = rig.getBone("leftUpperArm");
             const rightArm = rig.getBone("rightUpperArm");
+            const rightForearm = rig.getBone("rightLowerArm");
+            const leftForearm = rig.getBone("leftLowerArm");
+
             if (leftArm && rig.initialRotations["leftUpperArm"]) {
                 const deltaArmL = new THREE.Quaternion().setFromEuler(new THREE.Euler(sway * 0.02, 0, -1.25 + breath * 0.015));
                 leftArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(deltaArmL);
@@ -97,6 +127,12 @@ class AnimationSystem {
             if (rightArm && rig.initialRotations["rightUpperArm"]) {
                 const deltaArmR = new THREE.Quaternion().setFromEuler(new THREE.Euler(-sway * 0.02, 0, 1.25 - breath * 0.015));
                 rightArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(deltaArmR);
+            }
+            if (rightForearm && rig.initialRotations["rightLowerArm"]) {
+                rightForearm.quaternion.copy(rig.initialRotations["rightLowerArm"]);
+            }
+            if (leftForearm && rig.initialRotations["leftLowerArm"]) {
+                leftForearm.quaternion.copy(rig.initialRotations["leftLowerArm"]);
             }
         }
     }

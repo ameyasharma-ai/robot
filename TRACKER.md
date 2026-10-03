@@ -71,6 +71,13 @@ Legend:
 - [x] **19. Real-Time Active Tool HUD Display**: Emitted `tool_executing` and `tool_completed` events via `PermissionManager` and rendered live badge in dashboard HUD (`TOOL: NONE` -> `TOOL: <NAME>`).
 - [x] **20. Mem0 FastEmbed Cold-Start Elimination & Vector Relevance Threshold**: Added memory pre-warmup to eliminate 4.5s Turn 1 cold-start and implemented `score_threshold: 0.78` filtering out irrelevant semantic noise to maintain KV cache prefix stability.
 - [x] **21. Persistent FastEmbed Local Storage & Zero Re-download**: Configured persistent `models/fastembed` directory and `HF_HUB_OFFLINE=1` when cached models exist, stopping FastEmbed from downloading `bge-small-en-v1.5` on every robot launch.
+- [x] **22. TTS Markdown Syntax Sanitization & Clean Speech**: Added `clean_text_for_speech()` stripping asterisks (`**bold**`, `*italic*`), backticks, headers, bullet symbols, and motion tags so Piper TTS never speaks markdown characters.
+- [x] **23. Animated 3D Avatar Consolidation**: Removed "Realistic Model" and "Digital Visor" stages from dashboard HTML and JavaScript, retaining exclusively the animated 3D WebGL humanoid avatar.
+- [x] **24. Personality Voice Configuration & Cypher Thin High-Pitched Profile**: Added personality-specific `speed` and `pitch` support to `PiperTTS`, configuring Cypher (`neo.yaml`) with `pitch: 1.22` and `speed: 1.12` for a thin, brisk hacker tone. Corrected all dashboard displays from "NEO" to "CYPHER".
+- [x] **25. Speaking Movement & Contextual Motion / Tool Grounding**: Added procedural conversational arm, spine, and head gestures to `AnimationSystem.js` while speaking; grounded LLM with available tools and real-time physical motions (`wave`, `raise_hand`, `kick`, `point`, `walk`, `turn`, `sit`, `stand`, `stop`).
+- [x] **26. Image Generation Steps & Hardware Mic Disconnect**: Configured default diffusion steps to 15 (clamped to 12-20 range); wired the voice on/off dashboard button to physically pause/resume `AudioCapture.pause()` and stop ALSA/PipeWire mic hardware streaming in text-only mode.
+- [x] **30. Autonomous LLM Tool Calling & Two-Pass Output Synthesis**: Replaced rigid regex/keyword string triggers with native OpenAI-compatible function calling in `LlamaServerLLM.stream_chat`. When tool calls are generated, the engine executes tools dynamically, plays pre-warmed audio acknowledgment for long operations, appends tool outputs to message history, and performs a second-pass generation where the LLM reads and synthesizes tool outputs into fluent speech.
+- [x] **31. First-Class Camera Tool ('perception.what_do_you_see') & Audio-Synced Movement System**: Registered `perception.what_do_you_see` as a dedicated camera inspection tool returning objects, people, distance, and lighting; added tool permissions and system prompt guidance across all personalities. Synced avatar gestures to the exact millisecond of audio playback via `_tts_queue` and removed premature regex parsing on user text.
 
 ### 🟡 Medium Priority
 - [ ] **Physical Hardware Integration**:
@@ -78,8 +85,16 @@ Legend:
   - Add failsafe torque disconnect on unexpected stall current.
 - [ ] **Multi-turn Context Pruning**:
   - Implement rolling context budget trimmer in `ContextEngine` to ensure token budget never exceeds 2048 under prolonged conversations.
-- [ ] **Multi-Modal Vision Encoder (`mmproj`)**:
-  - Add optional local CLIP / MobileCLIP vision projector to `llama-server` when full visual question answering is demanded directly by the weights.
+- [x] **27. Multi-Modal Vision Encoder (`mmproj`) & Visual Question Answering**: Downloaded `mmproj-Qwen3.5-4B-F16.gguf` (642MB) and configured `llama-server` with `--mmproj` and `--mmproj-offload` (`-ngl 30` dynamically tuned to fit strictly within RTX 3050 4GB VRAM without CUDA OOM). Enabled multimodal vision image payloads in `config/default.yaml` and expanded visual triggers for natural queries (*"whose picture is this"*, *"who is this"*, etc.), streaming 480p base64 frames directly into `llama-server` for instant identification.
+- [x] **28. Girlfriend Personality ("Luna") & Expressive Avatar System**: Created `config/personalities/luna.yaml` with an ultra-thin, soft high-pitched voice profile (`pitch: 1.32`, `speed: 1.08`), romantic persona, and emotional expression triggers. Added `"love"`, `"affectionate"`, and `"shy"` emotional states to `GazeSystem.js` and `motion.py`, activating pink blushing visor glow (`#ff69b4`) and Three.js VRM joy facial blendshapes (`Fcl_EYE_Joy`).
+- [x] **29. Strictly Isolated Personality Workspaces**: Isolated persistent memory and conversation storage across all personalities (`cypher`, `aria`, `glados`, `luna`). `MemoryManager.store_turn()`, `add_memory()`, and `get_relevant_memories()` now partition both SQLite facts and Mem0 Qdrant vector spaces by personality namespace, preventing facts from bleeding between personalities.
+
+### 🟡 Medium Priority
+- [ ] **Physical Hardware Integration**:
+  - Test and calibrate real physical servos over serial (`/dev/ttyUSB0` or `/dev/ttyACM0`) using `src/robot/motion/serial_bridge.py`.
+  - Add failsafe torque disconnect on unexpected stall current.
+- [ ] **Multi-turn Context Pruning**:
+  - Implement rolling context budget trimmer in `ContextEngine` to ensure token budget never exceeds 2048 under prolonged conversations.
 - [ ] **Custom Wake-Word Detection**:
   - Add local wake-word engine (e.g. openWakeWord) preceding Silero VAD to allow hands-free wake-up (e.g., *"Hey Neo"*).
 - [ ] **Voice Cloning / Multiple Piper Voices**:
@@ -155,7 +170,13 @@ Legend:
 15. **Mem0 Optional spaCy Warning Spam on Startup**:
     - *Cause*: Mem0 attempted to import `spacy` to download `en_core_web_sm` even though vector search uses FastEmbed and Qdrant; printing warning traces to stderr.
     - *Fix*: Preemptively suppressed missing optional NLP model warnings in [`Mem0Provider.initialize`](file:///home/ameya/robot/src/robot/memory/__init__.py) by safely setting internal failure guards before loading `Memory`.
-16. **Dashboard UI Matrix Theme & Face-Tracking Jitter Reduction**:
+16. **Real-Time Execution Pipeline Forward Blinking Animation & Image Gen Button State Synchronization**:
+    - *Cause*: Pipeline nodes were statically displayed without forward motion cues, and image generation UI button was unresponsive on submit and failed to reactively toggle its state to "Generating..." when jobs were enqueued via voice, text chat, or UI button.
+    - *Fix*:
+      - Added keyframe animations (`@keyframes pipeBlinkForward` and `@keyframes arrowFlowForward`) to [`index.css`](file:///home/ameya/robot/src/robot/api/static/index.css) to visually pulse active steps with glowing cyan forward motion wave.
+      - Integrated WebSocket `pipeline_updated` emission in [`ObservabilityHub`](file:///home/ameya/robot/src/robot/observability/__init__.py) and connected `ImageGenerationService` events in [`RobotEngine`](file:///home/ameya/robot/src/robot/core/engine.py).
+      - Updated [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) `initImageGen` and `updateImageJobsUI` to dynamically set button text to "Generating..." with disabled pulse state during active generation across chat and UI interactions, and properly submit requests on click and Enter.
+17. **Dashboard UI Matrix Theme & Face-Tracking Jitter Reduction**:
     - *Cause*: Default bright-cyan dashboard lacked high-contrast dark cyberpunk ambiance; OpenCV face detection bounding boxes created subtle 4Hz head tracking jitter.
     - *Fix*: Redesigned UI styling with pure dark background, Matrix phosphor green colorway (`#00ff66`, `#39ff14`), live 30 FPS digital rain background canvas, and added a 2% deadzone filter with exponential damping in [`GazeSystem.js`](file:///home/ameya/robot/src/robot/api/static/character/GazeSystem.js).
 17. **First-Chat Turnaround Latency (~5.1s) & Turn-1 KV-Cache Eviction**:
@@ -215,6 +236,45 @@ Legend:
       - Cached all `bge-small-en-v1.5` model files permanently in `models/fastembed/`.
       - Configured `cache_dir: "models/fastembed"` in `config/default.yaml`.
       - Exported `FASTEMBED_CACHE_PATH` in `scripts/run.sh` and `src/robot/memory/__init__.py`, setting `HF_HUB_OFFLINE=1` when local files exist so startup is 100% offline and takes 0 seconds.
+30. **Autonomous LLM Tool Calling & Elimination of Crude Word Logic**:
+    - *Cause*: Tool invocation previously relied on 155+ lines of brittle regex and string matching in `engine.py` (`time_keywords`, `web_keywords`, `image_triggers`, etc.). `ToolRouter.select_tools` returned `[]` whenever keywords failed, blinding the LLM. Furthermore, `stream_chat` in `LlamaServerLLM` yielded unparsed JSON fragments (`__TOOL_CALL__{chunk}`) on every SSE delta, crashing `json.loads`.
+    - *Fix*:
+      - Rebuilt tool call chunk streaming in [`LlamaServerLLM.stream_chat`](file:///home/ameya/robot/src/robot/llm/__init__.py) to accumulate arguments across SSE deltas and yield a single validated JSON structure upon tool completion.
+      - Updated [`ToolRouter.select_tools`](file:///home/ameya/robot/src/robot/tools/__init__.py) so registered tools (including `system.time`, `web.search`, `image.generate`, `motion.*`) are reliably exposed to the LLM.
+      - Removed 150+ lines of hardcoded word logic from [`RobotEngine._stream_response`](file:///home/ameya/robot/src/robot/core/engine.py); implemented autonomous multi-tool execution with instant acoustic acknowledgment for long operations, pipeline state visualization, and second-pass LLM response synthesis where the model directly reads tool outputs and streams natural answers.
+31. **Null Property TypeError & Double Text Chat Echo in Dashboard Feed**:
+    - *Cause*: [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) accessed `this.faceCaption.textContent` unconditionally in `setRobotMode` even though `faceCaption` was null (due to UI consolidation to the 3D avatar), throwing `Cannot set properties of null (setting 'textContent')`. Also, both local `sendMessage` and server WebSocket echo logged the same user and assistant messages, creating duplicate lines in the HUD.
+    - *Fix*: Added null-safety guards across `faceCaption`, `traceTotalDuration`, and HUD indicators in `app.js`; deduplicated chat message logs so each utterance is recorded once.
+32. **Llama-Server Context Overflow on Autonomous Tool Invocations & Audio-Synced Motion**:
+    - *Cause*: When tool schemas were attached to turns with history and memories, total prompt tokens exceeded `llama-server`'s `-c 2048` context limit, causing HTTP 400 errors (`request (2125 tokens) exceeds available context size (2048 tokens)`) and triggering the fallback error `"I encountered an error connecting to my local inference model"`. Furthermore, avatar motions were triggered prematurely by user text matching rather than by LLM output, creating motion lag.
+    - *Fix*:
+      - Scaled `llama-server` context window in [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh) from 2048 to 4096 tokens (fitting comfortably in RTX 3050 VRAM); aligned `ToolRouter` keyword matching and ensured prompt tokens fit with large headroom.
+      - Registered `perception.what_do_you_see` in [`src/robot/tools/builtins/perception.py`](file:///home/ameya/robot/src/robot/tools/builtins/perception.py) as a dedicated camera inspection tool returning objects, people, distance, and lighting; updated personality prompts and permissions.
+      - Removed premature user text motion dispatch; avatar gestures are now decided by the LLM (via `character.execute_action` or `[motion: <action>]`) and triggered by [`RobotEngine._tts_player_loop`](file:///home/ameya/robot/src/robot/core/engine.py) at the exact millisecond audio playback begins, providing perfect audio-motion sync with zero lag.
+
+33. **Context Window Overflow & Fallback Tool Schema Bloat (2,174 Tokens / 1,963 ms TTFT)**:
+    - *Cause*:
+      1. [`ToolRouter.select_tools`](file:///home/ameya/robot/src/robot/tools/__init__.py) had a fallback when no keywords matched that returned `self._registry.list_tools()`. This dumped all 15 registered tool schemas (1,516 JSON schema tokens) on simple chats or conversational turns.
+      2. Combined with the system prompt and conversation history, prompt size reached **2,174 to 2,217 tokens**.
+      3. When `llama-server` was running with `-c 2048`, `llama-server` rejected the prompt with HTTP 400 (`error: request (2174 tokens) exceeds the available context size (2048 tokens)`), causing the engine to say: *"I encountered an error connecting to my local inference model."*
+      4. When `llama-server` was running with `-c 4096`, evaluating all 2,174 tokens on the RTX 3050 mobile GPU took **1,838.85 ms** prompt eval time (`llama-server.log`), driving total TTFT to **1,963 ms**.
+      5. Upstream NumPy 2.x emitted noisy `DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5` from `sounddevice.py:2795` during playback.
+    - *Fix*:
+      - Updated [`ToolRouter.select_tools`](file:///home/ameya/robot/src/robot/tools/__init__.py) to return `[]` when no tool family keywords match (for normal chit-chat, greetings, and queries), and strictly return only the 2-4 tools corresponding to the matched family. For example, `'Hi'` passes 0 tools (0 tokens), `'What is the time'` passes 2 tools (~150 tokens), and `'Who is Anubha'` passes 2 tools (~180 tokens).
+      - Added `export PYTHONWARNINGS="ignore::DeprecationWarning"` in [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh) to eliminate NumPy 2.x `sounddevice` deprecation warning spam in the terminal.
+      - Made multimodal vision projector `--mmproj` conditional on `multimodal: true` in [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh), freeing ~1.2GB VRAM and enabling 100% GPU layer offloading (`ngl 99`).
+      - All 49 test cases pass (`.venv/bin/pytest tests/`); prompt size stays under 400 tokens, eliminating HTTP 400 errors and locking TTFT to **< 200 ms**.
+
+34. **Continuous LLM-Generated Holding Conversation While Tools Execute ("Zero-Perceived-Latency" Tool Calling)**:
+    - *Architecture*: Implemented [`ToolConversationCoordinator`](file:///home/ameya/robot/src/robot/tools/coordinator.py) executing two concurrent asynchronous streams whenever an external tool is required:
+      - **Stream A (Holding LLM)**: The LLM runs in `TOOL_WAITING_MODE` with a lightweight system prompt (tiny context, 5–20 token segments) generating natural, spoken holding phrases while the tool runs.
+      - **Stream B (Tool Execution)**: Runs the tool (e.g. `web.search`, `image.generate`, etc.) concurrently in the background without blocking speech.
+      - **Seamless Transition**: Upon tool result arrival, holding generation cleanly halts at the nearest safe phrase boundary. Unspoken holding tokens are flushed while spoken phrases are saved into context. The LLM seamlessly continues the active turn into the grounded answer without repeating phrases, awkward restarts, or silence.
+      - **Hardware-Aware Resource Scheduler**: Respects the 4 GB VRAM RTX 3050 constraint by keeping holding context under 60 tokens and staggering slot usage so holding generation yields cleanly before final answer continuation begins.
+      - **Fast Router**: Implemented `< 1ms` direct intent extraction for common voice commands (`web.search`, `system.time`, `perception.what_do_you_see`, `image.generate`, `character.execute_action`, `memory.*`), bypassing pass 1 LLM latency.
+      - **Audio Arbitration & Barge-In**: User speech immediately cancels holding generation and TTS playback without leaking stale audio into the next turn.
+      - **Dashboard HUD**: Added real-time dual-stream execution visualization (`#parallelStreams`) and coordinator status badge (`#coordinatorBadge`) in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html) and [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js).
+      - **Validation**: 55 unit tests pass (`.venv/bin/pytest tests/`); benchmark suite added at [`scripts/benchmark_tool_orchestration.py`](file:///home/ameya/robot/scripts/benchmark_tool_orchestration.py).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

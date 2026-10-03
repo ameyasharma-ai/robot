@@ -117,51 +117,118 @@ class RobotUI {
 
         if (!input || !btn) return;
 
+        let isSubmitting = false;
+
         const sendMessage = async () => {
             const text = input.value.trim();
-            if (!text) return;
+            if (!text || isSubmitting) return;
 
-            // Show user message in bubble
-            this.bubbleTag.textContent = "USER (TEXT)";
-            this.bubbleTag.style.color = "var(--primary-cyan)";
-            this.bubbleContent.textContent = text;
-            this.logEvent("USER", text, "user");
-
-            // Clear input and disable while processing
-            input.value = "";
+            isSubmitting = true;
             btn.classList.add("sending");
             input.disabled = true;
-            this.setRobotMode("thinking");
+
+            try {
+                // Show user message in bubble immediately
+                if (this.bubbleTag) {
+                    this.bubbleTag.textContent = "USER (TEXT)";
+                    this.bubbleTag.style.color = "var(--primary-cyan)";
+                }
+                if (this.bubbleContent) {
+                    this.bubbleContent.textContent = text;
+                }
+                if (typeof this.logEvent === "function") {
+                    this.logEvent("USER", text, "user");
+                    this._lastUserLogged = text;
+                }
+
+                // Clear input so user can type next message
+                input.value = "";
+                if (typeof this.setRobotMode === "function") {
+                    this.setRobotMode("thinking");
+                }
+                this.updatePipelineStatus({ CONTEXT: "RUNNING", LLM: "RUNNING" });
+            } catch (err) {
+                console.error("UI update failed before fetch:", err);
+            }
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
 
             try {
                 const resp = await fetch("/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ text }),
+                    signal: controller.signal,
                 });
+                clearTimeout(timeoutId);
+
+                if (!resp.ok) {
+                    throw new Error(`Server returned HTTP ${resp.status}`);
+                }
+
                 const data = await resp.json();
-                const response = data.response || data.error || "No response.";
+                const response = data.response || data.error || "No response received.";
 
                 // Show robot response
-                this.bubbleTag.textContent = "ROBOT RESPONSE";
-                this.bubbleTag.style.color = "var(--accent-emerald)";
-                this.bubbleContent.textContent = response;
-                this.logEvent("ROBOT", response, "robot");
-                this.setRobotMode("speaking");
+                if (this.bubbleTag) {
+                    this.bubbleTag.textContent = "ROBOT RESPONSE";
+                    this.bubbleTag.style.color = "var(--accent-emerald)";
+                }
+                if (this.bubbleContent) {
+                    this.bubbleContent.textContent = response;
+                }
+                if (typeof this.logEvent === "function") {
+                    this.logEvent("ROBOT", response, "robot");
+                    this._lastRobotLogged = response;
+                }
+                if (typeof this.setRobotMode === "function") {
+                    this.setRobotMode("speaking");
+                }
+                this.updatePipelineStatus({ CONTEXT: "COMPLETED", LLM: "COMPLETED", AVATAR: "RUNNING" });
 
-                // Trigger lip-sync on all 3D engines
-                this._forEachEngine((eng) => {
-                    eng.speakStart();
-                    setTimeout(() => eng.speakStop(), Math.min(8000, response.length * 80));
-                });
+                // Trigger lip-sync on 3D engine safely
+                try {
+                    if (typeof this._forEachEngine === "function") {
+                        this._forEachEngine((eng) => {
+                            if (eng && typeof eng.speakStart === "function") {
+                                eng.speakStart();
+                                setTimeout(() => {
+                                    if (eng && typeof eng.speakStop === "function") eng.speakStop();
+                                }, Math.min(8000, response.length * 80));
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.warn("Avatar speech trigger warning:", e);
+                }
 
                 // Return to idle after speech completes
-                setTimeout(() => this.setRobotMode("idle"), Math.min(10000, response.length * 80 + 1000));
+                setTimeout(() => {
+                    if (typeof this.setRobotMode === "function") this.setRobotMode("idle");
+                    this.updatePipelineStatus({ AVATAR: "COMPLETED" });
+                    setTimeout(() => {
+                        this.updatePipelineStatus({ CONTEXT: "IDLE", LLM: "IDLE", AVATAR: "IDLE", TTS: "IDLE", TOOLS: "IDLE" });
+                    }, 2000);
+                }, Math.min(10000, response.length * 80 + 1000));
             } catch (err) {
-                this.bubbleContent.textContent = `Error: ${err.message}`;
-                this.logEvent("ERROR", err.message, "system");
-                this.setRobotMode("idle");
+                clearTimeout(timeoutId);
+                const errMsg = err.name === "AbortError" ? "Request timed out after 20s" : err.message;
+                if (this.bubbleContent) {
+                    this.bubbleContent.textContent = `[Error]: ${errMsg}`;
+                }
+                if (typeof this.logEvent === "function") {
+                    this.logEvent("ERROR", errMsg, "system");
+                }
+                if (typeof this.setRobotMode === "function") {
+                    this.setRobotMode("idle");
+                }
+                this.updatePipelineStatus({ CONTEXT: "ERROR", LLM: "ERROR" });
+                setTimeout(() => {
+                    this.updatePipelineStatus({ CONTEXT: "IDLE", LLM: "IDLE" });
+                }, 3000);
             } finally {
+                isSubmitting = false;
                 btn.classList.remove("sending");
                 input.disabled = false;
                 input.focus();
@@ -199,62 +266,7 @@ class RobotUI {
             }, 500);
         }
 
-        // ─── Realistic 3D Character Engine (created lazily on tab click) ───
-        this.realisticContainer = document.getElementById("realisticContainer");
-        this.realisticEngine = null;
-        this._activeTab = "3d"; // "3d" | "realistic" | "face"
-
-        // Avatar Tab Switcher (3D Humanoid vs Realistic Girl vs 2D Visor)
-        const tab3D = document.getElementById("tabBtn3D");
-        const tabRealGirl = document.getElementById("tabBtnRealGirl");
-        const tabFace = document.getElementById("tabBtnFace");
-
-        const resetTabs = () => {
-            [tab3D, tabRealGirl, tabFace].forEach(t => t && t.classList.remove("active"));
-            if (this.characterContainer) this.characterContainer.style.display = "none";
-            if (this.realisticContainer) this.realisticContainer.style.display = "none";
-            if (this.faceStage) this.faceStage.style.display = "none";
-        };
-
-        if (tab3D) {
-            tab3D.addEventListener("click", () => {
-                resetTabs();
-                tab3D.classList.add("active");
-                if (this.characterContainer) this.characterContainer.style.display = "flex";
-                if (this.characterEngine) this.characterEngine.onResize();
-                this._activeTab = "3d";
-            });
-        }
-
-        if (tabRealGirl) {
-            tabRealGirl.addEventListener("click", () => {
-                resetTabs();
-                tabRealGirl.classList.add("active");
-                if (this.realisticContainer) this.realisticContainer.style.display = "flex";
-                this._activeTab = "realistic";
-
-                // Lazy-init the realistic engine on first tab click
-                if (!this.realisticEngine && typeof CharacterEngine !== "undefined" && this.realisticContainer) {
-                    this.realisticEngine = new CharacterEngine(this.realisticContainer, {
-                        variant: "realistic",
-                        modelUrl: "/static/models/avatar.glb",
-                    });
-                    this.logEvent("3D-REAL", "Realistic 3D character initialized (portrait lighting).", "system");
-                } else if (this.realisticEngine) {
-                    this.realisticEngine.onResize();
-                }
-            });
-        }
-        if (tabFace) {
-            tabFace.addEventListener("click", () => {
-                resetTabs();
-                tabFace.classList.add("active");
-                if (this.faceStage) this.faceStage.style.display = "flex";
-                this._activeTab = "face";
-            });
-        }
-
-        // Character Action Debug Buttons — dispatch to the active engine
+        // Character Action Debug Buttons — dispatch to the animated engine
         document.querySelectorAll(".dbg-act-btn").forEach((btn) => {
             btn.addEventListener("click", () => {
                 const act = btn.getAttribute("data-act");
@@ -265,16 +277,14 @@ class RobotUI {
         });
     }
 
-    /** Returns whichever CharacterEngine is currently visible, or the animated one as default */
+    /** Returns the active animated CharacterEngine */
     _activeCharEngine() {
-        if (this._activeTab === "realistic" && this.realisticEngine) return this.realisticEngine;
         return this.characterEngine;
     }
 
-    /** Execute a callback on every initialized CharacterEngine */
+    /** Execute a callback on the active CharacterEngine */
     _forEachEngine(fn) {
         if (this.characterEngine) fn(this.characterEngine);
-        if (this.realisticEngine) fn(this.realisticEngine);
     }
 
     async executeSemanticAction(actionObj) {
@@ -398,7 +408,8 @@ class RobotUI {
                     data.personalities.forEach((p) => {
                         const opt = document.createElement("option");
                         opt.value = p;
-                        const label = p === "neo" ? "NEO (Confident / Direct)"
+                        const label = p === "neo" ? "CYPHER (Matrix Hacker Girl)"
+                                    : p === "luna" ? "LUNA (Devoted Girlfriend)"
                                     : p === "aria" ? "ARIA (Empathetic / Warm)"
                                     : p === "glados" ? "GLADOS (Sarcastic / Clinical)"
                                     : p.toUpperCase();
@@ -408,7 +419,8 @@ class RobotUI {
                 }
                 if (data.active) {
                     this.personaSelect.value = data.active;
-                    if (this.personaName) this.personaName.textContent = data.active.toUpperCase();
+                    const activeDisplay = data.active === "neo" ? "CYPHER" : data.active.toUpperCase();
+                    if (this.personaName) this.personaName.textContent = activeDisplay;
                 }
             }
         } catch (e) {}
@@ -418,8 +430,9 @@ class RobotUI {
             try {
                 const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
                 if (switchRes.ok) {
-                    this.logEvent("PERSONA", `Personality switched to ${chosen.toUpperCase()}`, "system");
-                    if (this.personaName) this.personaName.textContent = chosen.toUpperCase();
+                    const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+                    this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
+                    if (this.personaName) this.personaName.textContent = disp;
                 }
             } catch (err) {
                 this.logEvent("ERROR", `Failed to switch personality: ${err.message}`, "error");
@@ -459,24 +472,28 @@ class RobotUI {
     }
 
     setRobotMode(mode) {
-        if (this.currentMode === mode) return;
-        this.currentMode = mode;
+        if (!mode) return;
+        const normalizedMode = mode.toLowerCase();
+        if (this.currentMode === normalizedMode) return;
+        this.currentMode = normalizedMode;
 
-        // Reset stage state classes
-        this.faceStage.classList.remove("state-idle", "state-listening", "state-thinking", "state-speaking");
-        this.faceStage.classList.add(`state-${mode}`);
+        // Reset stage state classes if faceStage exists
+        if (this.faceStage) {
+            this.faceStage.classList.remove("state-idle", "state-listening", "state-thinking", "state-speaking");
+            this.faceStage.classList.add(`state-${normalizedMode}`);
+        }
 
         // Update Status Pill
-        this.statusPill.className = `status-pill status-${mode}`;
-        this.statusText.textContent = mode.toUpperCase();
+        if (this.statusPill) this.statusPill.className = `status-pill status-${normalizedMode}`;
+        if (this.statusText) this.statusText.textContent = normalizedMode.toUpperCase();
 
-        // Update Face Caption & 3D Character Posture / Expression (all engines)
-        if (this.charStateBadge) this.charStateBadge.textContent = `STATE: ${mode.toUpperCase()}`;
-        if (this.dbgCharState) this.dbgCharState.textContent = mode.toUpperCase();
+        // Update Face Caption & 3D Character Posture / Expression
+        if (this.charStateBadge) this.charStateBadge.textContent = `STATE: ${normalizedMode.toUpperCase()}`;
+        if (this.dbgCharState) this.dbgCharState.textContent = normalizedMode.toUpperCase();
 
-        switch (mode) {
+        switch (normalizedMode) {
             case "listening":
-                this.faceCaption.textContent = "LISTENING FOR VOICE";
+                if (this.faceCaption) this.faceCaption.textContent = "LISTENING FOR VOICE";
                 this.stopMouthSpeaking();
                 this._forEachEngine((eng) => {
                     eng.setEmotion("neutral");
@@ -484,7 +501,7 @@ class RobotUI {
                 });
                 break;
             case "thinking":
-                this.faceCaption.textContent = "PROCESSING & REASONING";
+                if (this.faceCaption) this.faceCaption.textContent = "PROCESSING & REASONING";
                 this.stopMouthSpeaking();
                 this._forEachEngine((eng) => {
                     eng.setEmotion("thinking");
@@ -492,7 +509,7 @@ class RobotUI {
                 });
                 break;
             case "speaking":
-                this.faceCaption.textContent = "SYNTHESIZING & SPEAKING";
+                if (this.faceCaption) this.faceCaption.textContent = "SYNTHESIZING & SPEAKING";
                 this.startMouthSpeaking();
                 this._forEachEngine((eng) => {
                     eng.speakStart();
@@ -500,7 +517,7 @@ class RobotUI {
                 });
                 break;
             default:
-                this.faceCaption.textContent = "OBSERVING ENVIRONMENT";
+                if (this.faceCaption) this.faceCaption.textContent = "OBSERVING ENVIRONMENT";
                 this.stopMouthSpeaking();
                 this._forEachEngine((eng) => {
                     eng.speakStop();
@@ -571,22 +588,42 @@ class RobotUI {
     }
 
     handleServerEvent(data) {
+        if (data.event === "pipeline_updated" || data.pipeline) {
+            this.updatePipelineStatus(data.pipeline);
+        }
+
         if (data.mode) {
             this.setRobotMode(data.mode);
         }
 
         if (data.user_text) {
-            this.bubbleTag.textContent = "USER SPEECH";
-            this.bubbleTag.style.color = "var(--primary-cyan)";
-            this.bubbleContent.textContent = data.user_text;
-            this.logEvent("USER", data.user_text, "user");
+            if (this.bubbleTag) {
+                this.bubbleTag.textContent = "USER SPEECH";
+                this.bubbleTag.style.color = "var(--primary-cyan)";
+            }
+            if (this.bubbleContent) {
+                this.bubbleContent.textContent = data.user_text;
+            }
+            if (this._lastUserLogged !== data.user_text) {
+                this.logEvent("USER", data.user_text, "user");
+                this._lastUserLogged = data.user_text;
+            }
+            this.updatePipelineStatus({ MIC: "COMPLETED", VAD: "COMPLETED", STT: "COMPLETED", CONTEXT: "RUNNING", LLM: "RUNNING" });
         }
 
         if (data.robot_phrase) {
-            this.bubbleTag.textContent = "ROBOT RESPONSE";
-            this.bubbleTag.style.color = "var(--accent-emerald)";
-            this.bubbleContent.textContent = data.robot_phrase;
-            this.logEvent("ROBOT", data.robot_phrase, "robot");
+            if (this.bubbleTag) {
+                this.bubbleTag.textContent = "ROBOT RESPONSE";
+                this.bubbleTag.style.color = "var(--accent-emerald)";
+            }
+            if (this.bubbleContent) {
+                this.bubbleContent.textContent = data.robot_phrase;
+            }
+            if (this._lastRobotLogged !== data.robot_phrase) {
+                this.logEvent("ROBOT", data.robot_phrase, "robot");
+                this._lastRobotLogged = data.robot_phrase;
+            }
+            this.updatePipelineStatus({ LLM: "COMPLETED", TTS: "RUNNING", AVATAR: "RUNNING" });
 
             // Trigger lip-sync on ALL 3D character engines
             this._forEachEngine((eng) => {
@@ -597,12 +634,43 @@ class RobotUI {
                     }
                 }, Math.min(8000, data.robot_phrase.length * 80));
             });
+            setTimeout(() => {
+                this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
+            }, Math.min(8000, data.robot_phrase.length * 80));
         }
 
         if (data.barge_in) {
             this.logEvent("BARGE-IN", "Interrupted bot playback via voice activity!", "barge");
             this._forEachEngine((eng) => eng.stopMotion());
             this.setRobotMode("listening");
+            this.updatePipelineStatus({ MIC: "RUNNING", VAD: "RUNNING", LLM: "CANCELLED", TTS: "CANCELLED", AVATAR: "IDLE" });
+        }
+
+        // Live Tool-Conversation Coordinator State
+        if (data.event === "coordinator_state" || data.coordinator_state) {
+            const st = data.state || data.coordinator_state;
+            const badge = document.getElementById("coordinatorBadge");
+            if (badge) {
+                badge.style.display = "inline-block";
+                badge.textContent = `COORDINATOR: ${st}`;
+                if (st === "HOLDING_CONVERSATION" || st === "TOOL_RUNNING") {
+                    badge.className = "badge badge-pulsing";
+                } else if (st === "COMPLETED") {
+                    badge.className = "badge badge-accent";
+                }
+            }
+            const parallelBox = document.getElementById("parallelStreams");
+            if (parallelBox) {
+                if (st === "HOLDING_CONVERSATION" || st === "TOOL_RUNNING" || st === "TRANSITIONING_TO_RESULT") {
+                    parallelBox.style.display = "flex";
+                } else if (st === "COMPLETED" || st === "IDLE" || st === "CANCELLED") {
+                    setTimeout(() => { if (parallelBox) parallelBox.style.display = "none"; }, 3000);
+                }
+            }
+            const toolStatusEl = document.getElementById("toolStreamStatus");
+            if (toolStatusEl && data.tool) {
+                toolStatusEl.textContent = `${data.tool.toUpperCase()}: ${st}`;
+            }
         }
 
         // Real-time Semantic Character Actions dispatched from Robot Core / LLM
@@ -636,6 +704,7 @@ class RobotUI {
                 toolBadge.style.borderColor = "var(--primary-cyan)";
             }
             this.logEvent("TOOL", `Executing: ${data.tool}`, "system");
+            this.updatePipelineStatus({ TOOLS: "RUNNING" });
         }
 
         if (data.event === "tool_completed" || data.event === "tool_error") {
@@ -656,6 +725,7 @@ class RobotUI {
                     }
                 }, 3000);
             }
+            this.updatePipelineStatus({ TOOLS: data.event === "tool_completed" ? "COMPLETED" : "ERROR" });
         }
 
         if (data.metrics) {
@@ -766,7 +836,8 @@ class RobotUI {
                     if (data.traces && data.traces.length > 0) {
                         this.renderTraceTree(data.traces[0]);
                         const total = data.traces[0].total_latency_ms;
-                        if (total) document.getElementById("traceTotalDuration").textContent = `DURATION: ${total.toFixed(1)} ms`;
+                        const durEl = document.getElementById("traceTotalDuration");
+                        if (durEl && total) durEl.textContent = `DURATION: ${total.toFixed(1)} ms`;
                     }
                     if (data.pipeline) {
                         this.updatePipelineStatus(data.pipeline);
@@ -782,10 +853,13 @@ class RobotUI {
                 if (res.ok) {
                     const ws = await res.json();
                     if (!ws.error) {
-                        this.worldStateCode.textContent = JSON.stringify(ws, null, 2);
-                        document.getElementById("hudLighting").textContent = `LIGHT: ${(ws.lighting || "NORMAL").toUpperCase()}`;
-                        document.getElementById("hudMotion").textContent = `MOTION: ${(ws.motion || "NONE").toUpperCase()}`;
-                        document.getElementById("hudPeople").textContent = `PEOPLE: ${ws.people_count || 0}`;
+                        if (this.worldStateCode) this.worldStateCode.textContent = JSON.stringify(ws, null, 2);
+                        const elLight = document.getElementById("hudLighting");
+                        if (elLight) elLight.textContent = `LIGHT: ${(ws.lighting || "NORMAL").toUpperCase()}`;
+                        const elMotion = document.getElementById("hudMotion");
+                        if (elMotion) elMotion.textContent = `MOTION: ${(ws.motion || "NONE").toUpperCase()}`;
+                        const elPeople = document.getElementById("hudPeople");
+                        if (elPeople) elPeople.textContent = `PEOPLE: ${ws.people_count || 0}`;
 
                         // Drive 3D Character Gaze & Look-At IK from OpenCV detected user position
                         if (ws.people && ws.people.length > 0 && this.characterEngine) {
@@ -864,7 +938,8 @@ class RobotUI {
         if (evt.type === "trace_updated" && evt.trace) {
             this.renderTraceTree(evt.trace);
             const total = evt.trace.total_latency_ms;
-            if (total) document.getElementById("traceTotalDuration").textContent = `DURATION: ${total.toFixed(1)} ms`;
+            const durEl = document.getElementById("traceTotalDuration");
+            if (durEl && total) durEl.textContent = `DURATION: ${total.toFixed(1)} ms`;
         }
         if (evt.type === "pipeline_updated" && evt.pipeline) {
             this.updatePipelineStatus(evt.pipeline);
@@ -872,24 +947,38 @@ class RobotUI {
     }
 
     updatePipelineStatus(pipeline) {
+        if (!pipeline) return;
         const nodes = ["mic", "vad", "stt", "context", "llm", "tools", "tts", "avatar", "image"];
-        for (const key of nodes) {
-            const el = document.getElementById(`node${key.charAt(0).toUpperCase() + key.slice(1)}`);
+        for (let i = 0; i < nodes.length; i++) {
+            const key = nodes[i];
+            const capKey = key.charAt(0).toUpperCase() + key.slice(1);
+            const el = document.getElementById(`node${capKey}`);
+            const arrow = document.getElementById(`arrow${capKey}`);
+            
+            // Only update nodes present in pipeline object if partial update
+            if (pipeline[key.toUpperCase()] === undefined && pipeline[key] === undefined) {
+                continue;
+            }
+            
             if (el) {
-                // Support uppercase or lowercase keys from backend
-                const rawStatus = pipeline[key.toUpperCase()] || pipeline[key] || "IDLE";
-                const status = String(rawStatus).toLowerCase();
+                const rawStatus = pipeline[key.toUpperCase()] !== undefined ? pipeline[key.toUpperCase()] : pipeline[key];
+                const status = String(rawStatus || "IDLE").toLowerCase();
                 el.className = "pipe-node";
-                el.querySelector(".node-status").textContent = rawStatus.toUpperCase();
+                const statusEl = el.querySelector(".node-status");
+                if (statusEl) statusEl.textContent = String(rawStatus || "IDLE").toUpperCase();
 
                 if (status === "running" || status === "active") {
                     el.classList.add("running");
-                } else if (status === "completed" || status === "done") {
-                    el.classList.add("completed");
-                } else if (status === "cancelled") {
-                    el.classList.add("cancelled");
-                } else if (status === "error") {
-                    el.classList.add("error");
+                    if (arrow) arrow.classList.add("running");
+                } else {
+                    if (arrow) arrow.classList.remove("running");
+                    if (status === "completed" || status === "done") {
+                        el.classList.add("completed");
+                    } else if (status === "cancelled") {
+                        el.classList.add("cancelled");
+                    } else if (status === "error" || status === "failed") {
+                        el.classList.add("error");
+                    }
                 }
             }
         }
@@ -931,35 +1020,85 @@ class RobotUI {
         const btnCancel = document.getElementById("btnCancelImage");
         const input = document.getElementById("imgPromptInput");
 
-        if (btnGen && input) {
-            btnGen.addEventListener("click", async () => {
-                const prompt = input.value.trim();
-                if (!prompt) return;
-                const resSelect = document.getElementById("imgResSelect");
-                const stepsInput = document.getElementById("imgStepsInput");
-                const [width, height] = (resSelect ? resSelect.value : "512x512").split("x").map(Number);
-                const steps = stepsInput ? (parseInt(stepsInput.value, 10) || 4) : 4;
-                try {
-                    const res = await fetch("/images/generate", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ prompt: prompt, width: width, height: height, steps: steps })
-                    });
-                    if (res.ok) {
-                        input.value = "";
-                        this.logEvent("IMAGE", `Generation job submitted: "${prompt}" (${width}x${height}, ${steps} steps)`, "system");
+        const submitImage = async () => {
+            if (!input) return;
+            const prompt = input.value.trim();
+            if (!prompt) return;
+
+            const resSelect = document.getElementById("imgResSelect");
+            const stepsInput = document.getElementById("imgStepsInput");
+            const [width, height] = (resSelect ? resSelect.value : "512x512").split("x").map(Number);
+            const steps = stepsInput ? (parseInt(stepsInput.value, 10) || 4) : 4;
+
+            if (btnGen) {
+                btnGen.disabled = true;
+                btnGen.textContent = "Generating...";
+                btnGen.classList.add("generating");
+            }
+            this.updatePipelineStatus({ IMAGE: "RUNNING" });
+
+            try {
+                const res = await fetch("/images/generate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ prompt: prompt, width: width, height: height, steps: steps })
+                });
+                const data = await res.json();
+                if (res.ok && !data.error) {
+                    input.value = "";
+                    this.logEvent("IMAGE", `Generation job submitted: "${prompt}" (${width}x${height}, ${steps} steps)`, "system");
+                    try {
+                        const pollRes = await fetch("/images/jobs");
+                        if (pollRes.ok) {
+                            const jobsData = await pollRes.json();
+                            if (jobsData.jobs) this.updateImageJobsUI(jobsData.jobs);
+                        }
+                    } catch (e) {}
+                } else {
+                    const err = data.error || `HTTP ${res.status}`;
+                    this.logEvent("IMAGE", `Image generation error: ${err}`, "system");
+                    if (btnGen) {
+                        btnGen.disabled = false;
+                        btnGen.textContent = "Generate";
+                        btnGen.classList.remove("generating");
                     }
-                } catch (e) {
-                    console.error("Image gen failed", e);
+                    this.updatePipelineStatus({ IMAGE: "ERROR" });
+                }
+            } catch (e) {
+                console.error("Image gen failed", e);
+                this.logEvent("IMAGE", `Failed to send generation request: ${e.message}`, "system");
+                if (btnGen) {
+                    btnGen.disabled = false;
+                    btnGen.textContent = "Generate";
+                    btnGen.classList.remove("generating");
+                }
+                this.updatePipelineStatus({ IMAGE: "ERROR" });
+            }
+        };
+
+        if (btnGen) {
+            btnGen.addEventListener("click", (e) => {
+                e.preventDefault();
+                submitImage();
+            });
+        }
+
+        if (input) {
+            input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitImage();
                 }
             });
         }
 
         if (btnCancel) {
-            btnCancel.addEventListener("click", async () => {
+            btnCancel.addEventListener("click", async (e) => {
+                e.preventDefault();
                 if (this.activeImageJob) {
                     await fetch(`/images/cancel/${this.activeImageJob}`, { method: "POST" });
                     this.logEvent("IMAGE", `Cancelled job ${this.activeImageJob}`, "system");
+                    this.updatePipelineStatus({ IMAGE: "CANCELLED" });
                 }
             });
         }
@@ -967,33 +1106,46 @@ class RobotUI {
 
     updateImageJobsUI(jobs) {
         const badge = document.getElementById("imgJobBadge");
+        const btnGen = document.getElementById("btnGenImage");
         const btnCancel = document.getElementById("btnCancelImage");
         const previewImg = document.getElementById("imgPreviewImg");
         const placeholder = document.getElementById("imgPlaceholder");
         const genStatus = document.getElementById("imgGeneratingStatus");
         const metaBlock = document.getElementById("imgMetaBlock");
 
-        let activeJob = jobs.find(j => j.status === "queued" || j.status === "running");
+        let activeJob = jobs.find(j => j.status === "queued" || j.status === "running" || j.status === "QUEUED" || j.status === "RUNNING");
         let completedJob = [...jobs].reverse().find(j => j.status === "completed" || j.status === "COMPLETED");
-        if (!activeJob && jobs.length > 0) activeJob = jobs[jobs.length - 1]; // Use last job if none active
+        if (!activeJob && jobs.length > 0 && (jobs[jobs.length - 1].status === "queued" || jobs[jobs.length - 1].status === "running")) {
+            activeJob = jobs[jobs.length - 1];
+        }
 
         this.activeImageJob = activeJob ? activeJob.job_id : null;
         
-        if (activeJob && (activeJob.status === "queued" || activeJob.status === "running" || activeJob.status === "QUEUED" || activeJob.status === "RUNNING")) {
-            badge.textContent = `STATUS: ${activeJob.status.toUpperCase()}`;
+        if (activeJob) {
+            if (badge) badge.textContent = `STATUS: ${activeJob.status.toUpperCase()}`;
             if (btnCancel) btnCancel.disabled = false;
+            if (btnGen) {
+                btnGen.disabled = true;
+                btnGen.textContent = "Generating...";
+                btnGen.classList.add("generating");
+            }
+            this.updatePipelineStatus({ IMAGE: "RUNNING" });
             
             // Show generating status
-            placeholder.style.display = "none";
-            previewImg.style.display = "none";
-            metaBlock.style.display = "none";
-            genStatus.style.display = "block";
+            if (placeholder) placeholder.style.display = "none";
+            if (previewImg) previewImg.style.display = "none";
+            if (metaBlock) metaBlock.style.display = "none";
+            if (genStatus) genStatus.style.display = "block";
             
-            document.getElementById("imgGenStep").textContent = `Step ${Math.floor((activeJob.progress / 100) * activeJob.steps)}/${activeJob.steps}`;
-            document.getElementById("imgGenBackend").textContent = `Backend: ${activeJob.backend || '--'}`;
-            document.getElementById("imgGenDevice").textContent = `Device: ${activeJob.device || '--'}`;
+            const stepEl = document.getElementById("imgGenStep");
+            if (stepEl) stepEl.textContent = `Step ${Math.floor((activeJob.progress / 100) * activeJob.steps)}/${activeJob.steps}`;
+            const beEl = document.getElementById("imgGenBackend");
+            if (beEl) beEl.textContent = `Backend: ${activeJob.backend || '--'}`;
+            const devEl = document.getElementById("imgGenDevice");
+            if (devEl) devEl.textContent = `Device: ${activeJob.device || '--'}`;
             const elapsed = activeJob.started_at ? ((Date.now() / 1000) - activeJob.started_at).toFixed(1) : 0.0;
-            document.getElementById("imgGenElapsed").textContent = `Elapsed: ${elapsed}s`;
+            const elapEl = document.getElementById("imgGenElapsed");
+            if (elapEl) elapEl.textContent = `Elapsed: ${elapsed}s`;
             
             const pbar = document.getElementById("imgProgressBar");
             const pwrap = document.getElementById("imgProgressWrap");
@@ -1002,29 +1154,38 @@ class RobotUI {
                 pbar.style.width = `${activeJob.progress}%`;
             }
         } else {
-            badge.textContent = "STATUS: READY";
+            if (badge) badge.textContent = "STATUS: READY";
             if (btnCancel) btnCancel.disabled = true;
-            genStatus.style.display = "none";
+            if (btnGen) {
+                btnGen.disabled = false;
+                btnGen.textContent = "Generate";
+                btnGen.classList.remove("generating");
+            }
+            if (genStatus) genStatus.style.display = "none";
             
             const pwrap = document.getElementById("imgProgressWrap");
             if (pwrap) pwrap.style.display = "none";
             
             if (completedJob && completedJob.output_path) {
-                placeholder.style.display = "none";
-                previewImg.style.display = "block";
-                previewImg.src = completedJob.output_path;
+                if (placeholder) placeholder.style.display = "none";
+                if (previewImg) {
+                    previewImg.style.display = "block";
+                    previewImg.src = completedJob.output_path;
+                }
                 
-                metaBlock.style.display = "block";
-                document.getElementById("metaModel").textContent = completedJob.model || '--';
-                document.getElementById("metaBackend").textContent = completedJob.backend || '--';
-                document.getElementById("metaDevice").textContent = completedJob.device || '--';
-                document.getElementById("metaTime").textContent = `${(completedJob.duration_s || 0).toFixed(2)}s`;
-                document.getElementById("metaRes").textContent = `${completedJob.width}x${completedJob.height}`;
-                document.getElementById("metaSteps").textContent = completedJob.steps || '--';
+                if (metaBlock) {
+                    metaBlock.style.display = "block";
+                    document.getElementById("metaModel").textContent = completedJob.model || '--';
+                    document.getElementById("metaBackend").textContent = completedJob.backend || '--';
+                    document.getElementById("metaDevice").textContent = completedJob.device || '--';
+                    document.getElementById("metaTime").textContent = `${(completedJob.duration_s || 0).toFixed(2)}s`;
+                    document.getElementById("metaRes").textContent = `${completedJob.width}x${completedJob.height}`;
+                    document.getElementById("metaSteps").textContent = completedJob.steps || '--';
+                }
             } else {
-                placeholder.style.display = "block";
-                previewImg.style.display = "none";
-                metaBlock.style.display = "none";
+                if (placeholder) placeholder.style.display = "block";
+                if (previewImg) previewImg.style.display = "none";
+                if (metaBlock) metaBlock.style.display = "none";
             }
         }
     }

@@ -15,8 +15,10 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
 
     # --- Memory Tools ---
     async def memory_write(fact: str) -> str:
-        await engine.memory.add_memory(fact, user_id="user")
-        return f"Successfully remembered: '{fact}'"
+        pers = engine.personalities.active
+        ns = getattr(pers, "memory_namespace", "default")
+        await engine.memory.add_memory(fact, user_id=ns)
+        return f"Successfully remembered: '{fact}' in {ns} workspace"
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -36,7 +38,9 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     )
 
     async def memory_search(query: str, limit: int = 5) -> Any:
-        return await engine.memory.get_relevant_memories(query, limit)
+        pers = engine.personalities.active
+        ns = getattr(pers, "memory_namespace", "default")
+        return await engine.memory.get_relevant_memories(query, user_id=ns, limit=limit)
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -329,9 +333,11 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     register_motion_tools(engine)
 
     # --- Image Generation Tools ---
-    async def generate_image(prompt: str, width: int = 512, height: int = 512, steps: int = 4) -> dict:
+    async def generate_image(prompt: str, width: int = 512, height: int = 512, steps: int = 15) -> dict:
         if not getattr(engine, "image_service", None):
             return {"error": "Image generation service is not initialized"}
+        # Bound steps between 12 and 20 for optimal quality and responsiveness
+        clamped_steps = max(12, min(20, steps)) if steps else 15
         span = None
         if getattr(engine, "observability", None):
             span = engine.observability.start_span("IMAGE", "GENERATE", metadata={"prompt": prompt})
@@ -340,7 +346,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             prompt=prompt,
             width=width,
             height=height,
-            steps=steps,
+            steps=clamped_steps,
             trace_id=getattr(engine.observability, "current_trace_id", None) if getattr(engine, "observability", None) else None,
         )
 
@@ -363,6 +369,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                     "prompt": {"type": "string", "description": "Visual prompt describing the image to generate"},
                     "width": {"type": "integer", "description": "Image width in pixels (128-1024)", "default": 512},
                     "height": {"type": "integer", "description": "Image height in pixels (128-1024)", "default": 512},
+                    "steps": {"type": "integer", "description": "Inference steps (recommended 12-20)", "default": 15},
                 },
                 "required": ["prompt"],
             },

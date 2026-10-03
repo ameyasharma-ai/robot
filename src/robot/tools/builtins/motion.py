@@ -47,12 +47,16 @@ def register_motion_tools(engine: "RobotEngine") -> None:
         sequence = planner.plan_action(req)
         serialized_seq = [a.to_dict() for a in sequence]
 
-        # Emit over EventBus for live browser 3D character execution
-        await engine.events.emit(
-            "character.action",
-            action=semantic_action.to_dict(),
-            sequence=serialized_seq,
-        )
+        # Stage on engine so motion triggers in exact synchrony with upcoming speech audio
+        if hasattr(engine, "_pending_motion"):
+            engine._pending_motion = semantic_action.to_dict()
+        else:
+            # Fallback to direct EventBus emission if called outside engine conversational loop
+            await engine.events.emit(
+                "character.action",
+                action=semantic_action.to_dict(),
+                sequence=serialized_seq,
+            )
 
         return {
             "status": "executing",
@@ -117,7 +121,7 @@ def register_motion_tools(engine: "RobotEngine") -> None:
                     },
                     "emotion": {
                         "type": "string",
-                        "enum": ["neutral", "happy", "sad", "surprised", "thinking", "angry", "confused"],
+                        "enum": ["neutral", "happy", "sad", "surprised", "thinking", "angry", "confused", "love", "affectionate", "shy"],
                     },
                 },
                 "required": ["action"],

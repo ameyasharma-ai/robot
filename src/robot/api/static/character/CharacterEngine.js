@@ -415,14 +415,19 @@ class CharacterEngine {
 
     speakStart() {
         if (this.facialSystem) this.facialSystem.startSpeaking();
+        if (this.animationSystem) this.animationSystem.isSpeaking = true;
     }
 
     speakStop() {
         if (this.facialSystem) this.facialSystem.stopSpeaking();
+        if (this.animationSystem) this.animationSystem.isSpeaking = false;
     }
 
     stopMotion() {
-        if (this.animationSystem) this.animationSystem.interrupt();
+        if (this.animationSystem) {
+            this.animationSystem.interrupt();
+            this.animationSystem.isSpeaking = false;
+        }
         if (this.facialSystem) this.facialSystem.stopSpeaking();
     }
 

@@ -8,6 +8,8 @@ llm:
   context_window: 2048
   enable_thinking: false
   stream: true
+  multimodal: false
+  mmproj_path: "models/vision/mmproj-Qwen3.5-4B-F16.gguf"
 
 stt:
   provider: whisper-server
@@ -118,7 +120,7 @@ image:
   enabled: true
   default_width: 512
   default_height: 512
-  default_steps: 4
+  default_steps: 15
   max_width: 1024
   max_height: 1024
   max_steps: 30

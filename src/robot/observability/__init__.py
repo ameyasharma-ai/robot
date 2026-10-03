@@ -69,8 +69,22 @@ class ObservabilityHub:
 
     def set_pipeline_node(self, node: str, state: str) -> None:
         """Update live status of a pipeline component (IDLE, RUNNING, COMPLETED, CANCELLED, ERROR)."""
-        if node in self.pipeline_state:
-            self.pipeline_state[node] = state
+        node_upper = node.upper()
+        if node_upper in self.pipeline_state:
+            self.pipeline_state[node_upper] = state
+            try:
+                loop = asyncio.get_running_loop()
+                if loop and loop.is_running():
+                    asyncio.create_task(
+                        self.events.emit(
+                            "pipeline_updated",
+                            pipeline=dict(self.pipeline_state),
+                            active_node=node_upper,
+                            node_status=state,
+                        )
+                    )
+            except RuntimeError:
+                pass
 
     def start_trace(self, name: str = "voice_turn", trace_id: str | None = None, metadata: dict[str, Any] | None = None) -> Trace:
         tid = trace_id or str(uuid.uuid4())[:8]
@@ -171,6 +185,17 @@ class ObservabilityHub:
         self._current_trace_id = None
         for k in self.pipeline_state:
             self.pipeline_state[k] = "IDLE"
+        try:
+            loop = asyncio.get_running_loop()
+            if loop and loop.is_running():
+                asyncio.create_task(
+                    self.events.emit(
+                        "pipeline_updated",
+                        pipeline=dict(self.pipeline_state),
+                    )
+                )
+        except RuntimeError:
+            pass
 
     def emit_event(
         self,

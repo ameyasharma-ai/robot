@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from abc import ABC, abstractmethod
@@ -80,6 +81,7 @@ class LlamaServerLLM(LLMProvider):
                             logger.error("llm_stream_error", status=response.status_code, body=err_body.decode("utf-8", errors="replace"))
                             yield "I encountered an error connecting to my local inference model."
                             return
+                        tool_calls_acc: dict[int, dict] = {}
                         async for line in response.aiter_lines():
                             if not line or line == "data: [DONE]":
                                 continue
@@ -87,18 +89,38 @@ class LlamaServerLLM(LLMProvider):
                                 try:
                                     data = json.loads(line[6:])
                                     choice = data["choices"][0]
+                                    delta = choice.get("delta", {})
 
-                                    # Check for tool calls
-                                    if "tool_calls" in choice.get("delta", {}):
-                                        tool_calls = choice["delta"]["tool_calls"]
-                                        yield f"__TOOL_CALL__{json.dumps(tool_calls)}"
+                                    # Accumulate tool calls delta chunks
+                                    if "tool_calls" in delta and delta["tool_calls"]:
+                                        for tc in delta["tool_calls"]:
+                                            idx = tc.get("index", 0)
+                                            if idx not in tool_calls_acc:
+                                                tool_calls_acc[idx] = {
+                                                    "id": tc.get("id") or f"call_{idx}_{int(time.time()*1000)}",
+                                                    "type": "function",
+                                                    "function": {
+                                                        "name": tc.get("function", {}).get("name", ""),
+                                                        "arguments": "",
+                                                    },
+                                                }
+                                            if tc.get("id"):
+                                                tool_calls_acc[idx]["id"] = tc["id"]
+                                            fn = tc.get("function", {})
+                                            if fn.get("name"):
+                                                tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                            if fn.get("arguments"):
+                                                tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
                                         continue
 
-                                    token = choice["delta"].get("content", "")
+                                    token = delta.get("content", "")
                                     if token:
                                         yield token
                                 except (json.JSONDecodeError, KeyError, IndexError):
                                     continue
+
+                        if tool_calls_acc:
+                            yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
                 return
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 if attempt < max_retries:

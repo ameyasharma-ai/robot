@@ -110,10 +110,14 @@ class LocalStableDiffusionProvider(ImageProvider):
                     raise InterruptedError("Cancelled by user")
                 job.progress = 20 + int((step / job.steps) * 75)
             
+            # Clamp steps to 12-20 range for high fidelity and consistent generation time
+            effective_steps = max(12, min(20, getattr(job, "steps", 15) or 15))
+            job.steps = effective_steps
+            
             image = self._pipe(
                 prompt=job.prompt,
                 negative_prompt=job.negative_prompt,
-                num_inference_steps=job.steps,
+                num_inference_steps=effective_steps,
                 width=job.width,
                 height=job.height,
                 callback=callback,

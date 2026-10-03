@@ -371,8 +371,8 @@ class ConversationHistory:
         )
         await asyncio.to_thread(self._conn.commit)
 
-    async def search_facts(self, query: str, limit: int = 5) -> list[dict]:
-        """Search persistent facts using FTS5 and LIKE fallback."""
+    async def search_facts(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
+        """Search persistent facts for specific user/namespace using FTS5 and LIKE fallback."""
         if not self._conn:
             return []
         # Try FTS5 first
@@ -383,9 +383,9 @@ class ConversationHistory:
                     self._conn.execute,
                     """SELECT f.id, f.fact, f.created_at FROM facts_fts ft
                        JOIN facts f ON f.id = ft.rowid
-                       WHERE ft.fact MATCH ?
+                       WHERE ft.fact MATCH ? AND f.user_id = ?
                        ORDER BY f.id DESC LIMIT ?""",
-                    (clean_q, limit),
+                    (clean_q, user_id, limit),
                 )
                 rows = cursor.fetchall()
                 if rows:
@@ -393,14 +393,14 @@ class ConversationHistory:
             except Exception:
                 pass
 
-        # Fallback to LIKE search or recent facts
+        # Fallback to LIKE search or recent facts filtered by user_id
         like_pattern = f"%{clean_q}%" if clean_q else "%"
         cursor = await asyncio.to_thread(
             self._conn.execute,
             """SELECT id, fact, created_at FROM facts
-               WHERE fact LIKE ?
+               WHERE fact LIKE ? AND user_id = ?
                ORDER BY id DESC LIMIT ?""",
-            (like_pattern, limit),
+            (like_pattern, user_id, limit),
         )
         rows = cursor.fetchall()
         return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
@@ -441,11 +441,14 @@ class MemoryManager:
         session_id: str,
         user_text: str,
         bot_text: str,
-        personality: str = "neo",
+        personality: str = "cypher",
         turn_number: int = 0,
+        namespace: str | None = None,
     ) -> None:
-        """Store a complete conversation turn in both systems."""
-        # SQLite archive (always)
+        """Store a complete conversation turn in both systems, isolated by personality namespace."""
+        active_ns = namespace or personality or "default"
+
+        # SQLite archive (always recorded with personality tag)
         await self.history.add_message(
             session_id, "user", user_text, personality, turn_number
         )
@@ -453,30 +456,29 @@ class MemoryManager:
             session_id, "assistant", bot_text, personality, turn_number
         )
 
-        # Also store user statements that declare preferences or facts into SQLite facts
+        # Store user statements that declare preferences into isolated SQLite facts
         lower_u = user_text.lower()
         remember_triggers = ["remember that", "remember this", "keep in mind that", "i like", "my favorite", "i am", "my name is", "i love", "my phone is"]
         if any(trig in lower_u for trig in remember_triggers):
-            await self.history.add_fact(user_text, user_id="user")
+            await self.history.add_fact(user_text, user_id=active_ns)
 
-        # Mem0 semantic memory (store fact without LLM extraction overhead to protect llama-server KV-cache)
+        # Mem0 semantic memory (isolated per personality namespace)
         messages = [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": bot_text},
         ]
-        await self.mem0.add(messages, user_id="user", infer=False)
+        await self.mem0.add(messages, user_id=active_ns, infer=False)
 
     async def add_memory(self, fact: str, user_id: str = "user") -> None:
-        """Explicitly add a durable memory."""
+        """Explicitly add a durable memory within a specific isolated personality workspace."""
         await self.history.add_fact(fact, user_id=user_id)
         if self.mem0._initialized:
             await self.mem0.add([{"role": "user", "content": fact}], user_id=user_id, infer=False)
 
-
-    async def get_relevant_memories(self, query: str, limit: int = 5) -> list[dict]:
-        """Retrieve relevant memories for context injection."""
-        mem0_results = await self.mem0.search(query, limit=limit)
-        sqlite_facts = await self.history.search_facts(query, limit=limit)
+    async def get_relevant_memories(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
+        """Retrieve relevant memories strictly isolated within the personality workspace."""
+        mem0_results = await self.mem0.search(query, user_id=user_id, limit=limit)
+        sqlite_facts = await self.history.search_facts(query, user_id=user_id, limit=limit)
         
         # Merge results, prioritizing SQLite facts if mem0 is empty or offline
         combined = []

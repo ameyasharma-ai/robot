@@ -125,6 +125,29 @@ class AudioCapture:
 
         return _callback
 
+    def pause(self) -> None:
+        """Pause audio input capture and release/stop the microphone stream."""
+        if self._stream and not self._stream.stopped:
+            try:
+                self._stream.stop()
+                logger.info("capture_stream_paused")
+            except Exception as e:
+                logger.debug("capture_stream_pause_error", error=str(e))
+        self._pre_roll.clear()
+
+    def resume(self) -> None:
+        """Resume audio input capture and restart microphone stream."""
+        if self._stream and self._stream.stopped and not getattr(self._stream, "closed", False):
+            try:
+                self._stream.start()
+                logger.info("capture_stream_resumed")
+            except Exception as e:
+                logger.debug("capture_stream_resume_error", error=str(e))
+
+    @property
+    def is_paused(self) -> bool:
+        return self._stream is None or self._stream.stopped
+
     async def stop(self) -> None:
         if self._stream:
             self._stream.stop()
