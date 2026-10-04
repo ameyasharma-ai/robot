@@ -260,10 +260,10 @@ async def test_music_player_service():
     assert yt_res["source"] in {"ytdlp", "local"}
     assert "youtube" in yt_res.get("url", "") or "local" in yt_res["source"]
 
-    # Spotify (when no Spotify Premium is configured, accurately reports ytdlp source)
+    # Spotify
     sp_res = svc.play_spotify("lofi hip hop")
     assert sp_res["status"] == "playing"
-    assert sp_res["source"] in {"ytdlp", "spotify_premium", "local"}
+    assert sp_res["source"] in {"spotify", "ytdlp", "spotify_premium", "local"}
 
     # SoundCloud
     sc_res = svc.play_soundcloud("synthwave")
@@ -319,6 +319,42 @@ async def test_piper_multi_voice_and_prosody():
     # Ensure dynamic active voice switching works
     tts.set_active_voice("models/tts/en-us-amy-medium.onnx")
     assert "amy" in tts._active_model.lower()
+
+
+@pytest.mark.asyncio
+async def test_personality_persistence_and_memory_clear_turn():
+    from robot.personality import PersonalityManager
+    from robot.memory import ConversationHistory
+    import tempfile, os
+
+    # 1. Personality persistence
+    pm = PersonalityManager()
+    pm.load_all()
+    assert pm.set_active("luna") is True
+    assert pm.get_persisted_active() == "luna"
+
+    # 2. ConversationHistory clear_turn
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+        db_path = tf.name
+    try:
+        hist = ConversationHistory(db_path)
+        await hist.initialize()
+        await hist.add_message("sess_1", "user", "turn 0 msg", turn_number=0)
+        await hist.add_message("sess_1", "assistant", "turn 0 reply", turn_number=0)
+        await hist.add_message("sess_1", "user", "turn 1 msg", turn_number=1)
+        recent = await hist.get_recent("sess_1", 10)
+        assert len(recent) == 3
+
+        # Clear turn 0
+        await hist.clear_turn("sess_1", turn_number=0)
+        recent_after = await hist.get_recent("sess_1", 10)
+        assert len(recent_after) == 1
+        assert recent_after[0]["content"] == "turn 1 msg"
+        await hist.close()
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
 
 
 

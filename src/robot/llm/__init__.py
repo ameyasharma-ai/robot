@@ -278,16 +278,19 @@ class ClauseChunker:
             if "<tool_call" in self._buffer:
                 return None
 
-        # If buffer starts with an unclosed bracket tag like "[motion: ", wait for tag to close
-        if self._buffer.startswith("[") and "]" not in self._buffer:
-            return None
+        # If buffer contains any unclosed bracket tag like "[motion: ", wait for tag to close
+        # Guard against unbounded waiting if model outputs an unclosed bracket or long description (>35 chars)
+        last_open = self._buffer.rfind("[")
+        if last_open != -1 and self._buffer.find("]", last_open) == -1:
+            if len(self._buffer) - last_open <= 35:
+                return None
 
-        # Separate any leading bracket/inline motion tag (e.g. "[motion: lean_in] ")
+        # Separate ALL leading bracket/inline tags (e.g. "[emotion: happy] [motion: wave] ")
         prefix_tag = ""
         check_buf = self._buffer
-        tag_match = re.match(r"^(\s*\[[^\]]+\]\s*)", check_buf)
+        tag_match = re.match(r"^(\s*\[[^\]]+\]\s*)+", check_buf)
         if tag_match:
-            prefix_tag = tag_match.group(1)
+            prefix_tag = tag_match.group(0)
             check_buf = check_buf[len(prefix_tag):]
 
         # 1. Terminal sentence punctuation detection (.!?)

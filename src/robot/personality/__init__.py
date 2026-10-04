@@ -75,10 +75,28 @@ class PersonalityManager:
             except Exception as e:
                 logger.error("personality_load_failed", file=str(yaml_file), error=str(e))
 
+    def get_persisted_active(self, default: str = "neo") -> str:
+        """Get persisted active personality name from data/active_personality.txt if available."""
+        persisted_file = Path("data/active_personality.txt")
+        if persisted_file.exists():
+            try:
+                name = persisted_file.read_text().strip()
+                if name and name in self._personalities:
+                    return name
+            except Exception:
+                pass
+        return default
+
     def set_active(self, name: str) -> bool:
-        """Switch to a named personality."""
+        """Switch to a named personality and persist selection."""
         if name in self._personalities:
             self._active = name
+            try:
+                p_file = Path("data/active_personality.txt")
+                p_file.parent.mkdir(parents=True, exist_ok=True)
+                p_file.write_text(name)
+            except Exception as e:
+                logger.debug("persist_personality_failed", error=str(e))
             logger.info("personality_switched", name=name)
             return True
         logger.warning("personality_not_found", name=name)
@@ -86,6 +104,8 @@ class PersonalityManager:
 
     @property
     def active(self) -> Personality | None:
+        if not self._active:
+            self._active = self.get_persisted_active("neo")
         return self._personalities.get(self._active)
 
     @property

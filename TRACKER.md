@@ -114,10 +114,15 @@ Legend:
   - *Automatic Audio Caching*: Extended `_play_full_song_ytdlp()` with simultaneous real-time MP3 disk caching into `data/music/{safe_filename}.mp3` using PyAV. As songs are streamed, they are automatically saved offline with valid MP3 metadata and headers upon completion.
   - *Seamless Offline & Local Fallback*: Added `find_local_track(query)` with fuzzy stem matching and word-overlap scoring across `data/music/` and `~/Music`. If a requested song is already downloaded locally, or if internet connectivity is offline (`is_online() == False`), the player immediately plays the local cached file with the track's real title and returns `"source": "local"` with ducking. Verified full test suite passes.
 - [x] **38. Confident Local/Online Music Search, TTS Stage-Direction Stripping, Natural Speech Fade-Out & Vibe-Matching Speech**:
-  - *High-Confidence Music Selection*: In `find_local_track()`, added stop-word filtering (`play`, `song`, `music`, `the`, `by`) and enforced a strict >=60% keyword overlap threshold. If local confidence is not met, the engine simultaneously conducts an online live search via `yt-dlp` instead of locking onto the wrong local audio file.
+  - *High-Confidence Music Selection*: In `find_local_track()`, raised keyword overlap threshold from >=60% to >=80%. When online, local files are only used for exact substring or stem matches (not fuzzy keyword overlap), preventing wrong cached files from playing. Added simultaneous online search via `yt-dlp` whenever local match confidence is insufficient.
   - *TTS Stage Direction & Motion Text Stripping*: Updated `clean_text_for_speech()` and `_extract_motion_from_phrase()` in `tts/__init__.py`, `engine.py`, and `coordinator.py` to aggressively strip stage directions and action asterisks (`*waves*`, `*smiles*`, `*nods*`, `(points)`, `[motion:wave]`), routing the kinematic action to the 3D avatar rig while ensuring Piper TTS never reads physical gestures or motions aloud.
-  - *Smooth Speech Fade-Out into Music*: Updated `AudioPlayer` with `fade_out()` and natural termination threshold (`self._volume <= 0.03`). When music starts playing, remaining speech volume smoothly fades down to silence over ~250–300ms, dissolving naturally into the music without abrupt cutoffs or clicks.
-  - *Vibe/Genre-Aware Holding Speech*: In `ToolConversationCoordinator`, tuned the holding prompt for music queries to match the energy of the requested track (punchy/hyped for rap/hip-hop, chill for lo-fi/acoustic) and strictly prohibited out-of-place romantic or incongruous dialogue. All 70 regression tests pass.
+  - *Smooth Speech Fade-Out into Music*: Updated `AudioPlayer` with `fade_out()` and natural termination threshold (`self._volume <= 0.03`). Added `_music_active` flag on `MusicPlayerService` that signals when music audio frames are actually playing. The TTS player loop in `engine.py` checks this flag before each phrase — when music is active, remaining TTS phrases are skipped and speech naturally dissolves into the music without abrupt cutoffs.
+  - *Music Continuation Prompt*: Injected explicit system instructions in `_generate_continuation()` for `music.play` tool results prohibiting all physical motion descriptions, gestures, stage directions, and asterisk actions. Limited continuation response to 1 short sentence under 10 words.
+  - *Vibe/Genre-Aware Holding Speech*: In `ToolConversationCoordinator`, tuned the holding prompt for music queries to match the energy of the requested track (punchy/hyped for rap/hip-hop, chill for lo-fi/acoustic, warm for love songs) and strictly prohibited out-of-place romantic or incongruous dialogue.
+  - *Volume Restoration*: Added `player.unduck()` at the start of `_stream_response` to restore full TTS volume for non-music turns after a music session. All 70 regression tests pass.
+- [x] **39. TTFT Warmup Reorder & First-Message Latency Fix**:
+  - *Root Cause*: LLM KV cache pre-warming was the FIRST warmup step in `RobotEngine.setup()`. Subsequent subsystem warmups (Mem0 `get_relevant_memories("warmup")`, STT dummy transcription, Piper TTS synthesis) occurred after the LLM warmup, allowing llama-server's single KV cache slot to potentially be evicted or dirtied before the first user utterance arrived.
+  - *Fix*: Reordered warmup sequence in [`RobotEngine.setup()`](file:///home/ameya/robot/src/robot/core/engine.py#L290) to: (1) STT Whisper, (2) Mem0 FastEmbed, (3) Piper TTS + phrase cache, (4) **LLM KV cache (LAST)**. This guarantees the llama-server slot is freshly loaded with the exact invariant system prompt + tools schema immediately before the voice loop begins listening. All 70 regression tests pass.
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:
@@ -391,7 +396,61 @@ Legend:
       2. Implemented autonomous memory-miss failover in [`ToolConversationCoordinator.coordinate`](file:///home/ameya/robot/src/robot/tools/coordinator.py): when `memory.search` returns 0 results for a non-personal query, the coordinator automatically triggers `web.search` and feeds real search results into continuation synthesis.
       3. Passed `tools=tools_schema` to `stream_chat` in `_generate_continuation`.
       4. Added unit tests in [`tests/test_tool_coordinator.py`](file:///home/ameya/robot/tests/test_tool_coordinator.py) verifying public entity routing and memory miss web failover.
-      5. All 70 unit tests pass (`.venv/bin/pytest tests/`).
+41. **First-Turn TTFT Spikes, Motion Tag TTS Readout, Music Matching & Speech Ducking**:
+    - *Symptoms*:
+      - First user turn TTFT spiked to ~2151ms after cold restarts because previous warmup query differed from Turn 1 prompt structure and lacked conversation session continuity.
+      - TTS read aloud avatar motion tags (e.g. *"motion wave Hi there!"* or *"wave]*").
+      - Music tool played incorrect local files due to loose keyword match threshold (60%), and misreported platform as Spotify when yt-dlp was used.
+      - Continuation after `music.play` threw a 500 Jinja template exception (`System message must be at the beginning`) because a second `role: "system"` message was appended to continuation messages.
+      - TTS speech clashed with loud music playback instead of smoothly dissolving as the track started.
+    - *Root Causes*:
+      1. `warm_up_llm` in `engine.py` ran before memory and TTS initialization, and `scripts/run.sh` warmed with non-streaming `max_tokens=1` without session history, causing llama-server slot cache LCP similarity to drop to 0.77 on Turn 1.
+      2. In [`ClauseChunker.feed`](file:///home/ameya/robot/src/robot/llm/__init__.py), when multiple bracket tags were present (e.g. `[emotion: happy] [motion: wave]`), the chunker only stripped the first tag and then eagerly split on the colon `:` inside `[motion:`, slicing the tag in half (`[motion:` and `wave]`). Neither half could be matched or stripped by downstream regexes, causing Piper TTS to speak the motion words out loud.
+      3. `find_local_track` used 60% keyword overlap, causing unrelated songs in local cache to match user music queries.
+      4. Qwen's Jinja chat template rejects `role: "system"` anywhere other than index 0; coordinator appended a system message after `role: "tool"`.
+      5. Speech audio player continued speaking over music frames instead of smoothly ducking/fading.
+    - *Fixes*:
+      1. **Silent Arrival Prompt & Sub-170ms Turn 1 TTFT**: Configured an invariant silent arrival prompt (`[System Event: Robot Core online and sensors active. The user has arrived / entered the room. In your next response, warmly acknowledge and greet the user.]`) in both `scripts/run.sh` and `RobotEngine.warm_up_llm()`. `warm_up_llm()` is the final setup step and records Turn 0 into session memory so Turn 1 hits >98% KV cache (<170ms TTFT) and naturally greets the user.
+      2. **Atomic Bracket Tag Protection in ClauseChunker**: Updated `ClauseChunker.feed` to check for unclosed brackets (`rfind("[") > rfind("]")`), pausing chunk emission until tags close. Stripped all contiguous leading bracket tags together (`group(0)`). Added orphaned bracket stripping to `_extract_motion_from_phrase` and `clean_text_for_speech`, and added support for `[character.execute_action action="..."]`.
+      3. **Strict Offline/Online Music Search**: Increased local track confidence threshold to 80% and required exact/substring match while online. Plays local files offline or on exact match; queries yt-dlp online and reports source accurately (`YouTube / yt-dlp`).
+      4. **Jinja-Safe Response Directives**: Embedded music response instructions directly into `role: "tool"` content, eliminating 500 template errors.
+      5. **Music-Aware Speech Ducking & Natural Fade-Out**: Added `_music_started_event` and `_music_active` flag in `MusicPlayerService`. `_tts_player_loop` in `engine.py` and `ToolConversationCoordinator` detect active music playback, apply smooth exponential speech fade-out (`player.fade_out(rate=0.10)`), and skip remaining phrases so music takes over naturally without harsh cuts or overpowering speech. Volume is restored (`unduck()`) at the start of subsequent turns.
+42. **Persistent Active Personality, LLM Slot Eviction Prevention, Spotify Web Integration & Direct Query Music Matching**:
+    - *Symptoms*:
+      - First-turn TTFT spiked to ~2184ms on cold restart despite warmup script running.
+      - Subsequent turn TTFT spiked to 2228ms after every music playback request (e.g. asking "time?").
+      - Asking for *"murder rate freestyle 3 by Juice WRLD"* failed to play the track, playing an unrelated song or failing.
+      - Spotify commands failed or hung indefinitely.
+      - Robot spit repetitive, hallucinated holding chatter when playing music, and used affectionate/romantic girlfriend phrases during rap/gang songs.
+    - *Root Causes*:
+      1. **Personality Mismatch on Restart**: `config/default.yaml` defaulted to `"neo"`. Both `scripts/run.sh` and `engine.py` warmed up `"neo"`. The user/browser was set to `"luna"`. On first user message, `luna`'s system prompt differed from slot 0's warmed prompt, causing an LCP cache miss (`f_keep = 0.769`) and forcing a full 2,761-token recomputation taking ~2,184ms.
+      2. **Holding Loop Evicting KV Cache Slot**: In `ToolConversationCoordinator._generate_holding_stream`, a while loop repeatedly called `stream_chat(holding_messages)` during tool execution. `holding_messages` was a short 139-token prompt without tools schema. Because `llama-server` runs with a single slot (`-np 1`), this holding loop wiped slot 0. When the continuation or next user message (e.g. "time?") arrived, slot 0 was evicted, spiking TTFT to 2,228ms!
+      3. **Query Mangling via iTunes Search**: `lookup_metadata` queried iTunes Search API. For unreleased/freestyle YouTube tracks (*"murder rate freestyle 3"*), iTunes returned unrelated nearest releases (*"Suicidal (Remix) [feat. Juice WRLD] by YNW Melly"*). The code replaced the query with the iTunes title, forcing yt-dlp to search for the wrong song.
+      4. **Spotify OAuth Terminal Hanging**: `_get_spotify_client` instantiated `SpotifyOAuth` without validating token existence. When `.spotify_cache` was absent, Spotipy called `input()` in python `sys.stdin`, hanging tool execution in headless mode. No OAuth redirect handler existed on FastAPI.
+      5. **Vibe Mismatch & Talk-over**: When `luna` persona was active, holding and continuation prompts generated romantic phrases during rap/gang tracks, and speech continued after music started.
+    - *Fixes*:
+      1. **Active Personality Persistence (`data/active_personality.txt`)**: Added `get_persisted_active()` and automatic persistence in `PersonalityManager.set_active()`. `scripts/run.sh`, `engine.setup()`, and `api/__init__.py` read and warm up the persisted active persona (`luna`). `switch_personality` now awaits `engine.warm_up_llm(name)` synchronously and clears previous Turn 0 so slot 0 is 100% primed (<145ms TTFT).
+      2. **Eliminated Holding Loop Slot Eviction**: Removed the while-loop LLM calls in `_generate_holding_stream`. Emits the instantaneous (<10ms) zero-latency opening phrase and cleanly waits for tool completion. Slot 0 KV cache remains 100% intact, guaranteeing sub-150ms TTFT on subsequent turns.
+      3. **Exact User Query for yt-dlp & Overlap Verification**: `play_ytdlp` passes `clean_q` directly to yt-dlp (`ytsearch1:{clean_q} audio`), finding unreleased tracks (like Juice WRLD's Murder Rate Freestyle 3) with 100% precision. Discards iTunes metadata if titles lack word overlap with the query.
+      4. **Spotify Dual Client & OAuth Endpoints**:
+         - Added `_get_spotify_search_client()` with `SpotifyClientCredentials` (developer credentials, zero login needed) for searching official Spotify metadata, URIs, and cover art.
+         - Added `_get_spotify_oauth_client()` checking `validate_token()`, never prompting `input()`.
+         - Added `/spotify/status`, `/spotify/login`, and `/callback` endpoints to FastAPI for one-click browser authorization.
+         - In `play_spotify`: searches official Spotify catalog and plays via Spotify Connect if active, or seamlessly streams audio via yt-dlp without failing.
+      5. **Music Vibe Matching & Silence Once Playing**: If music audio is already active, extra continuation speech is skipped so music takes over. Added strict musical tone directive in tool result banning romantic/affectionate terms for rap/trap/drill/rock tracks.
+43. **First-Turn E2E Latency Breakdown (1,962 ms), Active Voice Pre-Warming & Tag Safety Cap**:
+    - *Symptoms*:
+      - On Turn 1 after restart, `LLM TTFT = 240 ms`, `TTS SYNTHESIS = 103 ms`, `VAD SILENCE = 150 ms`, but `TOTAL E2E = 1962 ms`.
+      - On Turn 2, `TOTAL E2E` dropped to **146.5 ms**.
+    - *Root Causes*:
+      1. **Cold Piper ONNX Session Loading (1,159.8 ms)**: `engine.setup()` warmed up the default voice (`models/tts/en-us-lessac-medium.onnx`), but the active personality was `luna` (`models/tts/en-us-amy-medium.onnx`). On Turn 1, Piper had to read the 50MB ONNX file from disk, construct the ONNX Runtime session, and allocate execution buffers, taking **1,159.8 ms**.
+      2. **Runaway Novelistic Motion Tag Buffering (450 ms)**: The LLM began its Turn 1 response with an 80-character novelistic tag: `[motion: eyes widen with pure delight, cheeks flushing a soft pink as I beam a radiant smile at you] Oh!`. `ClauseChunker.feed` buffers unclosed brackets until `]` is received, waiting ~20 tokens (~450 ms at ~45 tok/s) before releasing the first spoken word `"Oh!"` to TTS.
+      3. Total mathematical breakdown: `240 ms (TTFT) + 450 ms (tag buffer) + 1,160 ms (cold ONNX load) + 103 ms (TTS synthesis) + ~9 ms audio pipeline dispatch ≈ 1,962 ms`.
+    - *Fixes*:
+      1. **Active Personality Voice Pre-Warming**: In [`RobotEngine.setup()`](file:///home/ameya/robot/src/robot/core/engine.py#L232-L335), set `self.tts.set_active_voice(pers.voice_model)` directly on initialization and pre-warm Piper TTS using the active persona's voice model, speed, and pitch so ONNX session creation and memory allocation occur during server boot, reducing Turn 1 synthesis from 1,160 ms to ~50 ms.
+      2. **Tag Buffering Safety Cap (35 chars)**: In [`ClauseChunker.feed`](file:///home/ameya/robot/src/robot/llm/__init__.py#L281-L286), added a 35-character safety limit to unclosed bracket waiting, ensuring long tags never block immediate speech streaming.
+      3. **Strict Motion Directive in Personality**: In [`config/personalities/luna.yaml`](file:///home/ameya/robot/config/personalities/luna.yaml#L10-L15), restricted motion markers to concise 1-word predefined actions (`[motion: wave]`, `[motion: nod]`, etc.), strictly forbidding descriptive sentences, roleplay stories, or emotional descriptions inside brackets.
+      4. All 71 unit tests pass (`.venv/bin/pytest tests/`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

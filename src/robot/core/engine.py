@@ -63,8 +63,10 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
 
     action_dict = None
 
-    # 1. Explicit bracket marker: [motion: wave] or [action: raise_hand left]
+    # 1. Explicit bracket marker: [motion: wave] or [character.execute_action action="wave"]
     m = re.search(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", text, re.IGNORECASE)
+    if not m:
+        m = re.search(r"\[(?:character\.)?execute_action[\s\(]+(?:action=)?['\"]?([a-zA-Z_]+)['\"]?(?:[\s,]+(?:side=)?['\"]?([a-zA-Z]+)['\"]?)?", text, re.IGNORECASE)
     if m:
         act = m.group(1).lower()
         side = m.group(2).lower() if m.group(2) else "right"
@@ -79,10 +81,14 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
             side = "left" if "left" in raw_act else "right"
             action_dict = {"action": act, "side": side}
 
-    # Clean out ALL stage directions, bracket tags, and parentheses so TTS never speaks them
-    cleaned = re.sub(r"\[(?:motion|action)?:?[^\]]*\]", "", text, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\*[^*]+\*", "", cleaned)
-    cleaned = re.sub(r"\([^)]+\)", "", cleaned).strip()
+    # Clean out ALL stage directions, bracket tags (motions, emotions), and parentheses so TTS never speaks them
+    cleaned = re.sub(r"\[[^\]]*\]", "", text)
+    # Strip any lingering unclosed or orphaned brackets e.g. [motion: or wave]
+    cleaned = re.sub(r"\[\s*(?:motion|action|emotion)?:?[^\]\n]*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:wave|point|kick|nod|smile|happy|sad|raise_hand|stop)\s*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace("[", "").replace("]", "")
+    cleaned = re.sub(r"\*[^*]*\*", "", cleaned)
+    cleaned = re.sub(r"\([^)]*\)", "", cleaned).strip()
     return cleaned, action_dict
 
 
@@ -221,9 +227,14 @@ class RobotEngine:
 
         # Personalities
         self.personalities.load_all()
-        default_personality = self.config.get("personality", {}).get("default", "neo")
+        default_personality = self.personalities.get_persisted_active(
+            self.config.get("personality", {}).get("default", "neo")
+        )
         self.personalities.set_active(default_personality)
         self.state.state.active_personality = default_personality
+        pers = self.personalities.active
+        if pers and getattr(pers, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
+            self.tts.set_active_voice(pers.voice_model)
 
         # Audio subsystem
         audio_cfg = self.config.get("audio", {})
@@ -287,12 +298,11 @@ class RobotEngine:
         health_results = await self.health.check_all()
         logger.info("initial_health", results=health_results)
 
-        # Warm up LLM, Whisper STT, Mem0 FastEmbed ONNX, and Piper TTS for zero first-turn cold-start delay
+        # Warm up subsystems for zero first-turn cold-start delay
+        # CRITICAL: LLM KV cache warm-up MUST be the LAST step so its slot
+        # prefix remains hot when the first user utterance arrives.
         try:
-            # 1. Warm up LLM KV cache slot with exact invariant system prompt prefix
-            await self.warm_up_llm()
-
-            # 2. Warm up Whisper STT connection & Vulkan backend
+            # 1. Warm up Whisper STT connection & Vulkan backend
             if self.stt:
                 try:
                     dummy_audio = np.zeros(1600, dtype=np.float32)
@@ -301,19 +311,31 @@ class RobotEngine:
                 except Exception as e:
                     logger.debug("stt_warmup_failed", error=str(e))
 
-            # 3. Warm up Mem0 FastEmbed embedding ONNX model eagerly so turn 1 has 0ms model load delay
+            # 2. Warm up Mem0 FastEmbed embedding ONNX model eagerly so turn 1 has 0ms model load delay
             if self.memory:
                 t_m0 = time.perf_counter()
                 await self.memory.get_relevant_memories("warmup", limit=1)
                 m_ms = (time.perf_counter() - t_m0) * 1000
                 logger.info("mem0_fastembed_warmed", duration_ms=round(m_ms, 1))
 
-            # 4. Warm up Piper TTS and SoundDevice OutputStream + Pre-warm common acknowledgment phrases
+            # 3. Warm up Piper TTS and SoundDevice OutputStream with active personality voice
             if self.tts:
                 t_t0 = time.perf_counter()
-                audio_w, sr_w = await self.tts.synthesize("Online.")
+                pers = self.personalities.active
+                voice_m = getattr(pers, "voice_model", None) if pers else None
+                tts_cfg = getattr(pers, "tts_settings", {}) if pers else {}
+                if voice_m and hasattr(self.tts, "set_active_voice"):
+                    self.tts.set_active_voice(voice_m)
+                audio_w, sr_w = await self.tts.synthesize(
+                    "Online.",
+                    speed=tts_cfg.get("speed", 1.0),
+                    pitch=tts_cfg.get("pitch", 1.0),
+                    voice_model=voice_m,
+                    noise_scale=tts_cfg.get("noise_scale", 0.667),
+                    noise_w=tts_cfg.get("noise_w", 0.8),
+                )
                 tts_ms = (time.perf_counter() - t_t0) * 1000
-                logger.info("tts_piper_warmed", duration_ms=round(tts_ms, 1))
+                logger.info("tts_piper_warmed", duration_ms=round(tts_ms, 1), voice=voice_m or "default")
                 if self.player:
                     self.player._ensure_stream(sr_w)
 
@@ -331,6 +353,11 @@ class RobotEngine:
                     if hasattr(self.tts, "warm_phrase"):
                         self.tts.warm_phrase(ack)
                 logger.info("tts_phrase_cache_prewarmed", count=len(ack_phrases))
+
+            # 4. LAST: Warm up LLM KV cache slot with exact invariant system prompt prefix
+            # This MUST be the final warmup step so the llama-server slot is freshly
+            # loaded with the system prompt when the first user utterance arrives.
+            await self.warm_up_llm()
         except Exception as e:
             logger.debug("subsystems_warmup_failed", error=str(e))
 
@@ -356,9 +383,14 @@ class RobotEngine:
 
         sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
         system_content = f"{sys_prompt.strip()}\n{GROUNDING_POLICY}"
+
+        silent_arrival_prompt = (
+            "[System Event: Robot Core online and sensors active. The user has arrived / entered the room. "
+            "In your next response, warmly acknowledge and greet the user.]"
+        )
         warmup_messages = [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": "hi"},
+            {"role": "user", "content": silent_arrival_prompt},
         ]
 
         # Pre-warm system prompt prefix together with tools schema so Turn 1 hits 100% KV cache
@@ -366,10 +398,27 @@ class RobotEngine:
         try:
             reg = getattr(self, "tool_registry", None)
             tools_schema = reg.get_schemas() if reg is not None else None
-            async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
-                pass
+            bot_reply = ""
+            async for token in self.llm.stream_chat(warmup_messages, max_tokens=15, tools=tools_schema):
+                bot_reply += token
             w_ms = (time.perf_counter() - t0) * 1000
             pers_name = pers.name if pers else "default"
+
+            # Record silent arrival bootstrap turn in session history so Turn 1 knows user arrived
+            # and matches the exact token sequence in llama-server's slot cache
+            if self.memory and self._session_id:
+                try:
+                    await self.memory.clear_turn(self._session_id, 0)
+                except Exception:
+                    pass
+                clean_reply = bot_reply.strip() or "[motion: wave] Ready and standing by."
+                await self.memory.store_turn(
+                    session_id=self._session_id,
+                    user_text=silent_arrival_prompt,
+                    bot_text=clean_reply,
+                    personality=pers_name,
+                    turn_number=0,
+                )
             logger.info("llm_kv_cache_warmed", personality=pers_name, duration_ms=round(w_ms, 1))
             return w_ms
         except Exception as e:
@@ -670,6 +719,9 @@ class RobotEngine:
         injects tool results into context so the model speaks grounded answers.
         """
         # Get personality
+        # Restore speech volume in case it was ducked by music on a previous turn
+        if self.player:
+            self.player.unduck()
         personality = self.personalities.active
         system_prompt = personality.system_prompt if personality else ""
         ns = getattr(personality, "memory_namespace", "default")
@@ -934,6 +986,20 @@ class RobotEngine:
 
             if interrupt.is_set() or not phrase or not self.tts:
                 continue
+
+            # Check if music has started playing — if so, apply speech fade-out
+            # and skip remaining TTS phrases so music naturally overpowers
+            try:
+                from robot.tools.builtins.music import MusicPlayerService
+                ms = MusicPlayerService.get_instance()
+                if getattr(ms, "_music_active", False):
+                    # Music is actively playing — fade out remaining speech
+                    if self.player:
+                        self.player.fade_out(rate=0.10)
+                    logger.info("tts_skipped_music_playing", phrase=phrase[:40])
+                    continue
+            except Exception:
+                pass
 
             self._last_bot_phrases.append(phrase)
             if len(self._last_bot_phrases) > 10:

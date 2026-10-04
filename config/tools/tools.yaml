@@ -57,7 +57,7 @@ music:
   full_stream_mode: "yt_dlp"
   # Spotify Developer Credentials (optional, for Spotify Connect Web API playback)
   spotify:
-    client_id: ""
-    client_secret: ""
+    client_id: "[REDACTED_SPOTIFY_CLIENT_ID]"
+    client_secret: "[REDACTED_SPOTIFY_CLIENT_SECRET]"
     redirect_uri: "http://127.0.0.1:8888/callback"
     device_id: ""

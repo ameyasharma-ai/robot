@@ -33,6 +33,9 @@ class MusicPlayerService:
         self._current_track = "None"
         self._current_source = "None"
         self._volume = self.config.get("default_volume", 0.8)
+        # Event set when music audio frames actually begin playing (for TTS coordination)
+        self._music_started_event = asyncio.Event()
+        self._music_active = False
 
     @property
     def is_playing(self) -> bool:
@@ -125,7 +128,7 @@ class MusicPlayerService:
                 best_score = score
                 best_match = f
 
-        if best_match and best_score >= 0.60:
+        if best_match and best_score >= 0.80:
             return best_match
 
         return None
@@ -260,20 +263,34 @@ class MusicPlayerService:
             logger.debug("music_metadata_lookup_failed", error=str(e), query=clean_q)
         return None
 
-    def _get_spotify_client(self) -> Any | None:
-        """Instantiate Spotify Premium API client if credentials are configured."""
+    def _get_spotify_search_client(self) -> Any | None:
+        """Instantiate Spotify client using Developer Client Credentials (zero login needed)."""
+        sp_cfg = self.config.get("spotify", {})
+        client_id = sp_cfg.get("client_id") or os.environ.get("SPOTIPY_CLIENT_ID")
+        client_secret = sp_cfg.get("client_secret") or os.environ.get("SPOTIPY_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            return None
+        try:
+            import spotipy
+            from spotipy.oauth2 import SpotifyClientCredentials
+            auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
+            return spotipy.Spotify(auth_manager=auth_manager)
+        except Exception as e:
+            logger.debug("spotify_search_client_init_failed", error=str(e))
+            return None
+
+    def _get_spotify_oauth_client(self) -> Any | None:
+        """Instantiate Spotify Premium API client ONLY if an authorized token exists on disk."""
         sp_cfg = self.config.get("spotify", {})
         client_id = sp_cfg.get("client_id") or os.environ.get("SPOTIPY_CLIENT_ID")
         client_secret = sp_cfg.get("client_secret") or os.environ.get("SPOTIPY_CLIENT_SECRET")
         redirect_uri = sp_cfg.get("redirect_uri") or os.environ.get("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
-
         if not client_id or not client_secret:
             return None
 
         try:
             import spotipy
             from spotipy.oauth2 import SpotifyOAuth
-
             scope = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
             auth_manager = SpotifyOAuth(
                 client_id=client_id,
@@ -283,10 +300,70 @@ class MusicPlayerService:
                 open_browser=False,
                 cache_path=".spotify_cache",
             )
+            token_info = auth_manager.validate_token(auth_manager.cache_handler.get_cached_token())
+            if not token_info:
+                # Token missing or expired without refresh capability; NEVER call get_access_token() in headless mode
+                return None
             return spotipy.Spotify(auth_manager=auth_manager)
         except Exception as e:
-            logger.warning("spotify_premium_init_failed", error=str(e))
+            logger.debug("spotify_oauth_client_init_failed", error=str(e))
             return None
+
+    def _get_spotify_client(self) -> Any | None:
+        """Alias for backward compatibility."""
+        return self._get_spotify_oauth_client()
+
+    def handle_spotify_callback(self, code: str) -> tuple[bool, str]:
+        """Process OAuth authorization code from /callback endpoint."""
+        sp_cfg = self.config.get("spotify", {})
+        client_id = sp_cfg.get("client_id") or os.environ.get("SPOTIPY_CLIENT_ID")
+        client_secret = sp_cfg.get("client_secret") or os.environ.get("SPOTIPY_CLIENT_SECRET")
+        redirect_uri = sp_cfg.get("redirect_uri") or os.environ.get("SPOTIPY_REDIRECT_URI", "http://127.0.0.1:8888/callback")
+        if not client_id or not client_secret:
+            return False, "Spotify credentials not configured."
+        try:
+            from spotipy.oauth2 import SpotifyOAuth
+            scope = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
+            auth_manager = SpotifyOAuth(
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                scope=scope,
+                open_browser=False,
+                cache_path=".spotify_cache",
+            )
+            auth_manager.get_access_token(code, as_dict=False)
+            return True, "Authorized"
+        except Exception as e:
+            logger.error("spotify_callback_failed", error=str(e))
+            return False, str(e)
+
+    def lookup_spotify_metadata(self, clean_q: str) -> dict[str, Any] | None:
+        """Search Spotify Web API for canonical track metadata using client credentials."""
+        sp = self._get_spotify_search_client()
+        if not sp:
+            return None
+        try:
+            results = sp.search(q=clean_q, type="track", limit=1)
+            tracks = results.get("tracks", {}).get("items", [])
+            if tracks:
+                t = tracks[0]
+                artists = [a.get("name", "") for a in t.get("artists", []) if a.get("name")]
+                artist_name = ", ".join(artists) if artists else "Unknown Artist"
+                images = t.get("album", {}).get("images", [])
+                artwork = images[0].get("url") if images else None
+                return {
+                    "title": t.get("name", clean_q),
+                    "artist": artist_name,
+                    "album": t.get("album", {}).get("name", ""),
+                    "uri": t.get("uri"),
+                    "url": t.get("external_urls", {}).get("spotify", ""),
+                    "preview_url": t.get("preview_url"),
+                    "artwork": artwork,
+                }
+        except Exception as e:
+            logger.debug("spotify_search_failed", error=str(e), query=clean_q)
+        return None
 
     def _play_full_song_ytdlp(
         self,
@@ -347,6 +424,13 @@ class MusicPlayerService:
                         logger.debug("ducking_error", error=str(e))
 
             _apply_ducking()
+
+            # Signal that music frames are now actively playing
+            self._music_active = True
+            try:
+                self._music_started_event.set()
+            except Exception:
+                pass
 
             # Prepare disk caching in background
             save_title = cache_name or query
@@ -584,17 +668,16 @@ class MusicPlayerService:
         """Play track using yt-dlp or local cached files, prioritizing offline playback."""
         clean_q = query.strip()
 
-        # 1. Check if the track is already available offline in data/music or ~/Music
-        local_match = self.find_local_track(clean_q)
-        if local_match:
-            logger.info("playing_offline_cached_file", file=str(local_match), query=clean_q)
-            return self.play_local(clean_q, wait_speech_engine=wait_speech_engine)
-
-        # 2. Check internet connectivity
+        # 1. Check internet connectivity first
         online = self.is_online()
+
+        # 2. Check local match with high confidence
+        local_match = self.find_local_track(clean_q)
+
         if not online:
-            # When offline, check if any local file matches the query with confidence
+            # Offline: must use local file if any match exists (even relaxed)
             if local_match:
+                logger.info("playing_offline_cached_file", file=str(local_match), query=clean_q)
                 return self.play_local(clean_q, wait_speech_engine=wait_speech_engine)
             return {
                 "status": "error",
@@ -602,19 +685,44 @@ class MusicPlayerService:
                 "message": f"Internet is offline and '{clean_q}' is not available in local storage.",
             }
 
+        # 3. Online: only use local match if it's a strong exact/substring match
+        #    (i.e. the full query appears in the filename, not just keyword overlap)
+        if local_match:
+            stem_l = local_match.stem.lower()
+            stop_words = {"play", "song", "music", "track", "audio", "please", "the", "a", "an", "on", "by", "to", "for", "me", "some", "offline", "local"}
+            q_words = [w for w in re.findall(r"\w+", clean_q.lower()) if w not in stop_words]
+            joined_q = " ".join(q_words)
+            # Only use local file if the full query is a substring of the filename OR exact stem match
+            if clean_q.lower() == stem_l or (joined_q and joined_q in stem_l):
+                logger.info("playing_offline_cached_file_exact", file=str(local_match), query=clean_q)
+                return self.play_local(clean_q, wait_speech_engine=wait_speech_engine)
+
         # 3. Lookup metadata if online
-        meta = self.lookup_metadata(clean_q)
-        track_title = meta["title"] if meta else clean_q
-        artist_name = meta["artist"] if meta else ""
+        meta = self.lookup_spotify_metadata(clean_q) or self.lookup_metadata(clean_q)
+        track_title = clean_q
+        artist_name = ""
+        if meta:
+            m_words = set(re.findall(r"\w+", (meta.get("title", "") + " " + meta.get("artist", "")).lower()))
+            q_terms = [w for w in re.findall(r"\w+", clean_q.lower()) if w not in {"play", "song", "music", "track", "by", "on", "the", "a"}]
+            if any(term in m_words for term in q_terms):
+                track_title = meta.get("title", clean_q)
+                artist_name = meta.get("artist", "")
+
         resolved_name = f"{track_title} by {artist_name}" if artist_name else track_title
         query_encoded = urllib.parse.quote(clean_q)
         web_url = f"https://www.youtube.com/results?search_query={query_encoded}"
 
+        # Reset music started event for TTS coordination
+        self._music_started_event.clear()
+        self._music_active = False
+
         def _execute_playback():
+            # CRITICAL: Always use clean_q as full_query so unreleased/freestyle tracks
+            # are queried accurately on YouTube instead of substituted titles!
             self._play_stream_audio(
                 None,
                 web_url=web_url,
-                full_query=resolved_name,
+                full_query=clean_q,
                 wait_speech_engine=wait_speech_engine,
                 cache_name=resolved_name,
             )
@@ -637,7 +745,7 @@ class MusicPlayerService:
         }
 
     def play_spotify(self, query: str, wait_speech_engine: Any = None) -> dict[str, Any]:
-        """Search Spotify for the exact track and play either via Spotify Premium or yt-dlp."""
+        """Search Spotify for the exact track and play either via Spotify Premium or full audio stream."""
         clean_q = query.strip()
 
         # Check local files first if confident match exists
@@ -651,37 +759,39 @@ class MusicPlayerService:
                 "message": f"Internet is offline and '{clean_q}' is not available in local storage.",
             }
 
-        meta = self.lookup_metadata(clean_q)
+        # 1. Search Spotify for canonical track metadata
+        meta = self.lookup_spotify_metadata(clean_q) or self.lookup_metadata(clean_q)
         track_title = meta["title"] if meta else clean_q
         artist_name = meta["artist"] if meta else ""
         resolved_name = f"{track_title} by {artist_name}" if artist_name else track_title
-
-        query_encoded = urllib.parse.quote(clean_q)
-        web_url = f"https://open.spotify.com/search/{query_encoded}"
+        track_url = meta.get("url") if (meta and meta.get("url")) else f"https://open.spotify.com/search/{urllib.parse.quote(clean_q)}"
+        track_uri = meta.get("uri") if meta else None
         preview_url = meta.get("preview_url") if meta else None
 
-        # Try Spotify Premium API first if configured
-        sp = self._get_spotify_client()
-        if sp:
-            try:
-                results = sp.search(q=resolved_name, type="track", limit=1)
-                tracks = results.get("tracks", {}).get("items", [])
-                if tracks:
-                    track_uri = tracks[0]["uri"]
-                    sp_cfg = self.config.get("spotify", {})
-                    dev_id = sp_cfg.get("device_id") or None
+        # Reset music started event for TTS coordination
+        self._music_started_event.clear()
+        self._music_active = False
 
+        # 2. Try Spotify Premium API first if configured and authenticated
+        sp_oauth = self._get_spotify_oauth_client()
+        if sp_oauth and track_uri:
+            try:
+                sp_cfg = self.config.get("spotify", {})
+                dev_id = sp_cfg.get("device_id") or None
+                devices = sp_oauth.devices().get("devices", [])
+                if devices:
+                    target_dev = dev_id or devices[0]["id"]
                     def _execute_spotify_premium():
-                        self._wait_for_speech_to_finish(wait_speech_engine)
                         try:
-                            sp.start_playback(device_id=dev_id, uris=[track_uri])
-                            logger.info("spotify_premium_playback_started", uri=track_uri)
+                            sp_oauth.start_playback(device_id=target_dev, uris=[track_uri])
+                            logger.info("spotify_premium_playback_started", uri=track_uri, device=target_dev)
                         except Exception as e:
                             logger.warning("spotify_premium_playback_failed_fallback_ytdlp", error=str(e))
                             self._play_stream_audio(
                                 preview_url,
-                                web_url=web_url,
-                                full_query=resolved_name,
+                                web_url=track_url,
+                                full_query=clean_q,
+                                wait_speech_engine=wait_speech_engine,
                                 cache_name=resolved_name,
                             )
 
@@ -697,20 +807,20 @@ class MusicPlayerService:
                         "artist": artist_name,
                         "resolved_name": resolved_name,
                         "query": clean_q,
-                        "url": web_url,
-                        "web_url": web_url,
+                        "url": track_url,
+                        "web_url": track_url,
                         "message": f"Playing '{resolved_name}' on Spotify Premium.",
                     }
             except Exception as e:
-                logger.warning("spotify_search_premium_error", error=str(e))
+                logger.warning("spotify_premium_start_failed_falling_back", error=str(e))
 
-        # Default full song playback via yt-dlp & paplay
-        # Transparently acknowledge playback source as YouTube / yt-dlp
+        # 3. Default full song playback via yt-dlp & paplay
+        # Transparently stream audio using the clean user query
         def _execute_playback():
             self._play_stream_audio(
                 preview_url,
-                web_url=web_url,
-                full_query=resolved_name,
+                web_url=track_url,
+                full_query=clean_q,
                 wait_speech_engine=wait_speech_engine,
                 cache_name=resolved_name,
             )
@@ -719,18 +829,17 @@ class MusicPlayerService:
         threading.Thread(target=_execute_playback, daemon=True).start()
 
         self._current_track = resolved_name
-        self._current_source = "ytdlp"
+        self._current_source = "spotify"
         return {
             "status": "playing",
-            "source": "ytdlp",
+            "source": "spotify",
             "track": track_title,
             "artist": artist_name,
             "resolved_name": resolved_name,
             "query": clean_q,
-            "url": web_url,
-            "web_url": web_url,
-            "preview_url": preview_url,
-            "message": f"Playing '{resolved_name}' via YouTube.",
+            "url": track_url,
+            "web_url": track_url,
+            "message": f"Playing '{resolved_name}' on Spotify.",
         }
 
     def play_soundcloud(self, query: str, wait_speech_engine: Any = None) -> dict[str, Any]:
@@ -787,6 +896,8 @@ class MusicPlayerService:
             pass
 
         self._is_paused = False
+        self._music_active = False
+        self._music_started_event.clear()
         track = self._current_track
         self._current_track = "None"
         return {"status": "stopped", "track": track, "message": "Music playback stopped."}

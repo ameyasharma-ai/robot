@@ -358,6 +358,17 @@ class ConversationHistory:
         rows = cursor.fetchall()
         return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in reversed(rows)]
 
+    async def clear_turn(self, session_id: str, turn_number: int = 0) -> None:
+        """Clear a specific turn (e.g. turn 0 bootstrap) from session history."""
+        if not self._conn:
+            return
+        await asyncio.to_thread(
+            self._conn.execute,
+            "DELETE FROM conversations WHERE session_id = ? AND turn_number = ?",
+            (session_id, turn_number),
+        )
+        await asyncio.to_thread(self._conn.commit)
+
     async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
         """Store a durable fact in SQLite."""
         if not self._conn:
@@ -534,6 +545,10 @@ class MemoryManager:
     ) -> list[dict]:
         """Get recent conversation for context."""
         return await self.history.get_recent(session_id, limit)
+
+    async def clear_turn(self, session_id: str, turn_number: int = 0) -> None:
+        """Clear a specific turn from session history."""
+        await self.history.clear_turn(session_id, turn_number)
 
     async def search_history(self, query: str, limit: int = 10) -> list[dict]:
         """Full-text search across all conversations."""

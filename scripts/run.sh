@@ -84,24 +84,19 @@ import urllib.request, json
 try:
     from robot.personality import PersonalityManager
     from robot.core.context import ContextEngine
+    from robot.core.engine import GROUNDING_POLICY
     from robot.tools import ToolRegistry
     from robot.tools.builtins import register_builtin_tools
     import yaml
 
-    with open('config/default.yaml') as f:
-        cfg = yaml.safe_load(f) or {}
-    def_p = cfg.get('personality', {}).get('default', 'neo')
-
     pm = PersonalityManager('config/personalities')
     pm.load_all()
+    def_p = pm.get_persisted_active('neo')
     pm.set_active(def_p)
     pers = pm.active
 
-    ce = ContextEngine()
-    msgs = ce.build_messages(
-        system_prompt=pers.system_prompt,
-        user_text='hi',
-    )
+    sys_prompt = pers.system_prompt if pers else 'You are a helpful robot.'
+    system_content = f'{sys_prompt.strip()}\n{GROUNDING_POLICY}'
 
     class MockEngine:
         def __init__(self):
@@ -112,10 +107,22 @@ try:
     register_builtin_tools(mock)
     tools_schema = mock.tool_registry.get_schemas()
 
+    silent_arrival_prompt = (
+        '[System Event: Robot Core online and sensors active. The user has arrived / entered the room. '
+        'In your next response, warmly acknowledge and greet the user.]'
+    )
+    msgs = [
+        {'role': 'system', 'content': system_content},
+        {'role': 'user', 'content': silent_arrival_prompt},
+    ]
+
     payload = json.dumps({
+        'model': 'Qwen3.5-4B-Q4_K_M',
         'messages': msgs,
         'tools': tools_schema,
-        'max_tokens': 1,
+        'stream': True,
+        'max_tokens': 15,
+        'chat_template_kwargs': {'enable_thinking': False},
         'temperature': 0.7
     }).encode('utf-8')
 
@@ -125,10 +132,9 @@ try:
         headers={'Content-Type': 'application/json'}
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
-        res = json.loads(resp.read().decode('utf-8'))
-    cached = res.get('usage', {}).get('prompt_tokens_details', {}).get('cached_tokens', 0)
-    prompt_ms = res.get('timings', {}).get('prompt_ms', 0)
-    print(f'[LLM] KV cache pre-warmed for personality \"{def_p}\" (cached: {cached} tokens, eval: {prompt_ms:.1f}ms)')
+        for line in resp:
+            pass
+    print(f'[LLM] KV cache pre-warmed for personality \"{def_p}\" (silent arrival prompt primed)')
 except Exception as e:
     print('[LLM] Warmup notice:', e)
 " 2>/dev/null || true

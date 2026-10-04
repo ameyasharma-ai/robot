@@ -36,6 +36,8 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
         return text, None
     action_dict = None
     m = re.search(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", text, re.IGNORECASE)
+    if not m:
+        m = re.search(r"\[(?:character\.)?execute_action[\s\(]+(?:action=)?['\"]?([a-zA-Z_]+)['\"]?(?:[\s,]+(?:side=)?['\"]?([a-zA-Z]+)['\"]?)?", text, re.IGNORECASE)
     if m:
         act = m.group(1).lower()
         side = m.group(2).lower() if m.group(2) else "right"
@@ -49,9 +51,14 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
             side = "left" if "left" in raw_act else "right"
             action_dict = {"action": act, "side": side}
 
-    cleaned = re.sub(r"\[(?:motion|action)?:?[^\]]*\]", "", text, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\*[^*]+\*", "", cleaned)
-    cleaned = re.sub(r"\([^)]+\)", "", cleaned).strip()
+    # Clean out ALL stage directions, bracket tags (motions, emotions), and parentheses so TTS never speaks them
+    cleaned = re.sub(r"\[[^\]]*\]", "", text)
+    # Strip any lingering unclosed or orphaned brackets e.g. [motion: or wave]
+    cleaned = re.sub(r"\[\s*(?:motion|action|emotion)?:?[^\]\n]*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:wave|point|kick|nod|smile|happy|sad|raise_hand|stop)\s*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace("[", "").replace("]", "")
+    cleaned = re.sub(r"\*[^*]*\*", "", cleaned)
+    cleaned = re.sub(r"\([^)]*\)", "", cleaned).strip()
     return cleaned, action_dict
 
 
@@ -518,10 +525,12 @@ class ToolConversationCoordinator:
         if not ctx.spoken_holding_text and not interrupt.is_set():
             if ctx.tool_name == "music.play":
                 song_q = ctx.tool_args.get("query", "").strip() if ctx.tool_args else ""
+                src = ctx.tool_args.get("source", "").lower() if ctx.tool_args else ""
+                on_src = " on Spotify" if "spotify" in src else ""
                 if song_q:
-                    initial_phrase = f"Putting on {song_q}."
+                    initial_phrase = f"Putting on {song_q}{on_src}."
                 else:
-                    initial_phrase = "Putting on the track for you."
+                    initial_phrase = f"Putting on the track for you{on_src}."
             else:
                 initial_phrase = opening_phrases.get(ctx.tool_name, "Checking that for you right now.")
 
@@ -531,115 +540,18 @@ class ToolConversationCoordinator:
             await self.engine._tts_queue.put((initial_phrase, interrupt, timing_ref, None))
             self._emit_obs_event("holding_segment_spoken", phrase=initial_phrase)
 
-        while not tool_completed_event.is_set() and not interrupt.is_set():
-            # If initial opening phrase is playing, wait up to 1.8s for fast tools before launching extra holding calls
-            if segment_index == 0 and initial_phrase:
-                try:
-                    await asyncio.wait_for(tool_completed_event.wait(), timeout=1.8)
-                    break
-                except asyncio.TimeoutError:
-                    pass
-
-            if tool_completed_event.is_set() or interrupt.is_set():
-                break
-
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            if elapsed_ms >= self.max_holding_duration_ms:
-                # Reached max holding duration — enter quiet waiting to prevent unbounded monologue
-                logger.info("holding_duration_cap_reached", elapsed_ms=elapsed_ms)
-                ctx.holding_status = HoldingStatus.PAUSED
-                break
-
-            segment_index += 1
-            # Build compact holding prompt avoiding repetition
-            holding_messages = [
-                {"role": "system", "content": self.HOLDING_SYSTEM_PROMPT},
-            ]
-            if ctx.tool_name == "music.play":
-                song_q = ctx.tool_args.get("query", "").strip() if ctx.tool_args else ""
-                user_prompt = (
-                    f"The user asked to play music: '{user_text}' (track: '{song_q}'). "
-                    f"Match the energy and vibe of this track (e.g. hyped/cool for rap, chill for lo-fi). "
-                    f"Never use inappropriate romantic or love phrases unless the song is an explicit love ballad. "
-                )
-                if ctx.spoken_holding_text:
-                    user_prompt += f"You already said: '{ctx.spoken_holding_text.strip()}'. Say 1 brief punchy line."
-                else:
-                    user_prompt += "Say 1 brief punchy phrase that you are loading it up."
-            else:
-                user_prompt = f"The user asked: '{user_text}'. You are currently running the '{ctx.tool_name}' tool."
-                if ctx.spoken_holding_text:
-                    user_prompt += f" You already said: '{ctx.spoken_holding_text.strip()}'. Generate the next natural spoken phrase without repeating yourself."
-                else:
-                    user_prompt += " Acknowledge this naturally and mention you are checking the latest details."
-
-            holding_messages.append({"role": "user", "content": user_prompt})
-
-            segment_text = ""
-            t_seg_start = time.perf_counter()
-
-            try:
-                # LLM streaming with small token budget (5-20 tokens per segment)
-                async for token in self.engine.llm.stream_chat(
-                    holding_messages,
-                    max_tokens=self.holding_max_tokens,
-                ):
-                    if interrupt.is_set() or tool_completed_event.is_set() or holding_stop_event.is_set():
-                        break
-
-                    if not ctx.holding_first_token_time:
-                        ctx.holding_first_token_time = time.perf_counter()
-                        holding_ttft = (ctx.holding_first_token_time - ctx.start_time) * 1000
-                        self.engine.telemetry.record("HOLDING_TTFT", holding_ttft)
-                        self._emit_obs_event("holding_llm_first_token", duration_ms=holding_ttft)
-
-                    segment_text += token
-                    phrase = chunker.feed(token)
-                    if phrase and not interrupt.is_set():
-                        clean_phrase = phrase.strip()
-                        if clean_phrase:
-                            ctx.spoken_holding_text = (ctx.spoken_holding_text + " " + clean_phrase).strip()
-                            timing_ref = None
-                            if not first_audio_emitted:
-                                timing_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
-                                first_audio_emitted = True
-                                self._emit_obs_event("holding_tts_started")
-
-                            # Send to TTS queue immediately
-                            await self.engine._tts_queue.put((clean_phrase, interrupt, timing_ref, None))
-                            self._emit_obs_event("holding_segment_spoken", phrase=clean_phrase)
-
-                # Flush remainder if safe and not interrupted
-                rem = chunker.flush()
-                if rem and not interrupt.is_set() and not tool_completed_event.is_set():
-                    clean_rem = rem.strip()
-                    if clean_rem:
-                        ctx.spoken_holding_text = (ctx.spoken_holding_text + " " + clean_rem).strip()
-                        await self.engine._tts_queue.put((clean_rem, interrupt, None, None))
-                        self._emit_obs_event("holding_segment_spoken", phrase=clean_rem)
-
-                if segment_text:
-                    ctx.segments.append(segment_text.strip())
-                    self._emit_obs_event(
-                        "holding_segment_generated",
-                        segment_index=segment_index,
-                        text=segment_text.strip(),
-                        duration_ms=(time.perf_counter() - t_seg_start) * 1000,
-                    )
-
-            except Exception as e:
-                logger.error("holding_generation_error", error=str(e))
-                # Fall back to quick deterministic acknowledgment if LLM fails
-                if not ctx.spoken_holding_text and not interrupt.is_set():
-                    fallback_phrase = "Checking that for you right now."
-                    ctx.spoken_holding_text = fallback_phrase
-                    timing_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
-                    await self.engine._tts_queue.put((fallback_phrase, interrupt, timing_ref, None))
-                break
-
-            # Brief pause between segments if tool is still running
-            if not tool_completed_event.is_set() and not holding_stop_event.is_set():
-                await asyncio.sleep(0.3)
+        # Wait cleanly for tool execution to complete.
+        # CRITICAL: We do NOT run a while loop calling stream_chat here!
+        # Calling stream_chat with short holding prompts evicts slot 0 in llama-server,
+        # which destroys the KV cache and spikes subsequent turn TTFT to ~2.2s.
+        # It also produces repetitive, unnatural monologues.
+        try:
+            await asyncio.wait_for(tool_completed_event.wait(), timeout=self.max_holding_duration_ms / 1000.0)
+        except asyncio.TimeoutError:
+            logger.info("holding_duration_cap_reached")
+            ctx.holding_status = HoldingStatus.PAUSED
+        except asyncio.CancelledError:
+            pass
 
         ctx.holding_status = HoldingStatus.COMPLETED
 
@@ -659,6 +571,20 @@ class ToolConversationCoordinator:
         self._emit_obs_event("final_llm_started", tool_name=ctx.tool_name)
 
         t_final_start = time.perf_counter()
+
+        # For music.play, check if music audio has already started playing
+        # If so, and we already announced the song in holding speech, return immediately
+        _music_already_playing = False
+        if ctx.tool_name == "music.play":
+            try:
+                from robot.tools.builtins.music import MusicPlayerService
+                ms = MusicPlayerService.get_instance()
+                _music_already_playing = getattr(ms, "_music_active", False)
+            except Exception:
+                pass
+            if _music_already_playing and ctx.spoken_holding_text:
+                logger.info("music_already_active_skipping_extra_speech", text=ctx.spoken_holding_text)
+                return ctx.spoken_holding_text
 
         # Format tool result cleanly without bloated tracking URLs
         result_text = str(ctx.tool_result) if ctx.tool_result is not None else (ctx.tool_error or "No data available")
@@ -714,6 +640,21 @@ class ToolConversationCoordinator:
         })
 
         # Append tool output turn
+        # For music.play, inject an explicit instruction directly into the tool result
+        # to not describe motions, match genre energy, and keep the response brief.
+        # NOTE: Do NOT append a 'system' role message here as Qwen's Jinja template requires
+        # system messages to only appear at index 0.
+        if ctx.tool_name == "music.play":
+            result_text = (
+                f"{result_text}\n"
+                "[Instruction: The music has begun. Your spoken response MUST be at most 1 short sentence (under 6 words). "
+                "CRITICAL VIBE MATCHING: strictly match the song's genre and mood. "
+                "For hip-hop, rap, trap, drill, or rock tracks: DO NOT use affectionate, romantic, or cutesy terms (NEVER say 'my love', 'sweetheart', 'darling', or romantic affection). Be chill and cool. "
+                "For explicit love ballads: warm affection is permitted. "
+                "NEVER describe physical motions, gestures, body movements, or actions. Do NOT use asterisks. "
+                "Keep it punchy, then STOP.]"
+            )
+
         continuation_messages.append({
             "role": "tool",
             "name": ctx.tool_name,
@@ -761,7 +702,20 @@ class ToolConversationCoordinator:
                 full_continuation += token
                 phrase = chunker.feed(token)
                 if phrase and not interrupt.is_set():
+                    # If music is actively playing, skip TTS to let music take over
+                    if ctx.tool_name == "music.play":
+                        try:
+                            from robot.tools.builtins.music import MusicPlayerService
+                            ms = MusicPlayerService.get_instance()
+                            if getattr(ms, "_music_active", False):
+                                logger.info("skipping_tts_music_playing", phrase=phrase[:30])
+                                continue
+                        except Exception:
+                            pass
                     clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
+                    # For music.play, strip inline motion actions entirely
+                    if ctx.tool_name == "music.play":
+                        inline_act = None
                     if clean_phrase:
                         t_ref = None
                         if not spoken_prefix and end_of_speech_time > 0 and not first_audio_queue_emitted:

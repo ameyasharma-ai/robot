@@ -26,8 +26,12 @@ def clean_text_for_speech(text: str) -> str:
     cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"</?(?:tool_call|function|parameter)[^>]*>", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"<[^>]+>", "", cleaned)
-    # Strip bracket motion tags like [motion:wave] or [action:nod] or [laughs]
-    cleaned = re.sub(r"\[(?:motion|action)?:?[^\]]*\]", "", cleaned, flags=re.IGNORECASE)
+    # Strip all bracket tags like [motion:wave], [emotion: happy], [action:nod], etc.
+    cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
+    # Strip any lingering unclosed or orphaned brackets e.g. [motion: or wave]
+    cleaned = re.sub(r"\[\s*(?:motion|action|emotion)?:?[^\]\n]*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:wave|point|kick|nod|smile|happy|sad|raise_hand|stop)\s*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.replace("[", "").replace("]", "")
     # Strip common stage directions in asterisks e.g. *waves*, *smiles*, *nods*, *laughs*, *sighs*
     stage_dir_pattern = (
         r"\*(?:waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|"

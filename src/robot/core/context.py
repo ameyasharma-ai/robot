@@ -203,6 +203,6 @@ def _trim_conversation(messages: list[dict], budget_tokens: int) -> list[dict]:
         tokens = _estimate_tokens(msg.get("content", ""))
         if total + tokens > budget_tokens:
             break
-        result.insert(0, msg)
+        result.insert(0, {"role": msg["role"], "content": msg["content"]})
         total += tokens
     return result

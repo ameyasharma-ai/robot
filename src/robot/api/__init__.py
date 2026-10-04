@@ -100,11 +100,108 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 engine.tts.set_active_voice(pers.voice_model)
             await engine.events.emit("personality_switched", personality=name)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
-                coro = engine.warm_up_llm(name)
-                if asyncio.iscoroutine(coro):
-                    asyncio.create_task(coro)
+                try:
+                    await engine.warm_up_llm(name)
+                except Exception as e:
+                    logger.debug("personality_warmup_error", error=str(e))
             return {"status": "switched", "personality": name}
         return {"error": f"Personality '{name}' not found"}
+
+    # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
+    @app.get("/spotify/status")
+    async def spotify_status():
+        """Get Spotify configuration, OAuth status, and devices."""
+        from robot.tools.builtins.music import MusicPlayerService
+        ms = MusicPlayerService.get_instance()
+        sp_cfg = ms.config.get("spotify", {})
+        client_id = bool(sp_cfg.get("client_id"))
+        client_secret = bool(sp_cfg.get("client_secret"))
+        sp_oauth = ms._get_spotify_oauth_client()
+        authenticated = sp_oauth is not None
+        devices = []
+        if sp_oauth:
+            try:
+                devices = sp_oauth.devices().get("devices", [])
+            except Exception:
+                pass
+        return {
+            "configured": client_id and client_secret,
+            "authenticated": authenticated,
+            "device_id": sp_cfg.get("device_id") or "",
+            "available_devices": devices,
+            "login_url": "/spotify/login",
+        }
+
+    @app.get("/spotify/login")
+    async def spotify_login():
+        """Get or redirect to Spotify OAuth login page."""
+        from fastapi.responses import RedirectResponse
+        from robot.tools.builtins.music import MusicPlayerService
+        ms = MusicPlayerService.get_instance()
+        sp_cfg = ms.config.get("spotify", {})
+        client_id = sp_cfg.get("client_id")
+        client_secret = sp_cfg.get("client_secret")
+        redirect_uri = sp_cfg.get("redirect_uri", "http://127.0.0.1:8888/callback")
+        if not client_id or not client_secret:
+            return {"error": "Spotify client_id or client_secret not configured"}
+        try:
+            from spotipy.oauth2 import SpotifyOAuth
+            scope = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
+            auth_manager = SpotifyOAuth(
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+                scope=scope,
+                open_browser=False,
+                cache_path=".spotify_cache",
+            )
+            auth_url = auth_manager.get_authorize_url()
+            return RedirectResponse(auth_url)
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/callback")
+    async def spotify_callback(code: str | None = None, error: str | None = None):
+        """Handle Spotify OAuth authorization redirect callback."""
+        from fastapi.responses import HTMLResponse
+        if error:
+            return HTMLResponse(
+                f"""<html><body style="font-family: sans-serif; background: #121212; color: #fff; padding: 2rem;">
+                <h2 style="color: #ff5555;">Spotify Authorization Error</h2>
+                <p>{error}</p>
+                <a href="/" style="color: #1db954;">Return to Dashboard</a>
+                </body></html>""",
+                status_code=400,
+            )
+        if not code:
+            return HTMLResponse(
+                """<html><body style="font-family: sans-serif; background: #121212; color: #fff; padding: 2rem;">
+                <h2>No authorization code provided.</h2>
+                <a href="/" style="color: #1db954;">Return to Dashboard</a>
+                </body></html>""",
+                status_code=400,
+            )
+        from robot.tools.builtins.music import MusicPlayerService
+        ms = MusicPlayerService.get_instance()
+        success, msg = ms.handle_spotify_callback(code)
+        if success:
+            return HTMLResponse(
+                """<html><body style="font-family: sans-serif; background: #121212; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+                <div style="background: #1e1e1e; padding: 2.5rem; border-radius: 12px; text-align: center; border: 1px solid #1db954; max-width: 480px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);">
+                <h2 style="color: #1db954; margin-top: 0;">Spotify Connected Successfully!</h2>
+                <p style="color: #ccc; line-height: 1.5;">Robot Core has authorized Spotify Connect playback. You can now command music playback seamlessly.</p>
+                <a href="/" style="display: inline-block; margin-top: 1rem; background: #1db954; color: #000; text-decoration: none; padding: 0.6rem 1.5rem; border-radius: 20px; font-weight: bold;">Return to Dashboard</a>
+                </div></body></html>"""
+            )
+        else:
+            return HTMLResponse(
+                f"""<html><body style="font-family: sans-serif; background: #121212; color: #fff; padding: 2rem;">
+                <h2 style="color: #ff5555;">Spotify Authorization Failed</h2>
+                <p>{msg}</p>
+                <a href="/" style="color: #1db954;">Return to Dashboard</a>
+                </body></html>""",
+                status_code=500,
+            )
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
