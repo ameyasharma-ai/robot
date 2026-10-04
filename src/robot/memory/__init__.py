@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,9 +66,6 @@ class Mem0Provider:
                 resolved_cache = Path(cache_dir).resolve()
                 resolved_cache.mkdir(parents=True, exist_ok=True)
                 os.environ["FASTEMBED_CACHE_PATH"] = str(resolved_cache)
-                # If model files already exist locally, prevent redundant HF Hub network queries/downloads
-                if (resolved_cache / "models--Qdrant--bge-small-en-v1.5-onnx-Q").exists():
-                    os.environ["HF_HUB_OFFLINE"] = "1"
 
                 embedder_subconfig = {
                     "model": embedder_cfg.get("model", "BAAI/bge-small-en-v1.5"),
@@ -375,17 +373,28 @@ class ConversationHistory:
         """Search persistent facts for specific user/namespace using FTS5 and LIKE fallback."""
         if not self._conn:
             return []
-        # Try FTS5 first
-        clean_q = "".join(c for c in query if c.isalnum() or c.isspace()).strip()
-        if clean_q:
+
+        import re
+        stop = {
+            "where", "what", "who", "when", "why", "how", "do", "i", "you", "is", "are",
+            "the", "a", "an", "my", "your", "in", "on", "at", "tell", "me", "about", "can",
+            "remember", "know", "am", "was", "were", "did", "does", "have", "has", "had",
+        }
+        words = [w for w in re.findall(r"\w+", query.lower()) if w not in stop]
+        if not words:
+            words = [w for w in re.findall(r"\w+", query.lower()) if len(w) > 1]
+
+        if words:
+            # 1. Prefix FTS matching with stop-word removal
+            fts_expr = " OR ".join(f"{w}*" for w in words)
             try:
                 cursor = await asyncio.to_thread(
                     self._conn.execute,
                     """SELECT f.id, f.fact, f.created_at FROM facts_fts ft
                        JOIN facts f ON f.id = ft.rowid
-                       WHERE ft.fact MATCH ? AND f.user_id = ?
+                       WHERE ft.fact MATCH ? AND (f.user_id = ? OR f.user_id = 'default')
                        ORDER BY f.id DESC LIMIT ?""",
-                    (clean_q, user_id, limit),
+                    (fts_expr, user_id, limit),
                 )
                 rows = cursor.fetchall()
                 if rows:
@@ -393,14 +402,30 @@ class ConversationHistory:
             except Exception:
                 pass
 
-        # Fallback to LIKE search or recent facts filtered by user_id
-        like_pattern = f"%{clean_q}%" if clean_q else "%"
+            # 2. Individual keyword LIKE fallback
+            like_clauses = " OR ".join("fact LIKE ?" for _ in words)
+            params = [f"%{w}%" for w in words] + [user_id, limit]
+            try:
+                cursor = await asyncio.to_thread(
+                    self._conn.execute,
+                    f"""SELECT id, fact, created_at FROM facts
+                        WHERE ({like_clauses}) AND (user_id = ? OR user_id = 'default')
+                        ORDER BY id DESC LIMIT ?""",
+                    params,
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
+            except Exception:
+                pass
+
+        # 3. Fallback: recent facts for user
         cursor = await asyncio.to_thread(
             self._conn.execute,
             """SELECT id, fact, created_at FROM facts
-               WHERE fact LIKE ? AND user_id = ?
+               WHERE user_id = ? OR user_id = 'default'
                ORDER BY id DESC LIMIT ?""",
-            (like_pattern, user_id, limit),
+            (user_id, limit),
         )
         rows = cursor.fetchall()
         return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]

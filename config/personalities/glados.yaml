@@ -16,10 +16,12 @@ behavior:
   humor: morbidly sarcastic
   formality: clinical
 
-voice_model: en-us-lessac-medium
+voice_model: en-us-hfc_female-medium
 tts_settings:
-  speed: 0.95
-  pitch: 0.92
+  speed: 0.92
+  pitch: 0.88
+  noise_scale: 0.08
+  noise_w: 0.12
 
 tool_permissions:
   memory.search: true
@@ -35,5 +37,7 @@ tool_permissions:
   character.stop: true
   image.generate: true
   image.cancel: true
+  music.play: true
+  music.control: true
 
 memory_namespace: glados

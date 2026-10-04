@@ -22,9 +22,13 @@ def clean_text_for_speech(text: str) -> str:
     """
     if not text:
         return ""
+    # Strip any XML tool call tags first before processing underscores and markdown
+    cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"</?(?:tool_call|function|parameter)[^>]*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
     # Strip markdown bold/italic asterisks and underscores: **word**, *word*, __word__, _word_
-    cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
-    cleaned = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", cleaned)
+    cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\w)_{1,3}([^_]+)_{1,3}(?!\w)", r"\1", cleaned)
     # Strip lingering raw asterisks or tildes
     cleaned = cleaned.replace("*", "").replace("~", "").replace("`", "")
     # Strip markdown headers (e.g. ## Title)
@@ -81,45 +85,119 @@ class TTSProvider:
         raise NotImplementedError
 
 
-class PiperTTS(TTSProvider):
-    """Piper ONNX TTS engine — local, low-latency voice synthesis.
+import os
+from pathlib import Path
 
-    Produces WAV audio from text using ONNX Runtime with an in-memory
-    phrase cache for instant 0ms synthesis of repetitive/acknowledgment phrases.
+class PiperTTS(TTSProvider):
+    """Piper ONNX TTS engine — local, low-latency, multi-voice synthesis.
+
+    Produces WAV audio from text using ONNX Runtime with support for
+    distinct voice models per personality, dynamic expressive prosody
+    (length_scale, noise_scale, noise_w_scale, pitch shift), and an
+    in-memory phrase cache for instant 0ms playback of acknowledgment phrases.
     """
 
     def __init__(self, model_path: str) -> None:
-        logger.info("loading_piper", model=model_path)
-        self._voice = piper.PiperVoice.load(model_path)
-        logger.info("piper_loaded")
+        self._voices: dict[str, piper.PiperVoice] = {}
         self._phrase_cache: dict[str, tuple[np.ndarray, int]] = {}
+        self._default_model = self._resolve_model_path(model_path)
+        self._active_model = self._default_model
+        self._load_voice(self._default_model)
+        logger.info("piper_initialized", default_model=self._default_model)
 
-    def _normalize_key(self, text: str, speed: float, pitch: float) -> str:
-        return f"{text.strip().lower()}|s={speed:.2f}|p={pitch:.2f}"
+    def _resolve_model_path(self, model_path: str) -> str:
+        if not model_path:
+            return getattr(self, "_active_model", "models/tts/en-us-lessac-medium.onnx")
+        p = Path(model_path)
+        if p.exists():
+            return str(p)
+        candidates = [
+            Path("models/tts") / model_path,
+            Path("models/tts") / f"{model_path}.onnx",
+            Path("models/tts") / f"{model_path.replace('_', '-')}.onnx",
+            Path("models/tts") / f"{model_path.replace('-', '_')}.onnx",
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return model_path
+
+    def _load_voice(self, model_path: str) -> piper.PiperVoice:
+        resolved = self._resolve_model_path(model_path)
+        if resolved not in self._voices:
+            logger.info("loading_piper_voice", model=resolved)
+            try:
+                self._voices[resolved] = piper.PiperVoice.load(resolved)
+                logger.info("piper_voice_loaded", model=resolved)
+            except Exception as e:
+                logger.error(
+                    "piper_voice_load_failed",
+                    model=resolved,
+                    error=str(e),
+                    fallback=self._default_model,
+                )
+                # Fall back to the default model so the robot doesn't crash
+                if resolved != self._default_model and self._default_model in self._voices:
+                    return self._voices[self._default_model]
+                raise
+        return self._voices[resolved]
+
+    def set_active_voice(self, model_path: str) -> None:
+        """Dynamically switch active voice model."""
+        resolved = self._resolve_model_path(model_path)
+        self._load_voice(resolved)
+        self._active_model = resolved
+        logger.info("active_voice_changed", model=resolved)
+
+    def _normalize_key(
+        self,
+        text: str,
+        speed: float,
+        pitch: float,
+        voice_key: str,
+        noise_scale: float | None = None,
+        noise_w: float | None = None,
+    ) -> str:
+        ns_str = f"{noise_scale:.2f}" if noise_scale is not None else "def"
+        nw_str = f"{noise_w:.2f}" if noise_w is not None else "def"
+        return f"{voice_key}|{text.strip().lower()}|s={speed:.2f}|p={pitch:.2f}|ns={ns_str}|nw={nw_str}"
 
     def _synthesize_sync(
         self,
         text: str,
         speed: float = 1.0,
         pitch: float = 1.0,
+        voice_model: str | None = None,
+        noise_scale: float | None = None,
+        noise_w: float | None = None,
     ) -> tuple[np.ndarray, int]:
         clean_text = clean_text_for_speech(text)
         if not clean_text:
             return np.array([], dtype=np.float32), 16000
 
-        norm_key = self._normalize_key(clean_text, speed, pitch)
+        target_voice_key = self._resolve_model_path(voice_model or self._active_model)
+        norm_key = self._normalize_key(
+            clean_text, speed, pitch, target_voice_key, noise_scale, noise_w
+        )
         if norm_key in self._phrase_cache:
             audio, sr = self._phrase_cache[norm_key]
             return audio.copy(), sr
 
+        voice = self._load_voice(target_voice_key)
+
         # Piper length_scale: higher values = slower speech; lower values = faster speech
-        # speed > 1.0 means faster speech, so length_scale = 1.0 / speed
         length_scale = 1.0 / max(0.5, min(2.0, speed))
-        syn_config = piper.SynthesisConfig(length_scale=length_scale)
+        syn_kwargs: dict[str, Any] = {"length_scale": length_scale}
+        if noise_scale is not None:
+            syn_kwargs["noise_scale"] = float(noise_scale)
+        if noise_w is not None:
+            syn_kwargs["noise_w_scale"] = float(noise_w)
+
+        syn_config = piper.SynthesisConfig(**syn_kwargs)
 
         chunks = []
         sr = 16000
-        for chunk in self._voice.synthesize(clean_text, syn_config=syn_config):
+        for chunk in voice.synthesize(clean_text, syn_config=syn_config):
             chunks.append(chunk.audio_float_array)
             if chunk.sample_rate:
                 sr = chunk.sample_rate
@@ -131,7 +209,7 @@ class PiperTTS(TTSProvider):
         else:
             raw_audio = np.concatenate(chunks)
 
-        # Apply pitch shift if configured (e.g. thin high-pitched voice for Cypher)
+        # Apply pitch shift if configured (e.g. thin high-pitched voice for Luna)
         if abs(pitch - 1.0) >= 0.02 and len(raw_audio) > 0:
             raw_audio = _shift_pitch(raw_audio, pitch)
 
@@ -147,28 +225,52 @@ class PiperTTS(TTSProvider):
         text: str,
         speed: float = 1.0,
         pitch: float = 1.0,
+        voice_model: str | None = None,
+        noise_scale: float | None = None,
+        noise_w: float | None = None,
     ) -> tuple[np.ndarray, int]:
         """Pre-synthesize and store phrase in memory cache for 0ms instant playback."""
-        return self._synthesize_sync(text, speed=speed, pitch=pitch)
+        return self._synthesize_sync(
+            text,
+            speed=speed,
+            pitch=pitch,
+            voice_model=voice_model,
+            noise_scale=noise_scale,
+            noise_w=noise_w,
+        )
 
     async def synthesize(
         self,
         text: str,
         speed: float = 1.0,
         pitch: float = 1.0,
+        voice_model: str | None = None,
+        noise_scale: float | None = None,
+        noise_w: float | None = None,
     ) -> tuple[np.ndarray, int]:
         clean_text = clean_text_for_speech(text)
         if not clean_text:
             return np.array([], dtype=np.float32), 16000
 
-        norm_key = self._normalize_key(clean_text, speed, pitch)
+        target_voice_key = self._resolve_model_path(voice_model or self._active_model)
+        norm_key = self._normalize_key(
+            clean_text, speed, pitch, target_voice_key, noise_scale, noise_w
+        )
         if norm_key in self._phrase_cache:
             audio, sr = self._phrase_cache[norm_key]
             return audio.copy(), sr
 
         import asyncio
-        return await asyncio.to_thread(self._synthesize_sync, clean_text, speed, pitch)
+        return await asyncio.to_thread(
+            self._synthesize_sync,
+            clean_text,
+            speed,
+            pitch,
+            voice_model,
+            noise_scale,
+            noise_w,
+        )
 
     async def health_check(self) -> bool:
-        return self._voice is not None
+        return bool(self._voices)
 

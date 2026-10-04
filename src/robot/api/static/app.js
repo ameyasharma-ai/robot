@@ -309,15 +309,30 @@ class RobotUI {
     }
 
     initViewControls() {
-        const btnFace = document.getElementById("btnViewFace");
+        const btnStop = document.getElementById("btnStopExecution");
         const btnDual = document.getElementById("btnViewDual");
         const btnDev = document.getElementById("btnViewDev");
         const btnFs = document.getElementById("btnFullscreen");
         const btnClear = document.getElementById("btnClearLog");
 
-        btnFace.addEventListener("click", () => this.setView("face"));
-        btnDual.addEventListener("click", () => this.setView("dual"));
-        btnDev.addEventListener("click", () => this.setView("dev"));
+        if (btnStop) {
+            btnStop.addEventListener("click", async () => {
+                try {
+                    await fetch("/interrupt", { method: "POST" });
+                } catch (e) {}
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({ type: "interrupt" }));
+                }
+                if (this.characterEngine && this.characterEngine.animation) {
+                    this.characterEngine.animation.interrupt();
+                }
+                this.setRobotMode("idle");
+                this.logEvent("INTERRUPT", "Manual stop triggered by user", "warning");
+            });
+        }
+
+        if (btnDual) btnDual.addEventListener("click", () => this.setView("dual"));
+        if (btnDev) btnDev.addEventListener("click", () => this.setView("dev"));
 
         btnFs.addEventListener("click", () => {
             if (!document.fullscreenElement) {
@@ -417,6 +432,11 @@ class RobotUI {
                         this.personaSelect.appendChild(opt);
                     });
                 }
+                const savedPersona = localStorage.getItem("robot_active_personality");
+                if (savedPersona && savedPersona !== data.active && data.personalities && data.personalities.includes(savedPersona)) {
+                    await fetch(`/personality/${savedPersona}`, { method: "POST" });
+                    data.active = savedPersona;
+                }
                 if (data.active) {
                     this.personaSelect.value = data.active;
                     const activeDisplay = data.active === "neo" ? "CYPHER" : data.active.toUpperCase();
@@ -428,6 +448,7 @@ class RobotUI {
         this.personaSelect.addEventListener("change", async (e) => {
             const chosen = e.target.value;
             try {
+                localStorage.setItem("robot_active_personality", chosen);
                 const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
                 if (switchRes.ok) {
                     const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
@@ -443,9 +464,8 @@ class RobotUI {
     setView(mode) {
         document.body.className = `mode-${mode}`;
         document.querySelectorAll(".view-btn").forEach(btn => btn.classList.remove("active"));
-        if (mode === "face") document.getElementById("btnViewFace").classList.add("active");
-        if (mode === "dual") document.getElementById("btnViewDual").classList.add("active");
-        if (mode === "dev") document.getElementById("btnViewDev").classList.add("active");
+        if (mode === "dual") document.getElementById("btnViewDual")?.classList.add("active");
+        if (mode === "dev") document.getElementById("btnViewDev")?.classList.add("active");
     }
 
     initBlinking() {

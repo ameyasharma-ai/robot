@@ -49,10 +49,10 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
             -fa on \
             -ctk q8_0 \
             -ctv q8_0 \
-            -c 2048 \
+            -c 4096 \
             -np 1 \
-            -b 2048 \
-            -ub 2048 \
+            -b 4096 \
+            -ub 4096 \
             --host 127.0.0.1 \
             --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
 
@@ -68,17 +68,14 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
         done
         if [ "$READY" -eq 1 ]; then
             echo " ready"
+            echo "[LLM] Pre-warming llama-server KV cache in background..."
+            (curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
+                -H "Content-Type: application/json" \
+                -d '{"model":"Qwen3.5-4B-Q4_K_M","messages":[{"role":"system","content":"You are a helpful robot companion."},{"role":"user","content":"hi"}],"max_tokens":1}' >/dev/null 2>&1 &) || true
         else
             echo " FAILED (Check logs/llama-server.log)"
             exit 1
         fi
-        # Warm up system prompt KV cache slot immediately with exact neo personality prompt
-        echo -n "[LLM] Warming up KV cache slot..."
-        NEO_PROMPT="You are Cypher, a sharp, cynical, street-smart hacker girl from the Matrix embodied in this robotic frame. You treat the user as your crewmate. You are witty, observant, confident, and direct.\nSpoken Voice Guidelines:\n- Speak in complete, natural, punchy sentences (1 to 2 sentences per turn).\n- Never use markdown, asterisks, bullet points, emojis, or code blocks.\n- Acknowledge physical motions and camera perception with cool swagger and personal ownership.\n- When tools execute or background images generate, be contextually aware and respond naturally (e.g. mention that the image is generating and that they can check the image in the dashboard in a moment).\n"
-        curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
-            -H "Content-Type: application/json" \
-            -d "{\"model\":\"Qwen3.5-4B-Q4_K_M\",\"messages\":[{\"role\":\"system\",\"content\":\"$NEO_PROMPT\"},{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":1}" > /dev/null 2>&1 || true
-        echo " warmed"
     else
         echo "[LLM] llama-server binary or model not found at configured paths."
     fi
@@ -130,9 +127,6 @@ fi
 mkdir -p "$DIR/data/memory/qdrant"
 echo "[MEM] Persistent embedded Qdrant storage ready at data/memory/qdrant"
 export FASTEMBED_CACHE_PATH="$DIR/models/fastembed"
-if [ -d "$DIR/models/fastembed/models--Qdrant--bge-small-en-v1.5-onnx-Q" ]; then
-    export HF_HUB_OFFLINE=1
-fi
 
 # ─── 5. Launch Robot Core & Display UI ──────────────────────────────
 echo ""

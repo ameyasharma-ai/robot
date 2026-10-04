@@ -95,7 +95,14 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         success = engine.personalities.set_active(name)
         if success:
             engine.state.state.active_personality = name
+            pers = engine.personalities.get(name)
+            if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
+                engine.tts.set_active_voice(pers.voice_model)
             await engine.events.emit("personality_switched", personality=name)
+            if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
+                coro = engine.warm_up_llm(name)
+                if asyncio.iscoroutine(coro):
+                    asyncio.create_task(coro)
             return {"status": "switched", "personality": name}
         return {"error": f"Personality '{name}' not found"}
 
@@ -108,6 +115,12 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             turn=engine.state.state.turn_count,
             personality=engine.state.state.active_personality,
         )
+
+    @app.post("/interrupt")
+    async def interrupt_execution():
+        """Manually interrupt active LLM generation, tool execution, and audio playback."""
+        engine.trigger_interrupt()
+        return {"status": "interrupted"}
 
     @app.get("/memory/search")
     async def search_memory(query: str, limit: int = 5):

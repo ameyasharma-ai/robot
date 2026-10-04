@@ -1,0 +1,55 @@
+# Tool Configuration File
+# Configure defaults, timeouts, and providers for built-in tools.
+
+system_time:
+  # Default country and timezone when none is specified by the user
+  default_country: "India"
+  default_timezone: "Asia/Kolkata"
+
+  # Country and city timezone lookup table
+  country_timezones:
+    india: "Asia/Kolkata"
+    bharat: "Asia/Kolkata"
+    japan: "Asia/Tokyo"
+    tokyo: "Asia/Tokyo"
+    usa: "America/New_York"
+    united states: "America/New_York"
+    new york: "America/New_York"
+    california: "America/Los_Angeles"
+    san francisco: "America/Los_Angeles"
+    los angeles: "America/Los_Angeles"
+    uk: "Europe/London"
+    united kingdom: "Europe/London"
+    london: "Europe/London"
+    england: "Europe/London"
+    germany: "Europe/Berlin"
+    berlin: "Europe/Berlin"
+    france: "Europe/Paris"
+    paris: "Europe/Paris"
+    australia: "Australia/Sydney"
+    sydney: "Australia/Sydney"
+    canada: "America/Toronto"
+    toronto: "America/Toronto"
+    vancouver: "America/Vancouver"
+    singapore: "Asia/Singapore"
+    uae: "Asia/Dubai"
+    dubai: "Asia/Dubai"
+    china: "Asia/Shanghai"
+    beijing: "Asia/Shanghai"
+    russia: "Europe/Moscow"
+    moscow: "Europe/Moscow"
+    brazil: "America/Sao_Paulo"
+    south africa: "Africa/Johannesburg"
+    gmt: "GMT"
+    utc: "UTC"
+
+web_search:
+  default_max_results: 3
+  deep_search_max_results: 8
+  timeout_seconds: 4.0
+  offer_deeper_search: true
+
+music:
+  default_source: "spotify"
+  local_music_dir: "data/music"
+  default_volume: 0.8

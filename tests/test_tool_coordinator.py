@@ -333,3 +333,186 @@ async def test_max_holding_duration_cap():
     assert coordinator.state == CoordinatorState.COMPLETED
     assert coordinator._active_context.tool_status == ToolExecutionStatus.COMPLETED
 
+
+@pytest.mark.asyncio
+async def test_fast_router_time_and_timezone():
+    """Verify fast router accurately captures time queries and timezones."""
+    engine = DummyEngine()
+    coordinator = ToolConversationCoordinator(engine, engine.config)
+
+    # 1. "What is the time?"
+    r1 = coordinator.fast_route("What is the time?")
+    assert r1 is not None
+    tool, args, cat = r1
+    assert tool == "system.time"
+    assert cat == ToolCategory.DIRECT
+
+    # 2. "What is the time in India?"
+    r2 = coordinator.fast_route("What is the time in India?")
+    assert r2 is not None
+    tool2, args2, cat2 = r2
+    assert tool2 == "system.time"
+    assert args2.get("timezone_str") == "india"
+    assert cat2 == ToolCategory.DIRECT
+
+    # 3. Perception "what do you see?"
+    r3 = coordinator.fast_route("What do you see?")
+    assert r3 is not None
+    assert r3[0] == "perception.what_do_you_see"
+    assert r3[2] == ToolCategory.DIRECT
+
+
+@pytest.mark.asyncio
+async def test_timezone_in_system_time():
+    """Verify system.time correctly resolves timezones and formats response."""
+    from robot.tools.builtins import register_builtin_tools
+    engine = DummyEngine()
+    register_builtin_tools(engine)
+
+    time_tool = engine.tool_registry.get("system.time")
+    assert time_tool is not None
+
+    res_india = await time_tool.handler(timezone_str="India")
+    assert "current_time" in res_india
+    assert res_india["timezone"] == "Asia/Kolkata"
+
+    res_utc = await time_tool.handler(timezone_str="UTC")
+    assert "current_time" in res_utc
+    assert res_utc["timezone"] == "UTC"
+
+
+@pytest.mark.asyncio
+async def test_fast_router_product_search():
+    """Verify fast router accurately captures product/info search queries."""
+    engine = DummyEngine()
+    coordinator = ToolConversationCoordinator(engine, engine.config)
+
+    # 1. "What is the new iPhone"
+    r1 = coordinator.fast_route("What is the new iPhone")
+    assert r1 is not None
+    tool, args, cat = r1
+    assert tool == "web.search"
+    assert "iPhone" in args.get("query", "")
+    assert cat == ToolCategory.LLM_REQUIRED
+
+    # 2. "Tell me about the new RTX 5090"
+    r2 = coordinator.fast_route("Tell me about the new RTX 5090")
+    assert r2 is not None
+    assert r2[0] == "web.search"
+    assert "5090" in r2[1].get("query", "")
+
+    # 3. "Who won the match"
+    r3 = coordinator.fast_route("Who won the match")
+    assert r3 is not None
+    assert r3[0] == "web.search"
+
+
+def test_clause_chunker_with_motion_tag():
+    """Verify ClauseChunker splits eager clauses on comma even with leading [motion: ...]."""
+    from robot.llm import ClauseChunker
+    chunker = ClauseChunker(min_first_words=2)
+
+    tokens = ["[motion: ", "lean_in] ", "The ", "latest ", "iPhone ", "is ", "the ", "iPhone ", "16, ", "dropping ", "next ", "month."]
+    emitted = []
+    for t in tokens:
+        res = chunker.feed(t)
+        if res:
+            emitted.append(res)
+
+    rem = chunker.flush()
+    if rem:
+        emitted.append(rem)
+
+    assert len(emitted) >= 2
+    assert "[motion: lean_in]" in emitted[0]
+    assert "iPhone 16," in emitted[0]
+
+
+def test_fast_router_event_search():
+    """Verify historical / event queries route to web.search and not memory.search."""
+    engine = DummyEngine()
+    coordinator = ToolConversationCoordinator(engine, engine.config)
+
+    res = coordinator.fast_route("What was the plane hijacking involving an Indian pilot who was attacked.")
+    assert res is not None
+    assert res[0] == "web.search"
+    assert "hijacking" in res[1]["query"]
+
+
+def test_fast_router_public_entity_vs_memory():
+    """Verify public multi-word entities route to web.search while personal queries route to memory."""
+    engine = DummyEngine()
+    coordinator = ToolConversationCoordinator(engine, engine.config)
+
+    # Public entity queries -> web.search
+    for q in ["Who is Andrew Tate", "who is Andrew Tate?", "Who is Elon Musk", "Who is Donald Trump"]:
+        route = coordinator.fast_route(q)
+        assert route is not None, f"Failed for {q}"
+        assert route[0] == "web.search", f"Expected web.search for {q}, got {route[0]}"
+
+    # Personal queries -> memory.search
+    for q in ["Who is my girlfriend", "What is my favorite food", "Who is Anubha", "Who is Anubha?"]:
+        route = coordinator.fast_route(q)
+        assert route is not None, f"Failed for {q}"
+        assert route[0] == "memory.search", f"Expected memory.search for {q}, got {route[0]}"
+
+
+@pytest.mark.asyncio
+async def test_memory_miss_failover_to_web():
+    """Verify that when memory.search returns empty for an entity, coordinator fails over to web.search."""
+    llm = DummyLLM(
+        holding_tokens=["Checking ", "my notes... "],
+        continuation_tokens=["Andrew Tate is an internet personality and former kickboxer."],
+        delay=0.01,
+    )
+    engine = DummyEngine(llm)
+    coordinator = ToolConversationCoordinator(engine, engine.config)
+
+    # memory.search returns empty list
+    async def empty_memory(query: str):
+        return []
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="memory.search",
+            description="Search memory",
+            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            handler=empty_memory,
+            permission_level=PermissionLevel.READ_ONLY,
+        )
+    )
+
+    # web.search returns real results
+    web_called = []
+    async def mock_web_search(query: str):
+        web_called.append(query)
+        return [{"title": "Andrew Tate", "snippet": "Internet personality and former kickboxer"}]
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="web.search",
+            description="Web search",
+            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            handler=mock_web_search,
+            permission_level=PermissionLevel.READ_ONLY,
+        )
+    )
+
+    res = await coordinator.coordinate(
+        tool_name="memory.search",
+        tool_args={"query": "Andrew Tate"},
+        category=ToolCategory.FORMAT,
+        user_text="Who is Andrew Tate",
+        end_of_speech_time=time.perf_counter(),
+        interrupt=asyncio.Event(),
+        messages=[],
+    )
+
+    assert len(web_called) == 1
+    assert web_called[0] == "Andrew Tate"
+    assert "Andrew Tate is an internet personality" in res
+
+
+
+
+

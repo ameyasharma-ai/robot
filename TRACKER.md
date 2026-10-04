@@ -9,9 +9,9 @@
 ## 1. System Overview & Architecture Snapshot
 
 The robot runs a heterogeneous, real-time distributed architecture designed for low-latency (<800ms) full-duplex conversational and embodied interaction:
-- **LLM**: Local `llama-server` running `Qwen3.5-4B-Q4_K_M` (`-ngl 99 -fa on -c 2048`) offloaded 100% to **NVIDIA GeForce RTX 3050 Mobile** (0% system RAM).
+- **LLM**: Local `llama-server` running `Qwen3.5-4B-Q4_K_M` (`-ngl 99 -fa on -c 4096`) offloaded 100% to **NVIDIA GeForce RTX 3050 Mobile** (0% system RAM).
 - **STT**: `whisper.cpp` (`whisper-server`) offloaded to **AMD Radeon 680M iGPU** via Vulkan (`-dev 0 -fa`).
-- **TTS**: `piper-tts` (`en-us-lessac-medium`) running on **AMD Ryzen 7 6800H CPU** via AVX2 / ONNX with sentence/clause streaming.
+- **TTS**: `piper-tts` (multi-voice: `amy`, `bryce`, `kathleen`, `hfc_female`, `lessac`) running on **AMD Ryzen 7 6800H CPU** via AVX2 / ONNX with sentence/clause streaming.
 - **Vision & Perception**: OpenCV YuNet (Face) + YOLOv8n (Object detection @ 320x240) feeding into real-time `WorldState`.
 - **Memory**: Mem0 persistent semantic memory with Qdrant vector store and `fastembed` (`BAAI/bge-small-en-v1.5`, 384 dims) local ONNX embeddings + SQLite conversation archive.
 - **Full-Duplex Audio & Barge-In**: Silero VAD (tuned 320ms pause) + self-speech suppression filter.
@@ -97,8 +97,14 @@ Legend:
   - Implement rolling context budget trimmer in `ContextEngine` to ensure token budget never exceeds 2048 under prolonged conversations.
 - [ ] **Custom Wake-Word Detection**:
   - Add local wake-word engine (e.g. openWakeWord) preceding Silero VAD to allow hands-free wake-up (e.g., *"Hey Neo"*).
-- [ ] **Voice Cloning / Multiple Piper Voices**:
-  - Assign unique Piper ONNX voices to each personality (e.g., dedicated voice models for Neo, Aria, and GLaDOS).
+- [x] **Voice Cloning / Multiple Piper Voices**:
+  - Assigned unique Piper ONNX voices per personality: Luna→`amy-medium` (sweet feminine), Cypher→`bryce-medium` (male), Aria→`kathleen-low` (warm expressive), GLaDOS→`hfc_female-medium` (clinical, flat). Each with tuned `speed`, `pitch`, `noise_scale`, `noise_w` prosody.
+  - Added TTS voice load fallback: corrupt ONNX files gracefully degrade to default voice instead of crashing.
+- [x] **Smooth Interrupt Pose Reset (2s Blend)**:
+  - Replaced instant `rig.resetPose()` snap with 2-second cubic-ease-out slerp from interrupted pose back to rest T-pose via `_returnBlend` in `AnimationSystem.js`.
+  - New gestures/speech automatically cancel any in-progress blend.
+- [x] **Context Window Upgrade (2048→4096)**:
+  - Increased `llama-server -c 4096 -b 4096 -ub 4096` to prevent context overflow errors on tool-heavy conversations.
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:
@@ -275,6 +281,104 @@ Legend:
       - **Audio Arbitration & Barge-In**: User speech immediately cancels holding generation and TTS playback without leaking stale audio into the next turn.
       - **Dashboard HUD**: Added real-time dual-stream execution visualization (`#parallelStreams`) and coordinator status badge (`#coordinatorBadge`) in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html) and [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js).
       - **Validation**: 55 unit tests pass (`.venv/bin/pytest tests/`); benchmark suite added at [`scripts/benchmark_tool_orchestration.py`](file:///home/ameya/robot/scripts/benchmark_tool_orchestration.py).
+
+35. **Model Hallucinating Real-World Facts & Evading Time / Perception Queries**:
+    - *Symptoms*:
+      - User asks *"What is the time?"* -> Robot answers *"It's Saturday afternoon, sweetheart... Just checking the time is so boring, let's just enjoy being here instead."*
+      - User asks *"What is the time in India?"* -> Robot hallucinates *"It's already late afternoon here in India, my love—12:35 PM on this Saturday..."* without invoking `system.time`.
+      - User asks *"What do you see?"* -> Robot hallucinates cozy corner scenes rather than accurately reporting YOLOv8/YuNet camera detections.
+    - *Root Causes*:
+      1. [`ToolConversationCoordinator.fast_route`](file:///home/ameya/robot/src/robot/tools/coordinator.py) had a rigid tuple `time_triggers` omitting `"what is the time"`, `"what is the time in india"`, etc., dropping queries back to standard LLM chat generation where small 4B companion personalities chose flirtatious evasion over tool calls.
+      2. In [`_generate_continuation`](file:///home/ameya/robot/src/robot/tools/coordinator.py), tool output was appended as a second consecutive `{"role": "user", ...}` message. In ChatML (`<|im_start|>user ... <|im_start|>user`), two consecutive user turns violate template semantics, confusing Qwen3.5 into discarding grounding instructions.
+      3. Dictionary tool outputs from `perception.what_do_you_see` and `system.time` were serialized via raw python `str(dict)` instead of clean natural language summaries.
+      4. [`system.time`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) accepted `timezone_str` as a parameter but never parsed it with `zoneinfo`.
+      5. `_generate_continuation` never emitted the `None` sentinel to `_tts_queue`, preventing the TTS loop from transitioning the robot back to `RobotMode.IDLE`.
+    - *Fixes*:
+      1. Replaced rigid string checks in `fast_route` with regex matching all time/date variations and extracting target timezones (`"in India"` -> `{"timezone_str": "india"}`). Expanded perception triggers.
+      2. Upgraded `_generate_continuation` to use official OpenAI tool message format:
+         `{"role": "assistant", "content": spoken_prefix or None, "tool_calls": [...]}` followed by `{"role": "tool", "content": result_text}`.
+      3. Added structured string formatting for perception summaries and system time.
+      4. Implemented `zoneinfo.ZoneInfo` timezone mapping in [`get_current_time`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) supporting aliases like `india` (`Asia/Kolkata`), `tokyo` (`Asia/Tokyo`), `london`, `new york`, `california`, etc.
+      5. Added an invariant static `GROUNDING_POLICY` in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py) and added strict Truth & Grounding directives across personality configs (`luna.yaml`, `neo.yaml`).
+      6. Added `_extract_motion_from_phrase` motion marker stripping and end-of-turn `None` sentinel queuing to `_tts_queue` in `_generate_continuation`.
+      7. All 57 tests pass (`.venv/bin/pytest tests/`).
+
+36. **Web Search Bypass on Product Queries & High LLM Latency from Motion Tag Colons**:
+    - *Symptoms*:
+      - User asks *"What is the new iPhone"* -> Robot bypasses web search and hallucinates outdated/fictional info (*"The latest iPhone is the iPhone 16, dropping next month..."*).
+      - Perceived first audio delivery delayed to ~1.4s on sentences with inline motion markers.
+    - *Root Causes*:
+      1. [`ToolRouter.select_tools`](file:///home/ameya/robot/src/robot/tools/__init__.py) omitted `"new"`, `"iphone"`, etc. from `FAMILY_KEYWORDS["web"]`, returning `[]` and omitting the search tool schema.
+      2. [`ToolConversationCoordinator.fast_route`](file:///home/ameya/robot/src/robot/tools/coordinator.py) only matched web search on rigid patterns like `"search for"` or `"latest"` + (`"price"`/`"news"`), failing on `"What is the new iPhone"`.
+      3. [`ClauseChunker.feed`](file:///home/ameya/robot/src/robot/llm/__init__.py) had regex `r"^(.*?[,;:\n—])"` that matched the colon inside `[motion: ...]` at the beginning of assistant turns. Because `'[motion:'` has only 1 word, it failed the `min_first_words >= 2` check and perpetually anchored on the colon, completely suppressing eager comma clause cuts and forcing the engine to wait for the final period (35+ tokens).
+    - *Fixes*:
+      1. Upgraded [`ClauseChunker.feed`](file:///home/ameya/robot/src/robot/llm/__init__.py) to parse leading bracket tags (`[motion: ...]`) separately without treating inner colons as clause boundaries, restoring instant eager clause splitting on commas (first audio at token 8 in ~200ms instead of token 35 in 1400ms).
+      2. Expanded `FAMILY_KEYWORDS["web"]` in [`src/robot/tools/__init__.py`](file:///home/ameya/robot/src/robot/tools/__init__.py) and `fast_route` in [`src/robot/tools/coordinator.py`](file:///home/ameya/robot/src/robot/tools/coordinator.py) to cover all common tech products, prices, news, and queries.
+      3. Added instantaneous `<10ms` opening holding acknowledgments (*"Checking the latest info on that for you."*) directly to the TTS queue in [`ToolConversationCoordinator`](file:///home/ameya/robot/src/robot/tools/coordinator.py), guaranteeing immediate spoken playback in ~40ms while DuckDuckGo fetches real web data in the background.
+      4. All 59 unit tests pass (`.venv/bin/pytest tests/`).
+
+37. **Turn 1 LLM TTFT Cold-Start Spike (566ms Prompt Eval vs ~150ms Subsequent Turns)**:
+    - *Symptoms*: The first user chat of a session experienced 806 ms TTFT (with 566 ms spent evaluating 602 prompt tokens), whereas subsequent chats enjoyed 187 ms TTFT (evaluating only 59 tokens due to 92.6% KV cache reuse).
+    - *Root Causes*:
+      1. Incomplete warmup message: `engine.py`'s `setup()` warmed up llama-server using `sys_prompt` alone (`warmup_messages = [{"role": "system", "content": sys_prompt}]`), omitting `GROUNDING_POLICY` (112 tokens) and causing token mismatch with `ContextEngine.build_messages()`.
+      2. Cold switch on personality change: Switching personality (e.g. from `neo` to `luna` in the dashboard UI or tool call) swapped the active personality object without pre-warming `llama-server` Slot 0, leaving the slot cold with 0% LCP similarity when the user began speaking.
+      3. Outdated bash warmup: `scripts/run.sh` issued a curl warmup using an ancient hardcoded 162-token string (`NEO_PROMPT`) that populated Slot 0 with stale tokens before Python started.
+    - *Fixes*:
+      1. Created [`RobotEngine.warm_up_llm(personality_name)`](file:///home/ameya/robot/src/robot/core/engine.py) which evaluates the exact static system prompt (`f"{sys_prompt.strip()}\n{GROUNDING_POLICY}"`), pre-populating all ~590 tokens into Slot 0 KV cache with `cache_n = 589`.
+      2. Integrated `warm_up_llm` directly into `switch_personality` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) and [`src/robot/tools/builtins/__init__.py`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) so any personality change eagerly warms Slot 0 in the background before speech starts.
+      3. Added `localStorage` persistence in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) to restore and warm the user's preferred personality immediately on UI load.
+      4. Added connection and pipeline pre-warming for Whisper STT with a 0.1s zero-buffer in `engine.setup()`.
+      5. Removed the stale hardcoded curl from `scripts/run.sh`.
+      6. Verified benchmark timings: first turn prompt evaluation dropped from **566 ms** to **123 ms** (`cache_n = 589`), matching subsequent turns (**158 ms**).
+38. **Raw `<tool_call>` XML Speech Leakage & Multi-Step Continuation Execution**:
+    - *Symptoms*:
+      - User asks a historical or current event query (e.g. *"What was the plane hijacking involving an Indian pilot who was attacked"*).
+      - Robot mistakenly routes the query to `memory.search` due to greedy `"what was"` matching.
+      - Upon `memory.search` returning empty results, the model attempts a dynamic follow-up tool call by outputting raw Qwen XML syntax: `<tool_call> <function=web.search> <parameter=query> plane hijacking Indian pilot attacked </parameter> </function> </tool_call>`.
+      - Because `llama-server` streams Qwen's Jinja tool calls as plain text tokens in `delta["content"]` rather than structured SSE tool call deltas, Piper TTS synthesized and spoke out the raw XML tags aloud.
+    - *Root Causes*:
+      1. Greedy pattern matching in [`ToolConversationCoordinator.fast_route`](file:///home/ameya/robot/src/robot/tools/coordinator.py): `r"^(?:who\s+is|what\s+is\s+my|who's|do\s+you\s+remember|what\s+was)\s+(.+)$"` greedily captured general world events starting with `"what was"` as personal memory lookups instead of internet searches.
+      2. No real-time XML tag stream interception in [`LlamaServerLLM.stream_chat`](file:///home/ameya/robot/src/robot/llm/__init__.py): Qwen formats tool invocations as `<tool_call>...</tool_call>` inside the content stream. The text streamer yielded these tokens directly to the audio chunker without filtering or parsing.
+      3. Markdown underscore stripping ordering in [`PiperTTS.clean_text_for_speech`](file:///home/ameya/robot/src/robot/tts/__init__.py): markdown italic/bold regex ran *before* XML tag removal, stripping the underscores in `<tool_call>` into `<toolcall>` and causing regex tag removal to miss the closing tag.
+      4. Single-pass continuation in [`ToolConversationCoordinator._generate_continuation`](file:///home/ameya/robot/src/robot/tools/coordinator.py): if the model generated a follow-up tool call during continuation, there was no executor to run the second-hop tool and feed its results back into a final synthesis turn.
+    - *Fixes*:
+      1. Added `parse_qwen_tool_call_block()` and streaming buffer interception in [`LlamaServerLLM.stream_chat`](file:///home/ameya/robot/src/robot/llm/__init__.py): buffers `<tool_call>` blocks in real-time, suppresses them from the speech token stream, and yields them as internal `__TOOL_CALL__` JSON control tokens.
+      2. Added multi-step tool execution loop in [`ToolConversationCoordinator._generate_continuation`](file:///home/ameya/robot/src/robot/tools/coordinator.py): catches `__TOOL_CALL__` tokens from continuation, executes the requested tool (e.g. `web.search`), appends the tool output to conversation history, and performs a second-pass generation to synthesize the answer seamlessly.
+      3. Defense-in-depth sanitization: upgraded [`PiperTTS.clean_text_for_speech`](file:///home/ameya/robot/src/robot/tts/__init__.py) and [`ClauseChunker.feed`](file:///home/ameya/robot/src/robot/llm/__init__.py) to strip `<tool_call>` blocks *before* markdown processing.
+      4. Disambiguated `fast_route` in [`src/robot/tools/coordinator.py`](file:///home/ameya/robot/src/robot/tools/coordinator.py): added `web_event_keywords` (e.g. `hijack`, `attacked`, `plane crash`, `terrorist`, `election`) and restricted `mem_recall_match` to strictly personal queries (`what is my`, `what was my`, `do you remember`).
+      5. All 64 unit tests pass (`.venv/bin/pytest tests/`).
+
+39. **Turn 1 Tool Schema Mismatch, Multi-Voice Expressive Prosody, Memory Search Fixes & Music Integration**:
+    - *Symptoms*:
+      - First-turn LLM TTFT spiked to 721ms (evaluating 600+ tokens from scratch) because `warm_up_llm` warmed without `tools_schema`, causing a KV cache miss when tools were selected on Turn 1.
+      - Personal memories like *"Who is my crush?"* returned empty results because `search_facts` in SQLite expected exact boolean question words in FTS5 `MATCH`, and Mem0 BM25 failed to load due to `HF_HUB_OFFLINE=1` and missing `import os`.
+      - Personalities lacked distinct voices, gender characteristics, and expressive emotional strengths.
+      - User could not query world time for different countries with India as configurable default.
+      - No native tool to play music on Spotify, SoundCloud, or local library files.
+    - *Fixes*:
+      1. **100% Invariant Warmup & < 200ms Turn 1 TTFT**: Included `tools_schema` in `warm_up_llm` and triggered background pre-warming in `scripts/run.sh` upon `llama-server` reporting healthy.
+      2. **Multi-Model Voice Architecture**: Downloaded `en-us-amy-medium` (thin, sweet, expressive female) and `en-us-bryce-medium` (resonant male). Upgraded [`PiperTTS`](file:///home/ameya/robot/src/robot/tts/__init__.py) to support multi-voice caching, `length_scale`, `noise_scale` (inflections), `noise_w` (emotional duration variance), and pitch resampling. Luna configured with thin sweet voice (`pitch: 1.20`, `noise_scale: 0.88`, `noise_w: 0.90`).
+      3. **Natural Language Memory Retrieval**: Fixed missing `import os` in `src/robot/memory/__init__.py`, removed `HF_HUB_OFFLINE=1` so FastEmbed BM25 snapshots load properly, and upgraded SQLite `search_facts` with stop-word stripping, prefix wildcard FTS (`live*`, `crush*`), and shared namespace fallback. Seeded 6 core facts across all workspaces.
+      4. **Country-Configurable System Time**: Added `config/tools/tools.yaml` with default `Asia/Kolkata` (India) and international timezone mapping. `system.time` queries now support country and city names with default to India.
+      5. **Music Playback & Control Tool**: Implemented `MusicPlayerService` in [`src/robot/tools/builtins/music.py`](file:///home/ameya/robot/src/robot/tools/builtins/music.py) and registered `music.play` (Spotify, SoundCloud, local files) and `music.control` (pause, resume, stop, volume).
+      6. **ToolSkillManager**: Created [`src/robot/tools/skills.py`](file:///home/ameya/robot/src/robot/tools/skills.py) providing structured capability definitions, parameters, and few-shot examples for all tools.
+      7. **Web Search Deeper Search**: Added `deep: bool = False` supporting extensive searches, with LLM guidance prompting follow-up deeper search options.
+      8. All 68 unit tests pass (`.venv/bin/pytest tests/`).
+
+40. **Public Entity Queries Routing to Memory & Autonomous Web Search Failover on Memory Miss**:
+    - *Symptoms*:
+      - User asked *"Who is Andrew Tate?"*.
+      - Robot replied: *"Checking my memory banks. I cannot answer this question as I have no information about Andrew Tate in my memory or access to external knowledge to verify who he is..."* instead of searching online.
+    - *Root Causes*:
+      1. Overly broad memory regex in [`ToolConversationCoordinator.fast_route`](file:///home/ameya/robot/src/robot/tools/coordinator.py): `|who\s+is|who's` caught multi-word public figure queries before public informational web search was checked.
+      2. No autonomous failover on memory miss: when `memory.search` returned `[]` (empty list), the coordinator passed empty context to continuation, forcing the LLM to admit it had no knowledge rather than checking online.
+      3. Missing tools parameter in continuation: [`_generate_continuation`](file:///home/ameya/robot/src/robot/tools/coordinator.py) called `stream_chat` without `tools=tools_schema`, depriving the LLM of tool calling capability during continuation.
+    - *Fixes*:
+      1. Disambiguated `fast_route`: personal relationships (`who is my ...`, `what is my ...`, `do you remember ...`) and single given names (`who is Anubha`) route to `memory.search`; multi-word public figures (`who is Andrew Tate`, `who is Elon Musk`) route directly to `web.search`.
+      2. Implemented autonomous memory-miss failover in [`ToolConversationCoordinator.coordinate`](file:///home/ameya/robot/src/robot/tools/coordinator.py): when `memory.search` returns 0 results for a non-personal query, the coordinator automatically triggers `web.search` and feeds real search results into continuation synthesis.
+      3. Passed `tools=tools_schema` to `stream_chat` in `_generate_continuation`.
+      4. Added unit tests in [`tests/test_tool_coordinator.py`](file:///home/ameya/robot/tests/test_tool_coordinator.py) verifying public entity routing and memory miss web failover.
+      5. All 70 unit tests pass (`.venv/bin/pytest tests/`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

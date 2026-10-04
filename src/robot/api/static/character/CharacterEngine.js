@@ -305,6 +305,7 @@ class CharacterEngine {
 
     raiseHand(side = "right", duration = 1.2) {
         if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null; // cancel any in-progress idle blend
         this.animationSystem.activeActions.upperBody = {
             type: "raise_hand",
             side: side,
@@ -315,6 +316,7 @@ class CharacterEngine {
 
     wave(side = "right", repetitions = 3, duration = 2.0) {
         if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null; // cancel any in-progress idle blend
         this.animationSystem.activeActions.upperBody = {
             type: "wave",
             side: side,
@@ -326,6 +328,7 @@ class CharacterEngine {
 
     point(side = "right", target = null, duration = 2.0) {
         if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null; // cancel any in-progress idle blend
         this.animationSystem.activeActions.upperBody = {
             type: "point",
             side: side,
@@ -415,7 +418,10 @@ class CharacterEngine {
 
     speakStart() {
         if (this.facialSystem) this.facialSystem.startSpeaking();
-        if (this.animationSystem) this.animationSystem.isSpeaking = true;
+        if (this.animationSystem) {
+            this.animationSystem._returnBlend = null; // cancel any idle-return blend immediately
+            this.animationSystem.isSpeaking = true;
+        }
     }
 
     speakStop() {

@@ -16,10 +16,12 @@ behavior:
   humor: playful
   formality: casual
 
-voice_model: en-us-lessac-medium
+voice_model: en-us-kathleen-low
 tts_settings:
-  speed: 1.05
-  pitch: 1.05
+  speed: 1.08
+  pitch: 1.06
+  noise_scale: 0.78
+  noise_w: 0.82
 
 tool_permissions:
   memory.search: true
@@ -35,5 +37,7 @@ tool_permissions:
   character.stop: true
   image.generate: true
   image.cancel: true
+  music.play: true
+  music.control: true
 
 memory_namespace: aria

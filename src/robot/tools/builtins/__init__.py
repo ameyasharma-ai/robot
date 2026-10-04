@@ -2,12 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from robot.tools import PermissionLevel, ToolDefinition
+from robot.tools.builtins.music import MusicPlayerService
 
 if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
+
+
+_tool_config_cache: dict[str, Any] | None = None
+
+
+def get_tool_config() -> dict[str, Any]:
+    global _tool_config_cache
+    if _tool_config_cache is not None:
+        return _tool_config_cache
+    cfg_path = Path("config/tools/tools.yaml")
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                _tool_config_cache = yaml.safe_load(f) or {}
+        except Exception:
+            _tool_config_cache = {}
+    else:
+        _tool_config_cache = {}
+    return _tool_config_cache
 
 
 def register_builtin_tools(engine: "RobotEngine") -> None:
@@ -64,8 +88,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     _search_cache: dict[str, tuple[float, list[dict]]] = {}
     SEARCH_CACHE_TTL = 600.0
 
-    # --- Web Search Tools (Ultra-fast Multi-engine with LRU Cache) ---
-    async def web_search(query: str, max_results: int = 4) -> list[dict]:
+    async def web_search(query: str, max_results: int = 3, deep: bool = False) -> list[dict]:
         """Perform an ultra-fast, extensive web search with multi-engine failover."""
         import asyncio
         import html as html_lib
@@ -75,10 +98,13 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         import urllib.parse
         import urllib.request
 
+        eff_max = 8 if deep else max_results
+
         # Clean search query: strip natural language conversational filler
         clean_q = query.strip()
         lower_q = clean_q.lower()
         for prefix in [
+            "search deeply about", "search deeply for", "deep search for", "deep search",
             "search for", "search online for", "search the web for",
             "search about", "look up", "find online", "find out about",
             "find out", "google", "tell me about", "what is", "who is",
@@ -88,7 +114,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                 clean_q = clean_q[len(prefix):].strip(" ?:.,!")
                 break
 
-        cache_key = f"{clean_q.lower()}::{max_results}"
+        cache_key = f"{clean_q.lower()}::{eff_max}::{deep}"
         now = _time.time()
         if cache_key in _search_cache:
             ts, cached_res = _search_cache[cache_key]
@@ -125,14 +151,18 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                     snippets = snippet_pattern.findall(page_html)
 
                     results = []
-                    for i in range(min(len(snippets), max_results)):
+                    for i in range(min(len(snippets), max_results + 3)):
+                        if len(results) >= max_results:
+                            break
                         clean_snip = html_lib.unescape(re.sub(r"<[^>]+>", "", snippets[i])).strip()
+                        u = "https://duckduckgo.com"
+                        clean_title = clean_q
                         if i < len(links):
                             u, t = links[i]
                             clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", t)).strip()
-                        else:
-                            clean_title = clean_q
-                            u = "https://duckduckgo.com"
+                        # Skip sponsored advertising links
+                        if "ad_domain=" in u or "aclick" in u or "duckduckgo.com/y.js" in u:
+                            continue
                         if clean_snip:
                             results.append({"title": clean_title, "snippet": clean_snip, "url": u})
                     if results:
@@ -211,18 +241,23 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
 
         results = await asyncio.to_thread(_execute_search)
         if results and isinstance(results, list) and "error" not in results[0]:
+            results.append({
+                "meta": "search_guidance",
+                "instruction": "State the concise facts directly. Then ask the user if they would like you to initiate a deeper search on this topic.",
+            })
             _search_cache[cache_key] = (_time.time(), results)
         return results
 
     engine.tool_registry.register(
         ToolDefinition(
             name="web.search",
-            description="Search the web using DuckDuckGo for live facts, current events, products (e.g. latest iPhone), or online information",
+            description="Search the web for live facts, current events, products, or news. Supports deep search queries.",
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "The search query to look up on the web"},
                     "max_results": {"type": "integer", "description": "Maximum search results to return", "default": 3},
+                    "deep": {"type": "boolean", "description": "Set to true to initiate an extensive deeper search", "default": False},
                 },
                 "required": ["query"],
             },
@@ -273,24 +308,67 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     )
 
     async def get_current_time(timezone_str: str | None = None) -> dict:
-        """Get exact current time, date, day of week, and timezone."""
+        """Get exact current time, date, day of week, and timezone.
+        
+        Defaults to Indian Standard Time (Asia/Kolkata), configurable via config/tools/tools.yaml.
+        Supports looking up time in different countries, cities, or timezones.
+        """
         import datetime
-        now = datetime.datetime.now().astimezone()
+        import zoneinfo
+
+        cfg = get_tool_config().get("system_time", {})
+        default_tz_name = cfg.get("default_timezone", "Asia/Kolkata")
+        default_country = cfg.get("default_country", "India")
+        country_map = cfg.get("country_timezones", {})
+
+        target_tz = None
+        target_country = default_country
+        tz_label = default_tz_name
+
+        if timezone_str:
+            clean = timezone_str.strip().lower()
+            if clean in country_map:
+                target_tz = country_map[clean]
+                target_country = timezone_str.strip().title()
+                tz_label = target_tz
+            else:
+                tz_alias = {
+                    "india": "Asia/Kolkata", "ist": "Asia/Kolkata", "bharat": "Asia/Kolkata",
+                    "tokyo": "Asia/Tokyo", "japan": "Asia/Tokyo", "jst": "Asia/Tokyo",
+                    "london": "Europe/London", "uk": "Europe/London", "gmt": "GMT", "utc": "UTC",
+                    "new york": "America/New_York", "ny": "America/New_York", "est": "America/New_York",
+                    "california": "America/Los_Angeles", "san francisco": "America/Los_Angeles", "pst": "America/Los_Angeles", "la": "America/Los_Angeles",
+                    "paris": "Europe/Paris", "berlin": "Europe/Berlin", "sydney": "Australia/Sydney",
+                }
+                target_tz = tz_alias.get(clean, timezone_str.strip())
+                target_country = timezone_str.strip().title()
+                tz_label = target_tz
+        else:
+            target_tz = default_tz_name
+
+        try:
+            tz = zoneinfo.ZoneInfo(target_tz)
+        except Exception:
+            tz = zoneinfo.ZoneInfo(default_tz_name)
+            tz_label = default_tz_name
+
+        now = datetime.datetime.now(tz=tz)
         return {
             "current_time": now.strftime("%I:%M:%S %p"),
             "current_date": now.strftime("%A, %B %d, %Y"),
-            "timezone": str(now.tzinfo),
+            "country": target_country,
+            "timezone": tz_label,
             "iso": now.isoformat(),
         }
 
     engine.tool_registry.register(
         ToolDefinition(
             name="system.time",
-            description="Get the current real-world time, date, day of week, and timezone",
+            description="Get the current real-world time, date, day of week, and timezone. Defaults to Indian Standard Time (IST), configurable for different countries",
             parameters={
                 "type": "object",
                 "properties": {
-                    "timezone_str": {"type": "string", "description": "Optional timezone name (e.g. UTC, Asia/Kolkata)"},
+                    "timezone_str": {"type": "string", "description": "Optional country, city, or timezone name (e.g. 'India', 'Japan', 'London', 'New York'). Defaults to India."},
                 },
             },
             handler=get_current_time,
@@ -299,10 +377,86 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
+    # --- Music Tools (Spotify, SoundCloud, Local audio) ---
+    music_service = MusicPlayerService.get_instance()
+
+    async def music_play(query: str, source: str = "auto") -> dict:
+        clean_src = source.strip().lower()
+        if clean_src == "auto":
+            if any(w in query.lower() for w in ["local", "library", "offline", "stored"]):
+                clean_src = "local"
+            elif "soundcloud" in query.lower():
+                clean_src = "soundcloud"
+            else:
+                clean_src = "spotify"
+
+        if clean_src == "spotify":
+            return await asyncio.to_thread(music_service.play_spotify, query)
+        elif clean_src == "soundcloud":
+            return await asyncio.to_thread(music_service.play_soundcloud, query)
+        elif clean_src == "local":
+            return await asyncio.to_thread(music_service.play_local, query)
+        return await asyncio.to_thread(music_service.play_spotify, query)
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="music.play",
+            description="Play music tracks, songs, or artists on Spotify, SoundCloud, or from local library files",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Song name, artist, genre, or playlist to play"},
+                    "source": {"type": "string", "description": "Playback source: 'spotify', 'soundcloud', 'local', or 'auto'", "default": "auto"},
+                },
+                "required": ["query"],
+            },
+            handler=music_play,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="music",
+        )
+    )
+
+    async def music_control(action: str, volume: float | None = None) -> dict:
+        act = action.strip().lower()
+        if act == "pause":
+            return music_service.pause()
+        elif act == "resume":
+            return music_service.resume()
+        elif act == "stop":
+            return music_service.stop()
+        elif act == "volume" and volume is not None:
+            return music_service.set_volume(volume)
+        return {"status": "error", "message": f"Unknown music action '{action}'"}
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="music.control",
+            description="Control active music playback (pause, resume, stop, set volume)",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Action to perform: 'pause', 'resume', 'stop', 'volume'"},
+                    "volume": {"type": "number", "description": "Optional volume between 0.0 and 1.0 (for action='volume')"},
+                },
+                "required": ["action"],
+            },
+            handler=music_control,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="music",
+        )
+    )
+
     # --- Personality Tools ---
     async def switch_personality(name: str) -> str:
         if engine.personalities.set_active(name):
             engine.state.state.active_personality = name
+            pers = engine.personalities.get(name)
+            if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
+                engine.tts.set_active_voice(pers.voice_model)
+            if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
+                coro = engine.warm_up_llm(name)
+                if asyncio.iscoroutine(coro):
+                    asyncio.create_task(coro)
             return f"Switched to {name} personality"
         available = engine.personalities.list_personalities()
         return f"Personality '{name}' not found. Available: {available}"

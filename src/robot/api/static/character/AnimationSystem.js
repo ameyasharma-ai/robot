@@ -36,6 +36,10 @@ class AnimationSystem {
         // Cache for smooth interpolation
         this.currentUpperArmR = new THREE.Euler();
         this.currentUpperArmL = new THREE.Euler();
+
+        // Smooth return-to-idle blend state
+        // Set by interrupt() and consumed each frame until complete
+        this._returnBlend = null; // { elapsed: 0, duration: 2.0, fromRotations: { boneName: Quaternion } }
     }
 
     /**
@@ -45,6 +49,38 @@ class AnimationSystem {
         this.time += delta;
         const rig = this.rig;
         if (!rig || !rig.hasBone("hips")) return;
+
+        // ─── Return-to-Idle Smooth Blend (post-interrupt) ─────────────────────
+        if (this._returnBlend) {
+            const rb = this._returnBlend;
+            rb.elapsed += delta;
+            const t = Math.min(1.0, rb.elapsed / rb.duration);
+            // Ease-out cubic: fast start, gently settles
+            const ease = 1.0 - Math.pow(1.0 - t, 3);
+            for (const [boneName, fromQ] of Object.entries(rb.fromRotations)) {
+                const bone = rig.getBone(boneName);
+                const toQ = rig.initialRotations[boneName];
+                if (bone && toQ) {
+                    bone.quaternion.slerpQuaternions(fromQ, toQ, ease);
+                }
+            }
+            // Also lerp positions (hips x/y)
+            if (rb.fromPositions) {
+                for (const [boneName, fromP] of Object.entries(rb.fromPositions)) {
+                    const bone = rig.getBone(boneName);
+                    const toP = rig.initialPositions[boneName];
+                    if (bone && toP) {
+                        bone.position.lerpVectors(fromP, toP, ease);
+                    }
+                }
+            }
+            if (t >= 1.0) {
+                this._returnBlend = null; // blend complete
+            }
+            // While blending back, skip the normal layer updates
+            // so we don't fight the blend with fresh gestures
+            return;
+        }
 
         // ─── Layer 1: Breathing & Subtle Weight Shift ────────────────────────
         const breath = Math.sin(this.time * Math.PI * 2 * this.procedural.breathingRate);
@@ -367,10 +403,36 @@ class AnimationSystem {
     }
 
     interrupt() {
+        // Capture current bone rotations as blend-from snapshots
+        const fromRotations = {};
+        const fromPositions = {};
+        const rig = this.rig;
+        for (const boneName of Object.keys(rig.initialRotations)) {
+            const bone = rig.getBone(boneName);
+            if (bone) {
+                fromRotations[boneName] = bone.quaternion.clone();
+            }
+        }
+        for (const boneName of Object.keys(rig.initialPositions)) {
+            const bone = rig.getBone(boneName);
+            if (bone) {
+                fromPositions[boneName] = bone.position.clone();
+            }
+        }
+
+        // Clear all active actions
         this.activeActions.locomotion = null;
         this.activeActions.lowerBody = null;
         this.activeActions.upperBody = null;
-        this.rig.resetPose();
+        this.isSpeaking = false;
+
+        // Kick off a smooth 2-second slerp back to rest pose
+        this._returnBlend = {
+            elapsed: 0,
+            duration: 2.0,
+            fromRotations,
+            fromPositions,
+        };
     }
 }
 

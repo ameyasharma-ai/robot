@@ -22,6 +22,14 @@ from robot.telemetry import get_logger
 logger = get_logger("context")
 
 
+GROUNDING_POLICY = (
+    "Truth & Factual Grounding Directive:\n"
+    "- Always answer factual questions (exact time, date, physical detections, real-world data) directly, truthfully, and accurately based on the tools and world state.\n"
+    "- When reporting what you see or what the user is holding, describe only the actual detected people, objects, and environment. Never fabricate unobserved items or people.\n"
+    "- When reporting the time or date, give the exact real-world time without evasion."
+)
+
+
 class ContextEngine:
     """Dynamic context assembly with budget-aware allocation.
 
@@ -72,7 +80,7 @@ class ContextEngine:
         # We keep the system message 100% pure, static and invariant across EVERY turn
         # (identical token-for-token from turn 1 onwards) so llama-server's slot cache hit rate is 100%!
         # Dynamic facts, world state, and tool results are grounded directly into the current turn.
-        system_parts = [system_prompt]
+        system_parts = [system_prompt.strip(), GROUNDING_POLICY]
         grounding_parts = []
 
         if world_state and (world_state.get("people") or world_state.get("objects")):

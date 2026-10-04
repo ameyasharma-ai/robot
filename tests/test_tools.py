@@ -207,5 +207,113 @@ async def test_all_15_tools_functional():
         elif name == "camera.capture_snapshot":
             res = await t.handler()
             assert res.get("format") == "jpeg"
+        elif name == "music.play":
+            res = await t.handler(query="Bohemian Rhapsody", source="spotify")
+            assert res.get("status") == "playing"
+            assert "spotify" in res.get("url", "")
+        elif name == "music.control":
+            res = await t.handler(action="pause")
+            assert res.get("status") == "paused"
+
+
+@pytest.mark.asyncio
+async def test_system_time_country_and_default():
+    from unittest.mock import MagicMock
+    from robot.core.engine import RobotEngine
+    from robot.tools.builtins import register_builtin_tools
+
+    engine = RobotEngine.__new__(RobotEngine)
+    engine.tool_registry = ToolRegistry()
+    engine.personalities = MagicMock()
+    register_builtin_tools(engine)
+
+    time_tool = engine.tool_registry.get("system.time")
+    assert time_tool is not None
+
+    # 1. Default (no timezone specified) -> Indian Standard Time
+    default_res = await time_tool.handler()
+    assert default_res["timezone"] == "Asia/Kolkata"
+    assert "India" in default_res["country"]
+    assert "current_time" in default_res
+
+    # 2. Country lookup: Tokyo / Japan
+    japan_res = await time_tool.handler(timezone_str="Tokyo")
+    assert japan_res["timezone"] == "Asia/Tokyo"
+
+    # 3. Country lookup: London / UK
+    london_res = await time_tool.handler(timezone_str="London")
+    assert london_res["timezone"] == "Europe/London"
+
+    # 4. Country lookup: New York / USA
+    ny_res = await time_tool.handler(timezone_str="New York")
+    assert ny_res["timezone"] == "America/New_York"
+
+
+@pytest.mark.asyncio
+async def test_music_player_service():
+    from robot.tools.builtins.music import MusicPlayerService
+    svc = MusicPlayerService()
+
+    # Spotify
+    sp_res = svc.play_spotify("lofi hip hop")
+    assert sp_res["status"] == "playing"
+    assert sp_res["source"] == "spotify"
+    assert "lofi%20hip%20hop" in sp_res["url"]
+
+    # SoundCloud
+    sc_res = svc.play_soundcloud("synthwave")
+    assert sc_res["status"] == "playing"
+    assert sc_res["source"] == "soundcloud"
+    assert "synthwave" in sc_res["url"]
+
+    # Controls
+    assert svc.pause()["status"] == "paused"
+    assert svc.resume()["status"] == "resumed"
+    assert svc.set_volume(0.5)["volume"] == 0.5
+    assert svc.stop()["status"] == "stopped"
+
+
+def test_tool_skill_manager():
+    from robot.tools.skills import ToolSkillManager
+    mgr = ToolSkillManager()
+    skills = mgr.list_skills()
+    assert "system.time" in skills
+    assert "web.search" in skills
+    assert "memory.write" in skills
+    assert "memory.search" in skills
+    assert "music.play" in skills
+    assert "music.control" in skills
+
+    prompt = mgr.format_skills_prompt(["system.time", "music.play"])
+    assert "Skill: system.time" in prompt
+    assert "Skill: music.play" in prompt
+    assert "Asia/Kolkata" in prompt
+
+
+@pytest.mark.asyncio
+async def test_piper_multi_voice_and_prosody():
+    from robot.tts import PiperTTS
+    tts = PiperTTS("models/tts/en-us-lessac-medium.onnx")
+
+    # Synthesize with active model
+    audio1, sr1 = await tts.synthesize("Testing voice.", speed=1.1, pitch=1.0)
+    assert len(audio1) > 0
+    assert sr1 == 16000 or sr1 == 22050
+
+    # Synthesize with Amy (thin & sweet female voice)
+    audio2, sr2 = await tts.synthesize(
+        "Testing Luna voice.",
+        speed=1.1,
+        pitch=1.2,
+        voice_model="models/tts/en-us-amy-medium.onnx",
+        noise_scale=0.88,
+        noise_w=0.90,
+    )
+    assert len(audio2) > 0
+
+    # Ensure dynamic active voice switching works
+    tts.set_active_voice("models/tts/en-us-amy-medium.onnx")
+    assert "amy" in tts._active_model.lower()
+
 
 

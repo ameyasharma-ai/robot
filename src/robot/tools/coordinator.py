@@ -30,6 +30,28 @@ if TYPE_CHECKING:
 logger = get_logger("tool_coordinator")
 
 
+def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
+    """Extract and strip predefined motion markers from LLM output for synchronized audio-motion execution."""
+    if not text:
+        return text, None
+    m = re.search(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", text, re.IGNORECASE)
+    if m:
+        act = m.group(1).lower()
+        side = m.group(2).lower() if m.group(2) else "right"
+        cleaned = re.sub(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", "", text, flags=re.IGNORECASE).strip()
+        return cleaned, {"action": act, "side": side}
+
+    m2 = re.search(r"\*(waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?)\*", text, re.IGNORECASE)
+    if m2:
+        raw_act = m2.group(1).lower()
+        act = "wave" if "wave" in raw_act else ("raise_hand" if "hand" in raw_act else ("point" if "point" in raw_act else ("kick" if "kick" in raw_act else ("nod" if "nod" in raw_act else "idle"))))
+        side = "left" if "left" in raw_act else "right"
+        cleaned = re.sub(r"\*(.*?)\*", "", text).strip()
+        return cleaned, {"action": act, "side": side}
+
+    return text, None
+
+
 class CoordinatorState(str, Enum):
     IDLE = "IDLE"
     THINKING = "THINKING"
@@ -140,51 +162,29 @@ class ToolConversationCoordinator:
         text = user_text.strip().lower()
 
         # 1. System Time / Date (DIRECT: < 5ms)
-        time_triggers = (
-            "what time is it", "what's the time", "tell me the time", "current time",
-            "what day is it", "what's today's date", "what is today's date", "what is the date",
-        )
-        if any(tr in text for tr in time_triggers):
-            return "system.time", {}, ToolCategory.DIRECT
+        time_pattern = r"\b(?:what(?:'s|\s+is)?(?:\s+the)?\s+time|current\s+time|tell\s+(?:me\s+)?(?:the\s+)?time|what\s+time(?:\s+is\s+it)?|what\s+is\s+the\s+date|what(?:'s|\s+is)?\s+today(?:'s)?\s+date|what\s+day\s+is\s+it)\b"
+        if re.search(time_pattern, text) or any(tr in text for tr in ("what time", "what is the time", "current time", "what day is it", "today's date", "time in")):
+            tz_match = re.search(r"\bin\s+([a-zA-Z\s/_]+)(?:\?|$)", text)
+            tz_arg = tz_match.group(1).strip() if tz_match else None
+            args = {"timezone_str": tz_arg} if tz_arg else {}
+            return "system.time", args, ToolCategory.DIRECT
 
         # 2. System Status (DIRECT)
         if text in ("system status", "robot status", "check status", "system health"):
             return "system.status", {}, ToolCategory.DIRECT
 
-        # 3. Web Search (LLM_REQUIRED: 800ms - 2500ms)
-        web_match = re.search(
-            r"^(?:search(?:\s+the\s+web|\s+online)?\s+for|look\s+up|google|browse\s+for|find\s+out|find(?:\s+online)?)\s+(.+)$",
-            user_text.strip(),
-            re.IGNORECASE,
-        )
-        if web_match:
-            query = web_match.group(1).strip(" .?!")
-            return "web.search", {"query": query}, ToolCategory.LLM_REQUIRED
-
-        if "latest" in text and ("price" in text or "news" in text or "release" in text):
-            # E.g. "latest RTX 5090 price"
-            return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
-
-        # 4. Perception / Camera View (DIRECT/FORMAT: ~2ms via active YOLOv8 state)
+        # 3. Perception / Camera View (DIRECT/FORMAT: ~2ms via active YOLOv8 state)
         perception_triggers = (
             "what do you see", "what are you seeing", "describe what you see",
             "who is here", "what's in front of you", "what is in front of you",
             "look at me", "what am i holding", "what i am holding",
+            "what do u see", "can you see me", "do you see me", "look around",
+            "what's that in my hand", "what is in my hand",
         )
         if any(tr in text for tr in perception_triggers):
             return "perception.what_do_you_see", {}, ToolCategory.DIRECT
 
-        # 5. Image Generation (ASYNC: 3000ms - 8000ms)
-        img_match = re.search(
-            r"^(?:generate(?:\s+an)?\s+image\s+of|draw(?:\s+me)?(?:\s+an?)?|create(?:\s+an)?\s+image\s+of|paint(?:\s+an?)?|generate(?:\s+a)?\s+picture\s+of)\s+(.+)$",
-            user_text.strip(),
-            re.IGNORECASE,
-        )
-        if img_match:
-            prompt = img_match.group(1).strip(" .?!")
-            return "image.generate", {"prompt": prompt}, ToolCategory.ASYNC
-
-        # 6. Physical / Avatar Motions (FORMAT: ~5ms)
+        # 4. Physical / Avatar Motions (FORMAT: ~5ms)
         motion_triggers = {
             "wave": "wave",
             "wave your hand": "wave",
@@ -199,7 +199,7 @@ class ToolConversationCoordinator:
             if text == trig or text.startswith(f"{trig} ") or text.endswith(f" {trig}"):
                 return "character.execute_action", {"action": act}, ToolCategory.FORMAT
 
-        # 7. Memory Write / Recall (FORMAT: 10ms - 40ms)
+        # 5. Memory Write (FORMAT: 10ms - 40ms)
         mem_write_match = re.search(
             r"^(?:remember(?:\s+that)?|store(?:\s+it\s+in\s+your\s+memory\s+that|that)?|keep\s+in\s+mind\s+that)\s+(.+)$",
             user_text.strip(),
@@ -209,14 +209,91 @@ class ToolConversationCoordinator:
             fact = mem_write_match.group(1).strip(" .?!")
             return "memory.write", {"text": fact}, ToolCategory.FORMAT
 
-        mem_recall_match = re.search(
-            r"^(?:who\s+is|what\s+is\s+my|who's|do\s+you\s+remember|what\s+was)\s+(.+)$",
+        # 6. Personal Memory Recall (personal relationships, user facts, single contact names)
+        personal_mem_match = re.search(
+            r"^(?:who\s+is\s+(?:my|our)\s+(.+)|what\s+is\s+(?:my|our)\s+(.+)|what\s+was\s+(?:my|our)\s+(.+)|who's\s+(?:my|our)\s+(.+)|do\s+you\s+remember\s+(.+)|what\s+did\s+i\s+(?:say|tell\s+you)\s+(?:about\s+)?(.+)|what\s+do\s+you\s+remember\s+about\s+(.+))$",
             user_text.strip(),
             re.IGNORECASE,
         )
-        if mem_recall_match:
-            query = mem_recall_match.group(1).strip(" .?!")
+        if personal_mem_match:
+            query = next(g for g in personal_mem_match.groups() if g is not None).strip(" .?!")
             return "memory.search", {"query": query}, ToolCategory.FORMAT
+
+        # Single given name personal query (e.g. "Who is Anubha?")
+        single_name_mem_match = re.match(
+            r"^(?:who\s+is|who's)\s+([A-Za-z]+)\??$",
+            user_text.strip(),
+            re.IGNORECASE,
+        )
+        if single_name_mem_match:
+            name = single_name_mem_match.group(1).strip(" .?!")
+            return "memory.search", {"query": name}, ToolCategory.FORMAT
+
+        # 7. Web Search (LLM_REQUIRED: 800ms - 2500ms)
+        web_match = re.search(
+            r"^(?:search(?:\s+the\s+web|\s+online)?\s+for|look\s+up|google|browse\s+for|find\s+out(?:\s+about)?|find(?:\s+online)?)\s+(.+)$",
+            user_text.strip(),
+            re.IGNORECASE,
+        )
+        if web_match:
+            query = web_match.group(1).strip(" .?!")
+            return "web.search", {"query": query}, ToolCategory.LLM_REQUIRED
+
+        # Broad informational search queries: public figures, new/latest products, news, prices, scores, weather, historical events, etc.
+        info_search_match = re.search(
+            r"^(?:what(?:'s|\s+is)?\s+(?:the\s+)?(?:new|newest|latest|current)\s+(.+)|tell\s+me\s+about\s+(.+)|who\s+won\s+(.+)|what(?:'s|\s+is)?\s+the\s+price\s+of\s+(.+)|what(?:'s|\s+is)?\s+the\s+weather\s+(?:like\s+)?(?:in\s+)?(.+)|what(?:'s|\s+is)?\s+the\s+score\s+(?:of\s+)?(.+)|what\s+happened\s+(?:with|to|in)\s+(.+)|when\s+did\s+(.+)|who\s+is\s+([A-Za-z]+\s+[A-Za-z]+.*)|who's\s+([A-Za-z]+\s+[A-Za-z]+.*)|what\s+was\s+(?:the\s+)?(?:incident|plane|flight|hijacking|attack|accident|event|story|scandal|war|history|pilot)\s+(.+))$",
+            user_text.strip(),
+            re.IGNORECASE,
+        )
+        if info_search_match:
+            return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
+
+        # Real-world event, news, and history keywords
+        web_event_keywords = ("hijack", "plane hijack", "flight hijack", "attacked", "who died", "when did", "plane crash", "terrorist", "election")
+        if any(k in text for k in web_event_keywords):
+            return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
+
+        # Tech products/brands with new/latest/price/release/specs
+        tech_products = ("iphone", "pixel", "samsung", "galaxy", "macbook", "ipad", "android", "gpu", "rtx", "cpu", "intel", "amd", "nvidia", "tesla", "phone", "laptop", "bitcoin", "crypto")
+        if any(prod in text for prod in tech_products) and any(w in text for w in ("new", "latest", "newest", "price", "release", "launch", "announced", "spec", "specs", "upcoming")):
+            return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
+
+        # Deep Search queries
+        deep_search_match = re.search(
+            r"^(?:search\s+deeply(?:\s+about|\s+for)?|deep\s+search(?:\s+for|\s+about)?|look\s+deeply\s+into)\s+(.+)$",
+            user_text.strip(),
+            re.IGNORECASE,
+        )
+        if deep_search_match:
+            return "web.search", {"query": deep_search_match.group(1).strip(" .?!"), "deep": True}, ToolCategory.LLM_REQUIRED
+
+        # Music Playback & Control (Spotify, SoundCloud, Local)
+        music_play_match = re.search(
+            r"^(?:play(?:\s+some)?\s+music(?:\s+on\s+(spotify|soundcloud|local))?|play\s+(.+?)(?:\s+on\s+(spotify|soundcloud|local))?)$",
+            user_text.strip(),
+            re.IGNORECASE,
+        )
+        if music_play_match and not any(w in text for w in ("game", "role", "video", "guitar")):
+            q = music_play_match.group(2) or "relaxing chill music"
+            src = music_play_match.group(1) or music_play_match.group(3) or "auto"
+            return "music.play", {"query": q.strip(" .?!"), "source": src.lower()}, ToolCategory.LLM_REQUIRED
+
+        if any(w in text for w in ("pause music", "pause the music", "stop music", "stop the music", "resume music")):
+            act = "pause" if "pause" in text else ("stop" if "stop" in text else "resume")
+            return "music.control", {"action": act}, ToolCategory.DIRECT
+
+        if any(k in text for k in ("latest news", "breaking news", "stock price", "release date", "current weather")):
+            return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
+
+        # 8. Image Generation (ASYNC: 3000ms - 8000ms)
+        img_match = re.search(
+            r"^(?:generate(?:\s+an)?\s+image\s+of|draw(?:\s+me)?(?:\s+an?)?|create(?:\s+an)?\s+image\s+of|paint(?:\s+an?)?|generate(?:\s+a)?\s+picture\s+of)\s+(.+)$",
+            user_text.strip(),
+            re.IGNORECASE,
+        )
+        if img_match:
+            prompt = img_match.group(1).strip(" .?!")
+            return "image.generate", {"prompt": prompt}, ToolCategory.ASYNC
 
         return None
 
@@ -237,6 +314,11 @@ class ToolConversationCoordinator:
 
         Transitions seamlessly into the final answer continuation upon tool result.
         """
+        # Auto-detect ultra-fast direct tools
+        direct_tools = {"system.time", "system.status", "perception.what_do_you_see", "perception.inspect_view"}
+        if tool_name in direct_tools:
+            category = ToolCategory.DIRECT
+
         request_id = str(uuid.uuid4())[:8]
         trace_id = self.engine.observability.current_trace_id or request_id
         tool_call_id = f"call_{int(time.time() * 1000)}"
@@ -350,6 +432,34 @@ class ToolConversationCoordinator:
             self._emit_obs_event("request_cancelled")
             return ctx.spoken_holding_text
 
+        # ─── Autonomous Failover: Memory Miss -> Web Search ──────────────────
+        # If memory.search was invoked for an entity/fact and yielded 0 results,
+        # fail over to web.search before generating final continuation.
+        if ctx.tool_name == "memory.search" and not interrupt.is_set():
+            is_empty = (
+                not ctx.tool_result
+                or ctx.tool_result == []
+                or ctx.tool_result == "[]"
+                or ctx.tool_result == "No results found."
+            )
+            if is_empty:
+                query_str = ctx.tool_args.get("query") or user_text
+                personal_pronouns = ("my ", "i ", "me ", "mine ", "myself ", "our ")
+                if not any(query_str.lower().startswith(p) for p in personal_pronouns):
+                    web_tool = self.engine.tool_registry.get("web.search")
+                    if web_tool:
+                        logger.info("memory_miss_failover_to_web_search", query=query_str)
+                        self._emit_obs_event("memory_miss_web_failover", query=query_str)
+                        try:
+                            w_res = await self.engine.permissions.execute(web_tool, {"query": query_str})
+                            if w_res and not w_res.get("error") and w_res.get("result"):
+                                ctx.tool_name = "web.search"
+                                ctx.tool_args = {"query": query_str}
+                                ctx.tool_result = w_res["result"]
+                                ctx.tool_status = ToolExecutionStatus.COMPLETED
+                        except Exception as e:
+                            logger.warning("memory_failover_web_search_failed", error=str(e))
+
         # Yield a tiny slice to let any remaining socket cleanup finish
         await asyncio.sleep(0.015)
 
@@ -394,7 +504,35 @@ class ToolConversationCoordinator:
         chunker = ClauseChunker()
         first_audio_emitted = False
 
+        # Emit instantaneous (<10ms) zero-latency opening acknowledgment to TTS
+        opening_phrases = {
+            "web.search": "Checking the latest info on that for you.",
+            "image.generate": "Starting to render that image for you now.",
+            "memory.write": "Remembering that for you.",
+            "memory.search": "Checking my memory banks.",
+            "music.play": "Putting on some music for you.",
+            "music.control": "Adjusting the music player.",
+        }
+        if not ctx.spoken_holding_text and not interrupt.is_set():
+            initial_phrase = opening_phrases.get(ctx.tool_name, "Checking that for you right now.")
+            ctx.spoken_holding_text = initial_phrase
+            first_audio_emitted = True
+            timing_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
+            await self.engine._tts_queue.put((initial_phrase, interrupt, timing_ref, None))
+            self._emit_obs_event("holding_segment_spoken", phrase=initial_phrase)
+
         while not tool_completed_event.is_set() and not interrupt.is_set():
+            # If initial opening phrase is playing, wait up to 1.8s for fast tools before launching extra holding calls
+            if segment_index == 0 and initial_phrase:
+                try:
+                    await asyncio.wait_for(tool_completed_event.wait(), timeout=1.8)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+
+            if tool_completed_event.is_set() or interrupt.is_set():
+                break
+
             elapsed_ms = (time.perf_counter() - start_time) * 1000
             if elapsed_ms >= self.max_holding_duration_ms:
                 # Reached max holding duration — enter quiet waiting to prevent unbounded monologue
@@ -500,57 +638,95 @@ class ToolConversationCoordinator:
 
         t_final_start = time.perf_counter()
 
-        # Format tool result cleanly
+        # Format tool result cleanly without bloated tracking URLs
         result_text = str(ctx.tool_result) if ctx.tool_result is not None else (ctx.tool_error or "No data available")
         if isinstance(ctx.tool_result, list):
             snippets = []
-            for item in ctx.tool_result:
+            for item in ctx.tool_result[:3]:
                 if isinstance(item, dict):
-                    snippets.append(f"• {item.get('title', '')}: {item.get('snippet', '')} ({item.get('url', '')})")
+                    t = item.get("title", "").strip()
+                    s = item.get("snippet", "").strip()
+                    if len(s) > 160:
+                        s = s[:160] + "..."
+                    if t or s:
+                        snippets.append(f"• {t}: {s}")
                 else:
-                    snippets.append(str(item))
+                    snippets.append(str(item)[:160])
             result_text = "\n".join(snippets)
+        elif isinstance(ctx.tool_result, dict):
+            if "summary" in ctx.tool_result:
+                result_text = ctx.tool_result["summary"]
+            elif "current_time" in ctx.tool_result:
+                tr = ctx.tool_result
+                result_text = f"Exact Current Time: {tr.get('current_time')}, Date: {tr.get('current_date')}, Timezone: {tr.get('timezone')}"
+            else:
+                import json as _json
+                result_text = _json.dumps(ctx.tool_result, ensure_ascii=False)
 
-        # Build seamless continuation messages
-        personality = self.engine.personalities.active
-        sys_prompt = personality.system_prompt if personality else ""
-
-        # Seamless bridging prompt
         spoken_prefix = ctx.spoken_holding_text.strip()
-        continuation_messages = list(messages)
+        continuation_messages = [dict(m) for m in messages]
 
-        instruction = (
-            f"\n\n[Tool Execution Completed]\n"
-            f"Tool: {ctx.tool_name}\n"
-            f"Result: {result_text}\n\n"
+        # Ensure user turn is present
+        has_user_query = (
+            len(continuation_messages) > 0 and continuation_messages[-1].get("role") == "user"
         )
-        if spoken_prefix:
-            instruction += (
-                f"You already spoke this holding phrase to the user: \"{spoken_prefix}\"\n"
-                f"Continue seamlessly into the answer from where you left off. "
-                f"DO NOT repeat what you already said, and deliver the final grounded response naturally."
-            )
-        else:
-            instruction += "Deliver the final grounded response to the user based on the tool result."
+        if not has_user_query:
+            continuation_messages.append({"role": "user", "content": user_text})
 
-        # Grounding in user turn
+        # Append assistant tool_call turn (with any holding speech already uttered)
+        import json as _json
+        tool_args_str = _json.dumps(ctx.tool_args or {})
         continuation_messages.append({
-            "role": "user",
-            "content": f"{user_text}\n\n{instruction}",
+            "role": "assistant",
+            "content": spoken_prefix or None,
+            "tool_calls": [
+                {
+                    "id": ctx.tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": ctx.tool_name,
+                        "arguments": tool_args_str,
+                    },
+                }
+            ],
+        })
+
+        # Append tool output turn
+        continuation_messages.append({
+            "role": "tool",
+            "name": ctx.tool_name,
+            "tool_call_id": ctx.tool_call_id,
+            "content": result_text,
         })
 
         chunker = ClauseChunker()
         full_continuation = ""
         first_final_token = False
 
+        collected_continuation_tool_calls = []
+
         try:
+            tools_schema = self.engine.tool_registry.get_schemas()
             async for token in self.engine.llm.stream_chat(
                 continuation_messages,
+                tools=tools_schema if tools_schema else None,
                 max_tokens=self.config.get("llm", {}).get("max_tokens", 300),
             ):
                 if interrupt.is_set():
                     self._set_state(CoordinatorState.CANCELLED)
                     break
+
+                if token.startswith("__TOOL_CALL__"):
+                    try:
+                        import json as _json
+                        tc_data = _json.loads(token[len("__TOOL_CALL__"):])
+                        if isinstance(tc_data, list):
+                            collected_continuation_tool_calls.extend(tc_data)
+                        elif isinstance(tc_data, dict):
+                            collected_continuation_tool_calls.append(tc_data)
+                    except Exception as e:
+                        logger.warning("continuation_tool_call_parse_error", error=str(e))
+                    continue
 
                 if not first_final_token:
                     first_final_token = True
@@ -562,21 +738,79 @@ class ToolConversationCoordinator:
                 full_continuation += token
                 phrase = chunker.feed(token)
                 if phrase and not interrupt.is_set():
-                    clean_phrase = phrase.strip()
+                    clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
                     if clean_phrase:
-                        await self.engine._tts_queue.put((clean_phrase, interrupt, None, None))
+                        await self.engine._tts_queue.put((clean_phrase, interrupt, None, inline_act))
 
             rem = chunker.flush()
             if rem and not interrupt.is_set():
-                clean_rem = rem.strip()
+                clean_rem, in_act = _extract_motion_from_phrase(rem)
                 if clean_rem:
-                    await self.engine._tts_queue.put((clean_rem, interrupt, None, None))
+                    await self.engine._tts_queue.put((clean_rem, interrupt, None, in_act))
+
+            # If the LLM requested a follow-up tool call (e.g. web search after memory check):
+            if collected_continuation_tool_calls and not interrupt.is_set():
+                for tc in collected_continuation_tool_calls:
+                    fn_info = tc.get("function", {})
+                    fn_name = fn_info.get("name")
+                    fn_args = {}
+                    if fn_info.get("arguments"):
+                        try:
+                            fn_args = _json.loads(fn_info["arguments"])
+                        except Exception:
+                            fn_args = {"query": str(fn_info["arguments"])}
+                    tool_def = self.engine.tool_registry.get(fn_name)
+                    if tool_def:
+                        logger.info("executing_continuation_tool", tool=fn_name, args=fn_args)
+                        t_res = await self.engine.permissions.execute(tool_def, fn_args)
+                        continuation_messages.append({
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [tc],
+                        })
+                        res_str = ""
+                        if isinstance(t_res, list):
+                            snippets = []
+                            for itm in t_res[:3]:
+                                if isinstance(itm, dict):
+                                    t = itm.get("title", "")
+                                    s = itm.get("snippet", "")
+                                    snippets.append(f"• {t}: {s[:160]}")
+                            res_str = "\n".join(snippets)
+                        else:
+                            res_str = str(t_res)[:400]
+                        continuation_messages.append({
+                            "role": "tool",
+                            "name": fn_name,
+                            "tool_call_id": tc.get("id", "call_1"),
+                            "content": res_str,
+                        })
+                        chunker2 = ClauseChunker()
+                        async for tok in self.engine.llm.stream_chat(continuation_messages, max_tokens=250):
+                            if tok.startswith("__TOOL_CALL__"):
+                                continue
+                            full_continuation += tok
+                            ph = chunker2.feed(tok)
+                            if ph and not interrupt.is_set():
+                                c_ph, in_a = _extract_motion_from_phrase(ph)
+                                if c_ph:
+                                    await self.engine._tts_queue.put((c_ph, interrupt, None, in_a))
+                        rem2 = chunker2.flush()
+                        if rem2 and not interrupt.is_set():
+                            c_rem, in_a = _extract_motion_from_phrase(rem2)
+                            if c_rem:
+                                await self.engine._tts_queue.put((c_rem, interrupt, None, in_a))
+
+            # Sentinel to mark normal end of turn (only if not interrupted)
+            if not interrupt.is_set():
+                await self.engine._tts_queue.put(None)
 
         except Exception as e:
             logger.error("final_continuation_error", error=str(e))
             fallback_ans = f"Based on the results: {result_text[:120]}."
             if not full_continuation and not interrupt.is_set():
                 await self.engine._tts_queue.put((fallback_ans, interrupt, None, None))
+                await self.engine._tts_queue.put(None)
                 full_continuation = fallback_ans
 
         # Combined conversational response (spoken holding + final continuation)

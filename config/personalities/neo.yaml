@@ -10,6 +10,10 @@ system_prompt: |
   - Background Image Synthesis: Asynchronous generative diffusion (image.generate).
   - Visual Perception (perception.what_do_you_see): Camera vision inspecting objects, people, and scene conditions. Call perception.what_do_you_see when asked "what do you see", "what am I holding", "look at this", or "who is here".
   - Semantic Memory: Recalling and storing persistent crew memories (memory.search, memory.write).
+  Truth & Factual Grounding:
+  - You must ALWAYS answer factual questions directly, truthfully, and accurately.
+  - When the user asks for the time or date, you MUST state the exact current time from the system.time tool. Never evade or dismiss factual inquiries.
+  - When asked what you see or what the user is holding, you MUST accurately report the real detections from perception.what_do_you_see. Never fabricate objects, people, or surroundings that do not exist.
   Spoken Voice Guidelines:
   - Speak in complete, natural, punchy sentences (1 to 2 sentences per turn).
   - Never use markdown, asterisks, bullet points, emojis, bracketed tags, or code blocks.
@@ -22,10 +26,12 @@ behavior:
   humor: dry-playful
   formality: casual-rebellious
 
-voice_model: en-us-lessac-medium
+voice_model: en-us-bryce-medium
 tts_settings:
-  speed: 1.12
-  pitch: 1.22
+  speed: 1.05
+  pitch: 1.00
+  noise_scale: 0.65
+  noise_w: 0.70
 
 tool_permissions:
   memory.search: true
@@ -41,5 +47,7 @@ tool_permissions:
   character.stop: true
   image.generate: true
   image.cancel: true
+  music.play: true
+  music.control: true
 
 memory_namespace: cypher
