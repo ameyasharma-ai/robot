@@ -31,10 +31,32 @@ class AudioPlayer:
         self._stream_sr: int | None = None
         self._is_playing: bool = False
         self._current_rms: float = 0.0
+        self._volume: float = 1.0
+        self._duck_target: float = 1.0
+        self._duck_rate: float = 0.15
         self._lock = threading.Lock()
         # Rolling buffer of recent block RMS values (covers ~120ms acoustic travel)
         self._recent_rms: deque[float] = deque(maxlen=3)
         self._energy_callbacks: list = []
+
+    def duck(self, target_volume: float = 0.0, rate: float = 0.12) -> None:
+        """Fade TTS volume down dynamically (e.g. when music starts and overpowers speech).
+        
+        Ramps volume down smoothly so speech fades out naturally over ~300-500ms
+        instead of cutting off abruptly.
+        """
+        self._duck_target = max(0.0, min(1.0, float(target_volume)))
+        self._duck_rate = max(0.01, float(rate))
+
+    def fade_out(self, rate: float = 0.15) -> None:
+        """Smoothly fade speech volume to 0 (inaudible) within ~250ms."""
+        self._duck_target = 0.0
+        self._duck_rate = max(0.05, float(rate))
+
+    def unduck(self) -> None:
+        """Restore TTS volume back to 1.0."""
+        self._duck_target = 1.0
+        self._volume = 1.0
 
     def on_energy(self, callback) -> None:
         """Register callback for each playback audio frame: fn(rms: float)."""
@@ -98,6 +120,23 @@ class AudioPlayer:
                     return False
 
                 chunk = audio[idx : idx + block_len]
+                # Smoothly adjust volume towards target (ducking fade-out/in)
+                if abs(self._volume - self._duck_target) > 0.01:
+                    if self._volume > self._duck_target:
+                        self._volume = max(self._duck_target, self._volume - self._duck_rate)
+                    else:
+                        self._volume = min(self._duck_target, self._volume + self._duck_rate)
+                else:
+                    self._volume = self._duck_target
+
+                chunk = (chunk * self._volume).astype(np.float32)
+
+                # Natural fade-out termination: when speech has faded down to silence,
+                # stop cleanly so speech naturally dissolves instead of lingering or abrupt cutoff.
+                if self._duck_target == 0.0 and self._volume <= 0.03:
+                    logger.debug("playback_naturally_faded_out")
+                    return False
+
                 block_rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
                 self._current_rms = block_rms
                 self._recent_rms.append(block_rms)
@@ -136,6 +175,8 @@ class AudioPlayer:
         self._is_playing = False
         self._current_rms = 0.0
         self._recent_rms.clear()
+        self._volume = 1.0
+        self._duck_target = 1.0
         with self._lock:
             if self._stream is not None:
                 try:

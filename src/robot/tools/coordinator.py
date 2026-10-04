@@ -34,22 +34,25 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     """Extract and strip predefined motion markers from LLM output for synchronized audio-motion execution."""
     if not text:
         return text, None
+    action_dict = None
     m = re.search(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", text, re.IGNORECASE)
     if m:
         act = m.group(1).lower()
         side = m.group(2).lower() if m.group(2) else "right"
-        cleaned = re.sub(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", "", text, flags=re.IGNORECASE).strip()
-        return cleaned, {"action": act, "side": side}
+        action_dict = {"action": act, "side": side}
 
-    m2 = re.search(r"\*(waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?)\*", text, re.IGNORECASE)
-    if m2:
-        raw_act = m2.group(1).lower()
-        act = "wave" if "wave" in raw_act else ("raise_hand" if "hand" in raw_act else ("point" if "point" in raw_act else ("kick" if "kick" in raw_act else ("nod" if "nod" in raw_act else "idle"))))
-        side = "left" if "left" in raw_act else "right"
-        cleaned = re.sub(r"\*(.*?)\*", "", text).strip()
-        return cleaned, {"action": act, "side": side}
+    if not action_dict:
+        m2 = re.search(r"\*(waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?)\*", text, re.IGNORECASE)
+        if m2:
+            raw_act = m2.group(1).lower()
+            act = "wave" if "wave" in raw_act else ("raise_hand" if "hand" in raw_act else ("point" if "point" in raw_act else ("kick" if "kick" in raw_act else ("nod" if "nod" in raw_act else "idle"))))
+            side = "left" if "left" in raw_act else "right"
+            action_dict = {"action": act, "side": side}
 
-    return text, None
+    cleaned = re.sub(r"\[(?:motion|action)?:?[^\]]*\]", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\*[^*]+\*", "", cleaned)
+    cleaned = re.sub(r"\([^)]+\)", "", cleaned).strip()
+    return cleaned, action_dict
 
 
 class CoordinatorState(str, Enum):
@@ -269,7 +272,7 @@ class ToolConversationCoordinator:
 
         # Music Playback & Control (Spotify, SoundCloud, Local)
         music_play_match = re.search(
-            r"^(?:play(?:\s+some)?\s+music(?:\s+on\s+(spotify|soundcloud|local))?|play\s+(.+?)(?:\s+on\s+(spotify|soundcloud|local))?)$",
+            r"^(?:(?:can\s+you\s+|could\s+you\s+|please\s+)?play(?:\s+some)?\s+music(?:\s+on\s+(spotify|soundcloud|local))?(?:\s+please)?|(?:can\s+you\s+|could\s+you\s+|please\s+)?play\s+(.+?)(?:\s+on\s+(spotify|soundcloud|local))?(?:\s+please)?)$",
             user_text.strip(),
             re.IGNORECASE,
         )
@@ -278,7 +281,7 @@ class ToolConversationCoordinator:
             src = music_play_match.group(1) or music_play_match.group(3) or "auto"
             return "music.play", {"query": q.strip(" .?!"), "source": src.lower()}, ToolCategory.LLM_REQUIRED
 
-        if any(w in text for w in ("pause music", "pause the music", "stop music", "stop the music", "resume music")):
+        if any(w in text for w in ("pause music", "pause the music", "pause playback", "stop music", "stop the music", "stop playing", "resume music", "resume playback")):
             act = "pause" if "pause" in text else ("stop" if "stop" in text else "resume")
             return "music.control", {"action": act}, ToolCategory.DIRECT
 
@@ -510,11 +513,18 @@ class ToolConversationCoordinator:
             "image.generate": "Starting to render that image for you now.",
             "memory.write": "Remembering that for you.",
             "memory.search": "Checking my memory banks.",
-            "music.play": "Putting on some music for you.",
             "music.control": "Adjusting the music player.",
         }
         if not ctx.spoken_holding_text and not interrupt.is_set():
-            initial_phrase = opening_phrases.get(ctx.tool_name, "Checking that for you right now.")
+            if ctx.tool_name == "music.play":
+                song_q = ctx.tool_args.get("query", "").strip() if ctx.tool_args else ""
+                if song_q:
+                    initial_phrase = f"Putting on {song_q}."
+                else:
+                    initial_phrase = "Putting on the track for you."
+            else:
+                initial_phrase = opening_phrases.get(ctx.tool_name, "Checking that for you right now.")
+
             ctx.spoken_holding_text = initial_phrase
             first_audio_emitted = True
             timing_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
@@ -545,11 +555,23 @@ class ToolConversationCoordinator:
             holding_messages = [
                 {"role": "system", "content": self.HOLDING_SYSTEM_PROMPT},
             ]
-            user_prompt = f"The user asked: '{user_text}'. You are currently running the '{ctx.tool_name}' tool."
-            if ctx.spoken_holding_text:
-                user_prompt += f" You already said: '{ctx.spoken_holding_text.strip()}'. Generate the next natural spoken phrase without repeating yourself."
+            if ctx.tool_name == "music.play":
+                song_q = ctx.tool_args.get("query", "").strip() if ctx.tool_args else ""
+                user_prompt = (
+                    f"The user asked to play music: '{user_text}' (track: '{song_q}'). "
+                    f"Match the energy and vibe of this track (e.g. hyped/cool for rap, chill for lo-fi). "
+                    f"Never use inappropriate romantic or love phrases unless the song is an explicit love ballad. "
+                )
+                if ctx.spoken_holding_text:
+                    user_prompt += f"You already said: '{ctx.spoken_holding_text.strip()}'. Say 1 brief punchy line."
+                else:
+                    user_prompt += "Say 1 brief punchy phrase that you are loading it up."
             else:
-                user_prompt += " Acknowledge this naturally and mention you are checking the latest details."
+                user_prompt = f"The user asked: '{user_text}'. You are currently running the '{ctx.tool_name}' tool."
+                if ctx.spoken_holding_text:
+                    user_prompt += f" You already said: '{ctx.spoken_holding_text.strip()}'. Generate the next natural spoken phrase without repeating yourself."
+                else:
+                    user_prompt += " Acknowledge this naturally and mention you are checking the latest details."
 
             holding_messages.append({"role": "user", "content": user_prompt})
 
@@ -699,9 +721,10 @@ class ToolConversationCoordinator:
             "content": result_text,
         })
 
-        chunker = ClauseChunker()
+        chunker = ClauseChunker(eager_first_chunk=True, min_first_words=1)
         full_continuation = ""
         first_final_token = False
+        first_audio_queue_emitted = False
 
         collected_continuation_tool_calls = []
 
@@ -740,13 +763,21 @@ class ToolConversationCoordinator:
                 if phrase and not interrupt.is_set():
                     clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
                     if clean_phrase:
-                        await self.engine._tts_queue.put((clean_phrase, interrupt, None, inline_act))
+                        t_ref = None
+                        if not spoken_prefix and end_of_speech_time > 0 and not first_audio_queue_emitted:
+                            first_audio_queue_emitted = True
+                            t_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
+                        await self.engine._tts_queue.put((clean_phrase, interrupt, t_ref, inline_act))
 
             rem = chunker.flush()
             if rem and not interrupt.is_set():
                 clean_rem, in_act = _extract_motion_from_phrase(rem)
                 if clean_rem:
-                    await self.engine._tts_queue.put((clean_rem, interrupt, None, in_act))
+                    t_ref = None
+                    if not spoken_prefix and end_of_speech_time > 0 and not first_audio_queue_emitted:
+                        first_audio_queue_emitted = True
+                        t_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
+                    await self.engine._tts_queue.put((clean_rem, interrupt, t_ref, in_act))
 
             # If the LLM requested a follow-up tool call (e.g. web search after memory check):
             if collected_continuation_tool_calls and not interrupt.is_set():

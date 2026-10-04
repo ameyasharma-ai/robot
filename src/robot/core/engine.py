@@ -61,24 +61,29 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     if not text:
         return text, None
 
+    action_dict = None
+
     # 1. Explicit bracket marker: [motion: wave] or [action: raise_hand left]
     m = re.search(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", text, re.IGNORECASE)
     if m:
         act = m.group(1).lower()
         side = m.group(2).lower() if m.group(2) else "right"
-        cleaned = re.sub(r"\[(?:motion|action):\s*([a-zA-Z_]+)(?:\s+([a-zA-Z]+))?\]", "", text, flags=re.IGNORECASE).strip()
-        return cleaned, {"action": act, "side": side}
+        action_dict = {"action": act, "side": side}
 
     # 2. Asterisk stage directions: *waves*, *raises hand*, *points*
-    m2 = re.search(r"\*(waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?)\*", text, re.IGNORECASE)
-    if m2:
-        raw_act = m2.group(1).lower()
-        act = "wave" if "wave" in raw_act else ("raise_hand" if "hand" in raw_act else ("point" if "point" in raw_act else ("kick" if "kick" in raw_act else ("nod" if "nod" in raw_act else "idle"))))
-        side = "left" if "left" in raw_act else "right"
-        cleaned = re.sub(r"\*(.*?)\*", "", text).strip()
-        return cleaned, {"action": act, "side": side}
+    if not action_dict:
+        m2 = re.search(r"\*(waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?)\*", text, re.IGNORECASE)
+        if m2:
+            raw_act = m2.group(1).lower()
+            act = "wave" if "wave" in raw_act else ("raise_hand" if "hand" in raw_act else ("point" if "point" in raw_act else ("kick" if "kick" in raw_act else ("nod" if "nod" in raw_act else "idle"))))
+            side = "left" if "left" in raw_act else "right"
+            action_dict = {"action": act, "side": side}
 
-    return text, None
+    # Clean out ALL stage directions, bracket tags, and parentheses so TTS never speaks them
+    cleaned = re.sub(r"\[(?:motion|action)?:?[^\]]*\]", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\*[^*]+\*", "", cleaned)
+    cleaned = re.sub(r"\([^)]+\)", "", cleaned).strip()
+    return cleaned, action_dict
 
 
 class RobotEngine:
@@ -356,11 +361,11 @@ class RobotEngine:
             {"role": "user", "content": "hi"},
         ]
 
-        reg = getattr(self, "tool_registry", None)
-        tools_schema = reg.get_schemas() if reg else None
-
+        # Pre-warm system prompt prefix together with tools schema so Turn 1 hits 100% KV cache
         t0 = time.perf_counter()
         try:
+            reg = getattr(self, "tool_registry", None)
+            tools_schema = reg.get_schemas() if reg is not None else None
             async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
@@ -514,7 +519,19 @@ class RobotEngine:
             if is_voice:
                 if self._is_speaking or self.player.is_playing:
                     # Barge-in detection (only reached if barge_in_enabled is True)
-                    if (time.time() - last_barge_in_time) < barge_in_cooldown:
+                    # When music is playing concurrently, speaker bleed from music into the microphone
+                    # must not falsely interrupt the robot's speech.
+                    music_active = False
+                    try:
+                        from robot.tools.builtins.music import MusicPlayerService
+                        music_active = MusicPlayerService.get_instance().is_playing
+                    except Exception:
+                        pass
+
+                    if music_active:
+                        # Music is playing; do not trigger barge-in from music acoustics
+                        barge_in_consecutive = 0
+                    elif (time.time() - last_barge_in_time) < barge_in_cooldown:
                         barge_in_consecutive = 0
                     else:
                         barge_in_consecutive += 1
@@ -739,8 +756,8 @@ class RobotEngine:
                     ]
                     break
 
-        # Stream LLM
-        chunker = ClauseChunker()
+        # Stream LLM with eager first-word release and background sentence chunking
+        chunker = ClauseChunker(eager_first_chunk=True, min_first_words=1)
         full_response = ""
         ttft_recorded = False
         timing_ref = None
@@ -753,9 +770,9 @@ class RobotEngine:
             metadata={"model": self.config.get("llm", {}).get("model", "Qwen3.5-4B-Q4_K_M")},
         )
 
-        tools_schema = None
-        if selected_tool_names:
-            tools_schema = self.tool_registry.get_schemas(selected_tool_names)
+        # Consistent tools schema: always provide the full registered tool schemas
+        # so llama-server's slot KV cache prefix remains 100% invariant across turns.
+        tools_schema = self.tool_registry.get_schemas() if getattr(self, "tool_registry", None) else None
 
         try:
             async for token in self.llm.stream_chat(

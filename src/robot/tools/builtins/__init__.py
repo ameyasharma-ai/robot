@@ -387,26 +387,30 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                 clean_src = "local"
             elif "soundcloud" in query.lower():
                 clean_src = "soundcloud"
-            else:
+            elif "spotify" in query.lower():
                 clean_src = "spotify"
+            else:
+                clean_src = music_service.config.get("default_source", "ytdlp")
 
-        if clean_src == "spotify":
-            return await asyncio.to_thread(music_service.play_spotify, query)
+        if clean_src in {"ytdlp", "yt-dlp", "youtube"}:
+            return await asyncio.to_thread(music_service.play_ytdlp, query, wait_speech_engine=engine)
+        elif clean_src == "spotify":
+            return await asyncio.to_thread(music_service.play_spotify, query, wait_speech_engine=engine)
         elif clean_src == "soundcloud":
-            return await asyncio.to_thread(music_service.play_soundcloud, query)
+            return await asyncio.to_thread(music_service.play_soundcloud, query, wait_speech_engine=engine)
         elif clean_src == "local":
-            return await asyncio.to_thread(music_service.play_local, query)
-        return await asyncio.to_thread(music_service.play_spotify, query)
+            return await asyncio.to_thread(music_service.play_local, query, wait_speech_engine=engine)
+        return await asyncio.to_thread(music_service.play_ytdlp, query, wait_speech_engine=engine)
 
     engine.tool_registry.register(
         ToolDefinition(
             name="music.play",
-            description="Play music tracks, songs, or artists on Spotify, SoundCloud, or from local library files",
+            description="Play music tracks, songs, or artists on YouTube (yt-dlp), Spotify, SoundCloud, or from local library files",
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Song name, artist, genre, or playlist to play"},
-                    "source": {"type": "string", "description": "Playback source: 'spotify', 'soundcloud', 'local', or 'auto'", "default": "auto"},
+                    "source": {"type": "string", "description": "Playback source: 'ytdlp', 'spotify', 'soundcloud', 'local', or 'auto'", "default": "auto"},
                 },
                 "required": ["query"],
             },

@@ -26,17 +26,27 @@ def clean_text_for_speech(text: str) -> str:
     cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"</?(?:tool_call|function|parameter)[^>]*>", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"<[^>]+>", "", cleaned)
-    # Strip markdown bold/italic asterisks and underscores: **word**, *word*, __word__, _word_
+    # Strip bracket motion tags like [motion:wave] or [action:nod] or [laughs]
+    cleaned = re.sub(r"\[(?:motion|action)?:?[^\]]*\]", "", cleaned, flags=re.IGNORECASE)
+    # Strip common stage directions in asterisks e.g. *waves*, *smiles*, *nods*, *laughs*, *sighs*
+    stage_dir_pattern = (
+        r"\*(?:waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|"
+        r"smiles?|laughs?|sighs?|stops?|leans?|looks?\s+around|shrugs?|pauses?|blinks?|winks?|"
+        r"whispers?|gasps?|chuckles?|scoffs?|coughs?|yawns?)[^*]*\*"
+    )
+    cleaned = re.sub(stage_dir_pattern, "", cleaned, flags=re.IGNORECASE)
+    # Strip parenthetical stage directions e.g. (waves hand), (smiling), (chuckles)
+    cleaned = re.sub(r"\([^)]*(?:wave|smile|nod|laugh|sigh|point|kick|wink|shrug|pause|gasp)[^)]*\)", "", cleaned, flags=re.IGNORECASE)
+    # Unpack markdown bold/italic asterisks: **word**, *word* -> word
     cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+    # Strip markdown bold/italic underscores: __word__, _word_ -> word
     cleaned = re.sub(r"(?<!\w)_{1,3}([^_]+)_{1,3}(?!\w)", r"\1", cleaned)
-    # Strip lingering raw asterisks or tildes
+    # Strip lingering raw asterisks, tildes, backticks
     cleaned = cleaned.replace("*", "").replace("~", "").replace("`", "")
     # Strip markdown headers (e.g. ## Title)
     cleaned = re.sub(r"^#+\s*", "", cleaned, flags=re.MULTILINE)
     # Strip markdown list bullets
     cleaned = re.sub(r"^\s*[-•*+]\s+", "", cleaned, flags=re.MULTILINE)
-    # Strip motion tags like [motion:wave] or [action:nod] if any
-    cleaned = re.sub(r"\[(motion|action):[^\]]+\]", "", cleaned, flags=re.IGNORECASE)
     # Collapse multiple whitespaces
     cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
     return cleaned

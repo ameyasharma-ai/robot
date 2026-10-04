@@ -50,6 +50,14 @@ web_search:
   offer_deeper_search: true
 
 music:
-  default_source: "spotify"
+  default_source: "ytdlp"
   local_music_dir: "data/music"
-  default_volume: 0.8
+  default_volume: 0.85
+  # Full song streaming: "yt_dlp" (zero credentials needed, full tracks) or "spotify_premium"
+  full_stream_mode: "yt_dlp"
+  # Spotify Developer Credentials (optional, for Spotify Connect Web API playback)
+  spotify:
+    client_id: ""
+    client_secret: ""
+    redirect_uri: "http://127.0.0.1:8888/callback"
+    device_id: ""

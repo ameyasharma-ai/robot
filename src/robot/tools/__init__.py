@@ -101,14 +101,14 @@ class ToolRouter:
 
     FAMILY_KEYWORDS: dict[str, list[str]] = {
         "memory": ["remember", "recall", "forget", "memory", "preference", "favorite", "crush", "keep in mind", "store", "who is", "who's", "what is my", "did i tell you", "what was"],
-        "history": ["said", "told", "conversation", "yesterday", "last time", "before", "earlier"],
-        "system": ["status", "health", "uptime", "service", "restart", "time", "date", "clock", "day of week", "what time", "what day"],
-        "personality": ["personality", "switch", "mode", "character"],
-        "web": ["search", "look up", "find online", "browse", "google", "duckduckgo", "latest", "news", "price", "release date", "current", "new", "newest", "upcoming", "recent", "today", "yesterday", "weather", "score", "match", "stock", "spec", "specs", "features", "iphone", "phone", "launch", "launched", "announced", "when did", "when will", "who won", "deep search", "search deeply", "look deeply"],
-        "music": ["play", "song", "music", "spotify", "soundcloud", "track", "tune", "pause music", "stop music", "resume music", "volume", "sound"],
-        "image": ["generate image", "generate an image", "draw", "picture", "create image", "paint", "illustration", "generate picture", "photo", "render image", "image of"],
-        "motion": ["wave", "raise your hand", "raise hand", "kick", "walk", "turn", "point", "sit", "stand", "dance", "move", "gesture", "look at", "stop motion", "reset pose", "body", "nod", "motion"],
-        "perception": ["what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that", "look at this", "look around", "look at me", "who is here", "who is this", "camera", "snapshot", "inspect", "can you see", "do you see", "see", "what am i holding", "what i am holding", "view"],
+        "history": ["what did you say", "what did i say", "past conversation", "yesterday", "last time", "earlier conversation"],
+        "system": ["system status", "robot status", "system health", "system uptime", "restart service", "what time", "what's the time", "current time", "what day", "what date", "clock"],
+        "personality": ["switch personality", "change personality", "switch character", "change character", "switch mode"],
+        "web": ["search online", "search web", "look up", "find online", "browse web", "google", "duckduckgo", "latest news", "price of", "release date", "current weather", "weather in", "sports score", "stock price", "specs of", "specifications", "deep search", "search deeply"],
+        "music": ["play music", "play song", "play track", "spotify", "soundcloud", "pause music", "stop music", "resume music", "set volume", "music volume"],
+        "image": ["generate image", "generate an image", "create image", "create an image", "draw an image", "paint an image", "illustration of", "render image", "generate picture"],
+        "motion": ["wave", "raise hand", "kick", "walk", "turn around", "point at", "dance", "gesture", "stop motion", "reset pose", "nod head"],
+        "perception": ["what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that", "look at this", "look around", "look at me", "who is here", "who is this", "can you see me", "do you see me", "what am i holding", "what i am holding", "inspect scene"],
     }
 
     def __init__(self, registry: ToolRegistry) -> None:
@@ -116,12 +116,20 @@ class ToolRouter:
 
     def select_tools(self, user_text: str) -> list[str]:
         """Select relevant tool families based on user intent."""
+        import re
         text_lower = user_text.lower()
         selected_families: set[str] = set()
 
         for family, keywords in self.FAMILY_KEYWORDS.items():
-            if any(kw in text_lower for kw in keywords):
-                selected_families.add(family)
+            for kw in keywords:
+                if " " in kw:
+                    if kw in text_lower:
+                        selected_families.add(family)
+                        break
+                else:
+                    if re.search(rf"\b{re.escape(kw)}\b", text_lower):
+                        selected_families.add(family)
+                        break
 
         if not selected_families:
             return []

@@ -243,11 +243,14 @@ class LlamaServerLLM(LLMProvider):
 
 
 class ClauseChunker:
-    """Buffers LLM tokens and emits speakable, complete sentences for TTS.
+    """Buffers LLM tokens and emits speakable chunks for TTS.
 
-    Chunking on full sentence boundaries (.!?) prevents unnatural fragmentation
-    and awkward phrasing caused by mid-sentence comma cuts, while still achieving
-    streaming TTS with minimal TTFT.
+    Design:
+    1. First chunk: Emitted as soon as the first word or initial clause is ready
+       (min_first_words=1..2) to initiate playback with near-zero latency.
+    2. Subsequent chunks: Buffered and synthesized in the background on natural
+       sentence terminals (.!?) or full semantic boundaries, preventing the choppy,
+       unnatural rhythm of mid-sentence comma fragmentation.
     """
 
     def __init__(
@@ -265,7 +268,7 @@ class ClauseChunker:
         self._first_chunk_emitted = False
 
     def feed(self, token: str) -> str | None:
-        """Feed a token, return a complete sentence if a boundary is reached."""
+        """Feed a token, return a complete speakable chunk if a boundary is reached."""
         self._buffer += token
 
         # Clean any raw tool call XML tags from buffer
@@ -287,7 +290,7 @@ class ClauseChunker:
             prefix_tag = tag_match.group(1)
             check_buf = check_buf[len(prefix_tag):]
 
-        # Sentence terminal detection on the check buffer
+        # 1. Terminal sentence punctuation detection (.!?)
         match = re.search(r"^(.*?[.!?]+[\"'\)\]]*)(?:\s+|$)", check_buf, re.DOTALL)
         if match:
             candidate = match.group(1).strip()
@@ -302,33 +305,56 @@ class ClauseChunker:
                 if len(candidate.split()) >= 1:
                     cut_len = len(prefix_tag) + match.end()
                     full_chunk = self._buffer[:cut_len].strip()
-                    self._buffer = self._buffer[cut_len:]
+                    self._buffer = self._buffer[cut_len:].lstrip()
                     self._first_chunk_emitted = True
                     return full_chunk
 
-        # Continuous eager clause cutting: split on clause boundaries (, ; \n —)
-        # throughout the turn so TTS generates and speaks in streaming chunks, never waiting for full sentences!
-        min_words_for_clause = self.min_first_words if not self._first_chunk_emitted else self._min_words
-        clause_match = re.search(r"^(.*?[,;\n—])(?:\s+|$)", check_buf, re.DOTALL)
-        if clause_match:
-            clause = clause_match.group(1).strip()
-            if len(clause.split()) >= min_words_for_clause:
-                cut_len = len(prefix_tag) + clause_match.end()
-                full_chunk = self._buffer[:cut_len].strip()
-                self._buffer = self._buffer[cut_len:]
-                self._first_chunk_emitted = True
-                return full_chunk
+        # 2. Eager first chunk clause release: emit when an early clause boundary (, ; : \n —)
+        # has accumulated at least min_first_words (e.g. 2 words) to kick off speech instantly
+        if not self._first_chunk_emitted and self.eager_first_chunk:
+            first_punct_match = re.search(r"^(.*?[,;:\n—])(?:\s+|$)", check_buf, re.DOTALL)
+            if first_punct_match:
+                clause = first_punct_match.group(1).strip()
+                if len(clause.split()) >= self.min_first_words:
+                    cut_len = len(prefix_tag) + first_punct_match.end()
+                    full_chunk = self._buffer[:cut_len].strip()
+                    self._buffer = self._buffer[cut_len:].lstrip()
+                    self._first_chunk_emitted = True
+                    return full_chunk
 
-        # Continuous phrase chunking: if buffer exceeds 8 words without punctuation, split at word boundary
-        words = check_buf.strip().split()
-        if len(words) >= 8:
-            last_space = check_buf.rfind(" ")
-            if last_space != -1 and len(check_buf[:last_space].split()) >= self._min_words:
-                cut_len = len(prefix_tag) + last_space
-                full_chunk = self._buffer[:cut_len].strip()
-                self._buffer = self._buffer[cut_len:].lstrip()
-                self._first_chunk_emitted = True
-                return full_chunk
+        # 3. For subsequent speech, prioritize natural multi-word phrases:
+        # Only split on major pause boundaries (semicolon, newline, em-dash, or comma with sufficient length)
+        # to ensure speech cadence sounds fluent and natural rather than fragmented.
+        if self._first_chunk_emitted:
+            # Paragraph or major clause break
+            major_break_match = re.search(r"^(.*?[;\n—])(?:\s+|$)", check_buf, re.DOTALL)
+            if major_break_match:
+                clause = major_break_match.group(1).strip()
+                if len(clause.split()) >= self._min_words:
+                    cut_len = len(prefix_tag) + major_break_match.end()
+                    full_chunk = self._buffer[:cut_len].strip()
+                    self._buffer = self._buffer[cut_len:].lstrip()
+                    return full_chunk
+
+            # Comma boundary: require at least 6-8 words to prevent jerky comma stutters
+            comma_match = re.search(r"^(.*?,)(?:\s+|$)", check_buf, re.DOTALL)
+            if comma_match:
+                clause = comma_match.group(1).strip()
+                if len(clause.split()) >= max(6, self._min_words):
+                    cut_len = len(prefix_tag) + comma_match.end()
+                    full_chunk = self._buffer[:cut_len].strip()
+                    self._buffer = self._buffer[cut_len:].lstrip()
+                    return full_chunk
+
+            # 4. Long unpunctuated phrase chunking (max_words buffer safety)
+            words = check_buf.strip().split()
+            if len(words) >= self._max_words:
+                last_space = check_buf.rfind(" ")
+                if last_space != -1 and len(check_buf[:last_space].split()) >= self._min_words:
+                    cut_len = len(prefix_tag) + last_space
+                    full_chunk = self._buffer[:cut_len].strip()
+                    self._buffer = self._buffer[cut_len:].lstrip()
+                    return full_chunk
 
         return None
 
@@ -339,3 +365,4 @@ class ClauseChunker:
         self._buffer = ""
         self._first_chunk_emitted = False
         return remainder if remainder else None
+

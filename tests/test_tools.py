@@ -254,11 +254,16 @@ async def test_music_player_service():
     from robot.tools.builtins.music import MusicPlayerService
     svc = MusicPlayerService()
 
-    # Spotify
+    # YouTube / yt-dlp
+    yt_res = svc.play_ytdlp("lofi hip hop")
+    assert yt_res["status"] == "playing"
+    assert yt_res["source"] in {"ytdlp", "local"}
+    assert "youtube" in yt_res.get("url", "") or "local" in yt_res["source"]
+
+    # Spotify (when no Spotify Premium is configured, accurately reports ytdlp source)
     sp_res = svc.play_spotify("lofi hip hop")
     assert sp_res["status"] == "playing"
-    assert sp_res["source"] == "spotify"
-    assert "lofi%20hip%20hop" in sp_res["url"]
+    assert sp_res["source"] in {"ytdlp", "spotify_premium", "local"}
 
     # SoundCloud
     sc_res = svc.play_soundcloud("synthwave")

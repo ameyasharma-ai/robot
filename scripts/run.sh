@@ -68,10 +68,6 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
         done
         if [ "$READY" -eq 1 ]; then
             echo " ready"
-            echo "[LLM] Pre-warming llama-server KV cache in background..."
-            (curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
-                -H "Content-Type: application/json" \
-                -d '{"model":"Qwen3.5-4B-Q4_K_M","messages":[{"role":"system","content":"You are a helpful robot companion."},{"role":"user","content":"hi"}],"max_tokens":1}' >/dev/null 2>&1 &) || true
         else
             echo " FAILED (Check logs/llama-server.log)"
             exit 1
@@ -80,6 +76,62 @@ if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
         echo "[LLM] llama-server binary or model not found at configured paths."
     fi
 fi
+
+# Always pre-warm llama-server KV cache slot with active personality and tools schema
+echo "[LLM] Pre-warming llama-server KV cache slot with active personality & tools..."
+"$DIR/.venv/bin/python" -c "
+import urllib.request, json
+try:
+    from robot.personality import PersonalityManager
+    from robot.core.context import ContextEngine
+    from robot.tools import ToolRegistry
+    from robot.tools.builtins import register_builtin_tools
+    import yaml
+
+    with open('config/default.yaml') as f:
+        cfg = yaml.safe_load(f) or {}
+    def_p = cfg.get('personality', {}).get('default', 'neo')
+
+    pm = PersonalityManager('config/personalities')
+    pm.load_all()
+    pm.set_active(def_p)
+    pers = pm.active
+
+    ce = ContextEngine()
+    msgs = ce.build_messages(
+        system_prompt=pers.system_prompt,
+        user_text='hi',
+    )
+
+    class MockEngine:
+        def __init__(self):
+            self.tool_registry = ToolRegistry()
+            self.config = {}
+
+    mock = MockEngine()
+    register_builtin_tools(mock)
+    tools_schema = mock.tool_registry.get_schemas()
+
+    payload = json.dumps({
+        'messages': msgs,
+        'tools': tools_schema,
+        'max_tokens': 1,
+        'temperature': 0.7
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        'http://127.0.0.1:8080/v1/chat/completions',
+        data=payload,
+        headers={'Content-Type': 'application/json'}
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        res = json.loads(resp.read().decode('utf-8'))
+    cached = res.get('usage', {}).get('prompt_tokens_details', {}).get('cached_tokens', 0)
+    prompt_ms = res.get('timings', {}).get('prompt_ms', 0)
+    print(f'[LLM] KV cache pre-warmed for personality \"{def_p}\" (cached: {cached} tokens, eval: {prompt_ms:.1f}ms)')
+except Exception as e:
+    print('[LLM] Warmup notice:', e)
+" 2>/dev/null || true
 
 # ─── 3. whisper-server (AMD Radeon 680M Vulkan, port 8081) ──────────
 WHISPER_BIN=""
