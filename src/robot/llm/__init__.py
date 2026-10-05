@@ -242,6 +242,300 @@ class LlamaServerLLM(LLMProvider):
             return False
 
 
+class GeminiLLM(LLMProvider):
+    """Google Gemini Cloud streaming client using the OpenAI-compatible endpoint.
+
+    Provides high-intelligence capabilities with up to 1,000,000 tokens of context.
+    Connects to the official Google Gemini OpenAI compatibility layer.
+    """
+
+    DEFAULT_API_KEY = "[REDACTED_API_KEY]"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
+        model: str = "gemini-3.5-flash-lite",
+        fallback_models: list[str] | None = None,
+    ) -> None:
+        import os
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or self.DEFAULT_API_KEY
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.fallback_models = fallback_models if fallback_models is not None else [
+            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite",
+            "gemini-flash-latest",
+        ]
+        self._client: httpx.AsyncClient | None = None
+        self._model_cooldown: dict[str, float] = {}
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            limits = httpx.Limits(max_keepalive_connections=10, max_connections=20, keepalive_expiry=120.0)
+            self._client = httpx.AsyncClient(timeout=25.0, http2=True, limits=limits)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+    async def stream_chat(
+        self,
+        messages: list[dict],
+        max_tokens: int = 1024,
+        tools: list[dict] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        import time as _time
+
+        # Sanitize messages for Gemini compatibility:
+        # Google's OpenAI-compatible endpoint strictly forbids assistant messages containing
+        # synthetic tool_calls if they lack a Google-generated thought_signature (HTTP 400).
+        # We transform tool turns and synthetic tool_calls into clean conversational turns.
+        sanitized_messages = []
+        for m in messages:
+            role = m.get("role")
+            if role == "tool":
+                tool_name = m.get("name") or "tool"
+                content = m.get("content") or ""
+                sanitized_messages.append({
+                    "role": "user",
+                    "content": f"[Tool result from {tool_name}]: {content}",
+                })
+            elif role == "assistant" and "tool_calls" in m:
+                content = m.get("content") or ""
+                if not content:
+                    names = [tc.get("function", {}).get("name", "tool") for tc in m.get("tool_calls", [])]
+                    content = f"Executing {', '.join(names)}..."
+                sanitized_messages.append({
+                    "role": "assistant",
+                    "content": content,
+                })
+            else:
+                sanitized_messages.append(m)
+
+        # Dynamic model routing with circuit-breaker cooldown:
+        # Avoid wasting 2-3 seconds querying a model that hit 429 quota or 503 high demand.
+        now = _time.time()
+        all_candidates = [self.model] + [m for m in self.fallback_models if m != self.model]
+        available_models = [m for m in all_candidates if self._model_cooldown.get(m, 0) < now]
+        cooldown_models = [m for m in all_candidates if self._model_cooldown.get(m, 0) >= now]
+        models_to_try = available_models + cooldown_models
+
+        client = self._get_client()
+
+        for model_name in models_to_try:
+            payload = {
+                "model": model_name,
+                "messages": sanitized_messages,
+                "stream": True,
+                "max_tokens": max_tokens,
+            }
+            if tools:
+                payload["tools"] = tools
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            }
+
+            try:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    if response.status_code == 200:
+                        # Clear cooldown on verified success
+                        if model_name in self._model_cooldown:
+                            del self._model_cooldown[model_name]
+
+                        tool_calls_acc: dict[int, dict] = {}
+                        async for line in response.aiter_lines():
+                            if not line or line == "data: [DONE]":
+                                continue
+                            if line.startswith("data: "):
+                                try:
+                                    data = json.loads(line[6:])
+                                    choices = data.get("choices", [])
+                                    if not choices:
+                                        continue
+                                    delta = choices[0].get("delta", {})
+
+                                    if "tool_calls" in delta and delta["tool_calls"]:
+                                        for tc in delta["tool_calls"]:
+                                            idx = tc.get("index", 0)
+                                            if idx not in tool_calls_acc:
+                                                tool_calls_acc[idx] = {
+                                                    "id": tc.get("id") or f"call_{idx}_{int(_time.time()*1000)}",
+                                                    "type": "function",
+                                                    "function": {
+                                                        "name": tc.get("function", {}).get("name", ""),
+                                                        "arguments": "",
+                                                    },
+                                                }
+                                            if tc.get("id"):
+                                                tool_calls_acc[idx]["id"] = tc["id"]
+                                            fn = tc.get("function", {})
+                                            if fn.get("name"):
+                                                tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                            if fn.get("arguments"):
+                                                tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+                                        continue
+
+                                    token = delta.get("content", "")
+                                    if token:
+                                        yield token
+                                except (json.JSONDecodeError, KeyError, IndexError):
+                                    continue
+
+                        if tool_calls_acc:
+                            yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
+                        return
+                    else:
+                        err_body = await response.aread()
+                        err_text = err_body.decode(errors="replace")
+                        # If model hit 429, 503, or 404, place into 300s cooldown
+                        if response.status_code in (429, 503, 404):
+                            self._model_cooldown[model_name] = _time.time() + 300.0
+                            logger.warning(
+                                "gemini_model_placed_in_cooldown",
+                                model=model_name,
+                                status=response.status_code,
+                                cooldown_s=300,
+                                error=err_text[:120],
+                            )
+                        else:
+                            logger.warning(
+                                "gemini_stream_model_fallback",
+                                model=model_name,
+                                status=response.status_code,
+                                error=err_text[:120],
+                            )
+                        continue
+            except Exception as exc:
+                logger.warning("gemini_request_exception", model=model_name, error=str(exc))
+                continue
+
+        yield "I encountered an error connecting to the Gemini cloud API service. Please verify network access."
+
+    async def health_check(self) -> bool:
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            }
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 1,
+            }
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                )
+                return resp.status_code == 200
+        except Exception:
+            return False
+
+
+class LlamaServerManager:
+    """Manages the local llama-server process lifecycle on the RTX 3050 GPU."""
+
+    BINARY_PATH = "/home/ameya/llama.cpp/build/bin/llama-server"
+    MODEL_PATH = "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf"
+    HEALTH_URL = "http://127.0.0.1:8080/health"
+
+    @classmethod
+    def is_running(cls) -> bool:
+        try:
+            resp = requests.get(cls.HEALTH_URL, timeout=0.8)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    @classmethod
+    async def is_running_async(cls) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=0.6) as client:
+                resp = await client.get(cls.HEALTH_URL)
+                return resp.status_code == 200
+        except Exception:
+            return False
+
+    @classmethod
+    async def stop(cls) -> bool:
+        """Kill the llama-server process to free 100% of GPU VRAM (3.4 GB)."""
+        import subprocess
+        logger.info("stopping_llama_server_freeing_vram")
+        try:
+            subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+            for _ in range(25):
+                if not await cls.is_running_async():
+                    logger.info("llama_server_stopped_vram_released")
+                    return True
+                await asyncio.sleep(0.1)
+            return True
+        except Exception as e:
+            logger.error("llama_server_stop_error", error=str(e))
+            return False
+
+    @classmethod
+    async def start(
+        cls,
+        model_path: str | None = None,
+        binary_path: str | None = None,
+        port: int = 8080,
+    ) -> bool:
+        """Launch llama-server with FlashAttention offloaded to the RTX 3050."""
+        import subprocess
+        from pathlib import Path
+
+        if await cls.is_running_async():
+            return True
+
+        bin_path = binary_path or cls.BINARY_PATH
+        m_path = model_path or cls.MODEL_PATH
+
+        if not Path(bin_path).exists() or not Path(m_path).exists():
+            logger.error("llama_server_binary_or_model_missing", bin=bin_path, model=m_path)
+            return False
+
+        cmd = [
+            bin_path,
+            "-m", m_path,
+            "-ngl", "99",
+            "-fa", "on",
+            "-ctk", "q8_0",
+            "-ctv", "q8_0",
+            "-c", "4096",
+            "-np", "1",
+            "-b", "4096",
+            "-ub", "4096",
+            "--host", "127.0.0.1",
+            "--port", str(port),
+        ]
+
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_dir / "llama-server.log", "a")
+
+        logger.info("starting_llama_server", cmd=" ".join(cmd))
+        subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
+
+        for i in range(50):
+            await asyncio.sleep(0.2)
+            if await cls.is_running_async():
+                logger.info("llama_server_ready", attempts=i + 1)
+                return True
+
+        logger.error("llama_server_start_timeout")
+        return False
+
+
 class ClauseChunker:
     """Buffers LLM tokens and emits speakable chunks for TTS.
 
@@ -312,48 +606,53 @@ class ClauseChunker:
                     self._first_chunk_emitted = True
                     return full_chunk
 
-        # 2. Eager first chunk clause release: emit when an early clause boundary (, ; : \n —)
-        # has accumulated at least min_first_words (e.g. 2 words) to kick off speech instantly
+        # 2. Eager first chunk clause release:
+        # Check all early clause boundaries (, ; : \n —) that satisfy min_first_words
         if not self._first_chunk_emitted and self.eager_first_chunk:
-            first_punct_match = re.search(r"^(.*?[,;:\n—])(?:\s+|$)", check_buf, re.DOTALL)
-            if first_punct_match:
-                clause = first_punct_match.group(1).strip()
+            for m in re.finditer(r"([,;:\n—])(?:\s+|$)", check_buf):
+                clause = check_buf[:m.end()].strip()
                 if len(clause.split()) >= self.min_first_words:
-                    cut_len = len(prefix_tag) + first_punct_match.end()
+                    cut_len = len(prefix_tag) + m.end()
                     full_chunk = self._buffer[:cut_len].strip()
                     self._buffer = self._buffer[cut_len:].lstrip()
                     self._first_chunk_emitted = True
                     return full_chunk
 
-        # 3. For subsequent speech, prioritize natural multi-word phrases:
-        # Only split on major pause boundaries (semicolon, newline, em-dash, or comma with sufficient length)
-        # to ensure speech cadence sounds fluent and natural rather than fragmented.
+            # If 10 or more words accumulated without any punctuation, release early as a safety valve
+            words = check_buf.strip().split()
+            if len(words) >= 10:
+                cut_pos = -1
+                w_count = 0
+                for idx, ch in enumerate(check_buf):
+                    if ch in (" ", "\t"):
+                        w_count += 1
+                        if w_count == 8:
+                            cut_pos = idx
+                            break
+                if cut_pos != -1:
+                    cut_len = len(prefix_tag) + cut_pos
+                    full_chunk = self._buffer[:cut_len].strip()
+                    self._buffer = self._buffer[cut_len:].lstrip()
+                    self._first_chunk_emitted = True
+                    return full_chunk
+
+        # 3. Subsequent chunks: prioritize natural multi-word phrases
         if self._first_chunk_emitted:
-            # Paragraph or major clause break
-            major_break_match = re.search(r"^(.*?[;\n—])(?:\s+|$)", check_buf, re.DOTALL)
-            if major_break_match:
-                clause = major_break_match.group(1).strip()
+            # Check pause boundaries (, ; \n —)
+            matches = list(re.finditer(r"([,;\n—])(?:\s+|$)", check_buf))
+            for m in reversed(matches):
+                clause = check_buf[:m.end()].strip()
                 if len(clause.split()) >= self._min_words:
-                    cut_len = len(prefix_tag) + major_break_match.end()
+                    cut_len = len(prefix_tag) + m.end()
                     full_chunk = self._buffer[:cut_len].strip()
                     self._buffer = self._buffer[cut_len:].lstrip()
                     return full_chunk
 
-            # Comma boundary: require at least 6-8 words to prevent jerky comma stutters
-            comma_match = re.search(r"^(.*?,)(?:\s+|$)", check_buf, re.DOTALL)
-            if comma_match:
-                clause = comma_match.group(1).strip()
-                if len(clause.split()) >= max(6, self._min_words):
-                    cut_len = len(prefix_tag) + comma_match.end()
-                    full_chunk = self._buffer[:cut_len].strip()
-                    self._buffer = self._buffer[cut_len:].lstrip()
-                    return full_chunk
-
-            # 4. Long unpunctuated phrase chunking (max_words buffer safety)
+            # Long unpunctuated phrase chunking (max_words buffer safety)
             words = check_buf.strip().split()
             if len(words) >= self._max_words:
                 last_space = check_buf.rfind(" ")
-                if last_space != -1 and len(check_buf[:last_space].split()) >= self._min_words:
+                if last_space != -1:
                     cut_len = len(prefix_tag) + last_space
                     full_chunk = self._buffer[:cut_len].strip()
                     self._buffer = self._buffer[cut_len:].lstrip()

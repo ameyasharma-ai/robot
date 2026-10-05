@@ -266,7 +266,9 @@ class ConversationHistory:
                 personality TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 ended_at TEXT,
-                turn_count INTEGER DEFAULT 0
+                turn_count INTEGER DEFAULT 0,
+                title TEXT DEFAULT 'New Chat',
+                updated_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS facts (
@@ -289,6 +291,19 @@ class ConversationHistory:
         """
         )
         self._conn.commit()
+
+        # Migrate existing sessions table if title or updated_at are missing
+        try:
+            cur = self._conn.execute("PRAGMA table_info(sessions)")
+            existing_cols = {row[1] for row in cur.fetchall()}
+            if "title" not in existing_cols:
+                self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT 'New Chat'")
+            if "updated_at" not in existing_cols:
+                self._conn.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
+            self._conn.commit()
+        except Exception:
+            pass
+
         logger.info("history_initialized", db=str(self.db_path))
 
     async def add_message(
@@ -305,6 +320,7 @@ class ConversationHistory:
         """Record a conversation message."""
         if not self._conn:
             return
+        t_res_str = json.dumps(tool_result) if isinstance(tool_result, (dict, list)) else tool_result
         await asyncio.to_thread(
             self._conn.execute,
             """INSERT INTO conversations
@@ -318,7 +334,7 @@ class ConversationHistory:
                 personality,
                 turn_number,
                 tool_name,
-                tool_result,
+                t_res_str,
                 datetime.now(timezone.utc).isoformat(),
                 json.dumps(metadata) if metadata else None,
             ),
@@ -368,6 +384,158 @@ class ConversationHistory:
             (session_id, turn_number),
         )
         await asyncio.to_thread(self._conn.commit)
+
+    async def create_session(
+        self, session_id: str | None = None, personality: str = "neo", title: str = "New Chat"
+    ) -> dict:
+        """Create or register a new isolated conversation session."""
+        if not session_id:
+            session_id = f"chat_{str(uuid.uuid4())[:8]}"
+        if not self._conn:
+            return {"id": session_id, "session_id": session_id, "personality": personality, "title": title}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await asyncio.to_thread(
+            self._conn.execute,
+            """INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
+               VALUES (?, ?, ?, ?, 0, ?)""",
+            (session_id, personality, now_iso, now_iso, title),
+        )
+        await asyncio.to_thread(self._conn.commit)
+        return {
+            "id": session_id,
+            "session_id": session_id,
+            "personality": personality,
+            "title": title,
+            "started_at": now_iso,
+            "updated_at": now_iso,
+            "turn_count": 0,
+        }
+
+    async def list_sessions(self, limit: int = 50) -> list[dict]:
+        """List past chat sessions ordered by most recently active."""
+        if not self._conn:
+            return []
+        cursor = await asyncio.to_thread(
+            self._conn.execute,
+            """SELECT s.id, s.personality, s.started_at, s.updated_at, s.turn_count, s.title,
+                      (SELECT content FROM conversations WHERE session_id = s.id AND role = 'assistant' ORDER BY id DESC LIMIT 1) as last_assistant_msg,
+                      (SELECT content FROM conversations WHERE session_id = s.id AND role = 'user' ORDER BY id ASC LIMIT 1) as first_user_msg
+               FROM sessions s
+               ORDER BY COALESCE(s.updated_at, s.started_at) DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            sid, pers, started, updated, turns, title, last_bot, first_u = r
+            display_title = title if (title and title != "New Chat") else ((first_u[:36] + "...") if first_u else "New Chat")
+            result.append({
+                "id": sid,
+                "personality": pers,
+                "started_at": started,
+                "updated_at": updated or started,
+                "turn_count": turns or 0,
+                "title": display_title,
+                "last_message": (last_bot[:60] + "...") if last_bot else None,
+            })
+        return result
+
+    async def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict]:
+        """Get all messages for an isolated session, including tool call details and metrics."""
+        if not self._conn:
+            return []
+        cursor = await asyncio.to_thread(
+            self._conn.execute,
+            """SELECT id, role, content, personality, turn_number, tool_name, tool_result, timestamp, metadata
+               FROM conversations
+               WHERE session_id = ?
+               ORDER BY id ASC
+               LIMIT ?""",
+            (session_id, limit),
+        )
+        rows = cursor.fetchall()
+        msgs = []
+        for r in rows:
+            mid, role, content, pers, turn_num, t_name, t_res, ts, meta_raw = r
+            meta = {}
+            if meta_raw:
+                try:
+                    meta = json.loads(meta_raw)
+                except Exception:
+                    pass
+            parsed_t_res = t_res
+            if isinstance(t_res, str) and (t_res.startswith("{") or t_res.startswith("[")):
+                try:
+                    parsed_t_res = json.loads(t_res)
+                except Exception:
+                    pass
+            msgs.append({
+                "id": mid,
+                "role": role,
+                "content": content,
+                "personality": pers,
+                "turn_number": turn_num,
+                "tool_name": t_name,
+                "tool_result": parsed_t_res,
+                "timestamp": ts,
+                "metadata": meta,
+            })
+        return msgs
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete an isolated session and all its messages."""
+        if not self._conn:
+            return False
+        await asyncio.to_thread(
+            self._conn.execute,
+            "DELETE FROM conversations WHERE session_id = ?",
+            (session_id,),
+        )
+        await asyncio.to_thread(
+            self._conn.execute,
+            "DELETE FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        await asyncio.to_thread(self._conn.commit)
+        return True
+
+    async def update_session(
+        self, session_id: str, title: str | None = None, turn_count: int | None = None
+    ) -> None:
+        """Update session metadata."""
+        if not self._conn:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if title is not None and turn_count is not None:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "UPDATE sessions SET title = ?, turn_count = ?, updated_at = ? WHERE id = ?",
+                (title, turn_count, now_iso, session_id),
+            )
+        elif title is not None:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
+                (title, now_iso, session_id),
+            )
+        elif turn_count is not None:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "UPDATE sessions SET turn_count = ?, updated_at = ? WHERE id = ?",
+                (turn_count, now_iso, session_id),
+            )
+        else:
+            await asyncio.to_thread(
+                self._conn.execute,
+                "UPDATE sessions SET updated_at = ? WHERE id = ?",
+                (now_iso, session_id),
+            )
+        await asyncio.to_thread(self._conn.commit)
+
+    async def update_session_title(self, session_id: str, title: str) -> None:
+        """Update session title."""
+        await self.update_session(session_id, title=title)
 
     async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
         """Store a durable fact in SQLite."""
@@ -441,6 +609,46 @@ class ConversationHistory:
         rows = cursor.fetchall()
         return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
 
+    async def get_all_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
+        """Retrieve all durable facts for the user/personality across time."""
+        if not self._conn:
+            return []
+        cursor = await asyncio.to_thread(
+            self._conn.execute,
+            """SELECT id, fact, created_at FROM facts
+               WHERE user_id = ? OR user_id = 'default'
+               ORDER BY id ASC LIMIT ?""",
+            (user_id, limit),
+        )
+        rows = cursor.fetchall()
+        return [{"id": r[0], "memory": r[1], "fact": r[1], "created_at": r[2]} for r in rows]
+
+    async def get_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
+        """Alias for get_all_facts."""
+        return await self.get_all_facts(user_id=user_id, limit=limit)
+
+    async def get_archive(self, limit: int = 1000, exclude_session_id: str | None = None) -> list[dict]:
+        """Retrieve chronological past conversation history across previous sessions."""
+        if not self._conn:
+            return []
+        if exclude_session_id:
+            cursor = await asyncio.to_thread(
+                self._conn.execute,
+                """SELECT role, content, timestamp, session_id FROM conversations
+                   WHERE session_id != ?
+                   ORDER BY id DESC LIMIT ?""",
+                (exclude_session_id, limit),
+            )
+        else:
+            cursor = await asyncio.to_thread(
+                self._conn.execute,
+                """SELECT role, content, timestamp, session_id FROM conversations
+                   ORDER BY id DESC LIMIT ?""",
+                (limit,),
+            )
+        rows = cursor.fetchall()
+        return [{"role": r[0], "content": r[1], "timestamp": r[2], "session_id": r[3]} for r in reversed(rows)]
+
     async def health_check(self) -> bool:
         return self._conn is not None
 
@@ -480,16 +688,31 @@ class MemoryManager:
         personality: str = "cypher",
         turn_number: int = 0,
         namespace: str | None = None,
+        tool_name: str | None = None,
+        tool_result: str | None = None,
+        metadata: dict | None = None,
     ) -> None:
         """Store a complete conversation turn in both systems, isolated by personality namespace."""
         active_ns = namespace or personality or "default"
+
+        # Auto-create or update session record
+        clean_title = (user_text.strip().replace("\n", " ")[:36] + "...") if user_text else "Chat"
+        await self.history.create_session(session_id, personality=personality, title=clean_title)
+        await self.history.update_session(session_id, turn_count=turn_number)
 
         # SQLite archive (always recorded with personality tag)
         await self.history.add_message(
             session_id, "user", user_text, personality, turn_number
         )
         await self.history.add_message(
-            session_id, "assistant", bot_text, personality, turn_number
+            session_id,
+            "assistant",
+            bot_text,
+            personality,
+            turn_number,
+            tool_name=tool_name,
+            tool_result=tool_result,
+            metadata=metadata,
         )
 
         # Store user statements that declare preferences into isolated SQLite facts
@@ -504,6 +727,24 @@ class MemoryManager:
             {"role": "assistant", "content": bot_text},
         ]
         await self.mem0.add(messages, user_id=active_ns, infer=False)
+
+    async def create_session(
+        self, session_id: str | None = None, personality: str = "neo", title: str = "New Chat"
+    ) -> dict:
+        """Create or register a new isolated conversation session."""
+        return await self.history.create_session(session_id=session_id, personality=personality, title=title)
+
+    async def list_sessions(self, limit: int = 50) -> list[dict]:
+        """List past chat sessions ordered by most recently active."""
+        return await self.history.list_sessions(limit)
+
+    async def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict]:
+        """Get all messages for an isolated session, including tool call details and metrics."""
+        return await self.history.get_session_messages(session_id, limit)
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete an isolated session and all its messages."""
+        return await self.history.delete_session(session_id)
 
     async def add_memory(self, fact: str, user_id: str = "user") -> None:
         """Explicitly add a durable memory within a specific isolated personality workspace."""
@@ -545,6 +786,16 @@ class MemoryManager:
     ) -> list[dict]:
         """Get recent conversation for context."""
         return await self.history.get_recent(session_id, limit)
+
+    async def get_all_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
+        """Retrieve all durable facts for full context grounding."""
+        return await self.history.get_all_facts(user_id=user_id, limit=limit)
+
+    async def get_conversation_archive(
+        self, limit: int = 1000, exclude_session_id: str | None = None
+    ) -> list[dict]:
+        """Retrieve historical multi-session conversations for deep context recall."""
+        return await self.history.get_archive(limit=limit, exclude_session_id=exclude_session_id)
 
     async def clear_turn(self, session_id: str, turn_number: int = 0) -> None:
         """Clear a specific turn from session history."""

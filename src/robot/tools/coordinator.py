@@ -572,35 +572,49 @@ class ToolConversationCoordinator:
 
         t_final_start = time.perf_counter()
 
-        # For music.play, check if music audio has already started playing
-        # If so, and we already announced the song in holding speech, return immediately
-        _music_already_playing = False
-        if ctx.tool_name == "music.play":
-            try:
-                from robot.tools.builtins.music import MusicPlayerService
-                ms = MusicPlayerService.get_instance()
-                _music_already_playing = getattr(ms, "_music_active", False)
-            except Exception:
-                pass
-            if _music_already_playing and ctx.spoken_holding_text:
-                logger.info("music_already_active_skipping_extra_speech", text=ctx.spoken_holding_text)
+        # For music.play, avoid speaking over the music track once it is launched
+        if ctx.tool_name == "music.play" and not ctx.tool_error:
+            if ctx.spoken_holding_text:
+                logger.info("music_starting_skipping_continuation_speech", text=ctx.spoken_holding_text)
+                if not interrupt.is_set():
+                    await self.engine._tts_queue.put(None)
                 return ctx.spoken_holding_text
+            track_name = "music"
+            if isinstance(ctx.tool_result, dict):
+                track_name = ctx.tool_result.get("title") or ctx.tool_result.get("track") or "music"
+            ack = f"Playing {track_name}."
+            await self.engine._tts_queue.put((ack, interrupt, None, None))
+            if not interrupt.is_set():
+                await self.engine._tts_queue.put(None)
+            return ack
 
         # Format tool result cleanly without bloated tracking URLs
+        # In Gemini High-Intelligence mode (1M context), provide full extracted article contents and rich multi-source data.
+        # In Local mode (4K context), keep compact 3-item snippets with 160-char truncation to preserve KV cache slot 0.
         result_text = str(ctx.tool_result) if ctx.tool_result is not None else (ctx.tool_error or "No data available")
+        is_gemini = getattr(self.engine, "llm_provider_type", "local") == "gemini"
         if isinstance(ctx.tool_result, list):
             snippets = []
-            for item in ctx.tool_result[:3]:
+            max_items = 8 if is_gemini else 3
+            for item in ctx.tool_result[:max_items]:
                 if isinstance(item, dict):
                     t = item.get("title", "").strip()
                     s = item.get("snippet", "").strip()
-                    if len(s) > 160:
-                        s = s[:160] + "..."
-                    if t or s:
-                        snippets.append(f"• {t}: {s}")
+                    u = item.get("url", "")
+                    content = item.get("content", "").strip()
+                    if is_gemini and content:
+                        snippets.append(f"• Source: {t}\n  URL: {u}\n  Full Extracted Article Content:\n{content}")
+                    else:
+                        if not is_gemini and len(s) > 160:
+                            s = s[:160] + "..."
+                        if t or s:
+                            snippets.append(f"• {t}: {s}")
                 else:
-                    snippets.append(str(item)[:160])
-            result_text = "\n".join(snippets)
+                    s_str = str(item)
+                    if not is_gemini and len(s_str) > 160:
+                        s_str = s_str[:160]
+                    snippets.append(s_str)
+            result_text = "\n\n".join(snippets)
         elif isinstance(ctx.tool_result, dict):
             if "summary" in ctx.tool_result:
                 result_text = ctx.tool_result["summary"]
@@ -609,7 +623,7 @@ class ToolConversationCoordinator:
                 result_text = f"Exact Current Time: {tr.get('current_time')}, Date: {tr.get('current_date')}, Timezone: {tr.get('timezone')}"
             else:
                 import json as _json
-                result_text = _json.dumps(ctx.tool_result, ensure_ascii=False)
+                result_text = _json.dumps(ctx.tool_result, ensure_ascii=False, indent=2 if is_gemini else None)
 
         spoken_prefix = ctx.spoken_holding_text.strip()
         continuation_messages = [dict(m) for m in messages]

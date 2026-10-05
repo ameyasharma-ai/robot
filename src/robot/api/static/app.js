@@ -58,10 +58,18 @@ class RobotUI {
         this.barTts = document.getElementById("barTts");
         this.barE2e = document.getElementById("barE2e");
 
+        // Chat Workspace State
+        this.chatSessions = [];
+        this.activeChatSessionId = null;
+        this.chatStreaming = false;
+        this.chatAbortController = null;
+
         this.initViewControls();
         this.initPersonalitySelector();
+        this.initLlmProviderToggle();
         this.init3DCharacter();
         this.initTextChat();
+        this.initChatWorkspace();
         this.initBlinking();
         this.initWebsocket();
         this.initImageGen();
@@ -248,6 +256,600 @@ class RobotUI {
         });
     }
 
+    initChatWorkspace() {
+        this.chatSidebar = document.getElementById("chatSidebar");
+        this.btnToggleChatSidebar = document.getElementById("btnToggleChatSidebar");
+        this.btnNewChat = document.getElementById("btnNewChat");
+        this.btnRefreshSessions = document.getElementById("btnRefreshSessions");
+        this.chatSessionsList = document.getElementById("chatSessionsList");
+        this.chatActiveTitle = document.getElementById("chatActiveTitle");
+        this.chatSessionIdPill = document.getElementById("chatSessionIdPill");
+        this.chatPersonaLabel = document.getElementById("chatPersonaLabel");
+        this.chatModelLabel = document.getElementById("chatModelLabel");
+        this.chatMicPill = document.getElementById("chatMicPill");
+        this.chatMicLabel = document.getElementById("chatMicLabel");
+        this.chatMessagesContainer = document.getElementById("chatMessagesContainer");
+        this.chatTextarea = document.getElementById("chatTextarea");
+        this.btnChatSubmit = document.getElementById("btnChatSubmit");
+        this.btnChatStopStream = document.getElementById("btnChatStopStream");
+        this.chatLiveSpeed = document.getElementById("chatLiveSpeed");
+
+        if (this.btnToggleChatSidebar && this.chatSidebar) {
+            this.btnToggleChatSidebar.addEventListener("click", () => {
+                this.chatSidebar.classList.toggle("collapsed");
+            });
+        }
+
+        if (this.btnNewChat) {
+            this.btnNewChat.addEventListener("click", () => this.createChatSession());
+        }
+
+        if (this.btnRefreshSessions) {
+            this.btnRefreshSessions.addEventListener("click", () => this.loadChatSessions());
+        }
+
+        if (this.chatTextarea) {
+            this.chatTextarea.addEventListener("input", () => {
+                this.chatTextarea.style.height = "auto";
+                this.chatTextarea.style.height = `${Math.min(220, this.chatTextarea.scrollHeight)}px`;
+            });
+
+            this.chatTextarea.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendChatMessage();
+                }
+            });
+        }
+
+        if (this.btnChatSubmit) {
+            this.btnChatSubmit.addEventListener("click", (e) => {
+                e.preventDefault();
+                this.sendChatMessage();
+            });
+        }
+
+        if (this.btnChatStopStream) {
+            this.btnChatStopStream.addEventListener("click", (e) => {
+                e.preventDefault();
+                this.stopChatStream();
+            });
+        }
+
+        // Quick action chips
+        document.querySelectorAll(".chat-chip").forEach((chip) => {
+            chip.addEventListener("click", () => {
+                const prompt = chip.getAttribute("data-prompt");
+                if (prompt && this.chatTextarea) {
+                    this.chatTextarea.value = prompt;
+                    this.chatTextarea.style.height = "auto";
+                    this.chatTextarea.style.height = `${Math.min(220, this.chatTextarea.scrollHeight)}px`;
+                    this.sendChatMessage();
+                }
+            });
+        });
+
+        this.syncChatTopBar();
+    }
+
+    syncChatTopBar() {
+        if (this.chatPersonaLabel && this.personaSelect) {
+            const p = this.personaSelect.value;
+            this.chatPersonaLabel.textContent = p === "neo" ? "CYPHER" : p.toUpperCase();
+        }
+        if (this.chatModelLabel) {
+            const isGemini = this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode");
+            this.chatModelLabel.textContent = isGemini ? "GEMINI 3.5 FLASH (1M)" : "RTX 3050 (4K)";
+        }
+    }
+
+    async onEnterChatMode() {
+        this.stopMouthSpeaking();
+        this._forEachEngine((eng) => eng.speakStop());
+
+        try {
+            await fetch("/voice-mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: false }),
+            });
+            this.voiceEnabled = false;
+            if (this.updateVoiceUI) this.updateVoiceUI(false);
+            if (this.chatMicLabel) this.chatMicLabel.textContent = "MIC UNLOADED";
+            this.logEvent("AUDIO", "Switched to Chat Workspace: Microphone unloaded and hardware released.", "system");
+        } catch (e) {
+            console.error("Failed to unload mic on entering chat mode:", e);
+        }
+
+        this.syncChatTopBar();
+
+        if (!this.chatSessions || this.chatSessions.length === 0) {
+            await this.loadChatSessions();
+        }
+
+        if (this.chatTextarea) {
+            this.chatTextarea.focus();
+        }
+    }
+
+    async onExitChatMode() {
+        try {
+            await fetch("/voice-mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: true }),
+            });
+            this.voiceEnabled = true;
+            if (this.updateVoiceUI) this.updateVoiceUI(true);
+            this.logEvent("AUDIO", "Returned to Voice Interface: Microphone restored.", "system");
+        } catch (e) {
+            console.error("Failed to restore voice mode:", e);
+        }
+    }
+
+    async loadChatSessions() {
+        if (!this.chatSessionsList) return;
+        try {
+            const res = await fetch("/chat/sessions");
+            if (!res.ok) return;
+            const data = await res.json();
+            this.chatSessions = data.sessions || [];
+            this.renderSessionsList();
+
+            if (!this.activeChatSessionId) {
+                if (this.chatSessions.length > 0) {
+                    this.selectChatSession(this.chatSessions[0].id);
+                } else {
+                    this.createChatSession();
+                }
+            }
+        } catch (e) {
+            console.error("Failed to load chat sessions:", e);
+        }
+    }
+
+    renderSessionsList() {
+        if (!this.chatSessionsList) return;
+        this.chatSessionsList.innerHTML = "";
+        if (this.chatSessions.length === 0) {
+            this.chatSessionsList.innerHTML = '<div class="chat-session-empty">No conversations yet.<br>Click "+ New Chat" to start.</div>';
+            return;
+        }
+
+        this.chatSessions.forEach((s) => {
+            const item = document.createElement("div");
+            item.className = `chat-session-item ${s.id === this.activeChatSessionId ? "active" : ""}`;
+            item.setAttribute("data-session-id", s.id);
+
+            const title = s.title || "Conversation";
+            let timeStr = "";
+            if (s.updated_at || s.created_at) {
+                const date = new Date(s.updated_at || s.created_at);
+                timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            }
+
+            item.innerHTML = `
+                <div class="session-info">
+                    <div class="session-title" title="${this.escapeHtml(title)}">${this.escapeHtml(title)}</div>
+                    <div class="session-date">${timeStr}</div>
+                </div>
+                <button class="session-del-btn" title="Delete conversation">✕</button>
+            `;
+
+            item.addEventListener("click", (e) => {
+                if (e.target.closest(".session-del-btn")) return;
+                this.selectChatSession(s.id);
+            });
+
+            const delBtn = item.querySelector(".session-del-btn");
+            if (delBtn) {
+                delBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    this.deleteChatSession(s.id);
+                });
+            }
+
+            this.chatSessionsList.appendChild(item);
+        });
+    }
+
+    async createChatSession() {
+        try {
+            const res = await fetch("/chat/sessions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title: "New Conversation" })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                this.activeChatSessionId = data.session_id;
+                await this.loadChatSessions();
+                this.selectChatSession(data.session_id);
+            }
+        } catch (e) {
+            console.error("Failed to create chat session:", e);
+        }
+    }
+
+    async selectChatSession(sessionId) {
+        this.activeChatSessionId = sessionId;
+        this.renderSessionsList();
+
+        if (this.chatSessionIdPill) {
+            this.chatSessionIdPill.textContent = `SESSION: ${sessionId.substring(0, 8)}...`;
+        }
+
+        try {
+            const res = await fetch(`/chat/sessions/${sessionId}`);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            if (this.chatActiveTitle) {
+                this.chatActiveTitle.textContent = data.title || "Conversation";
+            }
+
+            if (!this.chatMessagesContainer) return;
+            this.chatMessagesContainer.innerHTML = "";
+
+            if (!data.messages || data.messages.length === 0) {
+                this.renderChatWelcome();
+                return;
+            }
+
+            data.messages.forEach((msg) => {
+                this.appendHistoricalMessage(msg);
+            });
+            this.scrollChatToBottom();
+        } catch (e) {
+            console.error("Failed to select chat session:", e);
+        }
+    }
+
+    async deleteChatSession(sessionId) {
+        if (!confirm("Are you sure you want to delete this conversation thread?")) return;
+        try {
+            const res = await fetch(`/chat/sessions/${sessionId}`, { method: "DELETE" });
+            if (res.ok) {
+                if (this.activeChatSessionId === sessionId) {
+                    this.activeChatSessionId = null;
+                }
+                await this.loadChatSessions();
+            }
+        } catch (e) {
+            console.error("Failed to delete session:", e);
+        }
+    }
+
+    renderChatWelcome() {
+        if (!this.chatMessagesContainer) return;
+        const persona = (this.personaSelect ? this.personaSelect.value : "neo").toUpperCase();
+        this.chatMessagesContainer.innerHTML = `
+            <div class="chat-welcome-hero">
+                <div class="hero-logo">🤖</div>
+                <h2 class="hero-title">${this.escapeHtml(persona)} AI WORKSPACE</h2>
+                <p class="hero-desc">
+                    Isolated conversational threads with shared global memory across all instances and voice turns.
+                    Microphone is unloaded to preserve audio privacy and hardware bandwidth.
+                </p>
+                <div class="hero-features">
+                    <div class="hero-feat"><span class="feat-icon">⚡</span> Real-time token streaming with live tok/s</div>
+                    <div class="hero-feat"><span class="feat-icon">🛠️</span> Interactive tool execution telemetry cards</div>
+                    <div class="hero-feat"><span class="feat-icon">🧠</span> Shared persistent vector facts & context memory</div>
+                </div>
+            </div>
+        `;
+    }
+
+    appendHistoricalMessage(msg) {
+        if (!this.chatMessagesContainer) return;
+        const isUser = msg.role === "user";
+        const row = document.createElement("div");
+        row.className = `chat-msg-row ${isUser ? "msg-user" : "msg-assistant"}`;
+
+        let toolHtml = "";
+        if (!isUser && msg.tool_name) {
+            let resStr = "";
+            if (typeof msg.tool_result === "object") {
+                resStr = JSON.stringify(msg.tool_result, null, 2);
+            } else {
+                resStr = String(msg.tool_result || "Tool execution completed.");
+            }
+            toolHtml = `
+                <div class="chat-tool-card completed">
+                    <div class="tool-hdr">
+                        <span class="tool-icon">⚡</span>
+                        <span class="tool-title">TOOL EXECUTED: <strong>${this.escapeHtml(msg.tool_name)}</strong></span>
+                    </div>
+                    <div class="tool-result-box">
+                        <pre class="tool-result-content">${this.escapeHtml(resStr)}</pre>
+                    </div>
+                </div>
+            `;
+        }
+
+        let timeStr = "";
+        if (msg.timestamp) {
+            const d = new Date(msg.timestamp);
+            timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        }
+
+        const senderLabel = isUser ? "YOU" : (this.personaSelect ? this.personaSelect.value.toUpperCase() : "ROBOT");
+        const avatarIcon = isUser ? "👤" : "🤖";
+        const contentHtml = isUser ? this.escapeHtml(msg.content) : this.renderChatMarkdown(msg.content);
+
+        row.innerHTML = `
+            <div class="chat-msg-avatar">${avatarIcon}</div>
+            <div class="chat-msg-content">
+                <div class="chat-msg-header">
+                    <span class="chat-msg-sender">${senderLabel}</span>
+                    <span class="chat-msg-time">${timeStr}</span>
+                </div>
+                ${toolHtml}
+                <div class="chat-msg-body">${contentHtml}</div>
+            </div>
+        `;
+        this.chatMessagesContainer.appendChild(row);
+    }
+
+    async sendChatMessage(promptText) {
+        if (!this.chatTextarea) return;
+        const text = (promptText || this.chatTextarea.value).trim();
+        if (!text || this.chatStreaming) return;
+
+        if (!this.activeChatSessionId) {
+            await this.createChatSession();
+        }
+
+        // Remove welcome hero if present
+        const hero = this.chatMessagesContainer?.querySelector(".chat-welcome-hero");
+        if (hero) hero.remove();
+
+        this.chatStreaming = true;
+        if (this.btnChatSubmit) this.btnChatSubmit.disabled = true;
+        if (this.btnChatStopStream) this.btnChatStopStream.style.display = "inline-flex";
+        this.chatTextarea.value = "";
+        this.chatTextarea.style.height = "auto";
+
+        // Append User bubble
+        const userRow = document.createElement("div");
+        userRow.className = "chat-msg-row msg-user";
+        userRow.innerHTML = `
+            <div class="chat-msg-avatar">👤</div>
+            <div class="chat-msg-content">
+                <div class="chat-msg-header">
+                    <span class="chat-msg-sender">YOU</span>
+                    <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+                <div class="chat-msg-body">${this.escapeHtml(text)}</div>
+            </div>
+        `;
+        this.chatMessagesContainer.appendChild(userRow);
+        this.scrollChatToBottom();
+
+        // Create Assistant Streaming row
+        const streamId = `stream_${Date.now()}`;
+        const currentPersona = (this.personaSelect ? this.personaSelect.value : "neo").toUpperCase();
+        const isGemini = this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode");
+        const currentModel = isGemini ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+
+        const assistantRow = document.createElement("div");
+        assistantRow.className = "chat-msg-row msg-assistant";
+        assistantRow.id = `row_${streamId}`;
+        assistantRow.innerHTML = `
+            <div class="chat-msg-avatar">🤖</div>
+            <div class="chat-msg-content">
+                <div class="chat-msg-header">
+                    <span class="chat-msg-sender">${currentPersona}</span>
+                    <span class="chat-msg-badge">${currentModel}</span>
+                    <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+                <div class="chat-tool-container" id="toolBox_${streamId}"></div>
+                <div class="chat-msg-body">
+                    <span class="chat-text-stream" id="streamText_${streamId}"></span>
+                    <span class="chat-cursor" id="streamCursor_${streamId}"></span>
+                </div>
+                <div class="chat-msg-telemetry" id="streamTelem_${streamId}" style="display: none;"></div>
+            </div>
+        `;
+        this.chatMessagesContainer.appendChild(assistantRow);
+        this.scrollChatToBottom();
+
+        const textSpan = document.getElementById(`streamText_${streamId}`);
+        const cursorSpan = document.getElementById(`streamCursor_${streamId}`);
+        const toolBox = document.getElementById(`toolBox_${streamId}`);
+        const telemDiv = document.getElementById(`streamTelem_${streamId}`);
+
+        this.chatAbortController = new AbortController();
+        let streamedRawText = "";
+        let tokenCount = 0;
+        let streamStartTime = performance.now();
+
+        try {
+            const res = await fetch("/chat/stream", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    text: text,
+                    session_id: this.activeChatSessionId,
+                    personality: this.personaSelect ? this.personaSelect.value : undefined
+                }),
+                signal: this.chatAbortController.signal
+            });
+
+            if (!res.ok) {
+                throw new Error(`HTTP error ${res.status}`);
+            }
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n\n");
+                buffer = lines.pop(); // keep partial
+
+                for (const chunk of lines) {
+                    if (!chunk.trim()) continue;
+                    const eventMatch = chunk.match(/^event:\s*(.+)$/m);
+                    const dataMatch = chunk.match(/^data:\s*(.+)$/m);
+                    const eventType = eventMatch ? eventMatch[1].trim() : "message";
+                    const dataStr = dataMatch ? dataMatch[1].trim() : "{}";
+
+                    let payload = {};
+                    try { payload = JSON.parse(dataStr); } catch (e) {}
+
+                    if (eventType === "start") {
+                        streamStartTime = performance.now();
+                    } else if (eventType === "token") {
+                        if (payload.token) {
+                            streamedRawText += payload.token;
+                            tokenCount++;
+                            const elapsedSec = (performance.now() - streamStartTime) / 1000;
+                            const speed = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : "0.0";
+                            if (this.chatLiveSpeed) this.chatLiveSpeed.textContent = `${speed} tok/s`;
+                            if (textSpan) textSpan.innerHTML = this.renderChatMarkdown(streamedRawText);
+                            this.scrollChatToBottom();
+                        }
+                    } else if (eventType === "tool_call") {
+                        if (toolBox) {
+                            const card = document.createElement("div");
+                            card.className = "chat-tool-card running";
+                            card.id = `toolCard_${payload.tool}`;
+                            card.innerHTML = `
+                                <div class="tool-hdr">
+                                    <span class="tool-spinner"></span>
+                                    <span class="tool-title">⚡ Calling Tool: <strong>${this.escapeHtml(payload.tool)}</strong></span>
+                                </div>
+                                <pre class="tool-args">${this.escapeHtml(JSON.stringify(payload.args || {}, null, 2))}</pre>
+                            `;
+                            toolBox.appendChild(card);
+                            this.scrollChatToBottom();
+                        }
+                    } else if (eventType === "tool_result") {
+                        if (toolBox) {
+                            const existingCard = document.getElementById(`toolCard_${payload.tool}`);
+                            let resStr = typeof payload.result === "object" ? JSON.stringify(payload.result, null, 2) : String(payload.result);
+                            const completedCardHtml = `
+                                <div class="tool-hdr">
+                                    <span class="tool-icon">✓</span>
+                                    <span class="tool-title">Tool Executed: <strong>${this.escapeHtml(payload.tool)}</strong></span>
+                                </div>
+                                <div class="tool-result-box">
+                                    <pre class="tool-result-content">${this.escapeHtml(resStr)}</pre>
+                                </div>
+                            `;
+                            if (existingCard) {
+                                existingCard.className = "chat-tool-card completed";
+                                existingCard.innerHTML = completedCardHtml;
+                            } else {
+                                const newCard = document.createElement("div");
+                                newCard.className = "chat-tool-card completed";
+                                newCard.innerHTML = completedCardHtml;
+                                toolBox.appendChild(newCard);
+                            }
+                            this.scrollChatToBottom();
+                        }
+                    } else if (eventType === "done") {
+                        if (cursorSpan) cursorSpan.remove();
+                        if (telemDiv) {
+                            telemDiv.style.display = "flex";
+                            telemDiv.innerHTML = `
+                                <span class="telem-item">⚡ ${payload.tokens || tokenCount} tokens</span>
+                                <span class="telem-item">🚀 ${(payload.tokens_per_sec || 0).toFixed(1)} tok/s</span>
+                                <span class="telem-item">⏱️ ${(payload.duration_s || 0).toFixed(2)}s</span>
+                                <span class="telem-item">🎯 TTFT: ${(payload.ttft_ms || 0).toFixed(0)} ms</span>
+                            `;
+                        }
+                        this.loadChatSessions();
+                    } else if (eventType === "error") {
+                        if (textSpan) {
+                            textSpan.innerHTML += `<div class="chat-stream-error">[Error: ${this.escapeHtml(payload.error || "Unknown stream error")}]</div>`;
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            if (err.name === "AbortError") {
+                if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-stopped">[Generation stopped]</span>`;
+            } else {
+                if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-error">[Error: ${this.escapeHtml(err.message)}]</span>`;
+            }
+        } finally {
+            if (cursorSpan) cursorSpan.remove();
+            this.chatStreaming = false;
+            this.chatAbortController = null;
+            if (this.btnChatSubmit) this.btnChatSubmit.disabled = false;
+            if (this.btnChatStopStream) this.btnChatStopStream.style.display = "none";
+            if (this.chatLiveSpeed) this.chatLiveSpeed.textContent = "0.0 tok/s";
+            this.scrollChatToBottom();
+            if (this.chatTextarea) this.chatTextarea.focus();
+        }
+    }
+
+    stopChatStream() {
+        if (this.chatAbortController) {
+            this.chatAbortController.abort();
+        }
+    }
+
+    scrollChatToBottom() {
+        if (this.chatMessagesContainer) {
+            this.chatMessagesContainer.scrollTop = this.chatMessagesContainer.scrollHeight;
+        }
+    }
+
+    renderChatMarkdown(text) {
+        if (!text) return "";
+        let escaped = text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+        // Code blocks: ```lang ... ```
+        escaped = escaped.replace(/```([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+            const langLabel = lang ? lang.toUpperCase() : "CODE";
+            return `<div class="chat-code-block">
+                <div class="code-block-header">
+                    <span class="code-lang-tag">${langLabel}</span>
+                    <button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.chat-code-block').querySelector('code').innerText).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500); })">Copy</button>
+                </div>
+                <pre class="code-pre"><code class="language-${lang}">${code.trim()}</code></pre>
+            </div>`;
+        });
+
+        // Inline code: `code`
+        escaped = escaped.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
+
+        // Bold: **text**
+        escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+        // Italic: *text*
+        escaped = escaped.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+        // Line breaks outside code blocks
+        const parts = escaped.split(/(<div class="chat-code-block">[\s\S]*?<\/div>)/g);
+        for (let i = 0; i < parts.length; i++) {
+            if (!parts[i].startsWith('<div class="chat-code-block">')) {
+                parts[i] = parts[i].replace(/\n/g, "<br>");
+            }
+        }
+        return parts.join("");
+    }
+
+    escapeHtml(str) {
+        if (!str) return "";
+        return String(str)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
     init3DCharacter() {
         // ─── Animated 3D Character Engine (Cyber variant) ──────────────────
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
@@ -312,6 +914,7 @@ class RobotUI {
         const btnStop = document.getElementById("btnStopExecution");
         const btnDual = document.getElementById("btnViewDual");
         const btnDev = document.getElementById("btnViewDev");
+        const btnChat = document.getElementById("btnViewChat");
         const btnFs = document.getElementById("btnFullscreen");
         const btnClear = document.getElementById("btnClearLog");
 
@@ -333,6 +936,7 @@ class RobotUI {
 
         if (btnDual) btnDual.addEventListener("click", () => this.setView("dual"));
         if (btnDev) btnDev.addEventListener("click", () => this.setView("dev"));
+        if (btnChat) btnChat.addEventListener("click", () => this.setView("chat"));
 
         btnFs.addEventListener("click", () => {
             if (!document.fullscreenElement) {
@@ -454,6 +1058,7 @@ class RobotUI {
                     const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
                     this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
                     if (this.personaName) this.personaName.textContent = disp;
+                    this.syncChatTopBar();
                 }
             } catch (err) {
                 this.logEvent("ERROR", `Failed to switch personality: ${err.message}`, "error");
@@ -461,11 +1066,123 @@ class RobotUI {
         });
     }
 
+    async initLlmProviderToggle() {
+        const btn = document.getElementById("btnLlmToggle");
+        const icon = document.getElementById("llmToggleIcon");
+        const label = document.getElementById("llmToggleLabel");
+        const sub = document.getElementById("llmToggleSub");
+        const badge = document.getElementById("llmModeBadge");
+
+        const panelStrip = document.getElementById("activeModelStrip");
+        const panelBadge = document.getElementById("activeModelBadge");
+        const panelName = document.getElementById("activeModelName");
+        const panelBtn = document.getElementById("btnSwapModelPanel");
+        const panelBtnText = document.getElementById("swapModelBtnText");
+        const panelBtnIcon = document.getElementById("swapBtnIcon");
+
+        this.updateLlmToggleUi = (prov, mode, isTransitioning = false) => {
+            const isGemini = prov === "gemini";
+
+            if (isTransitioning) {
+                if (btn) btn.classList.add("switching");
+                if (panelBtn) panelBtn.disabled = true;
+                if (label) label.textContent = isGemini ? "STARTING LOCAL..." : "CONNECTING GEMINI...";
+                if (sub) sub.textContent = isGemini ? "ALLOCATING VRAM" : "FREEING 3.4GB VRAM";
+                if (badge) badge.textContent = "WAIT";
+                if (panelName) panelName.textContent = isGemini ? "Starting Local Qwen (Allocating VRAM)..." : "Connecting Gemini (Freeing VRAM)...";
+                if (panelBtnText) panelBtnText.textContent = "SWAPPING...";
+                return;
+            }
+
+            if (btn) btn.classList.remove("switching");
+            if (panelBtn) panelBtn.disabled = false;
+
+            if (isGemini) {
+                if (btn) {
+                    btn.classList.remove("local-mode");
+                    btn.classList.add("gemini-mode");
+                }
+                if (panelStrip) panelStrip.classList.add("gemini-active");
+                if (icon) icon.textContent = "✨";
+                if (label) label.textContent = "GEMINI (CLOUD)";
+                if (sub) sub.textContent = "1M CONTEXT • HIGH INTEL";
+                if (badge) badge.textContent = "GEMINI";
+                if (panelBadge) panelBadge.textContent = "CLOUD API";
+                if (panelName) panelName.textContent = "Gemini 3.5 Flash Lite • 1M Context";
+                if (panelBtnText) panelBtnText.textContent = "SWAP TO LOCAL";
+                if (panelBtnIcon) panelBtnIcon.textContent = "⚡";
+                if (btn) btn.title = "Active: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence). Click to swap to Local Qwen (RTX 3050).";
+            } else {
+                if (btn) {
+                    btn.classList.remove("gemini-mode");
+                    btn.classList.add("local-mode");
+                }
+                if (panelStrip) panelStrip.classList.remove("gemini-active");
+                if (icon) icon.textContent = "⚡";
+                if (label) label.textContent = "LOCAL (RTX 3050)";
+                if (sub) sub.textContent = "LOW LATENCY • 4K";
+                if (badge) badge.textContent = "LOCAL";
+                if (panelBadge) panelBadge.textContent = "LOCAL GPU";
+                if (panelName) panelName.textContent = "Qwen 3.5 4B • RTX 3050 • 4K";
+                if (panelBtnText) panelBtnText.textContent = "SWAP TO GEMINI";
+                if (panelBtnIcon) panelBtnIcon.textContent = "✨";
+                if (btn) btn.title = "Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency). Click to swap to Cloud Gemini (1M Context).";
+            }
+            if (typeof this.syncChatTopBar === "function") this.syncChatTopBar();
+        };
+
+        // Fetch current status on load
+        try {
+            const res = await fetch("/api/llm/status");
+            if (res.ok) {
+                const data = await res.json();
+                this.updateLlmToggleUi(data.provider, data.mode);
+            }
+        } catch (e) {}
+
+        const handleSwapAction = async () => {
+            const isCurrentlyGemini = (panelStrip && panelStrip.classList.contains("gemini-active")) || (btn && btn.classList.contains("gemini-mode"));
+            const target = isCurrentlyGemini ? "local" : "gemini";
+            this.updateLlmToggleUi(isCurrentlyGemini ? "gemini" : "local", null, true);
+            this.logEvent("LLM", `Swapping LLM provider to ${target.toUpperCase()}...`, "system");
+            try {
+                const res = await fetch("/api/llm/provider", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ provider: target })
+                });
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.updateLlmToggleUi(data.provider, data.mode);
+                    const msg = data.provider === "gemini" 
+                        ? "Swapped to Cloud Gemini 3.6 Flash (1M Context)! Local llama-server killed & 3.4GB VRAM released."
+                        : "Swapped to Local Qwen 3.5 4B on RTX 3050! llama-server spun up & slot cache primed.";
+                    this.logEvent("LLM", msg, "success");
+                } else {
+                    this.updateLlmToggleUi(isCurrentlyGemini ? "gemini" : "local");
+                    this.logEvent("ERROR", `Failed to switch LLM provider: ${data.message || data.error}`, "error");
+                }
+            } catch (err) {
+                this.updateLlmToggleUi(isCurrentlyGemini ? "gemini" : "local");
+                this.logEvent("ERROR", `Network error switching LLM provider: ${err.message}`, "error");
+            }
+        };
+
+        if (btn) btn.addEventListener("click", handleSwapAction);
+        if (panelBtn) panelBtn.addEventListener("click", handleSwapAction);
+    }
+
     setView(mode) {
         document.body.className = `mode-${mode}`;
         document.querySelectorAll(".view-btn").forEach(btn => btn.classList.remove("active"));
         if (mode === "dual") document.getElementById("btnViewDual")?.classList.add("active");
         if (mode === "dev") document.getElementById("btnViewDev")?.classList.add("active");
+        if (mode === "chat") {
+            document.getElementById("btnViewChat")?.classList.add("active");
+            this.onEnterChatMode();
+        } else {
+            this.onExitChatMode();
+        }
     }
 
     initBlinking() {
@@ -608,6 +1325,10 @@ class RobotUI {
     }
 
     handleServerEvent(data) {
+        if (data.event === "llm.provider_changed" && this.updateLlmToggleUi) {
+            this.updateLlmToggleUi(data.provider, data.mode);
+        }
+
         if (data.event === "pipeline_updated" || data.pipeline) {
             this.updatePipelineStatus(data.pipeline);
         }
@@ -631,6 +1352,21 @@ class RobotUI {
             this.updatePipelineStatus({ MIC: "COMPLETED", VAD: "COMPLETED", STT: "COMPLETED", CONTEXT: "RUNNING", LLM: "RUNNING" });
         }
 
+        if (data.event === "robot_speech_ended" || data.robot_speech_ended) {
+            this.stopMouthSpeaking();
+            this._forEachEngine((eng) => eng.speakStop());
+            this.setRobotMode("idle");
+            this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
+        }
+
+        if (data.music_playing) {
+            this.stopMouthSpeaking();
+            this._forEachEngine((eng) => eng.speakStop());
+            if (this.currentMode === "speaking") {
+                this.setRobotMode("idle");
+            }
+        }
+
         if (data.robot_phrase) {
             if (this.bubbleTag) {
                 this.bubbleTag.textContent = "ROBOT RESPONSE";
@@ -645,18 +1381,18 @@ class RobotUI {
             }
             this.updatePipelineStatus({ LLM: "COMPLETED", TTS: "RUNNING", AVATAR: "RUNNING" });
 
-            // Trigger lip-sync on ALL 3D character engines
-            this._forEachEngine((eng) => {
-                eng.speakStart();
-                setTimeout(() => {
-                    if (this.currentMode !== "speaking") {
-                        eng.speakStop();
-                    }
-                }, Math.min(8000, data.robot_phrase.length * 80));
-            });
-            setTimeout(() => {
+            // Trigger lip-sync on ALL 3D character engines with safe timeout
+            const phraseDuration = Math.max(1200, Math.min(10000, data.robot_phrase.length * 80));
+            this._forEachEngine((eng) => eng.speakStart());
+            if (this._phraseTimeout) clearTimeout(this._phraseTimeout);
+            this._phraseTimeout = setTimeout(() => {
+                this._forEachEngine((eng) => eng.speakStop());
+                this.stopMouthSpeaking();
+                if (this.currentMode === "speaking") {
+                    this.setRobotMode("idle");
+                }
                 this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
-            }, Math.min(8000, data.robot_phrase.length * 80));
+            }, phraseDuration);
         }
 
         if (data.barge_in) {
@@ -803,6 +1539,18 @@ class RobotUI {
                 if (res.ok) {
                     const data = await res.json();
                     if (data.mode) this.setRobotMode(data.mode);
+                    if ((data.is_speaking === false || data.mode === "idle") && this.currentMode === "speaking") {
+                        this.setRobotMode("idle");
+                        this.stopMouthSpeaking();
+                        this._forEachEngine((eng) => eng.speakStop());
+                    }
+                    if (data.music_playing) {
+                        this.stopMouthSpeaking();
+                        this._forEachEngine((eng) => eng.speakStop());
+                        if (this.currentMode === "speaking") {
+                            this.setRobotMode("idle");
+                        }
+                    }
                     if (data.voice_enabled !== undefined && this.updateVoiceUI && this.voiceEnabled !== data.voice_enabled) {
                         this.updateVoiceUI(data.voice_enabled);
                     }

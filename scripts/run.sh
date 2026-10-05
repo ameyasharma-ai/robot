@@ -27,64 +27,71 @@ pactl set-default-source alsa_input.pci-0000_05_00.6.analog-stereo 2>/dev/null |
 amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
-if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
-    if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
-        echo "[LLM] Starting llama-server (100% offload to RTX 3050, FlashAttention)..."
-        MMPROJ_ARG=""
-        NGL=99
-        MULTIMODAL_ENABLED=$(grep -E '^\s*multimodal:\s*true' "$DIR/config/default.yaml" || true)
-        if [ -n "$MULTIMODAL_ENABLED" ] && [ -f "$DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf" ]; then
-            echo "[LLM] Enabling multimodal vision projector ($DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf)..."
-            MMPROJ_ARG="--mmproj $DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf --mmproj-offload"
-            NGL=28
-        fi
-
-        pkill -9 -f "llama-server" 2>/dev/null || true
-        sleep 0.5
-
-        /home/ameya/llama.cpp/build/bin/llama-server \
-            -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
-            $MMPROJ_ARG \
-            -ngl $NGL \
-            -fa on \
-            -ctk q8_0 \
-            -ctv q8_0 \
-            -c 4096 \
-            -np 1 \
-            -b 4096 \
-            -ub 4096 \
-            --host 127.0.0.1 \
-            --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
-
-        echo -n "[LLM] Waiting for llama-server..."
-        READY=0
-        for i in $(seq 1 40); do
-            if curl -s http://127.0.0.1:8080/health | grep -q '"ok"'; then
-                READY=1
-                break
-            fi
-            echo -n "."
-            sleep 0.5
-        done
-        if [ "$READY" -eq 1 ]; then
-            echo " ready"
-        else
-            echo " FAILED (Check logs/llama-server.log)"
-            exit 1
-        fi
-    else
-        echo "[LLM] llama-server binary or model not found at configured paths."
-    fi
+ACTIVE_PROVIDER="local"
+if [ -f "$DIR/data/active_llm_provider.txt" ]; then
+    ACTIVE_PROVIDER=$(cat "$DIR/data/active_llm_provider.txt" 2>/dev/null | tr -d '[:space:]')
 fi
 
-# Always pre-warm llama-server KV cache slot with active personality and tools schema
-echo "[LLM] Pre-warming llama-server KV cache slot with active personality & tools..."
-"$DIR/.venv/bin/python" -c "
+if [ "$ACTIVE_PROVIDER" = "gemini" ]; then
+    echo "[LLM] Active provider is Gemini Cloud API — local llama-server deferred until swapped."
+else
+    if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
+        if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
+            echo "[LLM] Starting llama-server (100% offload to RTX 3050, FlashAttention)..."
+            MMPROJ_ARG=""
+            NGL=99
+            MULTIMODAL_ENABLED=$(grep -E '^\s*multimodal:\s*true' "$DIR/config/default.yaml" || true)
+            if [ -n "$MULTIMODAL_ENABLED" ] && [ -f "$DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf" ]; then
+                echo "[LLM] Enabling multimodal vision projector ($DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf)..."
+                MMPROJ_ARG="--mmproj $DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf --mmproj-offload"
+                NGL=28
+            fi
+
+            pkill -9 -f "llama-server" 2>/dev/null || true
+            sleep 0.5
+
+            /home/ameya/llama.cpp/build/bin/llama-server \
+                -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
+                $MMPROJ_ARG \
+                -ngl $NGL \
+                -fa on \
+                -ctk q8_0 \
+                -ctv q8_0 \
+                -c 4096 \
+                -np 1 \
+                -b 4096 \
+                -ub 4096 \
+                --host 127.0.0.1 \
+                --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
+
+            echo -n "[LLM] Waiting for llama-server..."
+            READY=0
+            for i in $(seq 1 40); do
+                if curl -s http://127.0.0.1:8080/health | grep -q '"ok"'; then
+                    READY=1
+                    break
+                fi
+                echo -n "."
+                sleep 0.5
+            done
+            if [ "$READY" -eq 1 ]; then
+                echo " ready"
+            else
+                echo " FAILED (Check logs/llama-server.log)"
+                exit 1
+            fi
+        else
+            echo "[LLM] llama-server binary or model not found at configured paths."
+        fi
+    fi
+
+    # Always pre-warm llama-server KV cache slot with active personality and tools schema
+    echo "[LLM] Pre-warming llama-server KV cache slot with active personality & tools..."
+    "$DIR/.venv/bin/python" -c "
 import urllib.request, json
 try:
     from robot.personality import PersonalityManager
-    from robot.core.context import ContextEngine
-    from robot.core.engine import GROUNDING_POLICY
+    from robot.core.context import ContextEngine, format_system_prompt
     from robot.tools import ToolRegistry
     from robot.tools.builtins import register_builtin_tools
     import yaml
@@ -96,7 +103,7 @@ try:
     pers = pm.active
 
     sys_prompt = pers.system_prompt if pers else 'You are a helpful robot.'
-    system_content = f'{sys_prompt.strip()}\n{GROUNDING_POLICY}'
+    system_content = format_system_prompt(sys_prompt, high_intelligence=False)
 
     class MockEngine:
         def __init__(self):
@@ -138,6 +145,7 @@ try:
 except Exception as e:
     print('[LLM] Warmup notice:', e)
 " 2>/dev/null || true
+fi
 
 # ─── 3. whisper-server (AMD Radeon 680M Vulkan, port 8081) ──────────
 WHISPER_BIN=""
@@ -204,6 +212,8 @@ echo "🚀 Launching Robot Core..."
         sleep 0.5
     done
 ) &
+
+export PYTHONWARNINGS="ignore::DeprecationWarning"
 
 if [ -f "$DIR/.venv/bin/python" ]; then
     "$DIR/.venv/bin/python" -m robot "$@"

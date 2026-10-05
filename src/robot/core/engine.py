@@ -15,18 +15,18 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import numpy as np
 import yaml
 
 from robot.audio import AudioCapture, AudioPlayer, VoiceActivityDetector
-from robot.core.context import ContextEngine, GROUNDING_POLICY
+from robot.core.context import ContextEngine, GROUNDING_POLICY, format_system_prompt
 from robot.core.events import EventBus, Events
 from robot.core.state import RobotMode, StateManager
 from robot.expression import AsusAuraLighting
 from robot.image import ImageGenerationService
-from robot.llm import ClauseChunker, LlamaServerLLM
+from robot.llm import ClauseChunker, LlamaServerLLM, GeminiLLM, LlamaServerManager
 from robot.memory import MemoryManager
 from robot.observability import ObservabilityHub
 from robot.observability.models import SpanStatus
@@ -87,7 +87,18 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     cleaned = re.sub(r"\[\s*(?:motion|action|emotion)?:?[^\]\n]*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:wave|point|kick|nod|smile|happy|sad|raise_hand|stop)\s*\]", "", cleaned, flags=re.IGNORECASE)
     cleaned = cleaned.replace("[", "").replace("]", "")
-    cleaned = re.sub(r"\*[^*]*\*", "", cleaned)
+    # Strip common physical stage directions in asterisks e.g. *waves*, *smiles*, *nods*
+    stage_dir_pattern = (
+        r"\*(?:waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|"
+        r"smiles?|laughs?|sighs?|stops?|leans?|looks?\s+around|shrugs?|pauses?|blinks?|winks?|"
+        r"whispers?|gasps?|chuckles?|scoffs?|coughs?|yawns?)[^*]*\*"
+    )
+    cleaned = re.sub(stage_dir_pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\([^)]*(?:wave|smile|nod|laugh|sigh|point|kick|wink|shrug|pause|gasp)[^)]*\)", "", cleaned, flags=re.IGNORECASE)
+    # Unpack markdown bold/italic asterisks: **word**, *word* -> word (preserve actual spoken words)
+    cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\w)_{1,3}([^_]+)_{1,3}(?!\w)", r"\1", cleaned)
+    cleaned = cleaned.replace("*", "").replace("~", "").replace("`", "")
     cleaned = re.sub(r"\([^)]*\)", "", cleaned).strip()
     return cleaned, action_dict
 
@@ -181,12 +192,14 @@ class RobotEngine:
         self._interrupt_event = asyncio.Event()
         self._speech_queue: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
         self._tts_queue: asyncio.Queue[tuple[str, asyncio.Event, dict | None] | None] = asyncio.Queue()
+        self._audio_queue: asyncio.Queue[tuple[np.ndarray, int, str, asyncio.Event, dict | None, dict | None, float] | None] = asyncio.Queue(maxsize=16)
         self._is_speaking = False
         self._speech_ended_ts = 0.0
         self._last_bot_phrases: list[str] = []
         self.voice_enabled = True
         self._pending_motion: dict | None = None
         self.tool_coordinator: ToolConversationCoordinator | None = None
+        self._provider_switch_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Initialize all subsystems."""
@@ -209,13 +222,27 @@ class RobotEngine:
         else:
             logger.warning("tts_model_missing", path=model_path)
 
-        # LLM
+        # LLM (supports local llama-server on RTX 3050 and Gemini Cloud 1M context)
         llm_cfg = self.config.get("llm", {})
-        self.llm = LlamaServerLLM(
-            base_url=llm_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
-            model=llm_cfg.get("model", "Qwen3.5-4B-Q4_K_M"),
-            enable_thinking=llm_cfg.get("enable_thinking", False),
-        )
+        gemini_cfg = llm_cfg.get("gemini", {})
+        self.llm_provider_type = self._get_persisted_llm_provider(llm_cfg.get("provider", "local"))
+        self._speech_started_ts = 0.0
+
+        if self.llm_provider_type == "gemini":
+            self.llm = GeminiLLM(
+                api_key=gemini_cfg.get("api_key"),
+                base_url=gemini_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"),
+                model=gemini_cfg.get("model", "gemini-flash-latest"),
+                fallback_models=gemini_cfg.get("fallback_models", ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"]),
+            )
+            logger.info("gemini_llm_initialized_on_boot")
+        else:
+            self.llm = LlamaServerLLM(
+                base_url=llm_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
+                model=llm_cfg.get("model", "Qwen3.5-4B-Q4_K_M"),
+                enable_thinking=llm_cfg.get("enable_thinking", False),
+            )
+            logger.info("local_llama_server_llm_initialized_on_boot")
 
         # Memory
         mem_cfg = self.config.get("memory", {})
@@ -298,6 +325,15 @@ class RobotEngine:
         health_results = await self.health.check_all()
         logger.info("initial_health", results=health_results)
 
+        # Emit real-time state mode changes to WebSocket event stream
+        async def _on_mode_change(old_mode, new_mode):
+            try:
+                await self.events.emit("mode", mode=new_mode.value)
+                await self.events.emit("mode_changed", mode=new_mode.value, old_mode=old_mode.value)
+            except Exception:
+                pass
+        self.state.subscribe(_on_mode_change)
+
         # Warm up subsystems for zero first-turn cold-start delay
         # CRITICAL: LLM KV cache warm-up MUST be the LAST step so its slot
         # prefix remains hot when the first user utterance arrives.
@@ -357,11 +393,119 @@ class RobotEngine:
             # 4. LAST: Warm up LLM KV cache slot with exact invariant system prompt prefix
             # This MUST be the final warmup step so the llama-server slot is freshly
             # loaded with the system prompt when the first user utterance arrives.
-            await self.warm_up_llm()
+            # 4. LLM Warmup (only necessary for local llama-server KV cache slot 0)
+            if self.llm_provider_type == "gemini":
+                # Ensure local llama-server is stopped so 3.4GB VRAM is free
+                if LlamaServerManager.is_running():
+                    await LlamaServerManager.stop()
+            else:
+                await self.warm_up_llm()
         except Exception as e:
             logger.debug("subsystems_warmup_failed", error=str(e))
 
         logger.info("engine_setup_complete")
+
+    def _get_persisted_llm_provider(self, default: str = "local") -> str:
+        prov_file = Path("data/active_llm_provider.txt")
+        if prov_file.exists():
+            try:
+                p = prov_file.read_text().strip().lower()
+                if p in ("local", "gemini"):
+                    return p
+            except Exception:
+                pass
+        return default
+
+    def _persist_llm_provider(self, provider: str) -> None:
+        try:
+            prov_file = Path("data/active_llm_provider.txt")
+            prov_file.parent.mkdir(parents=True, exist_ok=True)
+            prov_file.write_text(provider.strip().lower())
+        except Exception as e:
+            logger.warning("failed_to_persist_llm_provider", error=str(e))
+
+    async def switch_llm_provider(self, target: str) -> dict:
+        """Dynamically toggle between Local (RTX 3050) and Cloud Gemini (High-Intelligence 1M Context).
+        
+        When switching to Gemini:
+        - Kills llama-server process and releases 100% of GPU VRAM (3.4GB).
+        - Switches to Gemini OpenAI-compatible client with 1M context.
+        
+        When switching to Local:
+        - Starts llama-server offloaded to RTX 3050 with FlashAttention.
+        - Pre-warms KV cache slot with active personality & tools schema.
+        - Switches to low-latency local client.
+        """
+        target = target.strip().lower()
+        if target not in ("local", "gemini"):
+            return {"status": "error", "message": f"Invalid provider '{target}'. Must be 'local' or 'gemini'."}
+
+        async with self._provider_switch_lock:
+            if target == self.llm_provider_type:
+                return {
+                    "status": "ok",
+                    "provider": self.llm_provider_type,
+                    "mode": "high_intelligence" if target == "gemini" else "low_latency",
+                    "already_active": True,
+                }
+
+            logger.info("switching_llm_provider", from_provider=self.llm_provider_type, to_provider=target)
+
+            llm_cfg = self.config.get("llm", {})
+            gemini_cfg = llm_cfg.get("gemini", {})
+
+            if target == "gemini":
+                # 1. Kill local llama-server to free 3.4GB VRAM
+                await LlamaServerManager.stop()
+                # 2. Switch to Gemini provider
+                self.llm = GeminiLLM(
+                    api_key=gemini_cfg.get("api_key"),
+                    base_url=gemini_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"),
+                    model=gemini_cfg.get("model", "gemini-3.5-flash-lite"),
+                    fallback_models=gemini_cfg.get("fallback_models", ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]),
+                )
+                self.llm_provider_type = "gemini"
+                self._persist_llm_provider("gemini")
+                await self.events.emit("llm.provider_changed", provider="gemini", mode="high_intelligence")
+                return {
+                    "status": "ok",
+                    "provider": "gemini",
+                    "mode": "high_intelligence",
+                    "model": getattr(self.llm, "model", "gemini-3.5-flash-lite"),
+                    "context_window": 1000000,
+                    "vram_freed": True,
+                }
+            else:
+                # 1. Start local llama-server on RTX 3050
+                started = await LlamaServerManager.start()
+                if not started:
+                    return {
+                        "status": "error",
+                        "message": "Failed to start local llama-server on port 8080. Check logs/llama-server.log.",
+                    }
+                # 2. Switch to LlamaServerLLM
+                self.llm = LlamaServerLLM(
+                    base_url=llm_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
+                    model=llm_cfg.get("model", "Qwen3.5-4B-Q4_K_M"),
+                    enable_thinking=llm_cfg.get("enable_thinking", False),
+                )
+                self.llm_provider_type = "local"
+                self._persist_llm_provider("local")
+                # 3. Warm up KV cache slot
+                try:
+                    await self.warm_up_llm()
+                except Exception as e:
+                    logger.warning("warmup_after_switch_failed", error=str(e))
+
+                await self.events.emit("llm.provider_changed", provider="local", mode="low_latency")
+                return {
+                    "status": "ok",
+                    "provider": "local",
+                    "mode": "low_latency",
+                    "model": getattr(self.llm, "model", "Qwen3.5-4B-Q4_K_M"),
+                    "context_window": 4096,
+                    "llama_running": True,
+                }
 
     async def warm_up_llm(self, personality_name: str | None = None) -> float:
         """Warm up llama-server slot KV cache with the exact invariant system prompt.
@@ -382,7 +526,7 @@ class RobotEngine:
             pers = self.personalities.active
 
         sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
-        system_content = f"{sys_prompt.strip()}\n{GROUNDING_POLICY}"
+        system_content = format_system_prompt(sys_prompt, high_intelligence=getattr(self, "high_intelligence_mode", False))
 
         silent_arrival_prompt = (
             "[System Event: Robot Core online and sensors active. The user has arrived / entered the room. "
@@ -399,7 +543,7 @@ class RobotEngine:
             reg = getattr(self, "tool_registry", None)
             tools_schema = reg.get_schemas() if reg is not None else None
             bot_reply = ""
-            async for token in self.llm.stream_chat(warmup_messages, max_tokens=15, tools=tools_schema):
+            async for token in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 bot_reply += token
             w_ms = (time.perf_counter() - t0) * 1000
             pers_name = pers.name if pers else "default"
@@ -454,6 +598,7 @@ class RobotEngine:
         tasks = [
             asyncio.create_task(self._mic_loop(audio_queue)),
             asyncio.create_task(self._response_loop()),
+            asyncio.create_task(self._tts_synthesizer_loop()),
             asyncio.create_task(self._tts_player_loop()),
             asyncio.create_task(self.health.start()),
             asyncio.create_task(self._run_api()),
@@ -519,7 +664,7 @@ class RobotEngine:
             / audio_cfg.get("vad_frame_size", 512)
         )
         barge_in_enabled = audio_cfg.get("barge_in_enabled", False)
-        barge_in_required = audio_cfg.get("barge_in_frames", 2)
+        barge_in_required = audio_cfg.get("barge_in_frames", 5)
         barge_in_cooldown = audio_cfg.get("barge_in_cooldown_s", 0.3)
         echo_guard_s = audio_cfg.get("echo_guard_s", 0.4)
 
@@ -579,6 +724,10 @@ class RobotEngine:
 
                     if music_active:
                         # Music is playing; do not trigger barge-in from music acoustics
+                        barge_in_consecutive = 0
+                    speech_age = time.time() - getattr(self, "_speech_started_ts", 0.0)
+                    if speech_age < 0.45:
+                        # Grace period: ignore acoustic onset bleed during the first 450ms of robot speech
                         barge_in_consecutive = 0
                     elif (time.time() - last_barge_in_time) < barge_in_cooldown:
                         barge_in_consecutive = 0
@@ -726,16 +875,61 @@ class RobotEngine:
         system_prompt = personality.system_prompt if personality else ""
         ns = getattr(personality, "memory_namespace", "default")
 
+        # In Gemini High-Intelligence mode (1M context), provide rich context (up to 80% / 800k tokens)
+        # In Local mode, keep low-latency budget (3 turns, 5 memories)
+        is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
+
+        # Adaptive Context Sizing:
+        # Prevent TPM rate-limit throttling and high TTFT on simple conversational banter (e.g. "hi", "how are you").
+        # For simple banter, maintain a fast, lean context (~1k tokens, TTFT < 1s).
+        # For analytical, recall, search, or substantive queries, expand to full multi-session archive and facts (up to 800k tokens).
+        clean_query = user_text.strip().lower()
+        words = clean_query.split()
+        banter_triggers = {"hi", "hello", "hey", "sup", "howdy", "good morning", "good evening", "good night", "thanks", "thank you", "bye", "ok", "okay", "yes", "no"}
+        knowledge_triggers = ("remember", "recall", "past", "history", "search", "who", "what", "why", "how", "code", "file", "web", "weather", "news", "tell me", "explain", "analyze")
+        is_banter = len(words) <= 3 and any(w in clean_query for w in banter_triggers) and not any(k in clean_query for k in knowledge_triggers)
+
+        if is_gemini and is_banter:
+            recent_turns_limit = 10
+            memory_limit = 5
+            deep_expansion = False
+        elif is_gemini:
+            recent_turns_limit = 100
+            memory_limit = 50
+            deep_expansion = True
+        else:
+            recent_turns_limit = 3
+            memory_limit = 5
+            deep_expansion = False
+
         # Retrieve relevant memories isolated by personality workspace
         memories = []
+        all_facts = None
+        conversation_archive = None
         if self.memory:
             with Timer(self.telemetry, "MEMORY_RETRIEVAL_LATENCY"):
-                memories = await self.memory.get_relevant_memories(user_text, user_id=ns)
+                memories = await self.memory.get_relevant_memories(user_text, user_id=ns, limit=memory_limit)
+                if is_gemini and deep_expansion:
+                    try:
+                        all_facts = await self.memory.get_all_facts(user_id=ns, limit=100)
+                        conversation_archive = await self.memory.get_conversation_archive(limit=150, exclude_session_id=self._session_id)
+                    except Exception as e:
+                        logger.warning("gemini_context_expansion_failed", error=str(e))
 
-        # Get recent conversation (keep to last 3 turns / 6 messages max for low TTFT)
+        # Get recent conversation
         recent = []
         if self.memory:
-            recent = await self.memory.get_recent_conversation(self._session_id, 3)
+            recent = await self.memory.get_recent_conversation(self._session_id, recent_turns_limit)
+            # In Local mode, prevent prior large Gemini turns from blowing past the 4K KV cache slot
+            if not is_gemini and recent:
+                compacted_recent = []
+                for turn in recent[-2:]:
+                    c = turn.get("content", "")
+                    if turn.get("role") == "assistant" and len(c) > 160:
+                        compacted_recent.append({"role": "assistant", "content": c[:160] + "..."})
+                    else:
+                        compacted_recent.append(turn)
+                recent = compacted_recent
 
         # Build context
         world_state_compact = None
@@ -759,11 +953,14 @@ class RobotEngine:
                 system_prompt=system_prompt,
                 user_text=user_text,
                 recent_conversation=recent,
+                conversation_archive=conversation_archive,
                 memories=memories,
+                all_facts=all_facts,
                 robot_state=self.state.state.to_compact(),
                 world_state=world_state_compact,
                 image_data_url=image_data_url,
                 tool_results=tool_results if tool_results else None,
+                high_intelligence=is_gemini,
             )
             estimated_tokens = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
             self.telemetry.record("CONTEXT_TOKENS", estimated_tokens)
@@ -808,7 +1005,7 @@ class RobotEngine:
                     ]
                     break
 
-        # Stream LLM with eager first-word release and background sentence chunking
+        # Stream LLM with eager first-clause release and background sentence chunking
         chunker = ClauseChunker(eager_first_chunk=True, min_first_words=1)
         full_response = ""
         ttft_recorded = False
@@ -827,9 +1024,12 @@ class RobotEngine:
         tools_schema = self.tool_registry.get_schemas() if getattr(self, "tool_registry", None) else None
 
         try:
-            async for token in self.llm.stream_chat(
+            stream_max_tokens = 1024 if is_gemini else self.config["llm"].get("max_tokens", 300)
+            async with self._provider_switch_lock:
+                llm_instance = self.llm
+            async for token in llm_instance.stream_chat(
                 messages, 
-                max_tokens=self.config["llm"].get("max_tokens", 300),
+                max_tokens=stream_max_tokens,
                 tools=tools_schema
             ):
                 if interrupt.is_set():
@@ -965,17 +1165,12 @@ class RobotEngine:
 
         return full_response.strip()
 
-    async def _tts_player_loop(self) -> None:
-        """Dequeue phrases, synthesize with Piper, play immediately."""
+    async def _tts_synthesizer_loop(self) -> None:
+        """Background pipeline worker: dequeue text phrases, synthesize with Piper, push to audio queue."""
         while True:
             item = await self._tts_queue.get()
-
             if item is None:
-                self._is_speaking = False
-                self._speech_ended_ts = time.time()
-                # If an interruption occurred and switched state to LISTENING, don't clobber it to IDLE
-                if self.state.state.mode != RobotMode.LISTENING:
-                    await self.state.set_mode(RobotMode.IDLE)
+                await self._audio_queue.put(None)
                 continue
 
             if len(item) == 4:
@@ -988,12 +1183,10 @@ class RobotEngine:
                 continue
 
             # Check if music has started playing — if so, apply speech fade-out
-            # and skip remaining TTS phrases so music naturally overpowers
             try:
                 from robot.tools.builtins.music import MusicPlayerService
                 ms = MusicPlayerService.get_instance()
                 if getattr(ms, "_music_active", False):
-                    # Music is actively playing — fade out remaining speech
                     if self.player:
                         self.player.fade_out(rate=0.10)
                     logger.info("tts_skipped_music_playing", phrase=phrase[:40])
@@ -1011,7 +1204,6 @@ class RobotEngine:
                 operation="SYNTHESIZE",
                 metadata={"phrase_len": len(phrase)},
             )
-            # Get active personality voice parameters
             pers = self.personalities.active
             tts_cfg = pers.tts_settings if pers else {}
             speed = float(tts_cfg.get("speed", 1.0))
@@ -1032,6 +1224,41 @@ class RobotEngine:
             synth_ms = (time.perf_counter() - t_synth) * 1000
 
             self.telemetry.record("TTS_SYNTHESIS_LATENCY", synth_ms)
+            self.observability.finish_span(tts_span, metadata={"synth_ms": round(synth_ms, 1)})
+
+            if interrupt.is_set():
+                continue
+
+            await self._audio_queue.put(
+                (audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms)
+            )
+
+    async def _tts_player_loop(self) -> None:
+        """Continuous gapless playback worker from pre-synthesized audio queue."""
+        while True:
+            item = await self._audio_queue.get()
+
+            if item is None:
+                self._is_speaking = False
+                self._speech_ended_ts = time.time()
+                # If an interruption occurred and switched state to LISTENING, don't clobber it to IDLE
+                if self.state.state.mode != RobotMode.LISTENING:
+                    await self.state.set_mode(RobotMode.IDLE)
+                await self.events.emit("robot_speech_ended", mode="idle")
+                continue
+
+            audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms = item
+
+            if interrupt.is_set():
+                continue
+
+            self._is_speaking = True
+            if self._speech_started_ts == 0.0 or (time.time() - self._speech_ended_ts) > 1.0:
+                self._speech_started_ts = time.time()
+
+            await self.state.set_mode(RobotMode.SPEAKING)
+            await self.events.emit("robot_phrase", robot_phrase=phrase)
+
             if timing_ref:
                 t_start = timing_ref.get("t_tts_start", time.perf_counter() - synth_ms / 1000)
                 first_audio_ms = (time.perf_counter() - t_start) * 1000
@@ -1051,12 +1278,9 @@ class RobotEngine:
                     first_audio_ms=round(first_audio_ms, 1),
                     e2e_ms=round(e2e_ms, 1),
                 )
-            self.observability.finish_span(tts_span, metadata={"synth_ms": round(synth_ms, 1)})
-
-            # Play
-            self._is_speaking = True
-            await self.state.set_mode(RobotMode.SPEAKING)
-            await self.events.emit("robot_phrase", robot_phrase=phrase)
+                print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")
+            else:
+                print(f"   \033[32m...\033[0m {phrase}")
 
             # Trigger avatar motion tightly synchronized with speech playback
             if motion_action and not interrupt.is_set():
@@ -1078,26 +1302,25 @@ class RobotEngine:
                 except Exception as e:
                     logger.debug("audio_synced_motion_error", error=str(e))
 
-            if timing_ref:
-                print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")
-            else:
-                print(f"   \033[32m...\033[0m {phrase}")
-
             completed = await self.player.play(audio, sr, interrupt)
             self._speech_ended_ts = time.time()
 
             if not completed:
-                # Interrupted — drain TTS queue
+                # Interrupted — drain both audio and TTS queues
                 self._is_speaking = False
-                while not self._tts_queue.empty():
+                while not self._audio_queue.empty():
                     try:
-                        leftover = self._tts_queue.get_nowait()
-                        if leftover is None:
-                            break
+                        self._audio_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-            elif self._tts_queue.empty():
-                self._is_speaking = False
+                while not self._tts_queue.empty():
+                    try:
+                        self._tts_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                if self.state.state.mode != RobotMode.LISTENING:
+                    await self.state.set_mode(RobotMode.IDLE)
+                await self.events.emit("robot_speech_ended", mode="idle")
 
     # ─── Echo Filter ─────────────────────────────────────────────────────
 
@@ -1134,10 +1357,12 @@ class RobotEngine:
 
     # ─── Text API ────────────────────────────────────────────────────────
 
-    async def process_text_input(self, text: str) -> str:
+    async def process_text_input(self, text: str, session_id: str | None = None) -> str:
         """Process text input (from API, non-voice)."""
         if not self.llm:
             return "LLM not available"
+
+        target_sid = session_id or self._session_id or str(uuid.uuid4())[:8]
 
         print(f"\n💬 \033[1;36m[USER (TEXT)]\033[0m {text}")
         await self.events.emit("user_text", user_text=text, stt_ms=0.0)
@@ -1151,7 +1376,7 @@ class RobotEngine:
             active_pers = self.personalities.active
             ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
             await self.memory.store_turn(
-                self._session_id,
+                target_sid,
                 text,
                 response,
                 self.state.state.active_personality,
@@ -1160,6 +1385,254 @@ class RobotEngine:
             )
 
         return response
+
+    async def stream_text_chat(
+        self,
+        text: str,
+        session_id: str | None = None,
+        personality: str | None = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Stream conversational text turn with real-time tokens, token speed, tool events, and DB persistence.
+
+        - Hardware microphone is automatically paused so it does not capture room audio.
+        - Conversation history is isolated to session_id.
+        - Persistent memory (Mem0 + SQLite facts) is shared across all instances.
+        - Tool calls are executed and emitted live.
+        - Saves to SQLite sessions and conversations tables upon completion.
+        """
+        if not self.llm:
+            yield {"event": "error", "error": "LLM inference engine not available"}
+            return
+
+        target_session = session_id or self._session_id or str(uuid.uuid4())[:8]
+
+        # Ensure mic is physically paused in text chat mode
+        if hasattr(self, "capture") and self.capture and not self.capture.is_paused:
+            self.capture.pause()
+
+        # Switch personality if specified
+        if personality and personality in self.personalities.list_personalities():
+            if personality != self.state.state.active_personality:
+                self.personalities.set_active(personality)
+                self.state.state.active_personality = personality
+                pers_obj = self.personalities.get(personality)
+                if pers_obj and getattr(pers_obj, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
+                    self.tts.set_active_voice(pers_obj.voice_model)
+
+        active_pers_name = self.state.state.active_personality
+        active_pers = self.personalities.active
+        ns = getattr(active_pers, "memory_namespace", active_pers_name)
+
+        # 1. Fetch recent conversation history strictly isolated to target_session
+        recent_history = []
+        if self.memory:
+            recent_history = await self.memory.get_recent_conversation(target_session, limit=12)
+
+        # 2. Shared persistent memory across all instances and voice
+        retrieved_memories = []
+        if self.memory:
+            retrieved_memories = await self.memory.get_relevant_memories(text, user_id=ns, limit=5)
+
+        # 3. World state grounding
+        world_compact = None
+        if hasattr(self, "perception") and self.perception:
+            world_compact = self.perception.world_state.to_compact()
+
+        is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
+        messages = self.context.build_messages(
+            personality_prompt=self.personalities.active_prompt,
+            user_input=text,
+            history=recent_history,
+            retrieved_memories=retrieved_memories,
+            world_state=world_compact,
+            high_intelligence=is_gemini,
+        )
+
+        tools = None
+        if hasattr(self, "tool_registry") and self.tool_registry:
+            tools = self.tool_registry.get_schemas()
+
+        yield {
+            "event": "start",
+            "session_id": target_session,
+            "personality": active_pers_name,
+            "provider": getattr(self, "llm_provider_type", "local"),
+        }
+
+        t_start = time.perf_counter()
+        ttft_ms = None
+        token_count = 0
+        full_text = ""
+        tools_called = []
+        collected_tool_calls = []
+
+        try:
+            # First pass generation
+            for chunk in self.llm.stream_chat(messages, tools=tools):
+                if ttft_ms is None:
+                    ttft_ms = (time.perf_counter() - t_start) * 1000
+
+                if chunk.startswith("__TOOL_CALL__:"):
+                    raw_tc = chunk[len("__TOOL_CALL__:"):]
+                    try:
+                        import json as _json
+                        tc_data = _json.loads(raw_tc)
+                        if isinstance(tc_data, list):
+                            collected_tool_calls.extend(tc_data)
+                        else:
+                            collected_tool_calls.append(tc_data)
+                    except Exception:
+                        pass
+                    continue
+
+                token_count += 1
+                full_text += chunk
+                elapsed = max(0.001, time.perf_counter() - t_start - (ttft_ms / 1000.0))
+                tok_per_sec = round(token_count / elapsed, 1)
+
+                yield {
+                    "event": "token",
+                    "token": chunk,
+                    "token_index": token_count,
+                    "ttft_ms": round(ttft_ms, 1),
+                    "tok_per_sec": tok_per_sec,
+                }
+
+            # Check for <tool_call> tags in full_text if model produced text-based tool calls
+            if not collected_tool_calls and "<tool_call>" in full_text:
+                m_tc = re.search(r"<tool_call>(.*?)</tool_call>", full_text, re.DOTALL)
+                if m_tc:
+                    try:
+                        import json as _json
+                        parsed = _json.loads(m_tc.group(1).strip())
+                        collected_tool_calls.append({
+                            "id": f"call_{len(collected_tool_calls)}_{int(time.time()*1000)}",
+                            "type": "function",
+                            "function": parsed if "name" in parsed else {"name": parsed.get("function", ""), "arguments": parsed.get("parameters", {})},
+                        })
+                    except Exception:
+                        pass
+
+            # If tool calls were initiated, execute them and run second-pass continuation
+            if collected_tool_calls:
+                for tc in collected_tool_calls:
+                    func_info = tc.get("function", tc)
+                    t_name = func_info.get("name", "")
+                    raw_args = func_info.get("arguments", "{}")
+                    try:
+                        import json as _json
+                        t_args = _json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                    except Exception:
+                        t_args = {}
+
+                    yield {
+                        "event": "tool_call",
+                        "tool": t_name,
+                        "args": t_args,
+                        "status": "running",
+                    }
+
+                    t_tool_start = time.perf_counter()
+                    tool_def = self.tool_registry.get(t_name) if hasattr(self, "tool_registry") and self.tool_registry else None
+                    if tool_def and hasattr(self, "permissions") and self.permissions:
+                        try:
+                            exec_res = await self.permissions.execute(tool_def, t_args)
+                            t_res = exec_res.get("result", exec_res.get("error", "Executed"))
+                        except Exception as e:
+                            t_res = f"Error: {e}"
+                    else:
+                        t_res = "Tool executed."
+
+                    t_dur_ms = (time.perf_counter() - t_tool_start) * 1000
+                    tools_called.append({
+                        "name": t_name,
+                        "args": t_args,
+                        "result": t_res,
+                        "duration_ms": round(t_dur_ms, 1),
+                    })
+
+                    yield {
+                        "event": "tool_result",
+                        "tool": t_name,
+                        "result": t_res,
+                        "duration_ms": round(t_dur_ms, 1),
+                        "status": "completed",
+                    }
+
+                # Second pass continuation with tool outputs
+                messages.append({
+                    "role": "assistant",
+                    "content": full_text or None,
+                    "tool_calls": collected_tool_calls,
+                })
+                for tc, tool_info in zip(collected_tool_calls, tools_called):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", f"call_{int(time.time()*1000)}"),
+                        "content": str(tool_info.get("result", "")),
+                    })
+
+                second_pass_text = ""
+                for chunk in self.llm.stream_chat(messages, tools=None):
+                    if chunk.startswith("__TOOL_CALL__:"):
+                        continue
+                    token_count += 1
+                    second_pass_text += chunk
+                    elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                    tok_per_sec = round(token_count / elapsed, 1)
+
+                    yield {
+                        "event": "token",
+                        "token": chunk,
+                        "token_index": token_count,
+                        "ttft_ms": round(ttft_ms or 0, 1),
+                        "tok_per_sec": tok_per_sec,
+                    }
+                full_text = (full_text + "\n" + second_pass_text).strip() if full_text else second_pass_text.strip()
+
+        except Exception as e:
+            logger.error("stream_text_chat_error", error=str(e))
+            yield {"event": "error", "error": str(e)}
+
+        t_end = time.perf_counter()
+        total_dur_ms = (t_end - t_start) * 1000
+        gen_time_s = max(0.001, (total_dur_ms - (ttft_ms or 0)) / 1000.0)
+        final_speed = round(token_count / gen_time_s, 1)
+
+        # Store turn and shared memories in Database
+        turn_num = await self.state.increment_turn()
+        if self.memory:
+            meta = {
+                "ttft_ms": round(ttft_ms or 0, 1),
+                "tok_per_sec": final_speed,
+                "tokens": token_count,
+                "duration_ms": round(total_dur_ms, 1),
+                "provider": getattr(self, "llm_provider_type", "local"),
+                "tools": [t.get("name") for t in tools_called],
+            }
+            primary_tool = tools_called[0] if tools_called else None
+            await self.memory.store_turn(
+                session_id=target_session,
+                user_text=text,
+                bot_text=full_text,
+                personality=active_pers_name,
+                turn_number=turn_num,
+                namespace=ns,
+                tool_name=primary_tool.get("name") if primary_tool else None,
+                tool_result=str(primary_tool.get("result"))[:500] if primary_tool else None,
+                metadata=meta,
+            )
+
+        yield {
+            "event": "done",
+            "session_id": target_session,
+            "response": full_text,
+            "ttft_ms": round(ttft_ms or 0, 1),
+            "tok_per_sec": final_speed,
+            "tokens": token_count,
+            "duration_ms": round(total_dur_ms, 1),
+            "tools": tools_called,
+        }
 
     def trigger_interrupt(self) -> None:
         """Manually interrupt active LLM generation, tool execution, and audio playback."""
@@ -1171,11 +1644,17 @@ class RobotEngine:
         if self.player:
             self.player.stop()
 
-        # Drain pending TTS queue items
+        # Drain pending TTS and audio queue items
         while not self._tts_queue.empty():
             try:
                 self._tts_queue.get_nowait()
                 self._tts_queue.task_done()
+            except (asyncio.QueueEmpty, ValueError):
+                break
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+                self._audio_queue.task_done()
             except (asyncio.QueueEmpty, ValueError):
                 break
 

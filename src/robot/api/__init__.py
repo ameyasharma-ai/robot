@@ -8,10 +8,13 @@ Provides:
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+
+from robot.core.state import RobotMode
 
 if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
@@ -19,6 +22,7 @@ if TYPE_CHECKING:
 
 class ChatRequest(BaseModel):
     text: str
+    session_id: str | None = None
     personality: str | None = None
 
 
@@ -26,6 +30,12 @@ class ChatResponse(BaseModel):
     response: str
     turn: int
     personality: str
+    session_id: str | None = None
+
+
+class CreateSessionRequest(BaseModel):
+    personality: str | None = None
+    title: str | None = None
 
 
 class StatusResponse(BaseModel):
@@ -35,6 +45,8 @@ class StatusResponse(BaseModel):
     voice_enabled: bool = True
     services: dict[str, bool]
     telemetry: dict[str, Any]
+    is_speaking: bool = False
+    music_playing: bool = False
 
 
 class VoiceModeRequest(BaseModel):
@@ -56,6 +68,19 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     @app.get("/status", response_model=StatusResponse)
     async def status():
         state = engine.state.state
+        player_active = hasattr(engine, "player") and engine.player and engine.player.is_playing
+        speaking_active = getattr(engine, "_is_speaking", False)
+        if state.mode == RobotMode.SPEAKING and not player_active and not speaking_active:
+            await engine.state.set_mode(RobotMode.IDLE)
+            state = engine.state.state
+
+        music_playing = False
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            music_playing = MusicPlayerService.get_instance().is_playing
+        except Exception:
+            pass
+
         return StatusResponse(
             mode=state.mode.value,
             personality=state.active_personality,
@@ -65,6 +90,8 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 name: svc.healthy for name, svc in state.services.items()
             },
             telemetry=engine.telemetry.snapshot(),
+            is_speaking=bool(speaking_active or player_active),
+            music_playing=bool(music_playing),
         )
 
     @app.post("/voice-mode")
@@ -106,6 +133,40 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                     logger.debug("personality_warmup_error", error=str(e))
             return {"status": "switched", "personality": name}
         return {"error": f"Personality '{name}' not found"}
+
+    # ─── LLM Provider Swapping & Management Endpoints ───────────────────────
+    @app.get("/api/llm/status")
+    async def get_llm_status():
+        """Get active LLM provider, mode, context window, and llama-server process status."""
+        prov = getattr(engine, "llm_provider_type", "local")
+        if prov in ("llama-server", "local"):
+            prov = "local"
+        from robot.llm import LlamaServerManager
+        llama_running = LlamaServerManager.is_running()
+        is_gemini = prov == "gemini"
+        return {
+            "provider": prov,
+            "mode": "high_intelligence" if is_gemini else "low_latency",
+            "model": getattr(engine.llm, "model", "gemini-flash-latest" if is_gemini else "Qwen3.5-4B-Q4_K_M"),
+            "context_window": 1000000 if is_gemini else 4096,
+            "llama_running": llama_running,
+            "vram_freed": not llama_running,
+        }
+
+    @app.post("/api/llm/toggle")
+    async def toggle_llm_provider():
+        """Toggle between Local (RTX 3050) and Cloud Gemini (1M context)."""
+        current = getattr(engine, "llm_provider_type", "local")
+        target = "gemini" if current in ("local", "llama-server") else "local"
+        res = await engine.switch_llm_provider(target)
+        return res
+
+    @app.post("/api/llm/provider")
+    async def set_llm_provider(req: dict[str, Any]):
+        """Set specific LLM provider ('local' or 'gemini')."""
+        target = req.get("provider", "local")
+        res = await engine.switch_llm_provider(target)
+        return res
 
     # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
     @app.get("/spotify/status")
@@ -203,14 +264,83 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 status_code=500,
             )
 
+    @app.get("/chat/sessions")
+    async def list_chat_sessions():
+        """List all isolated conversation sessions stored in the SQLite database."""
+        if hasattr(engine, "memory") and engine.memory:
+            sessions = await engine.memory.list_sessions(limit=50)
+            return {"sessions": sessions, "active_session": engine._session_id}
+        return {"sessions": [], "active_session": engine._session_id}
+
+    @app.post("/chat/sessions")
+    async def create_chat_session(req: CreateSessionRequest | None = None):
+        """Create a new isolated chat session in the database."""
+        sid = f"chat_{str(uuid.uuid4())[:8]}"
+        pers = (req and req.personality) or getattr(getattr(engine, "state", None), "active_personality", "neo")
+        title = (req and req.title) or "New Chat"
+        if hasattr(engine, "memory") and engine.memory:
+            sess = await engine.memory.create_session(sid, personality=pers, title=title)
+            return sess
+        return {"id": sid, "session_id": sid, "personality": pers, "title": title}
+
+    @app.get("/chat/sessions/{session_id}")
+    async def get_chat_session(session_id: str):
+        """Get all messages for an isolated chat session from the database."""
+        if hasattr(engine, "memory") and engine.memory:
+            sessions = await engine.memory.list_sessions(limit=100)
+            matching = next((s for s in sessions if s["id"] == session_id), None)
+            if not matching:
+                raise HTTPException(status_code=404, detail="Session not found")
+            msgs = await engine.memory.get_session_messages(session_id, limit=200)
+            return {
+                "session_id": session_id,
+                "id": session_id,
+                "title": matching.get("title", "Conversation"),
+                "messages": msgs,
+            }
+        return {"session_id": session_id, "id": session_id, "title": "Conversation", "messages": []}
+
+    @app.delete("/chat/sessions/{session_id}")
+    async def delete_chat_session(session_id: str):
+        """Delete an isolated chat session and its conversation history."""
+        if hasattr(engine, "memory") and engine.memory:
+            success = await engine.memory.delete_session(session_id)
+            return {"status": "ok", "deleted": success, "session_id": session_id}
+        return {"status": "ok", "deleted": False, "session_id": session_id}
+
+    @app.post("/chat/stream")
+    async def chat_stream(req: ChatRequest):
+        """Server-Sent Events (SSE) streaming endpoint for real-time tokens, token speed, and tool events."""
+        from fastapi.responses import StreamingResponse
+        import json
+
+        async def _event_generator():
+            async for chunk in engine.stream_text_chat(
+                text=req.text,
+                session_id=req.session_id,
+                personality=req.personality,
+            ):
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+        return StreamingResponse(
+            _event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.post("/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
         """Text-based chat endpoint (non-voice)."""
-        response = await engine.process_text_input(req.text)
+        response = await engine.process_text_input(req.text, session_id=req.session_id)
         return ChatResponse(
             response=response,
             turn=engine.state.state.turn_count,
             personality=engine.state.state.active_personality,
+            session_id=req.session_id or engine._session_id,
         )
 
     @app.post("/interrupt")

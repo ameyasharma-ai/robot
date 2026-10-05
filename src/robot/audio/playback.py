@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 import warnings
 from collections import deque
-import threading
 
 import numpy as np
 import sounddevice as sd
@@ -38,6 +39,7 @@ class AudioPlayer:
         # Rolling buffer of recent block RMS values (covers ~120ms acoustic travel)
         self._recent_rms: deque[float] = deque(maxlen=3)
         self._energy_callbacks: list = []
+        self._last_play_time: float = 0.0
 
     def duck(self, target_volume: float = 0.0, rate: float = 0.12) -> None:
         """Fade TTS volume down dynamically (e.g. when music starts and overpowers speech).
@@ -91,9 +93,17 @@ class AudioPlayer:
                 )
                 self._stream.start()
                 self._stream_sr = sample_rate
+                # Pre-roll 40ms silence to absorb DAC power-up / anti-pop ramp-up
+                lead_in = np.zeros(int(sample_rate * 0.04), dtype=np.float32).reshape(-1, 1)
+                try:
+                    self._stream.write(lead_in)
+                except Exception:
+                    pass
             elif self._stream.stopped:
                 try:
                     self._stream.start()
+                    lead_in = np.zeros(int(sample_rate * 0.04), dtype=np.float32).reshape(-1, 1)
+                    self._stream.write(lead_in)
                 except Exception:
                     pass
             return self._stream
@@ -110,7 +120,26 @@ class AudioPlayer:
             True if playback completed, False if interrupted.
         """
         block_len = int(sample_rate * self.block_ms / 1000)
+
+        # Prepend 25ms silence only if starting fresh from idle (>0.8s gap) to prevent DAC ramp from eating the first syllable
+        is_fresh_start = (time.time() - self._last_play_time) > 0.8 or not self._stream or getattr(self._stream, "stopped", True)
+        if is_fresh_start:
+            pre_silence = np.zeros(int(sample_rate * 0.025), dtype=np.float32)
+            audio = np.concatenate([pre_silence, audio])
+
         self._is_playing = True
+
+        # Ensure volume is restored to full unless music playback is actively ducking speech
+        music_active = False
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            music_active = MusicPlayerService.get_instance().is_playing
+        except Exception:
+            pass
+
+        if not music_active:
+            self._duck_target = 1.0
+            self._volume = 1.0
 
         try:
             stream = self._ensure_stream(sample_rate)
@@ -169,6 +198,7 @@ class AudioPlayer:
             self._is_playing = False
             self._current_rms = 0.0
             self._recent_rms.clear()
+            self._last_play_time = time.time()
 
     def stop(self) -> None:
         """Immediately stop playback without crashing underlying ALSA mmap buffers."""

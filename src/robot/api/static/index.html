@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Share+Tech+Mono&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css">
+    <link rel="stylesheet" href="/static/index.css?v=2.2">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -29,6 +29,16 @@
                 <option value="glados">GLADOS (Sarcastic / Clinical)</option>
             </select>
         </div>
+        <div class="llm-provider-wrap" id="llmProviderWrap">
+            <button class="llm-toggle-btn local-mode" id="btnLlmToggle" title="Toggle AI Provider: Local (RTX 3050, 4K Context) ⮀ Cloud Gemini (High-Intelligence, 1M Context)">
+                <span class="llm-toggle-icon" id="llmToggleIcon">⚡</span>
+                <div class="llm-toggle-info">
+                    <span class="llm-toggle-label" id="llmToggleLabel">LOCAL (RTX 3050)</span>
+                    <span class="llm-toggle-sub" id="llmToggleSub">LOW LATENCY • 4K</span>
+                </div>
+                <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
+            </button>
+        </div>
         <div class="header-center">
             <div class="status-pill status-idle" id="globalStatusPill">
                 <span class="status-indicator"></span>
@@ -49,6 +59,7 @@
             <div class="view-switcher">
                 <button class="view-btn active" id="btnViewDual" title="Dual Mode (Avatar + Dev HUD)">DUAL</button>
                 <button class="view-btn" id="btnViewDev" title="Dev Console Only">CONSOLE</button>
+                <button class="view-btn" id="btnViewChat" title="ChatGPT-Like AI Workspace (Mic Unloaded / Real-Time Streaming)">💬 CHAT</button>
             </div>
             <button class="fullscreen-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶</button>
         </div>
@@ -132,6 +143,19 @@
                         <span class="h-dot h-mem" title="Memory (Mem0)">MEM</span>
                     </div>
                 </div>
+
+                <!-- Active AI Model Status & Rapid Toggle -->
+                <div class="active-model-strip" id="activeModelStrip">
+                    <div class="model-info-block">
+                        <span class="model-type-tag" id="activeModelBadge">LOCAL GPU</span>
+                        <span class="model-title" id="activeModelName">Qwen 3.5 4B • RTX 3050 • 4K</span>
+                    </div>
+                    <button class="model-swap-btn" id="btnSwapModelPanel" title="Click to swap between Local Qwen (RTX 3050) and Gemini Cloud (1M Context)">
+                        <span class="swap-icon" id="swapBtnIcon">✨</span>
+                        <span id="swapModelBtnText">SWAP TO GEMINI</span>
+                    </button>
+                </div>
+
                 <div class="metrics-grid">
                     <div class="metric-box">
                         <div class="m-lbl">VAD SILENCE</div>
@@ -325,6 +349,103 @@
                 </div>
             </div>
         </section>
+
+        <!-- CHATGPT-LIKE AI WORKSPACE (ISOLATED SESSIONS, SHARED MEMORY & REAL-TIME STREAMING) -->
+        <section class="chat-workspace-panel" id="chatWorkspacePanel">
+            <!-- Left Sidebar: Conversations & Threads -->
+            <aside class="chat-sidebar" id="chatSidebar">
+                <div class="chat-sidebar-top">
+                    <button class="new-chat-btn" id="btnNewChat">
+                        <span class="plus-icon">+</span> New Chat
+                    </button>
+                </div>
+                <div class="chat-sessions-header">
+                    <span class="chat-sessions-title">PAST SESSIONS</span>
+                    <button class="chat-refresh-btn" id="btnRefreshSessions" title="Refresh Sessions">↻</button>
+                </div>
+                <div class="chat-sessions-list" id="chatSessionsList">
+                    <div class="chat-session-item loading">Loading past chats...</div>
+                </div>
+                <div class="chat-sidebar-bottom">
+                    <div class="shared-memory-card" title="Mem0 vector space + SQLite facts are shared across all sessions and voice turns">
+                        <div class="shared-mem-header">
+                            <span class="mem-icon">🧠</span>
+                            <span class="mem-label">SHARED MEMORY</span>
+                            <span class="mem-status-dot"></span>
+                        </div>
+                        <div class="shared-mem-desc">Persistent facts & knowledge shared across all chat instances & voice.</div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Chat Workspace -->
+            <div class="chat-main-area" id="chatMainArea">
+                <!-- Chat Top Navbar -->
+                <div class="chat-top-bar">
+                    <div class="chat-top-left">
+                        <button class="chat-sidebar-toggle" id="btnToggleChatSidebar" title="Toggle Sessions Sidebar">☰</button>
+                        <div class="chat-session-meta">
+                            <div class="chat-active-title" id="chatActiveTitle">New Conversation</div>
+                            <div class="chat-session-id" id="chatSessionIdPill">SESSION: --</div>
+                        </div>
+                    </div>
+                    <div class="chat-top-right">
+                        <div class="chat-stat-pill" id="chatActivePersonaPill" title="Current Active Personality">
+                            <span class="pill-dot"></span>
+                            <span id="chatPersonaLabel">CYPHER</span>
+                        </div>
+                        <div class="chat-stat-pill" id="chatActiveModelPill" title="Current Active AI Model">
+                            <span class="model-icon">⚡</span>
+                            <span id="chatModelLabel">RTX 3050 (4K)</span>
+                        </div>
+                        <div class="chat-stat-pill chat-mic-pill" id="chatMicPill" title="Microphone is automatically unloaded/paused in text chat mode">
+                            <span class="mic-icon">🎙️⃠</span>
+                            <span id="chatMicLabel">MIC UNLOADED</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Messages Scrollable Thread -->
+                <div class="chat-messages-container" id="chatMessagesContainer">
+                    <!-- Welcoming hero or messages injected dynamically -->
+                </div>
+
+                <!-- Chat Input Dock -->
+                <div class="chat-input-dock">
+                    <div class="chat-quick-chips">
+                        <button class="chat-chip" data-prompt="Search the web for the latest advancements in humanoid robotics and embodied AI">🔍 Web Search</button>
+                        <button class="chat-chip" data-prompt="Play some cyberpunk electronic music on YouTube">🎵 Play Music</button>
+                        <button class="chat-chip" data-prompt="What do you see through your camera right now?">👁️ Camera Vision</button>
+                        <button class="chat-chip" data-prompt="Generate an image of a futuristic cybernetic android in Tokyo rain">🎨 Generate Image</button>
+                        <button class="chat-chip" data-prompt="What durable facts and memories do you have saved about me?">🧠 Check Memory</button>
+                    </div>
+                    <div class="chat-box-wrapper">
+                        <textarea 
+                            class="chat-textarea" 
+                            id="chatTextarea" 
+                            rows="1" 
+                            placeholder="Message the robot... (Enter to send, Shift+Enter for newline)"
+                            autocomplete="off"
+                        ></textarea>
+                        <div class="chat-box-actions">
+                            <span class="chat-live-speed" id="chatLiveSpeed">0.0 tok/s</span>
+                            <button class="chat-stop-stream-btn" id="btnChatStopStream" style="display: none;" title="Stop Generating">
+                                ■ Stop
+                            </button>
+                            <button class="chat-send-action-btn" id="btnChatSubmit" title="Send Message (Enter)">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="22" y1="2" x2="11" y2="13"></line>
+                                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="chat-bottom-footnote">
+                        <span class="dot-online"></span> Robot Intelligence Core • SQLite Database Archive • Mem0 Semantic Vector Store
+                    </div>
+                </div>
+            </div>
+        </section>
     </main>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
@@ -335,6 +456,6 @@
     <script src="/static/character/AnimationSystem.js"></script>
     <script src="/static/character/GazeSystem.js"></script>
     <script src="/static/character/CharacterEngine.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2.2"></script>
 </body>
 </html>

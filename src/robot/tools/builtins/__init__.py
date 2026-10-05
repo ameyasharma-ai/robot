@@ -240,10 +240,55 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             return [{"error": f"No web search results could be retrieved for '{clean_q}'."}]
 
         results = await asyncio.to_thread(_execute_search)
+
+        # Ultimate Web Mode for Gemini Cloud & Deep Search:
+        # Concurrently fetch and extract comprehensive readable article/page text from top sources
+        is_gemini = getattr(engine, "llm_provider_type", "local") == "gemini"
+        if (is_gemini or deep) and results and isinstance(results, list) and "error" not in results[0]:
+            try:
+                import httpx
+                from bs4 import BeautifulSoup
+
+                async def _fetch_page_content(target_url: str) -> str:
+                    if not target_url or not target_url.startswith("http") or "duckduckgo.com" in target_url:
+                        return ""
+                    try:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                        }
+                        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                            resp = await client.get(target_url, headers=headers)
+                            if resp.status_code == 200:
+                                soup = BeautifulSoup(resp.text, "html.parser")
+                                for bad in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "svg", "button", "form"]):
+                                    bad.decompose()
+                                node = soup.find("article") or soup.find("main") or soup.body
+                                text = node.get_text(separator=" ", strip=True) if node else ""
+                                import re as _re
+                                clean = _re.sub(r"\s+", " ", text).strip()
+                                return clean[:15000]
+                    except Exception:
+                        pass
+                    return ""
+
+                fetch_tasks = []
+                for item in results[:5]:
+                    if isinstance(item, dict) and item.get("url"):
+                        fetch_tasks.append(_fetch_page_content(item["url"]))
+                    else:
+                        fetch_tasks.append(asyncio.sleep(0, result=""))
+
+                page_contents = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+                for idx, content in enumerate(page_contents):
+                    if isinstance(content, str) and content and idx < len(results):
+                        results[idx]["content"] = content
+            except Exception:
+                pass
+
         if results and isinstance(results, list) and "error" not in results[0]:
             results.append({
                 "meta": "search_guidance",
-                "instruction": "State the concise facts directly. Then ask the user if they would like you to initiate a deeper search on this topic.",
+                "instruction": "Synthesize the facts and article contents deeply. State key findings clearly.",
             })
             _search_cache[cache_key] = (_time.time(), results)
         return results

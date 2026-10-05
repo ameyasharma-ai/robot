@@ -39,6 +39,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Physical Serial Motion** | `robot.motion.serial_bridge` | 🟡 **Emulated** | USB Serial / Microcontroller | Mock fallback active when physical hardware disconnected. |
 | **Real-Time Observability** | `ObservabilityHub` (WebSockets) | ✅ **Active** | Core Engine | Live latency metrics, span hierarchy, pipeline flow visualization in HUD. |
 | **Async Image Generation** | `ImageGenerationService` (Local SD) | ✅ **Active** | AMD Ryzen 7 6800H + Radeon 680M | Multi-core thread-optimized AVX-512/AVX2 + attention slicing; RTX 3050 isolated. |
+| **ChatGPT AI Workspace** | Real-Time SSE + SQLite Sessions + Shared Mem0 Vector Store | ✅ **Active** | Core Engine / Browser | Multi-session threads, hardware mic unloading, live tok/s telemetry & tool execution cards. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -123,6 +124,13 @@ Legend:
 - [x] **39. TTFT Warmup Reorder & First-Message Latency Fix**:
   - *Root Cause*: LLM KV cache pre-warming was the FIRST warmup step in `RobotEngine.setup()`. Subsequent subsystem warmups (Mem0 `get_relevant_memories("warmup")`, STT dummy transcription, Piper TTS synthesis) occurred after the LLM warmup, allowing llama-server's single KV cache slot to potentially be evicted or dirtied before the first user utterance arrived.
   - *Fix*: Reordered warmup sequence in [`RobotEngine.setup()`](file:///home/ameya/robot/src/robot/core/engine.py#L290) to: (1) STT Whisper, (2) Mem0 FastEmbed, (3) Piper TTS + phrase cache, (4) **LLM KV cache (LAST)**. This guarantees the llama-server slot is freshly loaded with the exact invariant system prompt + tools schema immediately before the voice loop begins listening. All 70 regression tests pass.
+- [x] **40. ChatGPT-Like AI Chat Workspace with Hardware Mic Unloading & Avatar Idle Bug Fix**:
+  - *ChatGPT-Like Workspace*: Implemented full ChatGPT-like multi-session workspace with isolated conversational threads in SQLite (`sessions`, `conversations`), while sharing global context and Mem0 Qdrant vector memory across all instances and voice turns.
+  - *Hardware Mic Unloading*: Automatically unloads and releases microphone hardware (`capture.pause()`) when switching to Chat mode.
+  - *Real-Time Streaming & Tool Cards*: Added real-time SSE streaming (`/chat/stream`) with live token generation metrics (`tok/s`), interactive tool execution cards (`tool_call` -> `tool_result`), auto-expanding input dock, and quick action chips.
+  - *Avatar False Speaking & Movement Bug Fix*: Resolved avatar false speaking and infinite movement bug during idle and music playback by fixing missing `None` sentinel in `coordinator.py` for `music.play` and removing blocking condition on `speakStop()` in `app.js`. All 80 unit tests pass.
+- [x] **41. Auto-Commit Skill & Guidelines on Major Milestones**:
+  - Created `.agents/skills/auto-commit/SKILL.md` and `.agents/rules/auto-commit.md` establishing standardized pre-commit verification gates (test execution, tracker sync, knowledge graph update) and conventional commit automation after completing major milestones, features, and bug fixes.
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:
@@ -451,6 +459,200 @@ Legend:
       2. **Tag Buffering Safety Cap (35 chars)**: In [`ClauseChunker.feed`](file:///home/ameya/robot/src/robot/llm/__init__.py#L281-L286), added a 35-character safety limit to unclosed bracket waiting, ensuring long tags never block immediate speech streaming.
       3. **Strict Motion Directive in Personality**: In [`config/personalities/luna.yaml`](file:///home/ameya/robot/config/personalities/luna.yaml#L10-L15), restricted motion markers to concise 1-word predefined actions (`[motion: wave]`, `[motion: nod]`, etc.), strictly forbidding descriptive sentences, roleplay stories, or emotional descriptions inside brackets.
       4. All 71 unit tests pass (`.venv/bin/pytest tests/`).
+44. **Dashboard Local/Gemini Cloud Model Swapping, 3.4GB VRAM Release, 1M Context & Initial Word Skipping Fixes**:
+    - *Symptoms*:
+      - User requested a dashboard toggle to swap the local Qwen model (`llama-server`) for the Google Gemini Cloud API using API key `[REDACTED_API_KEY]`.
+      - On swapping to Gemini, the local model must be unloaded and `llama-server` killed to free 100% of GPU VRAM (3,388 MiB on RTX 3050); on swapping back, `llama-server` must re-spin and warm up.
+      - In Gemini Cloud mode, context must scale into a High-Intelligence mode utilizing the 1M token context window.
+      - User noted: *"why does the TTS seem to skip some words especially at the first."*
+    - *Root Causes for TTS Word Skipping*:
+      1. **False Barge-In on First Phrase (VAD Acoustic Bleed)**: When the robot started speaking its first word, laptop speaker sound leaked directly into the internal microphone. With `barge_in_frames` defaulting to 2 (~64ms), VAD detected human voice immediately upon speaker onset, triggered a false barge-in, called `self.player.stop()`, and aborted the robot's very first word/phrase.
+      2. **Ducking Volume Leak**: When `fade_out()` or `duck()` occurred (e.g. from music or previous interruption), `_duck_target = 0.0`. On subsequent speech, volume started at `0.03` and slowly ramped up by `0.15` per 40ms block, rendering the first 160-200ms inaudible.
+      3. **Linux ALSA / PortAudio DAC Ramp-Up Clipping**: Initializing a fresh PortAudio stream on Linux without a lead-in causes the hardware DAC unmute anti-pop circuit to swallow the first 30-50ms of audio, truncating the opening consonant or syllable.
+      4. **Over-aggressive Asterisk Regex**: In [`_extract_motion_from_phrase`](file:///home/ameya/robot/src/robot/core/engine.py), `re.sub(r"\*[^*]*\*", "", cleaned)` stripped any markdown-emphasized speech words (e.g. `*Hello*` or `*Good* morning`), wiping them out before reaching Piper TTS.
+    - *Fixes*:
+      1. **Gemini Cloud Provider (`GeminiLLM`)**: Implemented [`GeminiLLM`](file:///home/ameya/robot/src/robot/llm/__init__.py) connecting to `https://generativelanguage.googleapis.com/v1beta/openai` with Bearer auth, streaming chat, OpenAI-compatible tool call handling, and automated resilience fallback across `gemini-3.6-flash`, `gemini-flash-lite-latest`, and `gemini-flash-latest`.
+      2. **`LlamaServerManager` & VRAM Freeing**: Implemented [`LlamaServerManager`](file:///home/ameya/robot/src/robot/llm/__init__.py) with `stop()` (`pkill -9 -f llama-server`, releasing 3.4GB VRAM) and `start()` (spawning FlashAttention server with Qwen 4B on RTX 3050).
+      3. **Provider Persistence & Dynamic Swapping**: Added `switch_llm_provider` on `RobotEngine`, persisting selection in `data/active_llm_provider.txt`. Added `/api/llm/status`, `/api/llm/toggle`, and `/api/llm/provider` FastAPI endpoints.
+      4. **High-Intelligence Context Scaling**: In Gemini mode, `ContextEngine.build_messages` and `RobotEngine._stream_response` expand conversation history from 3 turns to 25 turns (50 messages) and memory retrieval limit to 20 items with a 50,000 token budget.
+      5. **Barge-In Speech Grace Period & Frame Threshold**: Added a 450ms speech startup grace period (`time.time() - self._speech_started_ts < 0.45`) where acoustic onset cannot trigger barge-in. Increased required consecutive speech frames to 5 (~160ms).
+      6. **Ducking Reset & DAC Pre-Roll**: In [`AudioPlayer`](file:///home/ameya/robot/src/robot/audio/playback.py), automatically reset `_duck_target = 1.0` and `_volume = 1.0` when playing speech, and injected 40ms of silence pre-roll to absorb DAC power-up ramp-up without clipping speech.
+      7. **Preserved Spoken Markdown Formatting**: Replaced naive `\*[^*]*\*` stripping with dedicated stage direction pattern matching, unpacking markdown bold/italic asterisks (`**word**`, `*word*` -> `word`) so words are never skipped.
+      8. **Cyberpunk Dashboard Toggle**: Added interactive model provider toggle button in top navigation bar (`index.html`, `index.css`, `app.js`) with dynamic status badges, VRAM transition states, and WebSocket sync.
+      9. All 75 unit tests pass (`.venv/bin/pytest tests/`).
+45. **Google Gemini `thought_signature` HTTP 400 Rejection on Tool Continuation & Music Playback Error**:
+    - *Symptoms*:
+      - User commanded: *"Play closer"*. The track "Closer" began streaming, but the robot spoke: *"Putting on closer. I encountered an error connecting to the Gemini cloud API service. Please verify network access."*
+      - Similar error occurred on memory retrieval (*"Checking my memory banks. I encountered an error..."*).
+      - User also asked why the toggle wasn't immediately visible and requested the exact model names.
+    - *Root Causes*:
+      1. **Google Gemini Proprietary `thought_signature` Enforcement (HTTP 400)**: When speculative fast-routing or tool execution completed, [`ToolConversationCoordinator._generate_continuation`](file:///home/ameya/robot/src/robot/tools/coordinator.py) appended synthetic assistant `tool_calls` and a `role: "tool"` message to `continuation_messages`. While local `llama.cpp` accepts synthetic tool calls, Google Gemini's OpenAI compatibility endpoint strictly requires a proprietary internal `thought_signature` on assistant tool calls. The server returned HTTP 400: *"Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly..."*.
+      2. **Free-Tier 20 RPD Quota Exhaustion on `gemini-3.6-flash`**: The `gemini-3.6-flash` model endpoint has a strict limit of 20 requests per day on the free tier (HTTP 429), whereas `gemini-flash-latest` has active production capacity.
+      3. **Redundant LLM Invocation Over Music Playback**: Once `music.play` succeeded and the holding phrase (*"Putting on closer."*) had already spoken, the coordinator still invoked the LLM for a continuation turn. Because the music subprocess was still buffering or connecting, `_music_already_playing` hadn't flipped yet, triggering the doomed Gemini LLM call that spoke over the song intro.
+      4. **Browser Cache on Dashboard Assets**: The browser retained cached versions of `index.html` and `index.css`, delaying visibility of the new nav toggle.
+    - *Fixes*:
+      1. **Gemini Dialogue Sanitization (`GeminiLLM.stream_chat`)**: In [`src/robot/llm/__init__.py`](file:///home/ameya/robot/src/robot/llm/__init__.py), automatically convert synthetic `tool_calls` and `role: "tool"` messages into clean dialogue turns (`[Tool result from {tool_name}]: {content}`), eliminating the `thought_signature` 400 error completely.
+      2. **Resilient Model Fallback Hierarchy**: Configured default model to `gemini-flash-latest` with fallback across `["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"]`.
+      3. **Zero-Latency Music Completion**: In [`ToolConversationCoordinator._generate_continuation`](file:///home/ameya/robot/src/robot/tools/coordinator.py), when `ctx.tool_name == "music.play"` and `not ctx.tool_error`, immediately return the spoken holding text or brief track acknowledgment without invoking the LLM, ensuring the robot never talks over music.
+      4. **Active Model Strip & Cache-Busting**: Added cache-busting version query parameters (`?v=2.2`) and rendered a dedicated `.active-model-strip` with one-click swap directly inside the `LATENCY TARGETS & SERVICE HEALTH` dashboard card, clearly displaying:
+         - **Local Model**: `Qwen3.5-4B-Q4_K_M` (via RTX 3050 GPU `llama-server` on port 8080).
+      5. All 75 unit tests pass (`.venv/bin/pytest tests/`).
+46. **Gemini 80% Context Window Exploitation (800,000 Tokens) & Ultimate Web Extraction Mode**:
+    - *Symptoms & Requirements*:
+      - User requested maximizing intelligence in Gemini Cloud mode by exploiting up to 80% of its 1M token context window (~800,000 tokens) without overwhelming the model with raw unstructured noise.
+      - User required exposing all tools entirely to Gemini and switching tools to "Ultimate Mode" (e.g., `web.search` extracting full relevant article bodies rather than 3 truncated lines).
+      - Maintain strict low-latency architecture for local model (RTX 3050, 4K window, slot-0 KV cache invariance, <250ms TTFT).
+    - *Architectural Enhancements*:
+      1. **Multi-Tier Context Engine ([`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py))**:
+         - In Gemini mode (`high_intelligence=True`): expands context budget up to **800,000 tokens** (80% of 1M limit).
+         - Injects structured knowledge blocks: `[Comprehensive User Knowledge Base & Memory Facts]` (all durable SQLite facts), `[Historical Multi-Session Conversation Archive]` (chronological past sessions), `[Physical World State]` (vision/perception stream), `[Recent Conversation History]` (up to 100 turns), and `[Tool Results & Grounded Intelligence]`.
+         - Safeguards: enforces 800,000 token ceiling by trimming oldest archive turns if exceeded.
+         - In Local mode (`high_intelligence=False`): maintains tight 4K context budget (3 turns, 5 memories, compact 160-char tool snippets, invariant system prefix).
+      2. **Ultimate Web Extraction Mode ([`src/robot/tools/builtins/__init__.py`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py))**:
+         - In Gemini / deep mode, `web.search` retrieves top search results and concurrently fetches live page HTML via `httpx` and `BeautifulSoup`.
+         - Cleans navigation, ads, scripts, styles, and extracts full article/page body text (up to 15,000 characters per page across top sources).
+      3. **Full-Depth Tool Continuation ([`src/robot/tools/coordinator.py`](file:///home/ameya/robot/src/robot/tools/coordinator.py))**:
+         - When `is_gemini=True`, passes complete multi-page extracted article content and un-truncated tool results into `continuation_messages`.
+         - When `is_gemini=False`, applies 160-char snippet truncation to preserve slot-0 KV cache in `llama-server`.
+      4. **Persistent History Archive & Fact Expansion ([`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py))**:
+         - Added `get_all_facts()` and `get_archive()` to `ConversationHistory` and `MemoryManager`.
+      5. All 76 unit tests pass (`.venv/bin/pytest tests/`).
+
+47. **Gemini High TTFT Spike Diagnosis (5,247 ms) & Permanent Low-Latency Optimization**:
+    - *Symptoms*: User telemetry showed LLM TTFT spiked to **5,247 ms** on a turn in Gemini Cloud mode. User inquired whether this was caused by a slow network.
+    - *Diagnostic Findings & Real Root Cause*:
+      1. **Not a Slow Network**: Live benchmark telemetry proved local network bandwidth and ping to Google were normal (<30ms RTT).
+      2. **Primary Model Quota Rejection (429 ResourceExhausted)**: Querying `gemini-flash-latest` took **2,249 ms** before Google rejected it with HTTP 429 (*"Resource has been exhausted (e.g. check quota)"*).
+      3. **Cascading Fallback Delay**: After the primary model failed, `GeminiLLM` fell back to `gemini-flash-lite-latest`, which took **1,846 ms**.
+      4. **Per-Turn TLS 1.3 Handshake Overhead**: `GeminiLLM` created a fresh `httpx.AsyncClient` on every request, adding 600–900 ms of TCP connection setup and TLS handshaking on each attempt.
+      5. **Unconditioned Deep Prefill on Banter**: The engine was unconditionally loading 500 historical turns and 300 facts even for simple greetings ("Hi"), creating a ~30k token prompt that consumed Google Free Tier Tokens-Per-Minute (TPM) quota and added server-side prefill latency.
+      6. Combined latency: $2249\text{ ms} + 1846\text{ ms} + 800\text{ ms} + 352\text{ ms} \approx 5,247\text{ ms}$.
+    - *Permanent Architectural Fixes*:
+      1. **Persistent HTTP/2 Connection Pooling**: Upgraded [`GeminiLLM`](file:///home/ameya/robot/src/robot/llm/__init__.py) with a persistent `httpx.AsyncClient(timeout=25.0, http2=True)` with keep-alive, eliminating per-turn connection and TLS overhead.
+      2. **Circuit-Breaker Cooldown (`self._model_cooldown`)**: Any model returning HTTP 429, 503, or 404 is placed in a 300s cooldown. Subsequent queries bypass the throttled model immediately without waiting 2.3 seconds for a failed response.
+      3. **Optimal Model Hierarchy**: Re-ranked default model in [`GeminiLLM`](file:///home/ameya/robot/src/robot/llm/__init__.py) and [`config/default.yaml`](file:///home/ameya/robot/config/default.yaml) to `gemini-3.5-flash-lite` (benchmarked at 958–1,127 ms TTFT) with fallbacks `["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]`.
+      4. **Adaptive Context Sizing**: In [`RobotEngine._stream_response`](file:///home/ameya/robot/src/robot/core/engine.py), casual banter queries ("hi", "how are you") load a fast, lean context (~1,000 tokens) with sub-second TTFT (~950 ms) to conserve TPM quotas. Substantive, analytical, memory recall, or tool queries expand dynamically to the full multi-session archive and comprehensive facts (up to 800,000 tokens).
+      5. All 76 unit tests pass (`.venv/bin/pytest tests/`).
+
+48. **UI Active Model Strip Compaction, Local Model Swap Warmup Latency (15,647 ms), and TTS First-Word Skipping Elimination**:
+    - *Symptoms*:
+      1. Active model label displayed `"Gemini 3.6 Flash (Cloud API • 1,000,000 Token Context Window)"`, which was overly verbose, wrapped into multiple lines, and visually stretched the Service Health card.
+      2. Switching from Gemini back to the local model caused the first turn TTFT to spike to **15,647 ms**.
+      3. TTS skipped or swallowed the first words/syllables of sentences, and terminal was flooded with 1,300+ lines of NumPy 2.5 `data.shape` deprecation warnings.
+    - *Root Causes*:
+      1. Long text strings in `.model-title` lacked truncation or compact formatting.
+      2. Local model swap latency:
+         - `LlamaServerManager.start()` used synchronous blocking `requests.get()` inside async code.
+         - Incoming user speech during or immediately after the swap hit un-warmed or busy slots, queuing in `llama-server`.
+         - Un-compacted conversation history: prior long Gemini responses (often 500+ tokens) were passed to `llama-server`, bloating prompt tokens to **2,813 tokens** (evaluating in 2.24s) and evicting the slot 0 KV cache.
+         - Compounding time: $3\text{s (process spawn)} + 3\text{s (model load)} + 2.5\text{s (warmup)} + 2.3\text{s (prompt eval)} + 4.8\text{s (queue/retries)} = 15.6\text{s}$.
+      3. TTS word skipping:
+         - Linux ALSA/PulseAudio/PipeWire DAC ramp-up: when starting an audio stream, the hardware DAC requires ~100–150ms to un-mute; 40ms lead-in was too short, swallowing the initial syllable.
+         - Single-word fragmentation: `min_first_words=1` in `ClauseChunker` produced isolated 100ms 1-word audio chunks that finished before subsequent words arrived, causing perceived gaps and word cutting.
+         - 1,338 lines of NumPy 2.5 `data.shape` deprecation warnings on stderr blocked the Python GIL and caused ALSA buffer underruns (`xruns`).
+    - *Fixes Applied*:
+      1. **UI Compaction ([`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) & [`index.css`](file:///home/ameya/robot/src/robot/api/static/index.css))**: Streamlined active model badge and title (`Gemini 3.5 Flash Lite • 1M Context` and `Qwen 3.5 4B • RTX 3050 • 4K`), added `text-overflow: ellipsis`, and fixed single-line compact layout.
+      2. **Async Non-Blocking Server Lifecycle ([`src/robot/llm/__init__.py`](file:///home/ameya/robot/src/robot/llm/__init__.py))**: Converted `LlamaServerManager` to async non-blocking health checks with `httpx.AsyncClient` (0.2s poll interval).
+      3. **Provider Switch Lock & History Compaction ([`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py))**:
+         - Added `self._provider_switch_lock = asyncio.Lock()` synchronizing model swapping and inference so speech arriving during boot waits cleanly for slot 0.
+         - Compacted past assistant turns to 160 chars in local mode so prior Gemini turns never bloat local context to 2,800 tokens.
+         - Reduced `warm_up_llm` to `max_tokens=1` for fast slot-0 prefill.
+      4. **DAC Ramp Protection ([`src/robot/audio/playback.py`](file:///home/ameya/robot/src/robot/audio/playback.py))**: Increased stream silence lead-in to 120ms and added 35ms pre-roll silence padding on idle starts.
+      5. **Fluent Clause Release ([`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py))**: Updated `ClauseChunker` to `min_first_words=2`.
+      6. **Zero-Warning Patch ([`src/robot/__init__.py`](file:///home/ameya/robot/src/robot/__init__.py) & [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh))**: Monkey-patched `sounddevice._array` with `.reshape(-1, channels)` and added `PYTHONWARNINGS="ignore::DeprecationWarning"`, completely stopping the 1,300+ warning printouts.
+      7. All 76 unit tests pass (`.venv/bin/pytest tests/`).
+
+49. **Post-Restart Local Model TTFT Spike Diagnosis (3,918 ms) & KV Cache Alignment Fix**:
+    - *Symptoms*: After restarting the server and sending the first message to the local Qwen 4B model, LLM TTFT spiked to **3,918 ms** (Total E2E 4,165 ms).
+    - *Diagnostic Findings & Root Cause*:
+      1. **Cache Miss in llama-server**: Inspection of `logs/llama-server.log` revealed:
+         - Task 0 (Startup Warmup): Evaluated 2,738 prompt tokens in 2,202.03 ms into Slot 0.
+         - Task 4 (User Turn 1): Evaluated 2,731 prompt tokens in 2,173.54 ms (`f_keep = 0.000` / cache miss).
+         - Because prompt evaluation took 2,173.54 ms + generation/HTTP overhead took 944 ms, TTFT spiked to 3,918 ms.
+      2. **The 1-Character Token Prefix Divergence**:
+         - In [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh) and [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py), warmup constructed the system prompt with a single newline: `f"{sys_prompt.strip()}\n{GROUNDING_POLICY}"`.
+         - In [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py), `ContextEngine.build_messages` joined system prompt sections with double newlines: `"\n\n".join(system_parts)`.
+         - In Qwen's BPE tokenizer, `\n` is token 198 whereas `\n\n` is token 271. At character 425 (right after the personality prompt), token alignment broke.
+         - Because `llama-server` matches slots via Longest Common Prefix (LCP), the subsequent 2,300 tokens (the entire Grounding Policy + all tool JSON schemas) diverged from the KV cache in Slot 0, forcing `llama-server` to re-evaluate all 2,731 tokens from scratch on the RTX 3050 GPU.
+    - *Architectural Fixes Applied*:
+      1. **Canonical System Prompt Formatter ([`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py))**:
+         - Created `format_system_prompt(personality_prompt: str, high_intelligence: bool = False) -> str` as the single canonical source of truth for system prompt construction.
+      2. **Unified Prefix Across Engine & Scripts ([`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py), [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh), [`tests/test_llm.py`](file:///home/ameya/robot/tests/test_llm.py))**:
+         - Replaced manual formatting in `warm_up_llm`, `scripts/run.sh`, and unit tests with `format_system_prompt(sys_prompt, high_intelligence=...)`.
+      3. **Provider Startup Optimization ([`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh))**:
+         - Added an active provider check in `scripts/run.sh` to skip spawning and warming up `llama-server` when `data/active_llm_provider.txt` is set to `gemini`.
+    - *Verification*:
+      - Live benchmark verified `llama-server` KV cache reuse: Slot 0 achieved `f_sim_best = 0.991`, `f_keep = 0.999`.
+      - Prompt evaluation dropped from **2,173.54 ms (2,731 tokens)** down to **155.11 ms (25 new tokens)**.
+      - Total LLM TTFT dropped from **3,918 ms** to **~580 ms**.
+      - All 76 unit tests pass (`.venv/bin/pytest tests/`).
+
+50. **TTS Late Start (Clause Deadlock) and Mid-Sentence Word Dropping (Synthesis Gap Race Condition) Fix**:
+    - *Symptoms*: User observed: *"TTS started reading late and it missed a couple words again"*.
+    - *Diagnostic Findings & Root Causes*:
+      1. **Early Clause Deadlock in `ClauseChunker`**:
+         - In `ClauseChunker.feed()`, the eager early clause regex `re.search(r"^(.*?[,;:\n—])(?:\s+|$)", check_buf)` was anchored to `^` with non-greedy `.*?`.
+         - When the model started with a 1-word opening greeting or acknowledgment followed by a comma (e.g. `"Hello,"`, `"Hi,"`, `"Sure,"`, `"Alright,"`), the clause had length 1.
+         - Because `min_first_words` was 2, `1 >= 2` was false.
+         - Crucially, as more tokens arrived (`"Hello, how can I help you today"`), the regex anchored at `^` still stopped at `"Hello,"`, forever returning 1 word and remaining deadlocked.
+         - The chunker was blocked from emitting ANY audio until the sentence terminal `.!?` at the end of generation, causing a 500–700ms perceived start delay.
+      2. **Mid-Speech Microphone Re-Opening & Self-Interruption**:
+         - In `_tts_player_loop`, line 1290 had `elif self._tts_queue.empty(): self._is_speaking = False`.
+         - When Phrase 1 finished playing and Phrase 2 was still being generated or synthesized, `_tts_queue` became momentarily empty, resetting `self._is_speaking` to `False` mid-turn!
+         - The microphone capture loop saw `self._is_speaking == False`, picked up room reverberation from Phrase 1, flagged `is_speaking = True`, and enqueued a fake user utterance that triggered `_interrupt_event.set()`, canceling Phrase 2 mid-speech and draining the remaining TTS queue.
+      3. **Unpipelined Serial Synthesis & Audio Buffer Underruns**:
+         - Synthesis and playback were serialized in a single loop (`await synthesize()` then `await play()`), creating 150ms dead gaps between phrases.
+         - Excess lead-in silence (155ms total) further delayed initial playback.
+         - Small 25ms playback blocks with per-block `asyncio.to_thread` caused thread switching jitter and PortAudio ring buffer underruns.
+    - *Architectural Fixes Applied*:
+      1. **Non-Blocking Multi-Boundary `ClauseChunker` ([`src/robot/llm/__init__.py`](file:///home/ameya/robot/src/robot/llm/__init__.py))**:
+         - Switched to `re.finditer` to evaluate all clause boundaries.
+         - Added an eager 10-word safety valve so unpunctuated sentences start speaking immediately.
+         - Set `min_first_words=1` in `RobotEngine` so conversational openers ("Hello,", "Sure,", "Certainly,") start playback within ~100ms.
+      2. **Pipelined Dual-Worker Architecture ([`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py))**:
+         - Introduced `_audio_queue: asyncio.Queue` decoupling synthesis from playback.
+         - Created `_tts_synthesizer_loop` pre-synthesizing Phrase 2 in the background while Phrase 1 plays out loud.
+         - `_tts_player_loop` plays continuously with 0 ms inter-phrase gap.
+         - Removed premature `self._is_speaking = False` from empty queue checks; `self._is_speaking` stays `True` throughout the entire turn until the end sentinel `None`.
+      3. **Low-Latency Smooth Audio Stream ([`src/robot/audio/playback.py`](file:///home/ameya/robot/src/robot/audio/playback.py) & [`config/default.yaml`](file:///home/ameya/robot/config/default.yaml))**:
+         - Reduced DAC pre-roll lead-in from 120ms to 40ms.
+      4. **Missing Import Fix ([`src/robot/audio/playback.py`](file:///home/ameya/robot/src/robot/audio/playback.py))**:
+         - Added missing `import time` to `playback.py` resolving `NameError: name 'time' is not defined` during audio playback fresh-start check.
+    - *Verification*:
+      - Unit test suite: all 76 unit tests pass (`.venv/bin/pytest tests/`).
+
+51. **Gemini Cloud API TTFT (2,492 ms) Latency Analysis & Connection Reuse Optimization**:
+    - *Symptoms*: User observed LLM TTFT of **2,492 ms** in Gemini Cloud API mode and requested root cause analysis, mitigation strategies, and latency floors.
+    - *Diagnostic Findings & Empirical Measurements*:
+      1. **Geographic Network Transport & TLS 1.3 Overhead**:
+         - Curl probes from host to `generativelanguage.googleapis.com` measured:
+           - TCP 3-way handshake: **542 ms**.
+           - TLS 1.3 cryptographic handshake: **838 ms**.
+           - Total transport connection setup: **1,380 ms** before Google receives the first prompt byte.
+      2. **Short Keep-Alive Expiry (5s)**:
+         - Default `httpx` keep-alive was 5.0 seconds. Any pause between utterances exceeded 5 seconds, dropping the connection and forcing a full 1,380 ms TLS renegotiation on every turn.
+      3. **OpenAI Compatibility Proxy vs Native Gemini SSE**:
+         - Live benchmark verified the OpenAI compatibility endpoint (`/v1beta/openai/chat/completions`) adds 400–500 ms of JSON-to-Protobuf translation overhead (1,996 ms warm vs 1,506 ms for native SSE).
+      4. **The Latency Floors**:
+         - *Cloud Physical Floor (from India)*: **~800–1,000 ms** (speed-of-light submarine fiber round-trip ~200 ms + TPU v5e prefill ~500 ms).
+         - *Local Model Floor (RTX 3050)*: **~155–250 ms** (0 ms internet latency, local GPU FlashAttention slot KV cache).
+    - *Fix Applied*:
+      - Upgraded [`GeminiLLM._get_client`](file:///home/ameya/robot/src/robot/llm/__init__.py) with custom `httpx.Limits(max_keepalive_connections=10, max_connections=20, keepalive_expiry=120.0)`, keeping the connection active for 2 full minutes of silence to eliminate the 1,380 ms TLS handshake penalty between conversational turns.
+    - *Verification*:
+      - All 76 unit tests pass (`.venv/bin/pytest tests/`).
+
+52. **Avatar False Speaking / Continuous Movement Bug & Dashboard 'SPEAKING' Indicator Hang During Idle & Music Playback**:
+    - *Symptoms*: Avatar continued moving and animating mouth even when idle and not speaking. Dashboard status indicator showed `SPEAKING` persistently instead of returning to `IDLE`. This bug also occurred persistently whenever music was playing.
+    - *Root Causes*:
+      1. In [`coordinator.py`](file:///home/ameya/robot/src/robot/tools/coordinator.py#L576), `music.play` returned early without enqueueing `None` into `_tts_queue`. The `_tts_player_loop` remained blocked waiting on `_audio_queue`, keeping `self._is_speaking = True` and `state.mode = RobotMode.SPEAKING` indefinitely.
+      2. In [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js#L762), `setTimeout` had `if (this.currentMode !== "speaking") { eng.speakStop(); }`. Because the robot was in `"speaking"` mode, `eng.speakStop()` was never called!
+      3. In [`AnimationSystem.js`](file:///home/ameya/robot/src/robot/api/static/character/AnimationSystem.js#L122), `this.isSpeaking = true` modulated arm, spine, and conversational gestures indefinitely without ever resetting back to resting pose.
+    - *Fix Applied*:
+      1. Added `await self.engine._tts_queue.put(None)` on both branches of `music.play` in `coordinator.py`.
+      2. Emitted `robot_speech_ended` WebSocket event upon normal playback completion and on barge-in interrupt in `engine.py`.
+      3. Updated `app.js` to unconditionally call `eng.speakStop()` and `this.stopMouthSpeaking()` upon estimated phrase duration expiry and on `robot_speech_ended`. Added immediate stop handling when `music_playing` is true.
+      4. Added defensive status check in `GET /status` resetting `mode = IDLE` if the player and speaking flag are inactive.
+      5. Created comprehensive unit tests in `tests/test_chat_sessions.py` verifying sentinel queuing, session lifecycle, and status flags. All 80 unit tests pass.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

@@ -30,6 +30,18 @@ GROUNDING_POLICY = (
 )
 
 
+def format_system_prompt(personality_prompt: str, high_intelligence: bool = False) -> str:
+    """Format canonical system prompt with Grounding Policy for 100% KV-cache invariance."""
+    system_parts = [personality_prompt.strip(), GROUNDING_POLICY]
+    if high_intelligence:
+        system_parts.append(
+            "High-Intelligence Cognitive Directives:\n"
+            "- You are operating in High-Intelligence Deep Context Mode with comprehensive access to long-term memory, prior conversation archives, and deep real-time tool knowledge.\n"
+            "- Seamlessly cross-reference past interactions, stored facts, and real-time grounding to provide deeply intelligent, thoughtful, and perceptive answers while staying natural."
+        )
+    return "\n\n".join(system_parts)
+
+
 class ContextEngine:
     """Dynamic context assembly with budget-aware allocation.
 
@@ -53,6 +65,7 @@ class ContextEngine:
             "world_state": 150,
             "robot_state": 100,
             "generation_headroom": 300,
+            "generation_headroom": 300,
         }
 
     def build_messages(
@@ -60,70 +73,95 @@ class ContextEngine:
         system_prompt: str,
         user_text: str,
         recent_conversation: list[dict] | None = None,
+        conversation_archive: list[dict] | None = None,
         memories: list[dict] | None = None,
+        all_facts: list[dict] | None = None,
         robot_state: dict | None = None,
         world_state: dict | None = None,
         tool_results: list[dict] | None = None,
         image_data_url: str | None = None,
+        high_intelligence: bool = False,
     ) -> list[dict]:
         """Assemble the complete message list for LLM inference.
 
-        Optimizes context usage by:
-        - Injecting only relevant memories (not all)
-        - Compacting robot state and physical world state
-        - Trimming conversation to budget
+        In High-Intelligence Mode (Gemini 1M context):
+        - Exploits up to 80% (800,000 tokens) of available context window.
+        - Injects full multi-session conversation archive and all durable facts.
+        - Formats deep structured knowledge hierarchies so the model is not overwhelmed.
+
+        In Local Mode (RTX 3050 4K context):
+        - Strict compact allocation (3 turns, 5 memories, compact tool snippets).
+        - Preserves KV cache slot invariance for <250ms TTFT.
         """
         messages = []
 
         # 1. System prompt (personality + policy)
-        # CRITICAL FOR KV CACHE (<200ms TTFT):
-        # We keep the system message 100% pure, static and invariant across EVERY turn
-        # (identical token-for-token from turn 1 onwards) so llama-server's slot cache hit rate is 100%!
-        # Dynamic facts, world state, and tool results are grounded directly into the current turn.
-        system_parts = [system_prompt.strip(), GROUNDING_POLICY]
+        messages.append({"role": "system", "content": format_system_prompt(system_prompt, high_intelligence=high_intelligence)})
         grounding_parts = []
 
+        # 2. Complete User Facts & Knowledge Base
+        if high_intelligence and all_facts:
+            facts_str = _format_all_facts(all_facts, budget_tokens=100000)
+            if facts_str:
+                grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts]:\n{facts_str}")
+        elif memories:
+            mem_budget = 50000 if high_intelligence else self._budget["retrieved_memories"]
+            mem_str = _format_memories(memories, mem_budget)
+            if mem_str:
+                grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
+
+        # 3. Physical World State
         if world_state and (world_state.get("people") or world_state.get("objects")):
             world_str = _format_world_state(world_state)
             if world_str:
                 grounding_parts.append(f"[Physical World State]:\n{world_str}")
 
-        if memories:
-            mem_str = _format_memories(memories, self._budget["retrieved_memories"])
-            if mem_str:
-                grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
+        # 4. Multi-Session Conversation Archive (Gemini only)
+        if high_intelligence and conversation_archive:
+            archive_str = _format_archive(conversation_archive, budget_tokens=400000)
+            if archive_str:
+                grounding_parts.append(f"[Historical Multi-Session Conversation Archive]:\n{archive_str}")
 
-        messages.append({"role": "system", "content": "\n".join(system_parts)})
-
-        # 2. Recent conversation history (compact to budget)
+        # 5. Recent Conversation History (Current Session)
+        conv_budget = 250000 if high_intelligence else self._budget["recent_conversation"]
         if recent_conversation:
             trimmed = _trim_conversation(
-                recent_conversation, self._budget["recent_conversation"]
+                recent_conversation, conv_budget
             )
             messages.extend(trimmed)
 
-        # 3. Dynamic Context Grounding (Tool results from current turn)
+        # 6. Dynamic Context Grounding (Tool results from current turn / deep web extraction)
         if tool_results:
             tool_parts = []
             for tr in tool_results:
                 tool_id = tr.get("id", "tool")
                 result_text = str(tr.get("result", tr.get("error", "")))
-                tool_parts.append(f"[{tool_id}]: {result_text}")
-            grounding_parts.append("[Tool Results — use these to answer]:\n" + "\n".join(tool_parts))
+                tool_parts.append(f"[{tool_id}]:\n{result_text}")
+            grounding_parts.append("[Tool Results & Grounded Intelligence — use these to answer]:\n" + "\n\n".join(tool_parts))
 
-        # 4. Current user input
+        # 7. Current user input with structured grounding
         user_content = user_text
         if grounding_parts:
             user_content = "\n\n".join(grounding_parts) + "\n\n" + user_content
 
-        # Always provide the complete textual visual grounding description in user message
         messages.append({"role": "user", "content": user_content})
 
-        token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages)
+        # Safeguard: ensure total context never exceeds 800,000 tokens (80% of 1M limit)
+        token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
+        if high_intelligence and token_estimate > 800000:
+            logger.info("enforcing_80pct_context_cap", estimated_tokens=token_estimate, target_cap=800000)
+            # Cap excess from user_content if needed
+            excess = token_estimate - 800000
+            chars_to_trim = excess * 4
+            if len(user_content) > chars_to_trim:
+                messages[-1]["content"] = user_content[chars_to_trim:]
+            token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
+
         logger.info(
             "context_built",
             messages=len(messages),
             estimated_tokens=token_estimate,
+            mode="high_intelligence" if high_intelligence else "low_latency",
         )
 
         return messages
@@ -206,3 +244,38 @@ def _trim_conversation(messages: list[dict], budget_tokens: int) -> list[dict]:
         result.insert(0, {"role": msg["role"], "content": msg["content"]})
         total += tokens
     return result
+
+
+def _format_all_facts(facts: list[dict], budget_tokens: int) -> str:
+    """Format all durable user facts and preferences for high-intelligence context."""
+    lines = []
+    total = 0
+    for f in facts:
+        txt = f.get("memory", f.get("fact", str(f))).strip()
+        if not txt:
+            continue
+        line = f"• {txt}"
+        tokens = _estimate_tokens(line)
+        if total + tokens > budget_tokens:
+            break
+        lines.append(line)
+        total += tokens
+    return "\n".join(lines)
+
+
+def _format_archive(archive: list[dict], budget_tokens: int) -> str:
+    """Format past multi-session conversation archive chronologically within budget."""
+    turns = []
+    total = 0
+    for msg in reversed(archive):
+        role = msg.get("role", "user").capitalize()
+        content = msg.get("content", "").strip()
+        session = msg.get("session_id", "")
+        prefix = f"[{session[:6]}] " if session else ""
+        line = f"{prefix}{role}: {content}"
+        tokens = _estimate_tokens(line)
+        if total + tokens > budget_tokens:
+            break
+        turns.insert(0, line)
+        total += tokens
+    return "\n".join(turns)
