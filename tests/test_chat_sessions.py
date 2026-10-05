@@ -322,3 +322,38 @@ async def test_engine_stream_text_chat():
     assert done_event["response"] == "Hello world"
 
 
+@pytest.mark.asyncio
+async def test_engine_stream_text_chat_async_generator():
+    """Verify RobotEngine.stream_text_chat consumes real async generator without 'async_generator is not iterable'."""
+    from robot.core.engine import RobotEngine
+    from robot.core.context import ContextEngine
+    from robot.personality import PersonalityManager
+
+    engine = RobotEngine()
+    engine.context = ContextEngine()
+    engine.personalities = PersonalityManager()
+    engine.state = MagicMock()
+    engine.state.state.active_personality = "neo"
+    engine.state.increment_turn = AsyncMock(return_value=1)
+
+    async def mock_async_stream(messages, tools=None):
+        for w in ["Async", " stream", " working", "!"]:
+            yield w
+
+    engine.llm = MagicMock()
+    engine.llm.stream_chat = mock_async_stream
+    engine.memory = None
+
+    chunks = []
+    async for event in engine.stream_text_chat("Testing async stream", session_id="test_sess_async"):
+        chunks.append(event)
+
+    events = [c["event"] for c in chunks]
+    assert "start" in events
+    assert "token" in events
+    assert "done" in events
+    done_event = next(c for c in chunks if c["event"] == "done")
+    assert done_event["response"] == "Async stream working!"
+
+
+

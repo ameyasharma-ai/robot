@@ -1471,9 +1471,17 @@ class RobotEngine:
         tools_called = []
         collected_tool_calls = []
 
+        async def _iterate_stream(gen):
+            if hasattr(gen, "__aiter__"):
+                async for item in gen:
+                    yield item
+            else:
+                for item in gen:
+                    yield item
+
         try:
             # First pass generation
-            for chunk in self.llm.stream_chat(messages, tools=tools):
+            async for chunk in _iterate_stream(self.llm.stream_chat(messages, tools=tools)):
                 if ttft_ms is None:
                     ttft_ms = (time.perf_counter() - t_start) * 1000
 
@@ -1578,7 +1586,7 @@ class RobotEngine:
                     })
 
                 second_pass_text = ""
-                for chunk in self.llm.stream_chat(messages, tools=None):
+                async for chunk in _iterate_stream(self.llm.stream_chat(messages, tools=None)):
                     if chunk.startswith("__TOOL_CALL__:"):
                         continue
                     token_count += 1

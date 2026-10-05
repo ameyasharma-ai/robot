@@ -672,6 +672,11 @@ Legend:
       6. Resolved `TypeError: ContextEngine.build_messages() got an unexpected keyword argument 'personality_prompt'` by updating `stream_text_chat` in [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to use canonical arguments (`system_prompt`, `user_text`, `recent_conversation`, `memories`) and upgrading `ContextEngine.build_messages` in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py) with `**kwargs` alias resolution (`personality_prompt`, `user_input`, `history`, `retrieved_memories`).
       7. Added unit tests in `tests/test_chat_sessions.py` and `tests/test_context.py`. All 84 tests pass.
 
+54. **Chat Stream Async Generator TypeError (`'async_generator' object is not iterable`)**:
+    - *Symptoms*: When sending a chat message, the engine logged `stream_text_chat_error: error="'async_generator' object is not iterable"` in `engine.py`.
+    - *Root Cause*: `self.llm.stream_chat` is an `async def stream_chat(...)` returning an `async_generator`. Lines 1476 and 1581 in `stream_text_chat` called `for chunk in self.llm.stream_chat(...)` synchronously instead of `async for`.
+    - *Fix*: Implemented `_iterate_stream(gen)` in `stream_text_chat` in [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to iterate with `async for` over `self.llm.stream_chat(...)` across both the initial pass and second-pass tool continuation, seamlessly supporting both async generators and synchronous test iterables. Added `test_engine_stream_text_chat_async_generator` in `tests/test_chat_sessions.py`. All 85 unit tests pass.
+
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.
