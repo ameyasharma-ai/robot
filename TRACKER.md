@@ -669,8 +669,8 @@ Legend:
       2. Implemented automatic schema migration and backfill in `ConversationHistory.initialize()` and `list_sessions()` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py) importing all historical voice sessions from `conversations`, deriving clean titles from user utterances (or "Voice Chat"), timestamps, and turn counts.
       3. Added `get_session(session_id)` to `ConversationHistory` and `MemorySubsystem`, updated `GET /chat/sessions` default limit to 150, and updated `GET /chat/sessions/{session_id}` to retrieve session metadata directly without 404ing on older sessions.
       4. Updated `store_turn` with `update_session_title_if_default` so voice sessions dynamically receive human-readable titles from the user's first spoken sentence.
-      5. Enhanced `app.js` with smart relative date formatting ("Today at 06:15 PM", "Yesterday", "Oct 4") and graceful system event badge styling.
-      6. Added unit tests in `tests/test_chat_sessions.py`. All 82 tests pass.
+      6. Resolved `TypeError: ContextEngine.build_messages() got an unexpected keyword argument 'personality_prompt'` by updating `stream_text_chat` in [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to use canonical arguments (`system_prompt`, `user_text`, `recent_conversation`, `memories`) and upgrading `ContextEngine.build_messages` in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py) with `**kwargs` alias resolution (`personality_prompt`, `user_input`, `history`, `retrieved_memories`).
+      7. Added unit tests in `tests/test_chat_sessions.py` and `tests/test_context.py`. All 84 tests pass.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

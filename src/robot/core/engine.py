@@ -1445,10 +1445,10 @@ class RobotEngine:
             else (getattr(self.personalities, "active_prompt", "") or "")
         )
         messages = self.context.build_messages(
-            personality_prompt=pers_prompt,
-            user_input=text,
-            history=recent_history,
-            retrieved_memories=retrieved_memories,
+            system_prompt=pers_prompt,
+            user_text=text,
+            recent_conversation=recent_history,
+            memories=retrieved_memories,
             world_state=world_compact,
             high_intelligence=is_gemini,
         )

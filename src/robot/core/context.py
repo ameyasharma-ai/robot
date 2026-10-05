@@ -70,8 +70,8 @@ class ContextEngine:
 
     def build_messages(
         self,
-        system_prompt: str,
-        user_text: str,
+        system_prompt: str | None = None,
+        user_text: str | None = None,
         recent_conversation: list[dict] | None = None,
         conversation_archive: list[dict] | None = None,
         memories: list[dict] | None = None,
@@ -81,6 +81,7 @@ class ContextEngine:
         tool_results: list[dict] | None = None,
         image_data_url: str | None = None,
         high_intelligence: bool = False,
+        **kwargs,
     ) -> list[dict]:
         """Assemble the complete message list for LLM inference.
 
@@ -93,10 +94,15 @@ class ContextEngine:
         - Strict compact allocation (3 turns, 5 memories, compact tool snippets).
         - Preserves KV cache slot invariance for <250ms TTFT.
         """
+        resolved_system = system_prompt or kwargs.get("personality_prompt") or ""
+        resolved_user = user_text or kwargs.get("user_input") or ""
+        resolved_recent = recent_conversation if recent_conversation is not None else kwargs.get("history")
+        resolved_memories = memories if memories is not None else kwargs.get("retrieved_memories")
+
         messages = []
 
         # 1. System prompt (personality + policy)
-        messages.append({"role": "system", "content": format_system_prompt(system_prompt, high_intelligence=high_intelligence)})
+        messages.append({"role": "system", "content": format_system_prompt(resolved_system, high_intelligence=high_intelligence)})
         grounding_parts = []
 
         # 2. Complete User Facts & Knowledge Base
@@ -104,9 +110,9 @@ class ContextEngine:
             facts_str = _format_all_facts(all_facts, budget_tokens=100000)
             if facts_str:
                 grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts]:\n{facts_str}")
-        elif memories:
+        elif resolved_memories:
             mem_budget = 50000 if high_intelligence else self._budget["retrieved_memories"]
-            mem_str = _format_memories(memories, mem_budget)
+            mem_str = _format_memories(resolved_memories, mem_budget)
             if mem_str:
                 grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
 
@@ -124,9 +130,9 @@ class ContextEngine:
 
         # 5. Recent Conversation History (Current Session)
         conv_budget = 250000 if high_intelligence else self._budget["recent_conversation"]
-        if recent_conversation:
+        if resolved_recent:
             trimmed = _trim_conversation(
-                recent_conversation, conv_budget
+                resolved_recent, conv_budget
             )
             messages.extend(trimmed)
 
@@ -140,7 +146,7 @@ class ContextEngine:
             grounding_parts.append("[Tool Results & Grounded Intelligence — use these to answer]:\n" + "\n\n".join(tool_parts))
 
         # 7. Current user input with structured grounding
-        user_content = user_text
+        user_content = resolved_user
         if grounding_parts:
             user_content = "\n\n".join(grounding_parts) + "\n\n" + user_content
 

@@ -292,3 +292,33 @@ def test_personality_active_prompt():
 
     assert pm.active_prompt == "You are a helpful AI."
 
+
+@pytest.mark.asyncio
+async def test_engine_stream_text_chat():
+    """Verify RobotEngine.stream_text_chat generates tokens without TypeError."""
+    from robot.core.engine import RobotEngine
+    from robot.core.context import ContextEngine
+    from robot.personality import PersonalityManager
+
+    engine = RobotEngine()
+    engine.context = ContextEngine()
+    engine.personalities = PersonalityManager()
+    engine.state = MagicMock()
+    engine.state.state.active_personality = "neo"
+    engine.state.increment_turn = AsyncMock(return_value=1)
+    engine.llm = MagicMock()
+    engine.llm.stream_chat.return_value = ["Hello", " world"]
+    engine.memory = None
+
+    chunks = []
+    async for event in engine.stream_text_chat("Hi there", session_id="test_sess"):
+        chunks.append(event)
+
+    events = [c["event"] for c in chunks]
+    assert "start" in events
+    assert "token" in events
+    assert "done" in events
+    done_event = next(c for c in chunks if c["event"] == "done")
+    assert done_event["response"] == "Hello world"
+
+

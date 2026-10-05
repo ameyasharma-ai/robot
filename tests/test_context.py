@@ -48,3 +48,21 @@ def test_context_with_conversation():
         recent_conversation=recent,
     )
     assert len(messages) >= 4  # system + 2 history + user
+
+
+def test_context_alias_keyword_arguments():
+    """Verify build_messages accepts legacy / alias keyword arguments without throwing TypeError."""
+    engine = ContextEngine()
+    messages = engine.build_messages(
+        personality_prompt="You are Luna.",
+        user_input="Hello from chat interface",
+        history=[{"role": "user", "content": "previous question"}],
+        retrieved_memories=[{"memory": "favorite color is cyan"}],
+    )
+    assert len(messages) >= 3
+    assert messages[0]["role"] == "system"
+    assert "Luna" in messages[0]["content"]
+    assert messages[-1]["role"] == "user"
+    assert "Hello from chat interface" in messages[-1]["content"]
+    assert "cyan" in messages[-1]["content"]
+
