@@ -225,3 +225,70 @@ async def test_coordinator_music_play_enqueues_sentinel():
     assert isinstance(item1, tuple)
     item2 = await asyncio.wait_for(mock_engine._tts_queue.get(), timeout=1.0)
     assert item2 is None
+
+
+@pytest.mark.asyncio
+async def test_historical_voice_session_backfill(tmp_db):
+    """Test that historical voice chats stored in conversations table are automatically migrated/available in sessions list."""
+    import sqlite3
+    # Seed raw historical conversations before history or sessions table is created
+    conn = sqlite3.connect(tmp_db)
+    conn.execute(
+        """CREATE TABLE conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            personality TEXT DEFAULT 'neo',
+            turn_number INTEGER DEFAULT 0,
+            tool_name TEXT,
+            tool_result TEXT,
+            timestamp TEXT NOT NULL,
+            metadata TEXT
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO conversations (session_id, role, content, personality, turn_number, timestamp)
+           VALUES ('voice_hist_1', 'user', 'Hello robot from voice', 'luna', 1, '2026-10-01T12:00:00+00:00')"""
+    )
+    conn.execute(
+        """INSERT INTO conversations (session_id, role, content, personality, turn_number, timestamp)
+           VALUES ('voice_hist_1', 'assistant', 'Hello human!', 'luna', 1, '2026-10-01T12:00:05+00:00')"""
+    )
+    conn.commit()
+    conn.close()
+
+    # Initialize ConversationHistory
+    history = ConversationHistory(tmp_db)
+    await history.initialize()
+
+    # Sessions list should contain the historical voice session
+    sessions = await history.list_sessions()
+    assert len(sessions) == 1
+    s = sessions[0]
+    assert s["id"] == "voice_hist_1"
+    assert "Hello robot from voice" in s["title"]
+    assert s["personality"] == "luna"
+
+    # get_session and get_session_messages should return the historical voice turns
+    sess_meta = await history.get_session("voice_hist_1")
+    assert sess_meta is not None
+    assert sess_meta["id"] == "voice_hist_1"
+
+    msgs = await history.get_session_messages("voice_hist_1")
+    assert len(msgs) == 2
+    assert msgs[0]["content"] == "Hello robot from voice"
+    assert msgs[1]["content"] == "Hello human!"
+
+
+def test_personality_active_prompt():
+    """Verify PersonalityManager exposes active_prompt property cleanly."""
+    from robot.personality import Personality, PersonalityManager
+
+    pm = PersonalityManager()
+    p = Personality(name="test_bot", system_prompt="You are a helpful AI.")
+    pm._personalities["test_bot"] = p
+    pm._active = "test_bot"
+
+    assert pm.active_prompt == "You are a helpful AI."
+

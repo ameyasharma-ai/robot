@@ -1439,8 +1439,13 @@ class RobotEngine:
             world_compact = self.perception.world_state.to_compact()
 
         is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
+        pers_prompt = (
+            active_pers.system_prompt
+            if active_pers and getattr(active_pers, "system_prompt", None)
+            else (getattr(self.personalities, "active_prompt", "") or "")
+        )
         messages = self.context.build_messages(
-            personality_prompt=self.personalities.active_prompt,
+            personality_prompt=pers_prompt,
             user_input=text,
             history=recent_history,
             retrieved_memories=retrieved_memories,

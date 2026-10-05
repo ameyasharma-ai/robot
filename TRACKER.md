@@ -131,6 +131,9 @@ Legend:
   - *Avatar False Speaking & Movement Bug Fix*: Resolved avatar false speaking and infinite movement bug during idle and music playback by fixing missing `None` sentinel in `coordinator.py` for `music.play` and removing blocking condition on `speakStop()` in `app.js`. All 80 unit tests pass.
 - [x] **41. Auto-Commit Skill & Guidelines on Major Milestones**:
   - Created `.agents/skills/auto-commit/SKILL.md` and `.agents/rules/auto-commit.md` establishing standardized pre-commit verification gates (test execution, tracker sync, knowledge graph update) and conventional commit automation after completing major milestones, features, and bug fixes.
+- [x] **42. Chat Stream Fix & Historical Voice Conversation Migration**:
+  - Fixed `AttributeError: 'PersonalityManager' object has no attribute 'active_prompt'` by adding `@property def active_prompt` to `PersonalityManager` and safe fallback in `engine.py`.
+  - Implemented automatic backfill and migration for all 150+ historical voice sessions from `conversations` table into `sessions`, ensuring every voice conversation is accessible and browsable in the ChatGPT-like chat sidebar with full message turns, smart relative dates, and clean titles. All 82 unit tests pass.
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:
@@ -652,7 +655,22 @@ Legend:
       2. Emitted `robot_speech_ended` WebSocket event upon normal playback completion and on barge-in interrupt in `engine.py`.
       3. Updated `app.js` to unconditionally call `eng.speakStop()` and `this.stopMouthSpeaking()` upon estimated phrase duration expiry and on `robot_speech_ended`. Added immediate stop handling when `music_playing` is true.
       4. Added defensive status check in `GET /status` resetting `mode = IDLE` if the player and speaking flag are inactive.
-      5. Created comprehensive unit tests in `tests/test_chat_sessions.py` verifying sentinel queuing, session lifecycle, and status flags. All 80 unit tests pass.
+53. **Chat Stream AttributeError (`PersonalityManager.active_prompt`) & Historical Voice Conversations Missing from Chat History**:
+    - *Symptoms*:
+      1. Sending a message in Chat mode crashed with traceback:
+         `File "/home/ameya/robot/src/robot/core/engine.py", line 1443, in stream_text_chat: personality_prompt=self.personalities.active_prompt` -> `AttributeError: 'PersonalityManager' object has no attribute 'active_prompt'`.
+      2. Previous voice conversations from the robot were not appearing in the chat history sidebar.
+    - *Root Causes*:
+      1. `PersonalityManager` defined `.active` returning a `Personality` object, but had no `.active_prompt` property.
+      2. The `sessions` table was only recently created, whereas the database had 152 historical voice sessions with hundreds of turns recorded in `conversations`. Because `list_sessions()` queried strictly `FROM sessions s`, all historical voice conversations were invisible.
+      3. `get_chat_session` in `api/__init__.py` checked `list_sessions(limit=100)`, throwing 404 for any valid conversation not in the top 100 sessions.
+    - *Architectural Fixes Applied*:
+      1. Added `@property def active_prompt(self) -> str:` to `PersonalityManager` in [`src/robot/personality/__init__.py`](file:///home/ameya/robot/src/robot/personality/__init__.py) returning `self.active.system_prompt if self.active else ""` with defensive fallback in `engine.py:1443`.
+      2. Implemented automatic schema migration and backfill in `ConversationHistory.initialize()` and `list_sessions()` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py) importing all historical voice sessions from `conversations`, deriving clean titles from user utterances (or "Voice Chat"), timestamps, and turn counts.
+      3. Added `get_session(session_id)` to `ConversationHistory` and `MemorySubsystem`, updated `GET /chat/sessions` default limit to 150, and updated `GET /chat/sessions/{session_id}` to retrieve session metadata directly without 404ing on older sessions.
+      4. Updated `store_turn` with `update_session_title_if_default` so voice sessions dynamically receive human-readable titles from the user's first spoken sentence.
+      5. Enhanced `app.js` with smart relative date formatting ("Today at 06:15 PM", "Yesterday", "Oct 4") and graceful system event badge styling.
+      6. Added unit tests in `tests/test_chat_sessions.py`. All 82 tests pass.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

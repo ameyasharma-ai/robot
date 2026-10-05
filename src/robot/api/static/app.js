@@ -423,9 +423,21 @@ class RobotUI {
 
             const title = s.title || "Conversation";
             let timeStr = "";
-            if (s.updated_at || s.created_at) {
-                const date = new Date(s.updated_at || s.created_at);
-                timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const rawDate = s.updated_at || s.started_at || s.created_at;
+            if (rawDate) {
+                const date = new Date(rawDate);
+                const now = new Date();
+                const isToday = date.toDateString() === now.toDateString();
+                const yesterday = new Date(now);
+                yesterday.setDate(yesterday.getDate() - 1);
+                const isYesterday = date.toDateString() === yesterday.toDateString();
+                if (isToday) {
+                    timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+                } else if (isYesterday) {
+                    timeStr = "Yesterday";
+                } else {
+                    timeStr = date.toLocaleDateString([], { month: "short", day: "numeric" });
+                }
             }
 
             item.innerHTML = `
@@ -543,6 +555,21 @@ class RobotUI {
     appendHistoricalMessage(msg) {
         if (!this.chatMessagesContainer) return;
         const isUser = msg.role === "user";
+
+        // Render system bootstrap / arrival prompts gracefully as subtle badges
+        if (isUser && msg.content && (msg.content.startsWith("[System") || msg.content.startsWith("[SYSTEM"))) {
+            const sysRow = document.createElement("div");
+            sysRow.className = "chat-msg-row msg-system-event";
+            sysRow.innerHTML = `
+                <div class="chat-system-badge">
+                    <span class="system-icon">⚡</span>
+                    <span class="system-text">${this.escapeHtml(msg.content)}</span>
+                </div>
+            `;
+            this.chatMessagesContainer.appendChild(sysRow);
+            return;
+        }
+
         const row = document.createElement("div");
         row.className = `chat-msg-row ${isUser ? "msg-user" : "msg-assistant"}`;
 
@@ -573,7 +600,7 @@ class RobotUI {
             timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         }
 
-        const senderLabel = isUser ? "YOU" : (this.personaSelect ? this.personaSelect.value.toUpperCase() : "ROBOT");
+        const senderLabel = isUser ? "YOU" : (msg.personality ? msg.personality.toUpperCase() : (this.personaSelect ? this.personaSelect.value.toUpperCase() : "ROBOT"));
         const avatarIcon = isUser ? "👤" : "🤖";
         const contentHtml = isUser ? this.escapeHtml(msg.content) : this.renderChatMarkdown(msg.content);
 

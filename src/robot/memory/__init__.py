@@ -304,6 +304,40 @@ class ConversationHistory:
         except Exception:
             pass
 
+        # Clean up any legacy system event titles in sessions
+        try:
+            self._conn.execute("UPDATE sessions SET title = 'Voice Chat' WHERE title LIKE '[%'")
+            self._conn.commit()
+        except Exception:
+            pass
+
+        # Backfill any historical voice sessions from conversations into sessions
+        try:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
+                SELECT 
+                    c.session_id,
+                    COALESCE(MAX(c.personality), 'neo') as pers,
+                    MIN(c.timestamp) as started,
+                    MAX(c.timestamp) as updated,
+                    COUNT(*)/2 as turns,
+                    COALESCE(
+                        (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
+                         FROM conversations
+                         WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
+                         ORDER BY id ASC LIMIT 1),
+                        'Voice Chat'
+                    ) as title
+                FROM conversations c
+                WHERE c.session_id NOT IN (SELECT id FROM sessions)
+                GROUP BY c.session_id;
+                """
+            )
+            self._conn.commit()
+        except Exception as e:
+            logger.warning("history_backfill_sessions_failed", error=str(e))
+
         logger.info("history_initialized", db=str(self.db_path))
 
     async def add_message(
@@ -411,15 +445,44 @@ class ConversationHistory:
             "turn_count": 0,
         }
 
-    async def list_sessions(self, limit: int = 50) -> list[dict]:
+    async def list_sessions(self, limit: int = 150) -> list[dict]:
         """List past chat sessions ordered by most recently active."""
         if not self._conn:
             return []
+
+        # Ensure any orphan conversations have session records
+        try:
+            await asyncio.to_thread(
+                self._conn.execute,
+                """
+                INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
+                SELECT 
+                    c.session_id,
+                    COALESCE(MAX(c.personality), 'neo'),
+                    MIN(c.timestamp),
+                    MAX(c.timestamp),
+                    COUNT(*)/2,
+                    COALESCE(
+                        (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
+                         FROM conversations
+                         WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
+                         ORDER BY id ASC LIMIT 1),
+                        'Voice Chat'
+                    )
+                FROM conversations c
+                WHERE c.session_id NOT IN (SELECT id FROM sessions)
+                GROUP BY c.session_id;
+                """
+            )
+            await asyncio.to_thread(self._conn.commit)
+        except Exception:
+            pass
+
         cursor = await asyncio.to_thread(
             self._conn.execute,
             """SELECT s.id, s.personality, s.started_at, s.updated_at, s.turn_count, s.title,
                       (SELECT content FROM conversations WHERE session_id = s.id AND role = 'assistant' ORDER BY id DESC LIMIT 1) as last_assistant_msg,
-                      (SELECT content FROM conversations WHERE session_id = s.id AND role = 'user' ORDER BY id ASC LIMIT 1) as first_user_msg
+                      (SELECT content FROM conversations WHERE session_id = s.id AND role = 'user' AND content NOT LIKE '[%' ORDER BY id ASC LIMIT 1) as first_user_msg
                FROM sessions s
                ORDER BY COALESCE(s.updated_at, s.started_at) DESC
                LIMIT ?""",
@@ -429,7 +492,13 @@ class ConversationHistory:
         result = []
         for r in rows:
             sid, pers, started, updated, turns, title, last_bot, first_u = r
-            display_title = title if (title and title != "New Chat") else ((first_u[:36] + "...") if first_u else "New Chat")
+            if title and title not in ("New Chat", "Voice Chat", "Chat", "New Conversation") and not title.startswith("["):
+                display_title = title
+            elif first_u:
+                display_title = (first_u[:36] + "...") if len(first_u) > 36 else first_u
+            else:
+                display_title = title or "Voice Chat"
+
             result.append({
                 "id": sid,
                 "personality": pers,
@@ -440,6 +509,51 @@ class ConversationHistory:
                 "last_message": (last_bot[:60] + "...") if last_bot else None,
             })
         return result
+
+    async def get_session(self, session_id: str) -> dict | None:
+        """Get session metadata by ID, falling back to conversations table if needed."""
+        if not self._conn:
+            return None
+        cursor = await asyncio.to_thread(
+            self._conn.execute,
+            """SELECT id, personality, started_at, updated_at, turn_count, title
+               FROM sessions
+               WHERE id = ?""",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor_c = await asyncio.to_thread(
+                self._conn.execute,
+                """SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'), MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
+                          COALESCE(
+                            (SELECT SUBSTR(content, 1, 36) FROM conversations WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%' ORDER BY id ASC LIMIT 1),
+                            'Voice Chat'
+                          )
+                   FROM conversations c
+                   WHERE c.session_id = ?
+                   GROUP BY c.session_id""",
+                (session_id,),
+            )
+            c_row = cursor_c.fetchone()
+            if not c_row:
+                return None
+            return {
+                "id": c_row[0],
+                "personality": c_row[1] or "neo",
+                "started_at": c_row[2],
+                "updated_at": c_row[3],
+                "turn_count": c_row[4] or 0,
+                "title": c_row[5] or "Voice Chat",
+            }
+        return {
+            "id": row[0],
+            "personality": row[1],
+            "started_at": row[2],
+            "updated_at": row[3],
+            "turn_count": row[4] or 0,
+            "title": row[5] or "Conversation",
+        }
 
     async def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict]:
         """Get all messages for an isolated session, including tool call details and metrics."""
@@ -536,6 +650,19 @@ class ConversationHistory:
     async def update_session_title(self, session_id: str, title: str) -> None:
         """Update session title."""
         await self.update_session(session_id, title=title)
+
+    async def update_session_title_if_default(self, session_id: str, new_title: str) -> None:
+        """Update session title only if it is currently a generic default or system event string."""
+        if not self._conn:
+            return
+        await asyncio.to_thread(
+            self._conn.execute,
+            """UPDATE sessions 
+               SET title = ? 
+               WHERE id = ? AND (title IN ('New Chat', 'Voice Chat', 'Chat', 'New Conversation', '') OR title LIKE '[%')""",
+            (new_title, session_id),
+        )
+        await asyncio.to_thread(self._conn.commit)
 
     async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
         """Store a durable fact in SQLite."""
@@ -696,8 +823,15 @@ class MemoryManager:
         active_ns = namespace or personality or "default"
 
         # Auto-create or update session record
-        clean_title = (user_text.strip().replace("\n", " ")[:36] + "...") if user_text else "Chat"
+        is_system = user_text.strip().startswith("[")
+        clean_title = (
+            (user_text.strip().replace("\n", " ")[:36] + "...")
+            if (len(user_text.strip()) > 36 and not is_system)
+            else (user_text.strip() if (user_text.strip() and not is_system) else "Voice Chat")
+        )
         await self.history.create_session(session_id, personality=personality, title=clean_title)
+        if not is_system and user_text.strip():
+            await self.history.update_session_title_if_default(session_id, clean_title)
         await self.history.update_session(session_id, turn_count=turn_number)
 
         # SQLite archive (always recorded with personality tag)
@@ -734,9 +868,13 @@ class MemoryManager:
         """Create or register a new isolated conversation session."""
         return await self.history.create_session(session_id=session_id, personality=personality, title=title)
 
-    async def list_sessions(self, limit: int = 50) -> list[dict]:
+    async def list_sessions(self, limit: int = 150) -> list[dict]:
         """List past chat sessions ordered by most recently active."""
         return await self.history.list_sessions(limit)
+
+    async def get_session(self, session_id: str) -> dict | None:
+        """Get session metadata by ID."""
+        return await self.history.get_session(session_id)
 
     async def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict]:
         """Get all messages for an isolated session, including tool call details and metrics."""

@@ -112,6 +112,12 @@ class PersonalityManager:
     def active_name(self) -> str:
         return self._active
 
+    @property
+    def active_prompt(self) -> str:
+        """System prompt of the currently active personality, or empty string."""
+        p = self.active
+        return p.system_prompt if p else ""
+
     def list_personalities(self) -> list[str]:
         return list(self._personalities.keys())
 

@@ -2336,12 +2336,32 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     to { opacity: 1; transform: translateY(0); }
 }
 
-.chat-msg-row.user {
+.chat-msg-row.user,
+.chat-msg-row.msg-user {
     align-items: flex-end;
 }
 
-.chat-msg-row.assistant {
+.chat-msg-row.assistant,
+.chat-msg-row.msg-assistant {
     align-items: flex-start;
+}
+
+.chat-msg-row.msg-system-event {
+    align-items: center;
+    margin: 8px 0;
+}
+
+.chat-system-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px dashed rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 0.76rem;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
 }
 
 .chat-msg-header {
@@ -2358,15 +2378,18 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     font-weight: 700;
 }
 
-.chat-msg-row.user .chat-msg-header .msg-sender {
+.chat-msg-row.user .chat-msg-header .msg-sender,
+.chat-msg-row.msg-user .chat-msg-header .msg-sender {
     color: var(--primary-cyan);
 }
 
-.chat-msg-row.assistant .chat-msg-header .msg-sender {
+.chat-msg-row.assistant .chat-msg-header .msg-sender,
+.chat-msg-row.msg-assistant .chat-msg-header .msg-sender {
     color: var(--matrix-green);
 }
 
-.chat-bubble {
+.chat-bubble,
+.chat-msg-body {
     max-width: 82%;
     border-radius: 14px;
     padding: 14px 18px;
@@ -2376,7 +2399,10 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     position: relative;
 }
 
-.chat-msg-row.user .chat-bubble {
+.chat-msg-row.user .chat-bubble,
+.chat-msg-row.user .chat-msg-body,
+.chat-msg-row.msg-user .chat-bubble,
+.chat-msg-row.msg-user .chat-msg-body {
     background: linear-gradient(135deg, rgba(0, 255, 102, 0.14), rgba(0, 242, 254, 0.08));
     border: 1px solid rgba(0, 255, 102, 0.35);
     border-top-right-radius: 4px;
@@ -2384,7 +2410,10 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
 }
 
-.chat-msg-row.assistant .chat-bubble {
+.chat-msg-row.assistant .chat-bubble,
+.chat-msg-row.assistant .chat-msg-body,
+.chat-msg-row.msg-assistant .chat-bubble,
+.chat-msg-row.msg-assistant .chat-msg-body {
     background: rgba(4, 18, 10, 0.88);
     border: 1px solid rgba(0, 255, 102, 0.22);
     border-top-left-radius: 4px;

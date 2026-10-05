@@ -265,10 +265,10 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             )
 
     @app.get("/chat/sessions")
-    async def list_chat_sessions():
+    async def list_chat_sessions(limit: int = 150):
         """List all isolated conversation sessions stored in the SQLite database."""
         if hasattr(engine, "memory") and engine.memory:
-            sessions = await engine.memory.list_sessions(limit=50)
+            sessions = await engine.memory.list_sessions(limit=limit)
             return {"sessions": sessions, "active_session": engine._session_id}
         return {"sessions": [], "active_session": engine._session_id}
 
@@ -287,15 +287,17 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     async def get_chat_session(session_id: str):
         """Get all messages for an isolated chat session from the database."""
         if hasattr(engine, "memory") and engine.memory:
-            sessions = await engine.memory.list_sessions(limit=100)
-            matching = next((s for s in sessions if s["id"] == session_id), None)
-            if not matching:
+            sess = await engine.memory.get_session(session_id)
+            msgs = await engine.memory.get_session_messages(session_id, limit=300)
+            if not sess and not msgs:
                 raise HTTPException(status_code=404, detail="Session not found")
-            msgs = await engine.memory.get_session_messages(session_id, limit=200)
+            title = (sess.get("title") if sess else None) or "Conversation"
+            personality = (sess.get("personality") if sess else None) or "neo"
             return {
                 "session_id": session_id,
                 "id": session_id,
-                "title": matching.get("title", "Conversation"),
+                "title": title,
+                "personality": personality,
                 "messages": msgs,
             }
         return {"session_id": session_id, "id": session_id, "title": "Conversation", "messages": []}
