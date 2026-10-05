@@ -677,6 +677,19 @@ Legend:
     - *Root Cause*: `self.llm.stream_chat` is an `async def stream_chat(...)` returning an `async_generator`. Lines 1476 and 1581 in `stream_text_chat` called `for chunk in self.llm.stream_chat(...)` synchronously instead of `async for`.
     - *Fix*: Implemented `_iterate_stream(gen)` in `stream_text_chat` in [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to iterate with `async for` over `self.llm.stream_chat(...)` across both the initial pass and second-pass tool continuation, seamlessly supporting both async generators and synchronous test iterables. Added `test_engine_stream_text_chat_async_generator` in `tests/test_chat_sessions.py`. All 85 unit tests pass.
 
+55. **LLM Incomplete Sentence Generation & Single-Bracket Infinite Loop (`text=[`, `LLM_OUTPUT_TOKENS=1`)**:
+    - *Symptoms*: Chat and voice interactions failed to form sentences, returning single bracket tokens: `bot_response text=[`, `LLM_OUTPUT_TOKENS=1`, and generation terminating after 25ms.
+    - *Root Causes*:
+      1. **Boot-Time Session History Poisoning**: In `warm_up_llm` in [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py), the KV cache warmup ran with `max_tokens=1` and stored `clean_reply = bot_reply.strip() or "[motion: wave] Ready and standing by."` into `self.memory.store_turn` for `self._session_id` turn 0. Because motion tags begin with `[`, the 1-token output was literally `"["`. Storing `user: [System Event...]`, `assistant: [` conditioned Qwen's few-shot chat history to pattern-match `assistant: [` as the expected response, causing all subsequent turns to emit `[` and terminate.
+      2. **Corrupted History Ingestion**: In `ConversationHistory.get_recent`, single-bracket fragments or empty rows were returned raw as assistant history, contaminating any existing sessions that had accumulated single-bracket turns.
+      3. **LlamaServerManager Subprocess Lifecycle**: `LlamaServerManager.start` lacked `start_new_session=True` on `subprocess.Popen`, causing the server daemon to receive signals from parent process exits.
+    - *Fixes Applied*:
+      1. Updated `warm_up_llm` in [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to purely evaluate 1 token to prime llama-server's slot 0 KV cache without inserting dummy turns into `self.memory`.
+      2. Updated `ConversationHistory.get_recent` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py) to filter out single-bracket stray tokens (`[`, `]`, `<`, `>`) from chat context, and guarded `store_turn` from adding single-bracket turns to Mem0.
+      3. Purged legacy single-bracket corrupted rows from `data/database/conversations.db`.
+      4. Added `start_new_session=True` to `LlamaServerManager.start` in [`src/robot/llm/__init__.py`](file:///home/ameya/robot/src/robot/llm/__init__.py).
+      5. Added regression unit tests `test_warm_up_llm_does_not_pollute_session_history` and `test_get_recent_filters_single_bracket_garbage` in [`tests/test_chat_sessions.py`](file:///home/ameya/robot/tests/test_chat_sessions.py). All 87 unit tests pass.
+
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.

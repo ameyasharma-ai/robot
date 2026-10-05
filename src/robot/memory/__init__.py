@@ -406,7 +406,11 @@ class ConversationHistory:
             (session_id, limit),
         )
         rows = cursor.fetchall()
-        return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in reversed(rows)]
+        return [
+            {"role": r[0], "content": r[1], "timestamp": r[2]}
+            for r in reversed(rows)
+            if r[1] and r[1].strip() not in ("[", "]", "<", ">")
+        ]
 
     async def clear_turn(self, session_id: str, turn_number: int = 0) -> None:
         """Clear a specific turn (e.g. turn 0 bootstrap) from session history."""
@@ -856,11 +860,12 @@ class MemoryManager:
             await self.history.add_fact(user_text, user_id=active_ns)
 
         # Mem0 semantic memory (isolated per personality namespace)
-        messages = [
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": bot_text},
-        ]
-        await self.mem0.add(messages, user_id=active_ns, infer=False)
+        if bot_text and bot_text.strip() not in ("[", "]", ""):
+            messages = [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": bot_text},
+            ]
+            await self.mem0.add(messages, user_id=active_ns, infer=False)
 
     async def create_session(
         self, session_id: str | None = None, personality: str = "neo", title: str = "New Chat"

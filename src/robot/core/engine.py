@@ -528,13 +528,9 @@ class RobotEngine:
         sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
         system_content = format_system_prompt(sys_prompt, high_intelligence=getattr(self, "high_intelligence_mode", False))
 
-        silent_arrival_prompt = (
-            "[System Event: Robot Core online and sensors active. The user has arrived / entered the room. "
-            "In your next response, warmly acknowledge and greet the user.]"
-        )
         warmup_messages = [
             {"role": "system", "content": system_content},
-            {"role": "user", "content": silent_arrival_prompt},
+            {"role": "user", "content": "hi"},
         ]
 
         # Pre-warm system prompt prefix together with tools schema so Turn 1 hits 100% KV cache
@@ -542,27 +538,10 @@ class RobotEngine:
         try:
             reg = getattr(self, "tool_registry", None)
             tools_schema = reg.get_schemas() if reg is not None else None
-            bot_reply = ""
-            async for token in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
-                bot_reply += token
+            async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
+                pass
             w_ms = (time.perf_counter() - t0) * 1000
             pers_name = pers.name if pers else "default"
-
-            # Record silent arrival bootstrap turn in session history so Turn 1 knows user arrived
-            # and matches the exact token sequence in llama-server's slot cache
-            if self.memory and self._session_id:
-                try:
-                    await self.memory.clear_turn(self._session_id, 0)
-                except Exception:
-                    pass
-                clean_reply = bot_reply.strip() or "[motion: wave] Ready and standing by."
-                await self.memory.store_turn(
-                    session_id=self._session_id,
-                    user_text=silent_arrival_prompt,
-                    bot_text=clean_reply,
-                    personality=pers_name,
-                    turn_number=0,
-                )
             logger.info("llm_kv_cache_warmed", personality=pers_name, duration_ms=round(w_ms, 1))
             return w_ms
         except Exception as e:

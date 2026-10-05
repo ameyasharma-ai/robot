@@ -524,7 +524,7 @@ class LlamaServerManager:
         log_file = open(log_dir / "llama-server.log", "a")
 
         logger.info("starting_llama_server", cmd=" ".join(cmd))
-        subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
+        subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
 
         for i in range(50):
             await asyncio.sleep(0.2)

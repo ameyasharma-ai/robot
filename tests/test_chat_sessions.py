@@ -356,4 +356,51 @@ async def test_engine_stream_text_chat_async_generator():
     assert done_event["response"] == "Async stream working!"
 
 
+@pytest.mark.asyncio
+async def test_warm_up_llm_does_not_pollute_session_history():
+    """Verify warm_up_llm only primes inference KV cache and does NOT insert dummy turn 0 into memory."""
+    from robot.core.engine import RobotEngine
+    from robot.personality import PersonalityManager
+
+    engine = RobotEngine()
+    engine.personalities = PersonalityManager()
+    engine.memory = MagicMock()
+    engine.memory.store_turn = AsyncMock()
+    engine._session_id = "test_boot_sess"
+
+    engine.llm = MagicMock()
+    async def mock_stream(messages, max_tokens=1, tools=None):
+        yield "["
+    engine.llm.stream_chat = mock_stream
+
+    duration = await engine.warm_up_llm("neo")
+    assert duration >= 0.0
+    # Crucial: store_turn must NOT have been called with dummy "["
+    assert engine.memory.store_turn.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_recent_filters_single_bracket_garbage(tmp_path):
+    """Verify ConversationHistory.get_recent filters out corrupted single brackets ([ or ]) from chat context."""
+    from robot.memory import ConversationHistory
+    db_file = str(tmp_path / "test_filter.db")
+    hist = ConversationHistory(db_file)
+    await hist.initialize()
+
+    sid = "sess_filter_test"
+    await hist.create_session(sid, personality="luna", title="Filter Test")
+    await hist.add_message(sid, "user", "Hello robot", "luna", 0)
+    await hist.add_message(sid, "assistant", "[", "luna", 0)  # Corrupted single bracket
+    await hist.add_message(sid, "user", "How are you?", "luna", 1)
+    await hist.add_message(sid, "assistant", "I am doing wonderful, Ameya!", "luna", 1)
+
+    recent = await hist.get_recent(sid, limit=10)
+    contents = [r["content"] for r in recent]
+    assert "[" not in contents
+    assert "Hello robot" in contents
+    assert "How are you?" in contents
+    assert "I am doing wonderful, Ameya!" in contents
+
+
+
 
