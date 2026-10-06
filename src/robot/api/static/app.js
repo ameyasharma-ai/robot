@@ -721,16 +721,23 @@ class RobotUI {
 
                 for (const chunk of lines) {
                     if (!chunk.trim()) continue;
-                    const eventMatch = chunk.match(/^event:\s*(.+)$/m);
+
+                    // Backend sends: "data: {\"event\": \"token\", ...}\n\n"
+                    // Extract the JSON from the data: field
                     const dataMatch = chunk.match(/^data:\s*(.+)$/m);
-                    const eventType = eventMatch ? eventMatch[1].trim() : "message";
-                    const dataStr = dataMatch ? dataMatch[1].trim() : "{}";
+                    const dataStr = dataMatch ? dataMatch[1].trim() : chunk.trim();
 
                     let payload = {};
-                    try { payload = JSON.parse(dataStr); } catch (e) {}
+                    try { payload = JSON.parse(dataStr); } catch (e) { continue; }
+
+                    // Event type is embedded inside the JSON payload
+                    const eventType = payload.event || "message";
 
                     if (eventType === "start") {
                         streamStartTime = performance.now();
+                        if (this.chatLiveSpeed) {
+                            this.chatLiveSpeed.style.display = "inline";
+                        }
                     } else if (eventType === "token") {
                         if (payload.token) {
                             streamedRawText += payload.token;
@@ -784,12 +791,16 @@ class RobotUI {
                         if (cursorSpan) cursorSpan.remove();
                         if (telemDiv) {
                             telemDiv.style.display = "flex";
+                            const durationSec = payload.duration_ms ? (payload.duration_ms / 1000) : 0;
                             telemDiv.innerHTML = `
                                 <span class="telem-item">⚡ ${payload.tokens || tokenCount} tokens</span>
-                                <span class="telem-item">🚀 ${(payload.tokens_per_sec || 0).toFixed(1)} tok/s</span>
-                                <span class="telem-item">⏱️ ${(payload.duration_s || 0).toFixed(2)}s</span>
+                                <span class="telem-item">🚀 ${(payload.tok_per_sec || 0).toFixed(1)} tok/s</span>
+                                <span class="telem-item">⏱️ ${durationSec.toFixed(2)}s</span>
                                 <span class="telem-item">🎯 TTFT: ${(payload.ttft_ms || 0).toFixed(0)} ms</span>
                             `;
+                        }
+                        if (this.chatLiveSpeed) {
+                            this.chatLiveSpeed.style.display = "none";
                         }
                         this.loadChatSessions();
                     } else if (eventType === "error") {
