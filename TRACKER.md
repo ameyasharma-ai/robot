@@ -134,6 +134,10 @@ Legend:
 - [x] **42. Chat Stream Fix & Historical Voice Conversation Migration**:
   - Fixed `AttributeError: 'PersonalityManager' object has no attribute 'active_prompt'` by adding `@property def active_prompt` to `PersonalityManager` and safe fallback in `engine.py`.
   - Implemented automatic backfill and migration for all 150+ historical voice sessions from `conversations` table into `sessions`, ensuring every voice conversation is accessible and browsable in the ChatGPT-like chat sidebar with full message turns, smart relative dates, and clean titles. All 82 unit tests pass.
+- [x] **43. Chat Markdown Formatting & Avatar Motion Metadata Sanitization**:
+  - *Clean Human Text Sanitization*: Implemented `cleanHumanText()` in `app.js` to strip robot embodiment markers (`[motion: wave]`, `[action: point]`, `[emotion: happy]`, etc.), internal `<tool_call>` XML tags, and asterisk stage directions from all human-facing UI dialogs.
+  - *Robot Speech Bubble & Dialog Box*: Filtered REST `/chat` response and WebSocket `robot_phrase` events through `cleanHumanText()`, ensuring avatar speech bubbles show only natural spoken language intended for humans.
+  - *Full Markdown Parser & Typography*: Upgraded `renderChatMarkdown()` in `app.js` with structured support for headers (`##`, `###`), blockquotes (`>`), lists (`-`, `*`), inline code (`` `code` ``), bold (`**`), italic (`*`), and code blocks with syntax highlighting and copy buttons. Styled with matrix green accents in `index.css`. All 87 unit tests passing.
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:

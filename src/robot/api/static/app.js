@@ -176,7 +176,8 @@ class RobotUI {
                 }
 
                 const data = await resp.json();
-                const response = data.response || data.error || "No response received.";
+                const rawResponse = data.response || data.error || "No response received.";
+                const response = this.cleanHumanText(rawResponse) || rawResponse;
 
                 // Show robot response
                 if (this.bubbleTag) {
@@ -840,24 +841,63 @@ class RobotUI {
         }
     }
 
+    cleanHumanText(text) {
+        if (!text) return "";
+        let cleaned = String(text);
+        // Strip tool_call XML blocks
+        cleaned = cleaned.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "");
+        cleaned = cleaned.replace(/<\/?(?:tool_call|function|parameter)[^>]*>/gi, "");
+        // Strip explicit motion markers like [motion: wave], [motion: raise_hand left], [motion: lean_in]
+        cleaned = cleaned.replace(/\[\s*(?:motion|action|emotion|character\.)\s*:[^\]]*\]/gi, "");
+        // Strip general bracketed tags e.g. [motion: wave] or [character.execute_action ...]
+        cleaned = cleaned.replace(/\[(?:motion|action|emotion)?:?\s*(?:wave|nod|point|kick|walk|turn|sit|stand|lean_in|raise_hand|stop)[^\]]*\]/gi, "");
+        // Strip stage directions in asterisks e.g. *waves*, *smiles*, *nods*
+        cleaned = cleaned.replace(/\*(?:waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?|leans?|looks?\s+around|shrugs?|pauses?|blinks?|winks?)[^*]*\*/gi, "");
+        // Strip stray unclosed motion tags at end of stream like [motion: or [motion
+        cleaned = cleaned.replace(/\[\s*(?:motion|action|emotion)?:?[^\]\n]*$/i, "");
+        return cleaned.trim();
+    }
+
     renderChatMarkdown(text) {
         if (!text) return "";
-        let escaped = text
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
+        
+        // Strip motion tags and internal avatar directives from human-visible text
+        let cleaned = this.cleanHumanText(text);
+        if (!cleaned) return "";
 
-        // Code blocks: ```lang ... ```
-        escaped = escaped.replace(/```([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+        // Extract and preserve code blocks
+        const codeBlocks = [];
+        cleaned = cleaned.replace(/```([a-zA-Z0-9_\-\.]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+            const id = `__CODE_BLOCK_${codeBlocks.length}__`;
             const langLabel = lang ? lang.toUpperCase() : "CODE";
-            return `<div class="chat-code-block">
-                <div class="code-block-header">
-                    <span class="code-lang-tag">${langLabel}</span>
-                    <button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.chat-code-block').querySelector('code').innerText).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500); })">Copy</button>
-                </div>
-                <pre class="code-pre"><code class="language-${lang}">${code.trim()}</code></pre>
-            </div>`;
+            codeBlocks.push(
+                `<div class="chat-code-block">` +
+                `<div class="code-block-header">` +
+                `<span class="code-lang-tag">${this.escapeHtml(langLabel)}</span>` +
+                `<button class="code-copy-btn" onclick="navigator.clipboard.writeText(this.closest('.chat-code-block').querySelector('code').innerText).then(() => { this.textContent = 'Copied!'; setTimeout(() => this.textContent = 'Copy', 1500); })">Copy</button>` +
+                `</div>` +
+                `<pre class="code-pre"><code class="language-${this.escapeHtml(lang)}">${this.escapeHtml(code.trim())}</code></pre>` +
+                `</div>`
+            );
+            return id;
         });
+
+        // HTML escape the text outside code blocks
+        let escaped = this.escapeHtml(cleaned);
+
+        // Headers
+        escaped = escaped.replace(/^### (.*$)/gim, '<h4 class="chat-md-h4">$1</h4>');
+        escaped = escaped.replace(/^## (.*$)/gim, '<h3 class="chat-md-h3">$1</h3>');
+        escaped = escaped.replace(/^# (.*$)/gim, '<h2 class="chat-md-h2">$1</h2>');
+
+        // Blockquotes
+        escaped = escaped.replace(/^\> (.*$)/gim, '<blockquote class="chat-md-quote">$1</blockquote>');
+
+        // Unordered lists (- item or * item)
+        escaped = escaped.replace(/^\s*[-*]\s+(.*$)/gim, '<li class="chat-md-li">$1</li>');
+        escaped = escaped.replace(/(<li class="chat-md-li">[\s\S]*?<\/li>)/gi, '<ul class="chat-md-ul">$1</ul>');
+        // Fix contiguous ul tags
+        escaped = escaped.replace(/<\/ul>\s*<ul class="chat-md-ul">/g, "");
 
         // Inline code: `code`
         escaped = escaped.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>');
@@ -865,17 +905,25 @@ class RobotUI {
         // Bold: **text**
         escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
-        // Italic: *text*
-        escaped = escaped.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        // Italic: *text* (excluding already formatted list items and bold)
+        escaped = escaped.replace(/(^|[^\*])\*([^*]+)\*([^\*]|$)/g, '$1<em>$2</em>$3');
 
-        // Line breaks outside code blocks
-        const parts = escaped.split(/(<div class="chat-code-block">[\s\S]*?<\/div>)/g);
-        for (let i = 0; i < parts.length; i++) {
-            if (!parts[i].startsWith('<div class="chat-code-block">')) {
-                parts[i] = parts[i].replace(/\n/g, "<br>");
-            }
-        }
-        return parts.join("");
+        // Convert double newlines to paragraph breaks and single newlines to <br>
+        escaped = escaped.replace(/\n\n+/g, '</p><p>');
+        escaped = escaped.replace(/\n/g, '<br>');
+        escaped = `<p>${escaped}</p>`;
+
+        // Cleanup empty paragraphs
+        escaped = escaped.replace(/<p>\s*<\/p>/g, "");
+
+        // Restore code blocks
+        codeBlocks.forEach((block, idx) => {
+            escaped = escaped.replace(`__CODE_BLOCK_${idx}__`, block);
+            // Also handle if paragraph wrapped the placeholder
+            escaped = escaped.replace(`<p>${block}</p>`, block);
+        });
+
+        return escaped;
     }
 
     escapeHtml(str) {
@@ -1406,16 +1454,17 @@ class RobotUI {
         }
 
         if (data.robot_phrase) {
+            const cleanPhrase = this.cleanHumanText(data.robot_phrase) || data.robot_phrase;
             if (this.bubbleTag) {
                 this.bubbleTag.textContent = "ROBOT RESPONSE";
                 this.bubbleTag.style.color = "var(--accent-emerald)";
             }
             if (this.bubbleContent) {
-                this.bubbleContent.textContent = data.robot_phrase;
+                this.bubbleContent.textContent = cleanPhrase;
             }
-            if (this._lastRobotLogged !== data.robot_phrase) {
-                this.logEvent("ROBOT", data.robot_phrase, "robot");
-                this._lastRobotLogged = data.robot_phrase;
+            if (this._lastRobotLogged !== cleanPhrase) {
+                this.logEvent("ROBOT", cleanPhrase, "robot");
+                this._lastRobotLogged = cleanPhrase;
             }
             this.updatePipelineStatus({ LLM: "COMPLETED", TTS: "RUNNING", AVATAR: "RUNNING" });
 

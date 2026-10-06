@@ -2517,29 +2517,82 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     line-height: 1.45;
 }
 
-/* Markdown formatting inside assistant bubble */
-.chat-msg-text {
-    line-height: 1.65;
+/* Markdown formatting inside assistant bubble & chat body */
+.chat-msg-body,
+.chat-msg-text,
+.chat-text-stream {
+    line-height: 1.68;
 }
 
+.chat-msg-body p,
 .chat-msg-text p {
-    margin-bottom: 10px;
+    margin: 0 0 10px 0;
 }
 
+.chat-msg-body p:last-child,
 .chat-msg-text p:last-child {
     margin-bottom: 0;
 }
 
+.chat-msg-body strong,
 .chat-msg-text strong {
     color: var(--matrix-bright);
     font-weight: 700;
 }
 
+.chat-msg-body em,
 .chat-msg-text em {
     color: #a0f0bd;
     font-style: italic;
 }
 
+.chat-md-h2 {
+    font-size: 1.15rem;
+    font-weight: 800;
+    color: var(--matrix-bright);
+    margin: 14px 0 8px 0;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.2);
+    padding-bottom: 4px;
+}
+
+.chat-md-h3 {
+    font-size: 1.02rem;
+    font-weight: 700;
+    color: var(--primary-cyan);
+    margin: 12px 0 6px 0;
+}
+
+.chat-md-h4 {
+    font-size: 0.94rem;
+    font-weight: 700;
+    color: var(--text-main);
+    margin: 10px 0 4px 0;
+}
+
+.chat-md-quote {
+    margin: 10px 0;
+    padding: 8px 14px;
+    background: rgba(0, 255, 102, 0.05);
+    border-left: 3px solid var(--matrix-green);
+    color: #a5dfb8;
+    font-style: italic;
+    border-radius: 0 8px 8px 0;
+}
+
+.chat-md-ul {
+    margin: 8px 0 10px 20px;
+    padding: 0;
+    list-style-type: disc;
+}
+
+.chat-md-li {
+    margin-bottom: 5px;
+    line-height: 1.55;
+    color: var(--text-main);
+}
+
+.chat-msg-body code,
 .chat-msg-text code {
     background: rgba(0, 255, 102, 0.12);
     border: 1px solid rgba(0, 255, 102, 0.25);
@@ -2550,6 +2603,7 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     border-radius: 4px;
 }
 
+.chat-msg-body pre,
 .chat-msg-text pre {
     background: rgba(1, 6, 4, 0.95);
     border: 1px solid rgba(0, 255, 102, 0.25);
@@ -2563,6 +2617,7 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     color: #80ffaa;
 }
 
+.chat-msg-body pre code,
 .chat-msg-text pre code {
     background: transparent;
     border: none;
@@ -2570,10 +2625,14 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     color: inherit;
 }
 
-.chat-msg-text ul, .chat-msg-text ol {
+.chat-msg-body ul,
+.chat-msg-body ol,
+.chat-msg-text ul,
+.chat-msg-text ol {
     margin: 8px 0 10px 22px;
 }
 
+.chat-msg-body li,
 .chat-msg-text li {
     margin-bottom: 4px;
 }
