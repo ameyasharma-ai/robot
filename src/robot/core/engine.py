@@ -1464,8 +1464,8 @@ class RobotEngine:
                 if ttft_ms is None:
                     ttft_ms = (time.perf_counter() - t_start) * 1000
 
-                if chunk.startswith("__TOOL_CALL__:"):
-                    raw_tc = chunk[len("__TOOL_CALL__:"):]
+                if chunk.startswith("__TOOL_CALL__"):
+                    raw_tc = chunk[len("__TOOL_CALL__:"):] if chunk.startswith("__TOOL_CALL__:") else chunk[len("__TOOL_CALL__"):]
                     try:
                         import json as _json
                         tc_data = _json.loads(raw_tc)
@@ -1566,7 +1566,7 @@ class RobotEngine:
 
                 second_pass_text = ""
                 async for chunk in _iterate_stream(self.llm.stream_chat(messages, tools=None)):
-                    if chunk.startswith("__TOOL_CALL__:"):
+                    if chunk.startswith("__TOOL_CALL__"):
                         continue
                     token_count += 1
                     second_pass_text += chunk
@@ -1580,7 +1580,7 @@ class RobotEngine:
                         "ttft_ms": round(ttft_ms or 0, 1),
                         "tok_per_sec": tok_per_sec,
                     }
-                full_text = (full_text + "\n" + second_pass_text).strip() if full_text else second_pass_text.strip()
+                full_text = second_pass_text.strip() if second_pass_text else full_text.strip()
 
         except Exception as e:
             logger.error("stream_text_chat_error", error=str(e))

@@ -844,7 +844,9 @@ class RobotUI {
     cleanHumanText(text) {
         if (!text) return "";
         let cleaned = String(text);
-        // Strip tool_call XML blocks
+        // Strip tool_call XML blocks and internal __TOOL_CALL__ strings
+        cleaned = cleaned.replace(/__TOOL_CALL__[\s\S]*?(?:$|(?=\n\n)|(?<=\]\}))/gi, "");
+        cleaned = cleaned.replace(/__TOOL_CALL__[^\]]*\]?/gi, "");
         cleaned = cleaned.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "");
         cleaned = cleaned.replace(/<\/?(?:tool_call|function|parameter)[^>]*>/gi, "");
         // Strip explicit motion markers like [motion: wave], [motion: raise_hand left], [motion: lean_in]

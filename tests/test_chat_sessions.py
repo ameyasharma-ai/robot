@@ -402,5 +402,75 @@ async def test_get_recent_filters_single_bracket_garbage(tmp_path):
     assert "I am doing wonderful, Ameya!" in contents
 
 
+@pytest.mark.asyncio
+async def test_stream_text_chat_filters_tool_call_token():
+    """Verify stream_text_chat does not leak __TOOL_CALL__ chunks into client SSE stream or persisted text."""
+    import json
+    from unittest.mock import AsyncMock, MagicMock
+    from robot.core.engine import RobotEngine
+
+    engine = MagicMock()
+    engine.state = MagicMock()
+    engine.state.state.active_personality = "luna"
+    engine.state.get_personality.return_value = "luna"
+    engine.state.increment_turn = AsyncMock(return_value=1)
+    engine.personalities = MagicMock()
+    engine.personalities.active = MagicMock()
+    engine.personalities.active.system_prompt = "You are Luna."
+    engine.memory = MagicMock()
+    engine.memory.get_recent_conversation = AsyncMock(return_value=[])
+    engine.memory.get_relevant_memories = AsyncMock(return_value=[])
+    engine.memory.store_turn = AsyncMock()
+    engine.perception = None
+    engine.context = MagicMock()
+    engine.context.build_messages.return_value = [{"role": "user", "content": "Remember my favorite color"}]
+    engine.config = MagicMock()
+    engine.config.voice.rate_limit_enabled = False
+    engine.config.memory.enabled = False
+    engine._session_id = "test_sess"
+    engine.observability = MagicMock()
+    engine.observability.current_trace_id = "test_trace"
+    engine.events = MagicMock()
+    engine.events.emit = AsyncMock()
+    engine.tools = MagicMock()
+    engine.tools.get_tool_definitions.return_value = [{"type": "function", "function": {"name": "memory.write"}}]
+    engine.tools.execute = AsyncMock(return_value={"status": "saved"})
+
+    # LLM yields __TOOL_CALL__[{"name": "memory.write", ...}] without colon
+    tc_json = json.dumps([{"id": "call_123", "type": "function", "function": {"name": "memory.write", "arguments": '{"fact": "test"}'}}])
+    tc_chunk = f"__TOOL_CALL__{tc_json}"
+    second_pass_chunks = ["Got it, ", "I have remembered that for you!"]
+
+    async def mock_stream_chat(messages, tools=None):
+        if tools is not None:
+            yield tc_chunk
+        else:
+            for c in second_pass_chunks:
+                yield c
+
+    engine.llm = MagicMock()
+    engine.llm.stream_chat = mock_stream_chat
+
+    events = []
+    async for event in RobotEngine.stream_text_chat(engine, "Remember my favorite color", session_id="test_sess"):
+        events.append(event)
+
+    tokens = [e["token"] for e in events if e.get("event") == "token"]
+    for t in tokens:
+        assert "__TOOL_CALL__" not in t
+
+    # Ensure second pass tokens were yielded
+    assert "Got it, " in tokens
+    assert "I have remembered that for you!" in tokens
+
+    # Ensure stored turn in memory contains the clean response, not the raw tool call
+    engine.memory.store_turn.assert_called_once()
+    stored_kwargs = engine.memory.store_turn.call_args.kwargs
+    assert "__TOOL_CALL__" not in stored_kwargs["bot_text"]
+    assert stored_kwargs["bot_text"] == "Got it, I have remembered that for you!"
+    assert stored_kwargs["tool_name"] == "memory.write"
+
+
+
 
 

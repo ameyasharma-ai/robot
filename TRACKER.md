@@ -694,6 +694,20 @@ Legend:
       4. Added `start_new_session=True` to `LlamaServerManager.start` in [`src/robot/llm/__init__.py`](file:///home/ameya/robot/src/robot/llm/__init__.py).
       5. Added regression unit tests `test_warm_up_llm_does_not_pollute_session_history` and `test_get_recent_filters_single_bracket_garbage` in [`tests/test_chat_sessions.py`](file:///home/ameya/robot/tests/test_chat_sessions.py). All 87 unit tests pass.
 
+56. **Raw Control Token Leaks in Text Chat (`__TOOL_CALL__...`)**:
+    - *Symptoms*: User observed raw control tokens leaking into the chat UI: e.g. `__TOOL_CALL__[{"id": "...", "type": "function", "function": {"name": "memory.write", "arguments": "{\"fact\": \"...\"}"}}]`.
+    - *Root Causes*:
+      1. In `LlamaServerLLM` and `GeminiLLM`, tool calls are yielded as `__TOOL_CALL__<json>` (without a colon `:`).
+      2. In [`RobotEngine.stream_text_chat`](file:///home/ameya/robot/src/robot/core/engine.py), chunk inspection strictly checked `if chunk.startswith("__TOOL_CALL__:")`. Because there was no colon, the check evaluated to `False`.
+      3. The raw tool call chunk was counted as tokens, concatenated into `full_text`, and yielded to the frontend SSE stream (`event: token`).
+      4. In the second pass, `full_text = (full_text + "\n" + second_pass_text)` kept the raw `__TOOL_CALL__` string prepended and saved it to SQLite conversation memory.
+    - *Fixes Applied*:
+      1. Updated [`RobotEngine.stream_text_chat`](file:///home/ameya/robot/src/robot/core/engine.py) to inspect `chunk.startswith("__TOOL_CALL__")`, safely stripping either `__TOOL_CALL__:` or `__TOOL_CALL__`.
+      2. Prevented raw tool call chunks from being appended to `full_text` or emitted over SSE.
+      3. Set `full_text = second_pass_text.strip()` when tools were invoked, storing only the clean response.
+      4. Added client-side regex sanitization in `cleanHumanText()` in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) to strip any stray `__TOOL_CALL__` patterns.
+      5. Added regression test `test_stream_text_chat_filters_tool_call_token` in [`tests/test_chat_sessions.py`](file:///home/ameya/robot/tests/test_chat_sessions.py). All 88 unit tests pass.
+
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.
