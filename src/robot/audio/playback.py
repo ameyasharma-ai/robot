@@ -26,7 +26,7 @@ class AudioPlayer:
     takes effect within a single block boundary (~40ms latency).
     """
 
-    def __init__(self, block_ms: int = 40) -> None:
+    def __init__(self, block_ms: int = 60) -> None:
         self.block_ms = block_ms
         self._stream: sd.OutputStream | None = None
         self._stream_sr: int | None = None
@@ -36,24 +36,20 @@ class AudioPlayer:
         self._duck_target: float = 1.0
         self._duck_rate: float = 0.15
         self._lock = threading.Lock()
-        # Rolling buffer of recent block RMS values (covers ~120ms acoustic travel)
+        # Rolling buffer of recent block RMS values (covers ~180ms acoustic travel)
         self._recent_rms: deque[float] = deque(maxlen=3)
         self._energy_callbacks: list = []
         self._last_play_time: float = 0.0
 
-    def duck(self, target_volume: float = 0.0, rate: float = 0.12) -> None:
-        """Fade TTS volume down dynamically (e.g. when music starts and overpowers speech).
-        
-        Ramps volume down smoothly so speech fades out naturally over ~300-500ms
-        instead of cutting off abruptly.
-        """
-        self._duck_target = max(0.0, min(1.0, float(target_volume)))
-        self._duck_rate = max(0.01, float(rate))
+    def duck(self, target_volume: float = 1.0, rate: float = 0.12) -> None:
+        """Disabled: speech plays at full volume unattenuated."""
+        self._duck_target = 1.0
+        self._volume = 1.0
 
     def fade_out(self, rate: float = 0.15) -> None:
-        """Smoothly fade speech volume to 0 (inaudible) within ~250ms."""
-        self._duck_target = 0.0
-        self._duck_rate = max(0.05, float(rate))
+        """Disabled: speech plays at full volume unattenuated."""
+        self._duck_target = 1.0
+        self._volume = 1.0
 
     def unduck(self) -> None:
         """Restore TTS volume back to 1.0."""
@@ -89,12 +85,12 @@ class AudioPlayer:
                     except Exception:
                         pass
                 self._stream = sd.OutputStream(
-                    samplerate=sample_rate, channels=1, dtype="float32", latency="low"
+                    samplerate=sample_rate, channels=1, dtype="float32", latency=0.08
                 )
                 self._stream.start()
                 self._stream_sr = sample_rate
-                # Pre-roll 40ms silence to absorb DAC power-up / anti-pop ramp-up
-                lead_in = np.zeros(int(sample_rate * 0.04), dtype=np.float32).reshape(-1, 1)
+                # Pre-roll 60ms silence to absorb DAC power-up / anti-pop ramp-up
+                lead_in = np.zeros(int(sample_rate * 0.06), dtype=np.float32).reshape(-1, 1)
                 try:
                     self._stream.write(lead_in)
                 except Exception:
@@ -128,72 +124,54 @@ class AudioPlayer:
             audio = np.concatenate([pre_silence, audio])
 
         self._is_playing = True
-
-        # Ensure volume is restored to full unless music playback is actively ducking speech
-        music_active = False
-        try:
-            from robot.tools.builtins.music import MusicPlayerService
-            music_active = MusicPlayerService.get_instance().is_playing
-        except Exception:
-            pass
-
-        if not music_active:
-            self._duck_target = 1.0
-            self._volume = 1.0
+        self._duck_target = 1.0
+        self._volume = 1.0
 
         try:
-            stream = self._ensure_stream(sample_rate)
-            for idx in range(0, len(audio), block_len):
-                if interrupt.is_set():
-                    logger.info("playback_interrupted")
-                    return False
+            self._ensure_stream(sample_rate)
 
-                chunk = audio[idx : idx + block_len]
-                # Smoothly adjust volume towards target (ducking fade-out/in)
-                if abs(self._volume - self._duck_target) > 0.01:
-                    if self._volume > self._duck_target:
-                        self._volume = max(self._duck_target, self._volume - self._duck_rate)
+            def _play_blocking() -> bool:
+                for idx in range(0, len(audio), block_len):
+                    if interrupt.is_set():
+                        logger.info("playback_interrupted")
+                        return False
+
+                    chunk = audio[idx : idx + block_len]
+                    # Smoothly adjust volume towards target (ducking fade-out/in)
+                    if abs(self._volume - self._duck_target) > 0.01:
+                        if self._volume > self._duck_target:
+                            self._volume = max(self._duck_target, self._volume - self._duck_rate)
+                        else:
+                            self._volume = min(self._duck_target, self._volume + self._duck_rate)
                     else:
-                        self._volume = min(self._duck_target, self._volume + self._duck_rate)
-                else:
-                    self._volume = self._duck_target
+                        self._volume = self._duck_target
 
-                chunk = (chunk * self._volume).astype(np.float32)
+                    chunk = (chunk * self._volume).astype(np.float32)
 
-                # Natural fade-out termination: when speech has faded down to silence,
-                # stop cleanly so speech naturally dissolves instead of lingering or abrupt cutoff.
-                if self._duck_target == 0.0 and self._volume <= 0.03:
-                    logger.debug("playback_naturally_faded_out")
-                    return False
+                    block_rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
+                    self._current_rms = block_rms
+                    self._recent_rms.append(block_rms)
+                    for cb in self._energy_callbacks:
+                        try:
+                            cb(block_rms)
+                        except Exception:
+                            pass
+                    if chunk.ndim == 1:
+                        chunk = chunk.reshape(-1, 1)
 
-                block_rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
-                self._current_rms = block_rms
-                self._recent_rms.append(block_rms)
-                for cb in self._energy_callbacks:
-                    try:
-                        cb(block_rms)
-                    except Exception:
-                        pass
-                if chunk.ndim == 1:
-                    chunk = chunk.reshape(-1, 1)
-
-                try:
                     if interrupt.is_set():
                         return False
-                    
-                    def _write_block():
-                        with self._lock:
-                            if self._stream is not None and not interrupt.is_set():
-                                try:
-                                    self._stream.write(chunk)
-                                except Exception as e:
-                                    logger.debug("stream_write_error", error=str(e))
 
-                    await asyncio.to_thread(_write_block)
-                except Exception as exc:
-                    logger.debug("audio_write_aborted_or_interrupted", error=str(exc))
-                    return False
-            return True
+                    with self._lock:
+                        if self._stream is not None and not interrupt.is_set():
+                            try:
+                                self._stream.write(chunk)
+                            except Exception as e:
+                                logger.debug("stream_write_error", error=str(e))
+                                return False
+                return True
+
+            return await asyncio.to_thread(_play_blocking)
         finally:
             self._is_playing = False
             self._current_rms = 0.0

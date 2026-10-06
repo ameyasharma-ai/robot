@@ -21,12 +21,15 @@ from robot.telemetry import get_logger
 
 logger = get_logger("context")
 
+import re
 
 GROUNDING_POLICY = (
-    "Truth & Factual Grounding Directive:\n"
-    "- Always answer factual questions (exact time, date, physical detections, real-world data) directly, truthfully, and accurately based on the tools and world state.\n"
-    "- When reporting what you see or what the user is holding, describe only the actual detected people, objects, and environment. Never fabricate unobserved items or people.\n"
-    "- When reporting the time or date, give the exact real-world time without evasion."
+    "Truth, Tools & Real-Time Action Directives:\n"
+    "- Mandatory Tool Calling Directive: You possess real, executable tools for music, volume, time, memory, vision, motion, and web search. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'I am adjusting the volume for you' or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction.\n"
+    "- Volume & Music Controls: Whenever the user asks to change volume ('set volume to 20%', 'louder', 'turn it down', 'mute'), replay or play again ('play it again', 'replay', 'play that song again'), pause, resume, or stop, you MUST immediately emit a `music.control` tool call. Never narrate volume adjustments in text.\n"
+    "- Track Truth: When asked what song was last played or what song is playing, you MUST check `music.status` or `music.history`. NEVER guess, assume, or hallucinate a song title.\n"
+    "- Natural Memory & Autonomous Persistence: When the user asks you to remember something, acknowledge it naturally. Do NOT call `memory.write` for casual conversational remarks. Call `memory.write` only when a vital enduring user preference or fact must be permanently stored across sessions.\n"
+    "- Grounding Context Separation: Any environment grounding, player status, or tool results provided are background telemetry. Never repeat background labels to the user."
 )
 
 
@@ -64,7 +67,6 @@ class ContextEngine:
             "recent_conversation": 450,
             "world_state": 150,
             "robot_state": 100,
-            "generation_headroom": 300,
             "generation_headroom": 300,
         }
 
@@ -105,22 +107,67 @@ class ContextEngine:
         messages.append({"role": "system", "content": format_system_prompt(resolved_system, high_intelligence=high_intelligence)})
         grounding_parts = []
 
+        # Local System Time & Date Grounding (Always present: Indian Standard Time / IST)
+        try:
+            from datetime import datetime
+            import zoneinfo
+            tz_ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+            now_ist = datetime.now(tz_ist)
+        except Exception:
+            from datetime import datetime
+            now_ist = datetime.now()
+
+        grounding_parts.append(
+            f"[Current Local System Time (Indian Standard Time / IST)]:\n"
+            f"  Current Time: {now_ist.strftime('%I:%M:%S %p IST')}\n"
+            f"  Current Date: {now_ist.strftime('%A, %B %d, %Y')}\n"
+            f"  ISO 8601: {now_ist.isoformat()}"
+        )
+
+        # Gate memories: do NOT inject irrelevant memories if user turn is an action/command
+        action_patterns = [
+            r"\b(?:volume|louder|quieter|mute|unmute)\b",
+            r"\b(?:pause|resume|unpause|stop|replay|play\s+again)\b",
+            r"^(?:play|put\s+on)\s+",
+            r"\b(?:what\s+time|current\s+time|clock|time\s+is\s+it)\b",
+            r"\b(?:system\s+status|health\s+check)\b",
+        ]
+        is_direct_action = any(re.search(pat, (resolved_user or "").lower()) for pat in action_patterns)
+
         # 2. Complete User Facts & Knowledge Base
-        if high_intelligence and all_facts:
+        if high_intelligence and all_facts and not is_direct_action:
             facts_str = _format_all_facts(all_facts, budget_tokens=100000)
             if facts_str:
                 grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts]:\n{facts_str}")
-        elif resolved_memories:
+        elif resolved_memories and not is_direct_action:
             mem_budget = 50000 if high_intelligence else self._budget["retrieved_memories"]
             mem_str = _format_memories(resolved_memories, mem_budget)
             if mem_str:
                 grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
 
-        # 3. Physical World State
+        # 3. Physical World State & Music Player State
         if world_state and (world_state.get("people") or world_state.get("objects")):
             world_str = _format_world_state(world_state)
             if world_str:
                 grounding_parts.append(f"[Physical World State]:\n{world_str}")
+
+        music_state = kwargs.get("music_state")
+        if not music_state:
+            try:
+                from robot.tools.builtins.music import MusicPlayerService
+                ms = MusicPlayerService.get_instance()
+                music_state = ms.get_status()
+            except Exception:
+                pass
+        if music_state and (music_state.get("is_playing") or music_state.get("is_paused") or music_state.get("current_track", "None") != "None"):
+            grounding_parts.append(
+                f"[Active Music Player State]:\n"
+                f"  is_playing: {music_state.get('is_playing', False)}\n"
+                f"  is_paused: {music_state.get('is_paused', False)}\n"
+                f"  current_track: {music_state.get('current_track', 'None')}\n"
+                f"  source: {music_state.get('source', 'None')}\n"
+                f"  volume: {int(music_state.get('volume', 0.8) * 100)}%"
+            )
 
         # 4. Multi-Session Conversation Archive (Gemini only)
         if high_intelligence and conversation_archive:
@@ -145,10 +192,15 @@ class ContextEngine:
                 tool_parts.append(f"[{tool_id}]:\n{result_text}")
             grounding_parts.append("[Tool Results & Grounded Intelligence — use these to answer]:\n" + "\n\n".join(tool_parts))
 
-        # 7. Current user input with structured grounding
+        # 7. Current user input cleanly separated from background telemetry
         user_content = resolved_user
         if grounding_parts:
-            user_content = "\n\n".join(grounding_parts) + "\n\n" + user_content
+            user_content = (
+                "[Environment & System Grounding]:\n"
+                + "\n\n".join(grounding_parts)
+                + "\n\n[User Instruction]:\n"
+                + resolved_user
+            )
 
         messages.append({"role": "user", "content": user_content})
 

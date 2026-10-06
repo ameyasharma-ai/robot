@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from robot.core.state import RobotMode
@@ -51,6 +51,14 @@ class StatusResponse(BaseModel):
 
 class VoiceModeRequest(BaseModel):
     enabled: bool
+
+
+class ImageGenRequest(BaseModel):
+    prompt: str
+    width: int | None = 512
+    height: int | None = 512
+    steps: int | None = 4
+    seed: int | None = -1
 
 
 def create_app(engine: "RobotEngine") -> FastAPI:
@@ -464,15 +472,8 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         return {}
 
     # ─── Image Generation API ────────────────────────────────────────────────
-    class ImageGenRequest(BaseModel):
-        prompt: str
-        width: int | None = 512
-        height: int | None = 512
-        steps: int | None = 4
-        seed: int | None = -1
-
     @app.post("/images/generate")
-    async def api_generate_image(req: ImageGenRequest):
+    async def api_generate_image(req: ImageGenRequest = Body(...)):
         """Asynchronously submit an image generation job."""
         if not hasattr(engine, "image_service") or not engine.image_service:
             return {"error": "Image service not initialized"}

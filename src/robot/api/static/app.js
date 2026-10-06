@@ -266,6 +266,7 @@ class RobotUI {
         this.chatActiveTitle = document.getElementById("chatActiveTitle");
         this.chatSessionIdPill = document.getElementById("chatSessionIdPill");
         this.chatPersonaLabel = document.getElementById("chatPersonaLabel");
+        this.chatActiveModelPill = document.getElementById("chatActiveModelPill");
         this.chatModelLabel = document.getElementById("chatModelLabel");
         this.chatMicPill = document.getElementById("chatMicPill");
         this.chatMicLabel = document.getElementById("chatMicLabel");
@@ -317,15 +318,22 @@ class RobotUI {
             });
         }
 
-        // Quick action chips
+        // Quick available tools chips — insert prefix into chat input without auto-submitting
         document.querySelectorAll(".chat-chip").forEach((chip) => {
             chip.addEventListener("click", () => {
-                const prompt = chip.getAttribute("data-prompt");
-                if (prompt && this.chatTextarea) {
-                    this.chatTextarea.value = prompt;
+                const prefix = chip.getAttribute("data-prefix") || chip.getAttribute("data-prompt") || "";
+                if (this.chatTextarea) {
+                    const currentVal = this.chatTextarea.value.trim();
+                    if (!currentVal) {
+                        this.chatTextarea.value = prefix;
+                    } else if (!currentVal.startsWith(prefix)) {
+                        this.chatTextarea.value = `${prefix}${currentVal}`;
+                    }
                     this.chatTextarea.style.height = "auto";
                     this.chatTextarea.style.height = `${Math.min(220, this.chatTextarea.scrollHeight)}px`;
-                    this.sendChatMessage();
+                    this.chatTextarea.focus();
+                    const len = this.chatTextarea.value.length;
+                    this.chatTextarea.setSelectionRange(len, len);
                 }
             });
         });
@@ -338,9 +346,27 @@ class RobotUI {
             const p = this.personaSelect.value;
             this.chatPersonaLabel.textContent = p === "neo" ? "CYPHER" : p.toUpperCase();
         }
-        if (this.chatModelLabel) {
-            const isGemini = this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode");
-            this.chatModelLabel.textContent = isGemini ? "GEMINI 3.5 FLASH (1M)" : "RTX 3050 (4K)";
+        const modelPill = document.getElementById("chatActiveModelPill") || this.chatActiveModelPill;
+        const modelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
+        const modelIcon = modelPill ? modelPill.querySelector(".model-icon") : null;
+
+        const isGemini = this.currentLlmProvider === "gemini" || 
+                         (this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode")) ||
+                         document.getElementById("btnLlmToggle")?.classList.contains("gemini-mode") ||
+                         document.getElementById("activeModelStrip")?.classList.contains("gemini-active");
+
+        if (modelLabel) {
+            modelLabel.textContent = isGemini ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+        }
+        if (modelIcon) {
+            modelIcon.textContent = isGemini ? "✨" : "⚡";
+        }
+        if (modelPill) {
+            modelPill.classList.toggle("pill-gemini", isGemini);
+            modelPill.classList.toggle("pill-local", !isGemini);
+            modelPill.title = isGemini 
+                ? "Active AI Model: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence)" 
+                : "Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, 4K Context)";
         }
     }
 
@@ -512,6 +538,7 @@ class RobotUI {
             data.messages.forEach((msg) => {
                 this.appendHistoricalMessage(msg);
             });
+            this.syncChatTopBar();
             this.scrollChatToBottom();
         } catch (e) {
             console.error("Failed to select chat session:", e);
@@ -603,17 +630,46 @@ class RobotUI {
 
         const senderLabel = isUser ? "YOU" : (msg.personality ? msg.personality.toUpperCase() : (this.personaSelect ? this.personaSelect.value.toUpperCase() : "ROBOT"));
         const avatarIcon = isUser ? "👤" : "🤖";
-        const contentHtml = isUser ? this.escapeHtml(msg.content) : this.renderChatMarkdown(msg.content);
+        const contentHtml = this.renderChatMarkdown(msg.content);
+        let badgeHtml = "";
+        let telemHtml = "";
+
+        if (!isUser) {
+            let isGeminiMsg = false;
+            if (msg.metadata && msg.metadata.provider) {
+                isGeminiMsg = msg.metadata.provider === "gemini";
+            } else {
+                isGeminiMsg = this.currentLlmProvider === "gemini";
+            }
+            const badgeClass = isGeminiMsg ? "badge-gemini" : "badge-local";
+            const badgeIcon = isGeminiMsg ? "✨ " : "⚡ ";
+            const badgeText = isGeminiMsg ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+            badgeHtml = `<span class="chat-msg-badge ${badgeClass}">${badgeIcon}${badgeText}</span>`;
+
+            if (msg.metadata && (msg.metadata.tokens || msg.metadata.tok_per_sec)) {
+                const durSec = msg.metadata.duration_ms ? (msg.metadata.duration_ms / 1000) : 0;
+                telemHtml = `
+                    <div class="chat-msg-telemetry" style="display: flex;">
+                        <span class="telem-item">⚡ ${msg.metadata.tokens || 0} tokens</span>
+                        <span class="telem-item">🚀 ${(Number(msg.metadata.tok_per_sec) || 0).toFixed(1)} tok/s</span>
+                        <span class="telem-item">⏱️ ${durSec.toFixed(2)}s</span>
+                        <span class="telem-item">🎯 TTFT: ${(Number(msg.metadata.ttft_ms) || 0).toFixed(0)} ms</span>
+                    </div>
+                `;
+            }
+        }
 
         row.innerHTML = `
             <div class="chat-msg-avatar">${avatarIcon}</div>
             <div class="chat-msg-content">
                 <div class="chat-msg-header">
                     <span class="chat-msg-sender">${senderLabel}</span>
+                    ${badgeHtml}
                     <span class="chat-msg-time">${timeStr}</span>
                 </div>
                 ${toolHtml}
                 <div class="chat-msg-body">${contentHtml}</div>
+                ${telemHtml}
             </div>
         `;
         this.chatMessagesContainer.appendChild(row);
@@ -648,7 +704,7 @@ class RobotUI {
                     <span class="chat-msg-sender">YOU</span>
                     <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
-                <div class="chat-msg-body">${this.escapeHtml(text)}</div>
+                <div class="chat-msg-body">${this.renderChatMarkdown(text)}</div>
             </div>
         `;
         this.chatMessagesContainer.appendChild(userRow);
@@ -657,8 +713,13 @@ class RobotUI {
         // Create Assistant Streaming row
         const streamId = `stream_${Date.now()}`;
         const currentPersona = (this.personaSelect ? this.personaSelect.value : "neo").toUpperCase();
-        const isGemini = this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode");
+        const isGemini = this.currentLlmProvider === "gemini" || 
+                         (this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode")) ||
+                         document.getElementById("btnLlmToggle")?.classList.contains("gemini-mode") ||
+                         document.getElementById("activeModelStrip")?.classList.contains("gemini-active");
         const currentModel = isGemini ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+        const badgeClass = isGemini ? "badge-gemini" : "badge-local";
+        const badgeIcon = isGemini ? "✨ " : "⚡ ";
 
         const assistantRow = document.createElement("div");
         assistantRow.className = "chat-msg-row msg-assistant";
@@ -668,7 +729,7 @@ class RobotUI {
             <div class="chat-msg-content">
                 <div class="chat-msg-header">
                     <span class="chat-msg-sender">${currentPersona}</span>
-                    <span class="chat-msg-badge">${currentModel}</span>
+                    <span class="chat-msg-badge ${badgeClass}">${badgeIcon}${currentModel}</span>
                     <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
                 <div class="chat-tool-container" id="toolBox_${streamId}"></div>
@@ -739,6 +800,16 @@ class RobotUI {
                         if (this.chatLiveSpeed) {
                             this.chatLiveSpeed.style.display = "inline";
                         }
+                        if (payload.provider) {
+                            this.currentLlmProvider = payload.provider;
+                            const isGem = payload.provider === "gemini";
+                            const badgeEl = assistantRow.querySelector(".chat-msg-badge");
+                            if (badgeEl) {
+                                badgeEl.className = `chat-msg-badge ${isGem ? "badge-gemini" : "badge-local"}`;
+                                badgeEl.textContent = `${isGem ? "✨ " : "⚡ "}${isGem ? "GEMINI (1M)" : "LOCAL QWEN (4K)"}`;
+                            }
+                            this.syncChatTopBar();
+                        }
                     } else if (eventType === "token") {
                         if (payload.token) {
                             streamedRawText += payload.token;
@@ -751,9 +822,11 @@ class RobotUI {
                         }
                     } else if (eventType === "tool_call") {
                         if (toolBox) {
+                            const callId = payload.call_id || `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
                             const card = document.createElement("div");
                             card.className = "chat-tool-card running";
-                            card.id = `toolCard_${payload.tool}`;
+                            card.id = `toolCard_${callId}`;
+                            card.dataset.tool = payload.tool || "";
                             card.innerHTML = `
                                 <div class="tool-hdr">
                                     <span class="tool-spinner"></span>
@@ -766,7 +839,17 @@ class RobotUI {
                         }
                     } else if (eventType === "tool_result") {
                         if (toolBox) {
-                            const existingCard = document.getElementById(`toolCard_${payload.tool}`);
+                            let existingCard = null;
+                            if (payload.call_id) {
+                                existingCard = toolBox.querySelector(`#toolCard_${payload.call_id}`);
+                            }
+                            if (!existingCard && payload.tool) {
+                                existingCard = toolBox.querySelector(`.chat-tool-card.running[data-tool="${payload.tool}"]`);
+                            }
+                            if (!existingCard) {
+                                existingCard = toolBox.querySelector(".chat-tool-card.running");
+                            }
+
                             let resStr = typeof payload.result === "object" ? JSON.stringify(payload.result, null, 2) : String(payload.result);
                             const completedCardHtml = `
                                 <div class="tool-hdr">
@@ -790,6 +873,17 @@ class RobotUI {
                         }
                     } else if (eventType === "done") {
                         if (cursorSpan) cursorSpan.remove();
+                        if (toolBox) {
+                            toolBox.querySelectorAll(".chat-tool-card.running").forEach(rc => {
+                                rc.classList.remove("running");
+                                rc.classList.add("completed");
+                                const sp = rc.querySelector(".tool-spinner");
+                                if (sp) {
+                                    sp.className = "tool-icon";
+                                    sp.textContent = "✓";
+                                }
+                            });
+                        }
                         if (telemDiv) {
                             telemDiv.style.display = "flex";
                             const durationSec = payload.duration_ms ? (payload.duration_ms / 1000) : 0;
@@ -1001,7 +1095,6 @@ class RobotUI {
     initViewControls() {
         const btnStop = document.getElementById("btnStopExecution");
         const btnDual = document.getElementById("btnViewDual");
-        const btnDev = document.getElementById("btnViewDev");
         const btnChat = document.getElementById("btnViewChat");
         const btnFs = document.getElementById("btnFullscreen");
         const btnClear = document.getElementById("btnClearLog");
@@ -1023,7 +1116,6 @@ class RobotUI {
         }
 
         if (btnDual) btnDual.addEventListener("click", () => this.setView("dual"));
-        if (btnDev) btnDev.addEventListener("click", () => this.setView("dev"));
         if (btnChat) btnChat.addEventListener("click", () => this.setView("chat"));
 
         btnFs.addEventListener("click", () => {
@@ -1034,9 +1126,11 @@ class RobotUI {
             }
         });
 
-        btnClear.addEventListener("click", () => {
-            this.terminalFeed.innerHTML = "";
-        });
+        if (btnClear && this.terminalFeed) {
+            btnClear.addEventListener("click", () => {
+                this.terminalFeed.innerHTML = "";
+            });
+        }
 
         // ─── Camera Box Resizing Controls ──────────────────────────────
         const cameraBox = document.getElementById("cameraBox");
@@ -1161,6 +1255,9 @@ class RobotUI {
         const sub = document.getElementById("llmToggleSub");
         const badge = document.getElementById("llmModeBadge");
 
+        this.btnLlmToggle = btn;
+        this.currentLlmProvider = "local";
+
         const panelStrip = document.getElementById("activeModelStrip");
         const panelBadge = document.getElementById("activeModelBadge");
         const panelName = document.getElementById("activeModelName");
@@ -1170,6 +1267,7 @@ class RobotUI {
 
         this.updateLlmToggleUi = (prov, mode, isTransitioning = false) => {
             const isGemini = prov === "gemini";
+            this.currentLlmProvider = prov || (isGemini ? "gemini" : "local");
 
             if (isTransitioning) {
                 if (btn) btn.classList.add("switching");
@@ -1179,6 +1277,8 @@ class RobotUI {
                 if (badge) badge.textContent = "WAIT";
                 if (panelName) panelName.textContent = isGemini ? "Starting Local Qwen (Allocating VRAM)..." : "Connecting Gemini (Freeing VRAM)...";
                 if (panelBtnText) panelBtnText.textContent = "SWAPPING...";
+                const chatModelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
+                if (chatModelLabel) chatModelLabel.textContent = "SWAPPING...";
                 return;
             }
 
@@ -1261,11 +1361,11 @@ class RobotUI {
     }
 
     setView(mode) {
-        document.body.className = `mode-${mode}`;
+        const safeMode = mode === "chat" ? "chat" : "dual";
+        document.body.className = `mode-${safeMode}`;
         document.querySelectorAll(".view-btn").forEach(btn => btn.classList.remove("active"));
-        if (mode === "dual") document.getElementById("btnViewDual")?.classList.add("active");
-        if (mode === "dev") document.getElementById("btnViewDev")?.classList.add("active");
-        if (mode === "chat") {
+        if (safeMode === "dual") document.getElementById("btnViewDual")?.classList.add("active");
+        if (safeMode === "chat") {
             document.getElementById("btnViewChat")?.classList.add("active");
             this.onEnterChatMode();
         } else {
@@ -1371,6 +1471,7 @@ class RobotUI {
     }
 
     logEvent(tag, msg, type = "system") {
+        if (!this.terminalFeed) return;
         const time = new Date().toTimeString().split(" ")[0];
         const entry = document.createElement("div");
         entry.className = `log-entry log-${type}`;
@@ -1414,7 +1515,9 @@ class RobotUI {
 
     handleServerEvent(data) {
         if (data.event === "llm.provider_changed" && this.updateLlmToggleUi) {
+            this.currentLlmProvider = data.provider;
             this.updateLlmToggleUi(data.provider, data.mode);
+            this.syncChatTopBar();
         }
 
         if (data.event === "pipeline_updated" || data.pipeline) {
@@ -1445,14 +1548,6 @@ class RobotUI {
             this._forEachEngine((eng) => eng.speakStop());
             this.setRobotMode("idle");
             this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
-        }
-
-        if (data.music_playing) {
-            this.stopMouthSpeaking();
-            this._forEachEngine((eng) => eng.speakStop());
-            if (this.currentMode === "speaking") {
-                this.setRobotMode("idle");
-            }
         }
 
         if (data.robot_phrase) {
@@ -1632,13 +1727,6 @@ class RobotUI {
                         this.setRobotMode("idle");
                         this.stopMouthSpeaking();
                         this._forEachEngine((eng) => eng.speakStop());
-                    }
-                    if (data.music_playing) {
-                        this.stopMouthSpeaking();
-                        this._forEachEngine((eng) => eng.speakStop());
-                        if (this.currentMode === "speaking") {
-                            this.setRobotMode("idle");
-                        }
                     }
                     if (data.voice_enabled !== undefined && this.updateVoiceUI && this.voiceEnabled !== data.voice_enabled) {
                         this.updateVoiceUI(data.voice_enabled);
@@ -1842,7 +1930,12 @@ class RobotUI {
     }
 
     renderTraceTree(trace) {
+        const traceBadge = document.getElementById("activeTraceBadge");
+        if (trace && trace.trace_id && traceBadge) {
+            traceBadge.textContent = `TRACE: ${trace.trace_id.substring(0,8)}`;
+        }
         const box = document.getElementById("traceTreeBox");
+        if (!box) return;
         if (!trace || !trace.spans || trace.spans.length === 0) {
             box.innerHTML = '<div class="trace-empty-hint">Waiting for voice turn or tool execution...</div>';
             return;
@@ -1876,6 +1969,16 @@ class RobotUI {
         const btnGen = document.getElementById("btnGenImage");
         const btnCancel = document.getElementById("btnCancelImage");
         const input = document.getElementById("imgPromptInput");
+        const btnToggle = document.getElementById("btnToggleImageGen");
+        const drawer = document.getElementById("cardImageGen");
+
+        if (btnToggle && drawer) {
+            btnToggle.addEventListener("click", (e) => {
+                e.stopPropagation();
+                drawer.classList.toggle("collapsed");
+                btnToggle.textContent = drawer.classList.contains("collapsed") ? "+" : "−";
+            });
+        }
 
         const submitImage = async () => {
             if (!input) return;
@@ -1912,7 +2015,7 @@ class RobotUI {
                         }
                     } catch (e) {}
                 } else {
-                    const err = data.error || `HTTP ${res.status}`;
+                    const err = data.error || (data.detail ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : `HTTP ${res.status}`);
                     this.logEvent("IMAGE", `Image generation error: ${err}`, "system");
                     if (btnGen) {
                         btnGen.disabled = false;

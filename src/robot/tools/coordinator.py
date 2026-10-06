@@ -288,9 +288,12 @@ class ToolConversationCoordinator:
             src = music_play_match.group(1) or music_play_match.group(3) or "auto"
             return "music.play", {"query": q.strip(" .?!"), "source": src.lower()}, ToolCategory.LLM_REQUIRED
 
-        if any(w in text for w in ("pause music", "pause the music", "pause playback", "stop music", "stop the music", "stop playing", "resume music", "resume playback")):
-            act = "pause" if "pause" in text else ("stop" if "stop" in text else "resume")
+        if any(w in text for w in ("pause music", "pause the music", "pause playback", "pause the song", "pause song", "stop music", "stop the music", "stop playing", "stop the song", "stop song", "stop it", "stop that", "resume music", "resume playback", "resume the song", "resume song", "resume", "replay", "replay the song", "replay song", "play again", "repeat", "repeat the song", "repeat that", "unpause")):
+            act = "pause" if "pause" in text else ("stop" if any(s in text for s in ("stop", "halt")) else ("replay" if any(r in text for r in ("replay", "again", "repeat")) else "resume"))
             return "music.control", {"action": act}, ToolCategory.DIRECT
+
+        if any(k in text for k in ("what is playing", "what's playing", "what song is playing", "what is currently playing", "did it finish playing", "id it finish playing", "music status")):
+            return "music.status", {}, ToolCategory.DIRECT
 
         if any(k in text for k in ("latest news", "breaking news", "stock price", "release date", "current weather")):
             return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
@@ -324,8 +327,18 @@ class ToolConversationCoordinator:
 
         Transitions seamlessly into the final answer continuation upon tool result.
         """
-        # Auto-detect ultra-fast direct tools
-        direct_tools = {"system.time", "system.status", "perception.what_do_you_see", "perception.inspect_view"}
+        # Auto-detect ultra-fast direct tools (<15ms execution)
+        direct_tools = {
+            "system.time",
+            "system.status",
+            "perception.what_do_you_see",
+            "perception.inspect_view",
+            "music.control",
+            "music.status",
+            "music.history",
+            "character.execute_action",
+            "character.stop",
+        }
         if tool_name in direct_tools:
             category = ToolCategory.DIRECT
 
@@ -486,6 +499,8 @@ class ToolConversationCoordinator:
         )
 
         self._set_state(CoordinatorState.COMPLETED)
+        self.engine.observability.set_pipeline_node("LLM", "COMPLETED")
+        self.engine.observability.set_pipeline_node("TOOLS", "COMPLETED")
         self._emit_obs_event(
             "request_completed",
             tool_name=tool_name,
@@ -570,10 +585,9 @@ class ToolConversationCoordinator:
         self.engine.observability.set_pipeline_node("LLM", "RUNNING")
         self._emit_obs_event("final_llm_started", tool_name=ctx.tool_name)
 
-        t_final_start = time.perf_counter()
-
         # For music.play, avoid speaking over the music track once it is launched
         if ctx.tool_name == "music.play" and not ctx.tool_error:
+            self.engine.observability.set_pipeline_node("LLM", "COMPLETED")
             if ctx.spoken_holding_text:
                 logger.info("music_starting_skipping_continuation_speech", text=ctx.spoken_holding_text)
                 if not interrupt.is_set():
@@ -813,6 +827,7 @@ class ToolConversationCoordinator:
                 full_continuation = fallback_ans
 
         # Combined conversational response (spoken holding + final continuation)
+        self.engine.observability.set_pipeline_node("LLM", "COMPLETED")
         combined_response = (spoken_prefix + " " + full_continuation).strip()
         return combined_response or full_continuation.strip()
 
@@ -846,13 +861,18 @@ class ToolConversationCoordinator:
             self._emit_obs_event("tool_result_received", tool_name=ctx.tool_name, duration_ms=dur)
 
         # Synthesize direct answer via LLM
-        return await self._generate_continuation(
-            ctx=ctx,
-            user_text=user_text,
-            end_of_speech_time=end_of_speech_time,
-            interrupt=interrupt,
-            messages=messages,
-        )
+        try:
+            return await self._generate_continuation(
+                ctx=ctx,
+                user_text=user_text,
+                end_of_speech_time=end_of_speech_time,
+                interrupt=interrupt,
+                messages=messages,
+            )
+        finally:
+            self._set_state(CoordinatorState.COMPLETED)
+            self.engine.observability.set_pipeline_node("LLM", "COMPLETED")
+            self.engine.observability.set_pipeline_node("TOOLS", "COMPLETED")
 
     # ─── State & Observability Helpers ──────────────────────────────────────
 

@@ -134,10 +134,34 @@ Legend:
 - [x] **42. Chat Stream Fix & Historical Voice Conversation Migration**:
   - Fixed `AttributeError: 'PersonalityManager' object has no attribute 'active_prompt'` by adding `@property def active_prompt` to `PersonalityManager` and safe fallback in `engine.py`.
   - Implemented automatic backfill and migration for all 150+ historical voice sessions from `conversations` table into `sessions`, ensuring every voice conversation is accessible and browsable in the ChatGPT-like chat sidebar with full message turns, smart relative dates, and clean titles. All 82 unit tests pass.
-- [x] **43. Chat Markdown Formatting & Avatar Motion Metadata Sanitization**:
-  - *Clean Human Text Sanitization*: Implemented `cleanHumanText()` in `app.js` to strip robot embodiment markers (`[motion: wave]`, `[action: point]`, `[emotion: happy]`, etc.), internal `<tool_call>` XML tags, and asterisk stage directions from all human-facing UI dialogs.
-  - *Robot Speech Bubble & Dialog Box*: Filtered REST `/chat` response and WebSocket `robot_phrase` events through `cleanHumanText()`, ensuring avatar speech bubbles show only natural spoken language intended for humans.
-  - *Full Markdown Parser & Typography*: Upgraded `renderChatMarkdown()` in `app.js` with structured support for headers (`##`, `###`), blockquotes (`>`), lists (`-`, `*`), inline code (`` `code` ``), bold (`**`), italic (`*`), and code blocks with syntax highlighting and copy buttons. Styled with matrix green accents in `index.css`. All 87 unit tests passing.
+- [x] **44. Autonomous Tool Intelligence Routing, Natural Memory & Live Music Player Awareness**:
+  - *Full Autonomous Tool Routing*: Removed deterministic/regex tool interception (`fast_route` preemptive dispatch) in `engine.py`. All user utterances are routed directly to the LLM with full tool schemas exposed. Tool execution occurs exclusively when the LLM actively decides to invoke a tool via standard function calling (`__TOOL_CALL__` / `<tool_call>`).
+  - *Fast Conversational Holding & Multi-Pass Execution*: When the LLM initiates tool calls, `ToolConversationCoordinator` immediately speaks low-latency holding filler speech (<10ms opening phrases) while tools execute in parallel, transitioning into grounded second-pass continuation upon tool completion.
+  - *Natural Conversational Memory Policy*: Updated memory directives in `context.py` and `memory.write` tool descriptions. Casual remarks and "remember X" chat instructions are held naturally in conversational context without forcing redundant immediate database writes; `memory.write` is invoked autonomously only when the model identifies an essential, durable user fact or long-term preference.
+  - *Reliable Music Tool & Real-Time Player Grounding*:
+    - Enhanced `MusicPlayerService` in `music.py` with `get_status()` returning live playback metrics (`is_playing`, `is_paused`, `current_track`, `source`, `volume`).
+    - Added `music.status` tool and updated `music.control` action="status" so the LLM can explicitly inspect the player.
+- [x] **47. Single-Viewport Zero-Scroll HUD Layout, Audio Glitch Elimination, Dynamic Volume & Pipeline State Fixes**:
+  - *Single-Viewport Zero-Scroll Dashboard*:
+    - Re-architected dashboard into a strict 100vh zero-scroll cyberdeck layout (`overflow: hidden`).
+    - Top row: Left-skewed Continuous Perception & World State paired side-by-side with compact System Hardware Observability (5-stat grid).
+    - Bottom row: Latency Targets & Service Health with integrated ultra-compact Real-Time Execution Pipeline flow (`pipelineFlow`), eliminating the standalone pipeline window without increasing container height.
+    - Docked Asynchronous Image Generation Studio into the left `face-panel` as a collapsible top-left HUD drawer with interactive `−`/`+` toggle, fitting comfortably without obscuring the centered 3D avatar.
+    - Removed redundant Execution Trace and Live Telemetry Log cards from the DOM and added null-safe guards across `app.js`.
+    - Enforced strict view switching between DUAL and CHAT only (console button permanently removed).
+  - *Audio Playback Glitch Elimination & Hardware Microphone Release*:
+    - Fixed voice crackles and static by executing speech chunk playback continuously in a dedicated worker thread via `asyncio.to_thread(_play_blocking)`, eliminating thread pool hopping, GIL contention, and PortAudio ring buffer underruns.
+    - Fixed music playback crackles by adding `--latency-msec=300` to `paplay` and decoupling disk MP3 caching into an asynchronous background thread (`_disk_cache_worker`).
+    - Resolved local music file visibility in `music.status` and `music.control(action="library")`, accurately cataloging tracks in `data/music/`.
+    - Implemented dynamic volume control across local and streamed tracks with PulseAudio master sink (`pactl set-sink-volume`) and per-frame multiplication.
+    - Fixed hardware microphone release in chat mode: `capture.pause()` closes the `sounddevice.InputStream` connection, extinguishing the Linux/PipeWire mic tray icon and releasing the audio hardware.
+  - *Pipeline State & Chat Tool Spinner Bug Fixes*:
+    - Resolved LLM pipeline node remaining stuck on `RUNNING` by ensuring `set_pipeline_node("LLM", "COMPLETED")` and `set_pipeline_node("TOOLS", "COMPLETED")` in both `_generate_continuation` and `_handle_direct_tool`.
+    - Fixed infinite spinning tool cards in chat by scoping card IDs uniquely per call/turn and auto-resolving leftover `.running` cards on stream completion.
+  - All 94 regression unit tests pass.
+
+
+
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:
@@ -707,6 +731,112 @@ Legend:
       3. Set `full_text = second_pass_text.strip()` when tools were invoked, storing only the clean response.
       4. Added client-side regex sanitization in `cleanHumanText()` in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) to strip any stray `__TOOL_CALL__` patterns.
       5. Added regression test `test_stream_text_chat_filters_tool_call_token` in [`tests/test_chat_sessions.py`](file:///home/ameya/robot/tests/test_chat_sessions.py). All 88 unit tests pass.
+
+57. **Broad Memory Query Anchoring & Tool Parameter Bias (`memory.all` & `memory.search`)**:
+    - *Symptoms*: When user asked *"What durable facts and memories do you have saved about me?"*, Luna called `memory.search` with a hyper-specific, context-anchored query `{"query": "Ameya Sharma crush Anubha Anand", "limit": 5}` instead of querying all durable facts or doing a broad search.
+    - *Root Causes*:
+      1. **Missing General Recall Tool**: Only `memory.search(query: str, limit: int)` and `memory.write(fact: str)` were exposed to the LLM. There was no tool for retrieving all stored facts or asking open questions about the user.
+      2. **Pre-Turn History Clustering**: Duplicate crush facts stored across historical turns crowded the top SQLite rows (`ORDER BY id DESC`). Pre-turn semantic retrieval for the user's prompt surfaced these identical rows into `[Relevant Memories]`.
+      3. **LLM Context Anchoring Bias**: When prompted to call `memory.search(query=...)`, the local 4B model lacked guidance on how to query all facts, so it latched onto the salient entity already visible in `[Relevant Memories]` (`"Ameya Sharma crush Anubha Anand"`) and passed it into `query`.
+      4. **Grammatical Stopword & Meta-word Leak**: In `search_facts`, words like `"and"`, `"durable"`, `"facts"` were not in stop words, causing FTS to query for `durable* OR facts* OR and*`, matching `"and"` in a single row rather than treating it as a broad request.
+    - *Fixes Applied*:
+      1. Registered dedicated [`memory.all`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) tool in `register_builtin_tools` to retrieve all durable facts/memories up to `limit=20` (or custom limit).
+      2. Updated [`memory.search`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) tool definition to document that `query="all"` or empty query retrieves all stored facts, and routed broad queries directly to `get_all_facts`.
+      3. Implemented semantic content-word deduplication in `_deduplicate_fact_rows` in [`ConversationHistory`](file:///home/ameya/robot/src/robot/memory/__init__.py), ensuring query results return diverse facts (food preferences, Mumbai residence, humanoid companion project, synthesizer tastes) rather than multiple redundant phrasings of the same memory.
+      4. Added duplicate prevention on insertion in `add_fact` to keep `facts` table clean.
+      5. Added comprehensive stop and meta-word detection in `search_facts` so open-ended prompts automatically route to `get_all_facts`.
+      6. Updated personality permission matrices in [`luna.yaml`](file:///home/ameya/robot/config/personalities/luna.yaml), [`aria.yaml`](file:///home/ameya/robot/config/personalities/aria.yaml), [`glados.yaml`](file:///home/ameya/robot/config/personalities/glados.yaml), and [`neo.yaml`](file:///home/ameya/robot/config/personalities/neo.yaml) to enable `memory.all: true`.
+      7. Expanded [`ToolRouter.FAMILY_KEYWORDS["memory"]`](file:///home/ameya/robot/src/robot/tools/__init__.py) with `"facts"`, `"durable facts"`, `"saved about me"`, `"all memories"`, `"all facts"`.
+      8. Added unit tests `test_history_search_broad_queries_and_deduplication` and `test_memory_all_and_search_tool_execution` in [`tests/test_memory.py`](file:///home/ameya/robot/tests/test_memory.py). All 90 unit tests pass.
+
+58. **Music Playback History, Auto-Replay, Title Preservation, Chained Actions & UI Simplification**:
+    - *Symptoms*:
+      1. When user said *"resume the song"*, Luna merely replied conversationally without calling `music.control(action="resume")`, and when stopped or finished, resume had no history to replay the track.
+      2. When user asked *"what is playing"*, `music.status` reported `"No Good by Juice WRLD"` instead of `"Paranoid by Juice WRLD"` because external catalog search matched the artist and loosely replaced the unreleased title.
+      3. Chained actions in voice mode only executed the first tool in `collected_tool_calls`, discarding subsequent calls.
+      4. Dashboard top bar included an unnecessary `CONSOLE` view option.
+    - *Fixes Applied*:
+      1. **History & Replay in `MusicPlayerService`**: Added `self._history` list (max 50 tracks), tracking track, artist, resolved name, query, source, and timestamp. Added `replay(query)` to replay the most recent or targeted song. Enhanced `resume()` to automatically fall back to `replay()` if playback has stopped or finished. Added `get_history(limit)`.
+      2. **Strict Title Preservation**: Updated `_parse_query_target` to split `(target_title, target_artist)`. Added strict validation in `play_ytdlp`, `play_spotify`, and `play_soundcloud`: external metadata title is only adopted if target title keywords match. If Spotify/iTunes returns an unrelated song by the same artist (e.g. "No Good" for "Paranoid"), the substitution is rejected and the user's requested title is preserved (`"Paranoid by Juice Wrld"`).
+      3. **Registered `music.history` & Upgraded `music.control`**: Enabled actions `resume`, `replay`, `pause`, `stop`, `status`, `history`, `volume` with natural language aliases. Registered `music.history` tool. Updated personality execution mandates across all YAMLs to enforce calling tools on resume/replay/status requests.
+      4. **Chained Action Execution**: In [`RobotEngine._generate_response_stream`](file:///home/ameya/robot/src/robot/core/engine.py), looped over all preceding tool calls in `collected_tool_calls[:-1]` via permission execution before delegating the final tool to `ToolConversationCoordinator`, ensuring all chained actions run sequentially without loss.
+      5. **Dashboard Cleanup**: Removed the `CONSOLE` view button from [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html) so only `DUAL` and `CHAT` options remain.
+      6. Added unit test `test_music_history_replay_and_title_preservation` in [`tests/test_tools.py`](file:///home/ameya/robot/tests/test_tools.py). All 91 unit tests pass.
+
+59. **Permanent Eradication of Tool Execution Hallucinations & Fictional Relationship Injection**:
+    - *Symptoms*:
+      1. When user asked action commands (*"set the volume to 20%"*, *"what song did you last play?"*, *"play it again"*, *"play that song again on youtube"*), the assistant merely conversed in text claiming it performed the action rather than invoking the executable tools.
+      2. The assistant repeatedly hallucinated fabricated relationship and family fixations (*"dreams of a child"*, *"grow our little family"*), as well as fabricated songs (*"Love Story by Taylor Swift"*).
+    - *Root Causes Identified*:
+      1. **Indiscriminate Fallback #3 in `search_facts`**: In [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py), if query keywords had 0 matches in FTS/LIKE, Fallback 3 blindly dumped the most recent user facts into context. Rows 75–82 in SQLite contained legacy/accidental "wants to start a family / have a child" entries, so *every* functional query (volume, music control, time) was injected with child/family facts.
+      2. **Context Pollution in `ContextEngine.build_messages`**: Grounding parts were prepended directly into `user_content` in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py), making the LLM believe the user explicitly spoke those memories in their turn.
+      3. **Tool Schema Overload**: In `stream_text_chat`, all 20 tool schemas (~2,206 tokens) were dumped on every turn, consuming over 50% of the local 4K context window and degrading tool routing.
+      4. **Unmatched Keywords**: Single-word keywords like `volume`, `louder`, `quieter`, `mute`, `play that song again` were absent from `ToolRouter.FAMILY_KEYWORDS["music"]`.
+    - *Fixes Applied*:
+      1. **Purged Database & Fixed `search_facts`**: Deleted rows 75–82 (child/family hallucinations) and rows 25, 27, 59, 60 from `facts` in `conversations.db` and rebuilt `facts_fts`. Removed blind Fallback 3 from `search_facts` so queries with unmatched keywords return `[]` instead of dumping unrelated memories.
+      2. **Action-Gated Context Engine**: In [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py), added action-command regex gating (`volume`, `louder`, `quieter`, `mute`, `pause`, `resume`, `replay`, `play`, `stop`, `what time`) to completely bypass memory injection during direct hardware/media commands. Separated background telemetry from user input so user turns remain clean.
+      3. **Tool Routing in `stream_text_chat`**: Updated [`stream_text_chat`](file:///home/ameya/robot/src/robot/core/engine.py) to use `ToolRouter.select_tools(text)` for local inference, dropping tool schema tokens from 2,206 down to ~350 tokens.
+      4. **Expanded Keywords & Flexible Tool Handlers**: Added `volume`, `turn it up/down`, `louder`, `quieter`, `mute`, `unmute`, `play it again`, `play that song again`, `last played` to `ToolRouter.FAMILY_KEYWORDS["music"]`. Updated `music.play` to auto-delegate relative phrases ("that song again", "it again") to `replay()`, and allowed optional kwargs in `music.control`.
+      5. **Few-Shot Mandate in Luna's System Prompt & Grounding Policy**: Strengthened `GROUNDING_POLICY` and [`luna.yaml`](file:///home/ameya/robot/config/personalities/luna.yaml) with explicit few-shot action mappings and strict anti-hallucination rules.
+      6. Added regression tests `test_context_action_commands_do_not_inject_memories`, `test_tool_router_music_and_volume_keywords`, and `test_music_play_relative_replay`. All 94 unit tests pass.
+
+60. **Avatar Dashboard Tool Execution, Model Badge Telemetry Sync, Console Removal, and Persona Tool Alignment**:
+    - *Symptoms*:
+      1. When typing action commands in the avatar dashboard (e.g. *"play cornelia street on youtube"*), the assistant merely chatted in the speech bubble claiming it played the song without executing any tool.
+      2. In the web chat, switching personalities to `ARIA` resulted in tool execution hallucinations on queries like *"repeat the song"*, *"did it finish playing"*, *"what song is playing"*, and *"stop it"* (hallucinating fabricated tracks like *"Cardigan Acapella"* and *"Call Out My Name"*).
+      3. Switching between Local and API (Cloud Gemini) models did not update the chat message header badge or metadata in the frontend, remaining statically stuck on `LOCAL QWEN (4K)` even when running at 201 tok/s.
+      4. Legacy console option needed removal from the dashboard view controls so only `DUAL` and `CHAT` exist.
+    - *Root Causes*:
+      1. In [`RobotEngine._stream_response`](file:///home/ameya/robot/src/robot/core/engine.py#L988-L1005) (called by `process_text_input` via `POST /chat` from avatar input), `tools_schema = self.tool_registry.get_schemas()` unconditionally dumped all 20 schemas (2,260 tokens). Together with conversation history and state, prompt tokens exceeded 4096 tokens, triggering an HTTP 400 error in `LlamaServerLLM`, which auto-stripped tools (`del payload['tools']`) and generated without any tool definitions.
+      2. In [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js#L1185-L1210), `this.btnLlmToggle` was never assigned (`const btn` was local), causing `isGemini` to evaluate to `false` always, hardcoding `LOCAL QWEN (4K)` on every turn. In addition, the SSE `start` event listener did not update `assistantRow`'s `.chat-msg-badge` with `payload.provider`, and `appendHistoricalMessage` omitted the model badge and telemetry.
+      3. Personality prompts for [`aria.yaml`](file:///home/ameya/robot/config/personalities/aria.yaml), [`glados.yaml`](file:///home/ameya/robot/config/personalities/glados.yaml), and [`neo.yaml`](file:///home/ameya/robot/config/personalities/neo.yaml) completely lacked the `Available Tools & Execution Mandate`, explicit action mappings, and anti-hallucination rules present in `luna.yaml`.
+      4. [`ToolRouter.FAMILY_KEYWORDS['music']`](file:///home/ameya/robot/src/robot/tools/__init__.py#L111-L126) lacked `"stop it"`, `"stop that"`, `"repeat the song"`, `"did it finish playing"`, and `"what song is playing"`.
+    - *Fixes Applied*:
+      1. **Context-Safe Tool Routing**: In [`RobotEngine._stream_response`](file:///home/ameya/robot/src/robot/core/engine.py#L988-L1005) and `stream_text_chat`, used `self.tool_router.select_tools()` for local inference to supply only relevant tool schemas (~485 tokens for music instead of 2,260), completely preventing 4K context overflows.
+      2. **Fast Routing & Direct Tools in Coordinator**: Added `music.control`, `music.status`, and `music.history` to `direct_tools` in [`coordinator.py`](file:///home/ameya/robot/src/robot/tools/coordinator.py#L320-L340) and added fast intent regex matching for `"stop it"`, `"repeat"`, and status queries.
+      3. **Expanded Keywords in ToolRouter**: Added `"stop it"`, `"stop that"`, `"stop"`, `"repeat"`, `"repeat the song"`, `"did it finish playing"`, `"what song is playing"`, etc. to `FAMILY_KEYWORDS['music']`.
+      4. **Universal Tool Mandate Across All Personalities**: Updated `aria.yaml`, `glados.yaml`, and `neo.yaml` with strict executable tool mandates, explicit action mappings, and factual grounding rules.
+      5. **Frontend Model Badge & Telemetry Sync**: Assigned `this.btnLlmToggle = btn` and tracked `this.currentLlmProvider` in `app.js`; updated `assistantRow` badge dynamically on SSE `start` events; added model badges and full token/tok_s/TTFT telemetry bars to historical messages in `appendHistoricalMessage`.
+      6. **Dashboard View Switcher**: Removed legacy `btnDev` references from `app.js` and restricted `setView` exclusively to `"dual"` and `"chat"`.
+      7. Verified with unit tests (`tests/` passing 94/94) and targeted intent routing verification.
+
+61. **Chat Workspace Model Dynamic State Sync & Vector Mic-Off Icon**:
+    - *Symptoms*:
+      1. When switching between local and Cloud Gemini in the top header, the chat top-right model pill remained stuck showing `⚡ RTX 3050 (4K)` in green, failing to reflect Gemini cloud status.
+      2. Chat messages rendered with green `LOCAL QWEN (4K)` badges even when Gemini was active, because historical turns lacked `"provider"` metadata in SQLite and the message template lacked purple Gemini badges (`.badge-gemini`).
+      3. The "MIC UNLOADED" pill displayed an ugly overlapping cross centered directly on the microphone icon (`🎙️⃠`).
+    - *Root Causes*:
+      1. Combining enclosing circle-backslash (`U+20E0`) does not compose cleanly with `🎙️` (Noto Color Emoji) on Linux Chromium/WebKit, causing glyph collision.
+      2. `syncChatTopBar()` in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) only updated `chatModelLabel.textContent` without changing `.model-icon` or toggling pill styling classes (`pill-gemini` vs `pill-local`).
+      3. Message streaming and historical rendering lacked dynamic provider fallback and purple badge CSS styles.
+    - *Fixes Applied*:
+      1. **Crisp Vector SVG Mic-Off**: Replaced Unicode `🎙️⃠` with a clean, non-overlapping inline SVG `mic-off` icon in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html).
+      2. **Full Dynamic Top-Bar Sync**: Enhanced `syncChatTopBar()` to update text (`GEMINI (1M)` vs `LOCAL QWEN (4K)`), icon (`✨` vs `⚡`), tooltip, and CSS classes (`pill-gemini` vs `pill-local`).
+      3. **Gemini & Local Pill / Badge CSS**: Added styles for `.chat-stat-pill.pill-gemini`, `.chat-stat-pill.pill-local`, `.chat-msg-badge.badge-gemini`, and `.chat-msg-badge.badge-local` in [`index.css`](file:///home/ameya/robot/src/robot/api/static/index.css).
+      4. **End-to-End State Sync**: Hooked `syncChatTopBar()` into `selectChatSession`, `sendChatMessage` (on SSE `start`), `updateLlmToggleUi`, and `handleServerEvent` (`llm.provider_changed`).
+      5. **Backend Turn Persistence**: Updated `process_input` and `process_text_input` in [`engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to persist `metadata={"provider": ...}` into SQLite.
+      6. **Cache Busting**: Bumped asset versions to `?v=2.5` in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html).
+
+62. **HUD Bottom Split Integration, Image Studio Fix, Indian Standard Time Grounding, Music Ducking Removal & Chat Formatting**:
+    - *Symptoms & Requirements*:
+      1. `LATENCY TARGETS & SERVICE HEALTH` card was excessively stretched vertically, leaving a massive empty void.
+      2. `IMAGE STUDIO` was docked floating over the 3D VRM character, blocking Luna.
+      3. Image generation button was non-responsive (due to FastAPI 422 schema lookup error on inner BaseModel with `from __future__ import annotations`).
+      4. User chat messages collapsed into a single-character-wide vertical column without markdown or newline formatting.
+      5. Chat quick chips automatically sent fixed pre-written prompts instead of presenting available tools and inserting clean command prefixes.
+      6. Music playback aggressively ducked and faded out TTS and avatar speech instead of letting the model speak freely.
+      7. Model was unaware of local system time (Indian Standard Time / IST).
+      8. Dashboard responsiveness on smaller screens needed comprehensive optimization.
+    - *Root Causes & Fixes Applied*:
+      1. **HUD Bottom Split (`.hud-bottom-split`)**: Removed `#cardImageGen` from `#facePanel` to give the 3D avatar unobstructed canvas space. Placed both `card-metrics` and `card-image-studio` side-by-side in `.hud-bottom-split` inside `.dev-panel`. Reorganized metrics into a clean 3×2 grid (`repeat(3, 1fr)`), eliminating the empty void.
+      2. **Zero-Distortion Image Studio**: Created `#imgPreviewArea` with fixed min/max heights (`min-height: 130px; max-height: 180px; overflow: hidden;`) and `object-fit: contain;` so neither synthesis nor loaded images shift or distort surrounding UI.
+      3. **FastAPI Image Route Fix**: Moved `ImageGenRequest` to module top level in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) with explicit `Body(...)` binding, resolving type hint introspection and 422 errors. Tested endpoint with `fastapi.testclient.TestClient` (200 OK).
+      4. **Chat User Bubble Collapse Fix**: Removed nested `max-width: 82%` from `.chat-msg-body`, set `.chat-msg-row.msg-user .chat-msg-content` to `align-items: flex-end; max-width: 82%; width: auto;`, and `.chat-msg-body` to `width: fit-content; max-width: 100%; white-space: pre-wrap; word-break: break-word;`. Rendered user messages through `renderChatMarkdown` in both active send and session restore.
+      5. **Available Tools Quick Chips**: Redesigned `.chat-quick-chips` with `<span class="chat-chips-label"><span class="pulse-dot"></span> CURRENTLY AVAILABLE TOOLS:</span>` and chips (`🔍 Web Search`, `🎵 Play Music`, `👁️ Camera Vision`, `🎨 Generate Image`, `🧠 Check Memory`). Click handlers now insert clean tool prefixes into `chatTextarea` and focus without auto-submitting.
+      6. **Complete Audio Ducking & TTS Fade Removal**: Unconditionally locked `_duck_target = 1.0` and `_volume = 1.0` in [`src/robot/audio/playback.py`](file:///home/ameya/robot/src/robot/audio/playback.py) and stripped out `_apply_ducking()` and `wait_speech_engine.player.fade_out()` in [`src/robot/tools/builtins/music.py`](file:///home/ameya/robot/src/robot/tools/builtins/music.py). Stripped avatar mouth/speech interruptions from `app.js` upon music start.
+      7. **Indian Standard Time (IST) Grounding**: Injected `[Current Local System Time (Indian Standard Time / IST)]` with formatted time (`%I:%M:%S %p IST`), date (`%A, %B %d, %Y`), and ISO-8601 string on every conversational turn in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py).
+      8. **Universal Responsive Design**: Added fluid media queries in [`src/robot/api/static/index.css`](file:///home/ameya/robot/src/robot/api/static/index.css) for <=1200px (single-column stack, auto-height cards) and <=768px (2-column metrics, horizontal scrolling chips, 95% chat width).
+      9. **Verification**: 94/94 pytest suite passing. Bumped cache-buster to `?v=2.6`.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

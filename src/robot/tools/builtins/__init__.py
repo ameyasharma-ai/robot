@@ -47,11 +47,11 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     engine.tool_registry.register(
         ToolDefinition(
             name="memory.write",
-            description="Store and remember an important fact, preference, or detail about the user for future turns",
+            description="Autonomously record an essential, durable user fact or long-term preference into permanent memory. Do NOT call this for casual conversational context or temporary chit-chat.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "fact": {"type": "string", "description": "The exact fact or preference to remember"},
+                    "fact": {"type": "string", "description": "The exact enduring fact or preference to remember for future sessions"},
                 },
                 "required": ["fact"],
             },
@@ -61,19 +61,43 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def memory_search(query: str, limit: int = 5) -> Any:
+    async def memory_all(limit: int = 20) -> list[dict]:
         pers = engine.personalities.active
         ns = getattr(pers, "memory_namespace", "default")
+        return await engine.memory.get_all_facts(user_id=ns, limit=limit)
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="memory.all",
+            description="Retrieve all durable facts, memories, preferences, and personal details saved about the user across past sessions. Call this whenever the user asks what you remember or know about them, asks to see their memories/facts, or asks for a general summary of everything saved.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum number of distinct facts to return", "default": 20},
+                },
+            },
+            handler=memory_all,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="memory",
+        )
+    )
+
+    async def memory_search(query: str = "all", limit: int = 5) -> Any:
+        pers = engine.personalities.active
+        ns = getattr(pers, "memory_namespace", "default")
+        clean_q = (query or "").strip().lower()
+        if clean_q in {"", "all", "*", "everything", "facts", "memories", "about me", "me", "preferences", "durable facts"}:
+            return await engine.memory.get_all_facts(user_id=ns, limit=limit)
         return await engine.memory.get_relevant_memories(query, user_id=ns, limit=limit)
 
     engine.tool_registry.register(
         ToolDefinition(
             name="memory.search",
-            description="Search persistent memories for relevant facts, preferences, or past events",
+            description="Search persistent memories for a specific topic, keyword, person, or preference. To retrieve all stored memories and facts about the user, set query='all' or call memory.all.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "What to search for"},
+                    "query": {"type": "string", "description": "Specific topic or keyword to search for, or 'all' to retrieve all saved facts and memories", "default": "all"},
                     "limit": {"type": "integer", "description": "Max results", "default": 5},
                 },
                 "required": ["query"],
@@ -425,9 +449,19 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Music Tools (Spotify, SoundCloud, Local audio) ---
     music_service = MusicPlayerService.get_instance()
 
-    async def music_play(query: str, source: str = "auto") -> dict:
+    async def music_play(query: str, source: str = "ytdlp") -> dict:
+        clean_q = query.strip().lower()
+        # Auto-delegate relative replay references to replay
+        replay_queries = {
+            "that song again", "that song", "it again", "play it again", "play that again",
+            "the same song", "same song", "previous song", "last song", "replay", "again",
+            "that song again on youtube", "it again on youtube",
+        }
+        if clean_q in replay_queries:
+            return await asyncio.to_thread(music_service.replay, wait_speech_engine=engine)
+
         clean_src = source.strip().lower()
-        if clean_src == "auto":
+        if clean_src in {"auto", "default", ""}:
             if any(w in query.lower() for w in ["local", "library", "offline", "stored"]):
                 clean_src = "local"
             elif "soundcloud" in query.lower():
@@ -435,7 +469,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             elif "spotify" in query.lower():
                 clean_src = "spotify"
             else:
-                clean_src = music_service.config.get("default_source", "ytdlp")
+                clean_src = "ytdlp"
 
         if clean_src in {"ytdlp", "yt-dlp", "youtube"}:
             return await asyncio.to_thread(music_service.play_ytdlp, query, wait_speech_engine=engine)
@@ -450,12 +484,12 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     engine.tool_registry.register(
         ToolDefinition(
             name="music.play",
-            description="Play music tracks, songs, or artists on YouTube (yt-dlp), Spotify, SoundCloud, or from local library files",
+            description="Play songs, music tracks, or artists via YouTube (yt-dlp, default for all personalities) or local files. If user asks to replay or play the previous song again, invoke music.control(action='replay').",
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Song name, artist, genre, or playlist to play"},
-                    "source": {"type": "string", "description": "Playback source: 'ytdlp', 'spotify', 'soundcloud', 'local', or 'auto'", "default": "auto"},
+                    "source": {"type": "string", "description": "Playback source: 'ytdlp' (default YouTube full song stream), 'spotify', 'soundcloud', or 'local'", "default": "ytdlp"},
                 },
                 "required": ["query"],
             },
@@ -465,32 +499,90 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def music_control(action: str, volume: float | None = None) -> dict:
+    async def music_control(action: str, volume: float | None = None, query: str | None = None, **kwargs) -> dict:
         act = action.strip().lower()
-        if act == "pause":
+        if act in {"pause", "hold", "freeze"}:
             return music_service.pause()
-        elif act == "resume":
-            return music_service.resume()
-        elif act == "stop":
+        elif act in {"resume", "unpause", "continue"}:
+            return music_service.resume(wait_speech_engine=engine)
+        elif act in {"replay", "restart", "repeat", "again", "play again"}:
+            return music_service.replay(query=query, wait_speech_engine=engine)
+        elif act in {"stop", "cancel", "kill"}:
             return music_service.stop()
-        elif act == "volume" and volume is not None:
-            return music_service.set_volume(volume)
+        elif act in {"status", "current", "what is playing", "what's playing"}:
+            return music_service.get_status()
+        elif act in {"library", "collection", "local", "files", "local_tracks", "my collection"}:
+            tracks = music_service.list_local_tracks()
+            return {"status": "ok", "local_collection": tracks, "total_songs": len(tracks)}
+        elif act in {"history", "recent", "queue", "list"}:
+            return {"history": music_service.get_history(limit=10)}
+        elif act == "volume":
+            v_val = volume if volume is not None else kwargs.get("level")
+            if v_val is not None:
+                try:
+                    if isinstance(v_val, str) and "%" in v_val:
+                        v_float = float(v_val.replace("%", "").strip()) / 100.0
+                    else:
+                        v_float = float(v_val)
+                        if v_float > 1.0:
+                            v_float = v_float / 100.0
+                    return music_service.set_volume(v_float)
+                except Exception:
+                    pass
+            return {"status": "error", "message": "Volume action requires volume level (e.g. 0.2 for 20%, 1.0 for 100%)"}
         return {"status": "error", "message": f"Unknown music action '{action}'"}
 
     engine.tool_registry.register(
         ToolDefinition(
             name="music.control",
-            description="Control active music playback (pause, resume, stop, set volume)",
+            description="Control music playback, volume, and local collection: action='volume' (requires volume float between 0.0 and 1.0, e.g. 0.2 for 20%, 1.0 for 100%), action='library' (list all local downloaded songs in library collection), action='replay' (immediately re-stream the last played song from start), action='resume', action='pause', action='stop', action='status' (what is playing), action='history' (recently played songs).",
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "Action to perform: 'pause', 'resume', 'stop', 'volume'"},
-                    "volume": {"type": "number", "description": "Optional volume between 0.0 and 1.0 (for action='volume')"},
+                    "action": {"type": "string", "description": "Action: 'volume', 'library', 'replay', 'resume', 'pause', 'stop', 'status', 'history'"},
+                    "volume": {"type": "number", "description": "Volume between 0.0 and 1.0 (e.g. 0.2 for 20%, 0.5 for 50%, 1.0 for 100%)"},
+                    "query": {"type": "string", "description": "Optional song name if replaying a specific track"},
                 },
                 "required": ["action"],
             },
             handler=music_control,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="music",
+        )
+    )
+
+    async def music_history(limit: int = 10) -> list[dict]:
+        return music_service.get_history(limit=limit)
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="music.history",
+            description="Get the list of recently played songs, tracks, and artists",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max recent songs to return", "default": 10},
+                },
+            },
+            handler=music_history,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="music",
+        )
+    )
+
+    async def music_status() -> dict:
+        return music_service.get_status()
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="music.status",
+            description="Get the current music player playback state (is_playing, current_track, source, volume, is_paused, last_played, history)",
+            parameters={
+                "type": "object",
+                "properties": {},
+            },
+            handler=music_status,
+            permission_level=PermissionLevel.READ_ONLY,
             family="music",
         )
     )

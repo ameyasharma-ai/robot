@@ -18,6 +18,7 @@
 18. Run the system for 7 days straight, check for memory leaks and crashes, Fix them. Just simulate this thing
 19. Warm up the LLM with a greeting on startup
 20. Build a bug tracker 
+21. Implement Gemini API
 
 VAD
  ↓
@@ -50,3 +51,17 @@ Debugger + Resource Optimizer
 Latency < 2s
         ↓
 Barebone Linux
+
+Make a death clock tool tomorrow where it says how much time I have left to live. It asks me my age and habits and uses the gemini API to calculate. Then it makes an approximation and saves it in the db. It reads this everytime, I can also ask it to create another/edit this one and everything
+
+Make an online-free-hostable version of this
+
+VAD - browser
+SST - Groq whisper large
+LLM - gemini free
+TTS - edge tts
+tools - cloudflare free workers
+memory - mem0 and supabase
+frontend - next.js on vercel
+
+deadline 15th october - 16th october

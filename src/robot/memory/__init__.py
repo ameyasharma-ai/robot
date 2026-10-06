@@ -669,30 +669,60 @@ class ConversationHistory:
         await asyncio.to_thread(self._conn.commit)
 
     async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
-        """Store a durable fact in SQLite."""
+        """Store a durable fact in SQLite, preventing duplicate entries."""
         if not self._conn:
             return
+        clean_fact = fact.strip()
+        if not clean_fact:
+            return
+
+        # Prevent exact duplicate insertions for the same user
+        try:
+            cursor = await asyncio.to_thread(
+                self._conn.execute,
+                """SELECT id FROM facts WHERE (user_id = ? OR user_id = 'default') AND LOWER(fact) = LOWER(?) LIMIT 1""",
+                (user_id, clean_fact),
+            )
+            if cursor.fetchone():
+                return
+        except Exception:
+            pass
+
         await asyncio.to_thread(
             self._conn.execute,
             """INSERT INTO facts (key, fact, user_id, created_at) VALUES (?, ?, ?, ?)""",
-            (key, fact, user_id, datetime.now(timezone.utc).isoformat()),
+            (key, clean_fact, user_id, datetime.now(timezone.utc).isoformat()),
         )
         await asyncio.to_thread(self._conn.commit)
 
     async def search_facts(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
-        """Search persistent facts for specific user/namespace using FTS5 and LIKE fallback."""
+        """Search persistent facts for specific user/namespace using FTS5, LIKE fallback, and deduplication."""
         if not self._conn:
             return []
 
         import re
-        stop = {
+        clean_q = (query or "").strip().lower()
+        broad_phrases = {
+            "", "all", "*", "everything", "facts", "memories", "durable facts",
+            "saved facts", "what do you know", "what do you remember",
+            "what facts", "what memories", "preferences", "me", "about me",
+            "user facts", "who am i", "all facts", "all memories",
+        }
+        if clean_q in broad_phrases:
+            return await self.get_all_facts(user_id=user_id, limit=limit)
+
+        stop_and_meta = {
             "where", "what", "who", "when", "why", "how", "do", "i", "you", "is", "are",
             "the", "a", "an", "my", "your", "in", "on", "at", "tell", "me", "about", "can",
             "remember", "know", "am", "was", "were", "did", "does", "have", "has", "had",
+            "and", "or", "so", "with", "for", "to", "of", "from", "by", "that", "this",
+            "durable", "facts", "fact", "memories", "memory", "saved", "stored", "remembered",
+            "details", "info", "information", "everything", "all", "any", "get", "show", "list",
         }
-        words = [w for w in re.findall(r"\w+", query.lower()) if w not in stop]
+        words = [w for w in re.findall(r"\w+", clean_q) if w not in stop_and_meta]
         if not words:
-            words = [w for w in re.findall(r"\w+", query.lower()) if len(w) > 1]
+            # The query did not specify a specific topic or keyword; return all deduplicated facts
+            return await self.get_all_facts(user_id=user_id, limit=limit)
 
         if words:
             # 1. Prefix FTS matching with stop-word removal
@@ -704,17 +734,17 @@ class ConversationHistory:
                        JOIN facts f ON f.id = ft.rowid
                        WHERE ft.fact MATCH ? AND (f.user_id = ? OR f.user_id = 'default')
                        ORDER BY f.id DESC LIMIT ?""",
-                    (fts_expr, user_id, limit),
+                    (fts_expr, user_id, limit * 3),
                 )
                 rows = cursor.fetchall()
                 if rows:
-                    return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
+                    return self._deduplicate_fact_rows(rows, limit)
             except Exception:
                 pass
 
             # 2. Individual keyword LIKE fallback
             like_clauses = " OR ".join("fact LIKE ?" for _ in words)
-            params = [f"%{w}%" for w in words] + [user_id, limit]
+            params = [f"%{w}%" for w in words] + [user_id, limit * 3]
             try:
                 cursor = await asyncio.to_thread(
                     self._conn.execute,
@@ -725,34 +755,64 @@ class ConversationHistory:
                 )
                 rows = cursor.fetchall()
                 if rows:
-                    return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
+                    return self._deduplicate_fact_rows(rows, limit)
             except Exception:
                 pass
 
-        # 3. Fallback: recent facts for user
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
-            """SELECT id, fact, created_at FROM facts
-               WHERE user_id = ? OR user_id = 'default'
-               ORDER BY id DESC LIMIT ?""",
-            (user_id, limit),
-        )
-        rows = cursor.fetchall()
-        return [{"id": r[0], "memory": r[1], "created_at": r[2]} for r in rows]
+        # If query specified keywords but no fact matched, return empty list
+        # to prevent irrelevant memory pollution during unrelated commands or tasks.
+        return []
+
+    @staticmethod
+    def _deduplicate_fact_rows(rows: list[tuple], limit: int) -> list[dict]:
+        """Filter out semantically redundant fact rows to maximize diverse memory recall."""
+        import re
+        stop = {
+            "user", "the", "a", "an", "is", "in", "on", "at", "to", "for", "with",
+            "about", "of", "me", "my", "and", "that", "i", "he", "she", "it", "his",
+            "her", "asked", "asking", "asks", "know", "remember", "saved", "stored",
+        }
+        unique_facts: list[dict] = []
+        seen_word_sets: list[set[str]] = []
+
+        for r in rows:
+            fact_text = str(r[1]).strip()
+            words = set(w for w in re.findall(r"\w+", fact_text.lower()) if w not in stop)
+            if not words:
+                words = set(re.findall(r"\w+", fact_text.lower()))
+
+            is_dup = False
+            for seen in seen_word_sets:
+                common = words & seen
+                # High content word overlap indicates redundant phrasing of the same fact
+                if len(common) >= 2 and (len(common) / min(len(words), len(seen))) >= 0.5:
+                    is_dup = True
+                    break
+                elif len(common) >= 1 and len(words) == 1 and len(seen) == 1:
+                    is_dup = True
+                    break
+
+            if not is_dup:
+                seen_word_sets.append(words)
+                unique_facts.append({"id": r[0], "memory": fact_text, "fact": fact_text, "created_at": r[2]})
+                if len(unique_facts) >= limit:
+                    break
+
+        return unique_facts
 
     async def get_all_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
-        """Retrieve all durable facts for the user/personality across time."""
+        """Retrieve all durable facts for the user/personality across time, deduplicated."""
         if not self._conn:
             return []
         cursor = await asyncio.to_thread(
             self._conn.execute,
             """SELECT id, fact, created_at FROM facts
                WHERE user_id = ? OR user_id = 'default'
-               ORDER BY id ASC LIMIT ?""",
-            (user_id, limit),
+               ORDER BY id DESC LIMIT ?""",
+            (user_id, max(limit * 3, 100)),
         )
         rows = cursor.fetchall()
-        return [{"id": r[0], "memory": r[1], "fact": r[1], "created_at": r[2]} for r in rows]
+        return self._deduplicate_fact_rows(rows, limit)
 
     async def get_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
         """Alias for get_all_facts."""

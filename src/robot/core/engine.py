@@ -830,6 +830,7 @@ class RobotEngine:
                     self.state.state.active_personality,
                     turn,
                     namespace=ns,
+                    metadata={"provider": getattr(self, "llm_provider_type", "local")},
                 )
 
             await self.state.set_mode(RobotMode.IDLE)
@@ -955,21 +956,9 @@ class RobotEngine:
             )
         self.observability.finish_span(context_span, metadata={"msg_count": len(messages), "tokens": estimated_tokens})
 
-        # ─── Fast Intent Router (Phase 24) ──────────────────────────────────
-        if self.tool_coordinator and not interrupt.is_set():
-            fast_route_res = self.tool_coordinator.fast_route(user_text)
-            if fast_route_res is not None:
-                f_tool, f_args, f_cat = fast_route_res
-                logger.info("fast_router_matched", tool=f_tool, category=f_cat.value)
-                return await self.tool_coordinator.coordinate(
-                    tool_name=f_tool,
-                    tool_args=f_args,
-                    category=f_cat,
-                    user_text=user_text,
-                    end_of_speech_time=end_of_speech_time,
-                    interrupt=interrupt,
-                    messages=messages,
-                )
+        # ─── Autonomous LLM Tool Invocation ────────────────────────────────
+        # Tools are not called deterministically or via simple keyword regex logic.
+        # Intelligence is routed through tools only when the LLM actively proposes a tool call.
 
         # If we have an image and the LLM explicitly supports multimodal (mmproj loaded),
         # convert the last user message to OpenAI vision content blocks
@@ -998,9 +987,21 @@ class RobotEngine:
             metadata={"model": self.config.get("llm", {}).get("model", "Qwen3.5-4B-Q4_K_M")},
         )
 
-        # Consistent tools schema: always provide the full registered tool schemas
-        # so llama-server's slot KV cache prefix remains 100% invariant across turns.
-        tools_schema = self.tool_registry.get_schemas() if getattr(self, "tool_registry", None) else None
+        # Context-safe tool routing:
+        # Cloud Gemini has 1M context so it receives all schemas.
+        # Local Qwen has a 4K context; inject matched tool families (or all schemas only if context permits)
+        # to prevent 400 context overflow and emergency tool stripping.
+        tools_schema = None
+        if getattr(self, "tool_registry", None):
+            if is_gemini:
+                tools_schema = self.tool_registry.get_schemas()
+            else:
+                if selected_tool_names:
+                    tools_schema = self.tool_registry.get_schemas(selected_tool_names)
+                elif estimated_tokens < 1200:
+                    tools_schema = self.tool_registry.get_schemas()
+                else:
+                    tools_schema = None
 
         try:
             stream_max_tokens = 1024 if is_gemini else self.config["llm"].get("max_tokens", 300)
@@ -1080,7 +1081,27 @@ class RobotEngine:
 
             # If the model autonomously proposed tool calls, coordinate holding conversation and execution
             if collected_tool_calls and not interrupt.is_set():
-                tc = collected_tool_calls[0]
+                # Execute any preceding tools in the chain before coordinating the primary/final tool
+                for tc in collected_tool_calls[:-1]:
+                    if interrupt.is_set():
+                        break
+                    f_info = tc.get("function", tc)
+                    t_nm = f_info.get("name", "")
+                    try:
+                        import json as _json
+                        r_args = f_info.get("arguments", "{}")
+                        a_args = _json.loads(r_args) if isinstance(r_args, str) else (r_args or {})
+                    except Exception:
+                        a_args = {}
+                    t_def = self.tool_registry.get(t_nm) if getattr(self, "tool_registry", None) else None
+                    if t_def and getattr(self, "permissions", None):
+                        try:
+                            await self.permissions.execute(t_def, a_args)
+                            logger.info("chained_tool_executed", tool=t_nm)
+                        except Exception as e:
+                            logger.warning("chained_tool_exec_error", tool=t_nm, error=str(e))
+
+                tc = collected_tool_calls[-1]
                 func_info = tc.get("function", tc)
                 tool_name = func_info.get("name", "")
                 try:
@@ -1361,6 +1382,7 @@ class RobotEngine:
                 self.state.state.active_personality,
                 turn,
                 namespace=ns,
+                metadata={"provider": getattr(self, "llm_provider_type", "local")},
             )
 
         return response
@@ -1434,7 +1456,15 @@ class RobotEngine:
 
         tools = None
         if hasattr(self, "tool_registry") and self.tool_registry:
-            tools = self.tool_registry.get_schemas()
+            if is_gemini:
+                tools = self.tool_registry.get_schemas()
+            else:
+                selected_tool_names = self.tool_router.select_tools(text) if hasattr(self, "tool_router") and self.tool_router else []
+                if selected_tool_names:
+                    tools = self.tool_registry.get_schemas(selected_tool_names)
+                else:
+                    est_in = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
+                    tools = self.tool_registry.get_schemas() if est_in < 1200 else None
 
         yield {
             "event": "start",

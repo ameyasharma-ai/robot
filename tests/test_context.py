@@ -16,8 +16,8 @@ def test_context_basic_build():
     )
     assert len(messages) >= 2  # system + user
     assert messages[0]["role"] == "system"
-    assert messages[-1]["role"] == "user"
-    assert messages[-1]["content"] == "What time is it?"
+    assert "What time is it?" in messages[-1]["content"]
+    assert "Indian Standard Time" in messages[-1]["content"]
 
 
 def test_context_with_memories():
@@ -65,4 +65,21 @@ def test_context_alias_keyword_arguments():
     assert messages[-1]["role"] == "user"
     assert "Hello from chat interface" in messages[-1]["content"]
     assert "cyan" in messages[-1]["content"]
+
+
+def test_context_action_commands_do_not_inject_memories():
+    """Verify action commands like volume or replay never get polluted by memories."""
+    engine = ContextEngine()
+    memories = [{"memory": "User likes jazz"}, {"memory": "User crush is Anubha"}]
+    for action_cmd in ["set the volume to 20%", "pause the music", "replay", "what time is it?"]:
+        messages = engine.build_messages(
+            system_prompt="You are Luna.",
+            user_text=action_cmd,
+            memories=memories,
+        )
+        user_turn = messages[-1]["content"]
+        assert "User crush" not in user_turn
+        assert "User likes jazz" not in user_turn
+        assert action_cmd in user_turn
+
 

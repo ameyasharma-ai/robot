@@ -33,6 +33,7 @@ class MusicPlayerService:
         self._current_track = "None"
         self._current_source = "None"
         self._volume = self.config.get("default_volume", 0.8)
+        self._history: list[dict[str, Any]] = []
         # Event set when music audio frames actually begin playing (for TTS coordination)
         self._music_started_event = asyncio.Event()
         self._music_active = False
@@ -41,7 +42,39 @@ class MusicPlayerService:
     def is_playing(self) -> bool:
         if self._current_process is not None:
             return self._current_process.poll() is None
-        return self._is_playing
+        return self._is_playing or self._music_active
+
+    def list_local_tracks(self) -> list[str]:
+        """Scan local music directory and ~/Music and return list of track names."""
+        music_dir = Path(self.config.get("local_music_dir", "data/music"))
+        search_dirs = [music_dir, Path.home() / "Music"]
+        valid_exts = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm", ".opus"}
+        tracks = []
+        for s_dir in search_dirs:
+            if s_dir.exists():
+                for f in s_dir.rglob("*"):
+                    if f.is_file() and f.suffix.lower() in valid_exts and not f.name.endswith(".part"):
+                        tracks.append(f.stem)
+        return sorted(list(set(tracks)))
+
+    def get_status(self) -> dict[str, Any]:
+        """Return the current live music playback state, history, and last played song."""
+        active = self.is_playing
+        last = self._history[0] if self._history else None
+        current = self._current_track if (active or self._is_paused) else (last["resolved_name"] if last else "None")
+        source = self._current_source if (active or self._is_paused) else (last["source"] if last else "None")
+        local_tracks = self.list_local_tracks()
+        return {
+            "is_playing": active,
+            "is_paused": self._is_paused,
+            "current_track": current,
+            "source": source,
+            "volume": self._volume,
+            "history": self.get_history(5),
+            "last_played": last,
+            "local_collection": local_tracks[:30],
+            "total_local_songs": len(local_tracks),
+        }
 
     def _load_config(self) -> None:
         self.config = {
@@ -149,15 +182,6 @@ class MusicPlayerService:
         self.stop()
 
         def _execute_local_playback():
-            def _apply_ducking():
-                if wait_speech_engine and hasattr(wait_speech_engine, "player"):
-                    try:
-                        wait_speech_engine.player.fade_out(rate=0.10)
-                    except Exception as e:
-                        logger.debug("ducking_error", error=str(e))
-
-            _apply_ducking()
-
             try:
                 if matched.suffix.lower() == ".wav" and os.path.exists("/usr/bin/paplay"):
                     paplay = subprocess.Popen(
@@ -166,7 +190,6 @@ class MusicPlayerService:
                         stderr=subprocess.DEVNULL,
                     )
                     self._current_process = paplay
-                    _apply_ducking()
                 elif os.path.exists("/usr/bin/mpv"):
                     mpv = subprocess.Popen(
                         ["mpv", "--no-video", f"--volume={int(self._volume * 100)}", str(matched)],
@@ -174,7 +197,6 @@ class MusicPlayerService:
                         stderr=subprocess.DEVNULL,
                     )
                     self._current_process = mpv
-                    _apply_ducking()
                 else:
                     # PyAV decode into paplay or sounddevice
                     import av
@@ -186,14 +208,12 @@ class MusicPlayerService:
 
                     if os.path.exists("/usr/bin/paplay"):
                         paplay = subprocess.Popen(
-                            ["/usr/bin/paplay", f"--rate={sr}", f"--channels={channels}", "--format=s16le", "--raw"],
+                            ["/usr/bin/paplay", f"--rate={sr}", f"--channels={channels}", "--format=s16le", "--raw", "--latency-msec=300"],
                             stdin=subprocess.PIPE,
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )
                         self._current_process = paplay
-                        _apply_ducking()
-                        vol = max(0.0, min(1.0, float(self._volume)))
                         for frame in container.decode(audio_stream):
                             if paplay.poll() is not None or self._current_process != paplay:
                                 break
@@ -204,6 +224,7 @@ class MusicPlayerService:
                                 raw = np.repeat(raw, 2, axis=0)
                             elif raw.shape[0] > 2:
                                 raw = raw[:2, :]
+                            vol = max(0.0, min(1.0, float(self._volume)))
                             if raw.dtype == np.int16:
                                 raw = (raw * vol).astype(np.int16)
                             else:
@@ -232,6 +253,7 @@ class MusicPlayerService:
         self._current_track = matched.stem
         self._current_source = "local"
         self._is_paused = False
+        self._record_history(matched.stem, "", matched.stem, query, "local")
         return {
             "status": "playing",
             "source": "local",
@@ -240,6 +262,51 @@ class MusicPlayerService:
             "file": str(matched),
             "message": f"Playing '{matched.stem}' from local storage.",
         }
+
+    @staticmethod
+    def _parse_query_target(clean_q: str) -> tuple[str, str]:
+        """Split 'title by artist' or 'artist - title' into (title, artist)."""
+        stop_lead = {"play", "song", "music", "track", "listen to", "put on"}
+        q = clean_q.strip()
+        for sl in stop_lead:
+            if q.lower().startswith(sl + " "):
+                q = q[len(sl) + 1:].strip()
+                break
+
+        for sep in [" by ", " from "]:
+            if sep in q.lower():
+                parts = re.split(re.escape(sep), q, maxsplit=1, flags=re.IGNORECASE)
+                if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                    return parts[0].strip(), parts[1].strip()
+
+        if " - " in q:
+            parts = q.split(" - ", 1)
+            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                return parts[1].strip(), parts[0].strip()
+
+        return q, ""
+
+    def _record_history(
+        self,
+        track: str,
+        artist: str,
+        resolved_name: str,
+        query: str,
+        source: str,
+    ) -> None:
+        """Record played track into recently played history (max 50 tracks)."""
+        import datetime
+        entry = {
+            "track": track,
+            "artist": artist,
+            "resolved_name": resolved_name,
+            "query": query,
+            "source": source,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        if not self._history or self._history[0].get("resolved_name") != resolved_name:
+            self._history.insert(0, entry)
+        self._history = self._history[:50]
 
     def lookup_metadata(self, query: str) -> dict[str, Any] | None:
         """Reliably resolve artist, track title, and audio preview from music catalog API."""
@@ -407,23 +474,13 @@ class MusicPlayerService:
             channels = 2
 
             paplay = subprocess.Popen(
-                ["/usr/bin/paplay", f"--rate={sr}", f"--channels={channels}", "--format=s16le", "--raw"],
+                ["/usr/bin/paplay", f"--rate={sr}", f"--channels={channels}", "--format=s16le", "--raw", "--latency-msec=300"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             self._current_process = paplay
             logger.info("playing_full_song_via_ytdlp", query=query, rate=sr)
-
-            def _apply_ducking():
-                if wait_speech_engine and hasattr(wait_speech_engine, "player"):
-                    try:
-                        wait_speech_engine.player.fade_out(rate=0.10)
-                        logger.info("tts_fade_out_applied_for_music")
-                    except Exception as e:
-                        logger.debug("ducking_error", error=str(e))
-
-            _apply_ducking()
 
             # Signal that music frames are now actively playing
             self._music_active = True
@@ -451,16 +508,30 @@ class MusicPlayerService:
                 logger.debug("cache_container_init_failed", error=str(e))
                 cache_container = None
 
+            import queue
+            cache_q = queue.Queue(maxsize=500) if cache_container else None
+            def _disk_cache_worker():
+                if not cache_container or not cache_stream or not resampler:
+                    return
+                while True:
+                    try:
+                        f = cache_q.get()
+                        if f is None:
+                            break
+                        for rf in resampler.resample(f):
+                            for pkt in cache_stream.encode(rf):
+                                cache_container.mux(pkt)
+                        cache_q.task_done()
+                    except Exception:
+                        break
+
+            if cache_q:
+                threading.Thread(target=_disk_cache_worker, daemon=True, name="MusicDiskCache").start()
+
             def _stream_pump():
                 nonlocal cache_container, cache_stream, resampler
-                c_frames_written = 0
                 try:
-                    ducked_once = False
-                    vol = max(0.0, min(1.0, float(self._volume)))
                     for frame in container.decode(audio_stream):
-                        if not ducked_once:
-                            _apply_ducking()
-                            ducked_once = True
                         if paplay.poll() is not None or self._current_process != paplay:
                             break
                         raw = frame.to_ndarray()
@@ -472,7 +543,8 @@ class MusicPlayerService:
                         elif raw.shape[0] > 2:
                             raw = raw[:2, :]
 
-                        # Scale volume for playback
+                        # Read volume dynamically on every frame for instant response
+                        vol = max(0.0, min(1.0, float(self._volume)))
                         if raw.dtype == np.int16:
                             raw_play = (raw * vol).astype(np.int16)
                         else:
@@ -483,18 +555,20 @@ class MusicPlayerService:
                         except (BrokenPipeError, OSError):
                             break
 
-                        # Simultaneously cache clean audio to disk
-                        if cache_container and cache_stream and resampler:
+                        # Asynchronously send clean audio to background cache worker
+                        if cache_q:
                             try:
-                                for rf in resampler.resample(frame):
-                                    for pkt in cache_stream.encode(rf):
-                                        cache_container.mux(pkt)
-                                c_frames_written += 1
-                            except Exception:
+                                cache_q.put_nowait(frame)
+                            except queue.Full:
                                 pass
                 except Exception as e:
                     logger.debug("ytdlp_stream_pump_ended", error=str(e))
                 finally:
+                    if cache_q:
+                        try:
+                            cache_q.put(None)
+                        except Exception:
+                            pass
                     try:
                         if paplay.stdin:
                             paplay.stdin.close()
@@ -698,15 +772,19 @@ class MusicPlayerService:
                 return self.play_local(clean_q, wait_speech_engine=wait_speech_engine)
 
         # 3. Lookup metadata if online
+        target_title, target_artist = self._parse_query_target(clean_q)
         meta = self.lookup_spotify_metadata(clean_q) or self.lookup_metadata(clean_q)
-        track_title = clean_q
-        artist_name = ""
+        track_title = target_title.title()
+        artist_name = target_artist.title()
         if meta:
-            m_words = set(re.findall(r"\w+", (meta.get("title", "") + " " + meta.get("artist", "")).lower()))
-            q_terms = [w for w in re.findall(r"\w+", clean_q.lower()) if w not in {"play", "song", "music", "track", "by", "on", "the", "a"}]
-            if any(term in m_words for term in q_terms):
-                track_title = meta.get("title", clean_q)
-                artist_name = meta.get("artist", "")
+            t_words = set(re.findall(r"\w+", target_title.lower())) - {"play", "song", "music", "track", "by", "on", "the", "a", "an", "audio"}
+            m_words = set(re.findall(r"\w+", meta.get("title", "").lower()))
+            # Only adopt external title if at least one meaningful title keyword matches
+            if t_words and (t_words & m_words):
+                track_title = meta.get("title", track_title)
+                artist_name = meta.get("artist", artist_name)
+            elif not target_artist and meta.get("artist") and (t_words and (t_words & m_words)):
+                artist_name = meta.get("artist")
 
         resolved_name = f"{track_title} by {artist_name}" if artist_name else track_title
         query_encoded = urllib.parse.quote(clean_q)
@@ -732,6 +810,8 @@ class MusicPlayerService:
 
         self._current_track = resolved_name
         self._current_source = "ytdlp"
+        self._is_paused = False
+        self._record_history(track_title, artist_name, resolved_name, clean_q, "ytdlp")
         return {
             "status": "playing",
             "source": "ytdlp",
@@ -760,9 +840,19 @@ class MusicPlayerService:
             }
 
         # 1. Search Spotify for canonical track metadata
+        target_title, target_artist = self._parse_query_target(clean_q)
         meta = self.lookup_spotify_metadata(clean_q) or self.lookup_metadata(clean_q)
-        track_title = meta["title"] if meta else clean_q
-        artist_name = meta["artist"] if meta else ""
+        track_title = target_title.title()
+        artist_name = target_artist.title()
+        if meta:
+            t_words = set(re.findall(r"\w+", target_title.lower())) - {"play", "song", "music", "track", "by", "on", "the", "a", "an", "audio"}
+            m_words = set(re.findall(r"\w+", meta.get("title", "").lower()))
+            if t_words and (t_words & m_words):
+                track_title = meta.get("title", track_title)
+                artist_name = meta.get("artist", artist_name)
+            elif not target_artist and meta.get("artist") and (t_words and (t_words & m_words)):
+                artist_name = meta.get("artist")
+
         resolved_name = f"{track_title} by {artist_name}" if artist_name else track_title
         track_url = meta.get("url") if (meta and meta.get("url")) else f"https://open.spotify.com/search/{urllib.parse.quote(clean_q)}"
         track_uri = meta.get("uri") if meta else None
@@ -800,6 +890,8 @@ class MusicPlayerService:
 
                     self._current_track = resolved_name
                     self._current_source = "spotify_premium"
+                    self._is_paused = False
+                    self._record_history(track_title, artist_name, resolved_name, clean_q, "spotify_premium")
                     return {
                         "status": "playing",
                         "source": "spotify_premium",
@@ -830,6 +922,8 @@ class MusicPlayerService:
 
         self._current_track = resolved_name
         self._current_source = "spotify"
+        self._is_paused = False
+        self._record_history(track_title, artist_name, resolved_name, clean_q, "spotify")
         return {
             "status": "playing",
             "source": "spotify",
@@ -845,9 +939,17 @@ class MusicPlayerService:
     def play_soundcloud(self, query: str, wait_speech_engine: Any = None) -> dict[str, Any]:
         """Search SoundCloud for the exact track and play the full song with ducking."""
         clean_q = query.strip()
+        target_title, target_artist = self._parse_query_target(clean_q)
         meta = self.lookup_metadata(clean_q)
-        track_title = meta["title"] if meta else clean_q
-        artist_name = meta["artist"] if meta else ""
+        track_title = target_title.title()
+        artist_name = target_artist.title()
+        if meta:
+            t_words = set(re.findall(r"\w+", target_title.lower())) - {"play", "song", "music", "track", "by", "on", "the", "a", "an", "audio"}
+            m_words = set(re.findall(r"\w+", meta.get("title", "").lower()))
+            if t_words and (t_words & m_words):
+                track_title = meta.get("title", track_title)
+                artist_name = meta.get("artist", artist_name)
+
         resolved_name = f"{track_title} by {artist_name}" if artist_name else track_title
 
         query_encoded = urllib.parse.quote(clean_q)
@@ -858,7 +960,7 @@ class MusicPlayerService:
             self._play_stream_audio(
                 preview_url,
                 web_url=web_url,
-                full_query=resolved_name,
+                full_query=clean_q,
                 wait_speech_engine=wait_speech_engine,
             )
 
@@ -867,6 +969,8 @@ class MusicPlayerService:
 
         self._current_track = resolved_name
         self._current_source = "soundcloud"
+        self._is_paused = False
+        self._record_history(track_title, artist_name, resolved_name, clean_q, "soundcloud")
         return {
             "status": "playing",
             "source": "soundcloud",
@@ -913,20 +1017,64 @@ class MusicPlayerService:
         self._is_paused = True
         return {"status": "paused", "track": self._current_track, "message": "Music playback paused."}
 
-    def resume(self) -> dict[str, Any]:
-        """Resume playback."""
-        if self._current_process:
+    def resume(self, wait_speech_engine: Any = None) -> dict[str, Any]:
+        """Resume playback, or replay if the process was stopped or finished."""
+        if self._current_process and self._current_process.poll() is None:
             try:
                 import signal
                 os.kill(self._current_process.pid, signal.SIGCONT)
+                self._is_paused = False
+                return {"status": "resumed", "track": self._current_track, "message": f"Resumed playback of '{self._current_track}'."}
             except Exception:
                 pass
+
         self._is_paused = False
-        return {"status": "resumed", "track": self._current_track, "message": "Resumed music playback."}
+        # If process has terminated or was stopped, automatically replay the last track from history!
+        if self._history or (self._current_track and self._current_track != "None"):
+            logger.info("resume_falling_back_to_replay")
+            res = self.replay(wait_speech_engine=wait_speech_engine)
+            res["status"] = "resumed"
+            return res
+
+        return {"status": "error", "message": "No active or recent track to resume."}
+
+    def replay(self, query: str | None = None, wait_speech_engine: Any = None) -> dict[str, Any]:
+        """Replay the most recent song or a specific track from history."""
+        target_entry = None
+        if query and query.strip().lower() not in {"", "last", "again", "recent", "replay", "this song", "the song"}:
+            clean_q = query.strip().lower()
+            for h in self._history:
+                if clean_q in h.get("resolved_name", "").lower() or clean_q in h.get("query", "").lower() or clean_q in h.get("track", "").lower():
+                    target_entry = h
+                    break
+            if not target_entry:
+                return self.play_ytdlp(query, wait_speech_engine=wait_speech_engine)
+        elif self._history:
+            target_entry = self._history[0]
+        elif self._current_track and self._current_track != "None":
+            target_entry = {"query": self._current_track, "resolved_name": self._current_track}
+
+        if not target_entry:
+            return {"status": "error", "message": "No recently played songs in history to replay."}
+
+        song_query = target_entry.get("query") or target_entry.get("resolved_name")
+        logger.info("replaying_recent_song", song=target_entry.get("resolved_name"))
+        res = self.play_ytdlp(song_query, wait_speech_engine=wait_speech_engine)
+        res["message"] = f"Replaying '{target_entry.get('resolved_name', song_query)}'."
+        return res
+
+    def get_history(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return recently played tracks list."""
+        return self._history[:limit]
 
     def set_volume(self, volume: float) -> dict[str, Any]:
-        """Adjust playback volume between 0.0 and 1.0."""
+        """Adjust playback volume between 0.0 and 1.0, updating dynamic stream gain and system mixer."""
         self._volume = max(0.0, min(1.0, float(volume)))
+        try:
+            pct = int(self._volume * 100)
+            subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{pct}%"], capture_output=True, timeout=1.0)
+        except Exception as e:
+            logger.debug("pactl_volume_sync_failed", error=str(e))
         return {
             "status": "volume_set",
             "volume": self._volume,

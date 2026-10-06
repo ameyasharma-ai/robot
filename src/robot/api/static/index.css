@@ -542,13 +542,15 @@ body {
 
 /* ─── Main Viewport Grid ────────────────────────────────────────────── */
 .main-viewport {
-    flex: 1;
+    height: calc(100vh - 60px);
+    max-height: calc(100vh - 60px);
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 20px;
-    padding: 20px;
+    gap: 16px;
+    padding: 14px 18px;
     overflow: hidden;
     position: relative;
+    box-sizing: border-box;
 }
 
 body.mode-face .main-viewport {
@@ -898,9 +900,11 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 .dev-panel {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    overflow-y: auto;
-    padding-right: 4px;
+    justify-content: space-between;
+    gap: 12px;
+    height: 100%;
+    overflow: hidden;
+    padding-right: 0;
     z-index: 10;
 }
 
@@ -2215,6 +2219,19 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     color: #ffaa00 !important;
 }
 
+.chat-stat-pill.pill-gemini {
+    background: rgba(168, 85, 247, 0.14) !important;
+    border-color: rgba(168, 85, 247, 0.45) !important;
+    color: #e9d5ff !important;
+    box-shadow: 0 0 10px rgba(168, 85, 247, 0.25);
+}
+
+.chat-stat-pill.pill-local {
+    background: rgba(0, 255, 102, 0.08) !important;
+    border-color: rgba(0, 255, 102, 0.25) !important;
+    color: var(--matrix-green) !important;
+}
+
 /* ─── Chat Messages Thread Container ──────────────────────────────── */
 .chat-messages-container {
     flex: 1;
@@ -2390,24 +2407,63 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 
 .chat-bubble,
 .chat-msg-body {
-    max-width: 82%;
     border-radius: 14px;
-    padding: 14px 18px;
+    padding: 12px 16px;
     font-size: 0.94rem;
-    line-height: 1.65;
+    line-height: 1.6;
     word-break: break-word;
     position: relative;
+}
+
+.chat-msg-row.user .chat-msg-content,
+.chat-msg-row.msg-user .chat-msg-content {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    max-width: 82%;
+    width: auto;
+}
+
+.chat-msg-row.user .chat-msg-header,
+.chat-msg-row.msg-user .chat-msg-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-bottom: 4px;
 }
 
 .chat-msg-row.user .chat-bubble,
 .chat-msg-row.user .chat-msg-body,
 .chat-msg-row.msg-user .chat-bubble,
 .chat-msg-row.msg-user .chat-msg-body {
-    background: linear-gradient(135deg, rgba(0, 255, 102, 0.14), rgba(0, 242, 254, 0.08));
+    background: linear-gradient(135deg, rgba(0, 255, 102, 0.16), rgba(0, 242, 254, 0.10));
     border: 1px solid rgba(0, 255, 102, 0.35);
     border-top-right-radius: 4px;
     color: var(--text-main);
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+    width: fit-content;
+    max-width: 100%;
+    white-space: pre-wrap;
+    word-break: break-word;
+    text-align: left;
+}
+
+.chat-msg-row.assistant .chat-msg-content,
+.chat-msg-row.msg-assistant .chat-msg-content {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    max-width: 86%;
+    width: auto;
+}
+
+.chat-msg-row.assistant .chat-msg-header,
+.chat-msg-row.msg-assistant .chat-msg-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
 }
 
 .chat-msg-row.assistant .chat-bubble,
@@ -2419,7 +2475,9 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     border-top-left-radius: 4px;
     color: var(--text-main);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
-    max-width: 88%;
+    width: fit-content;
+    max-width: 100%;
+    word-break: break-word;
 }
 
 /* Tool Call Cards */
@@ -3067,6 +3125,19 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     font-weight: 600;
 }
 
+.chat-msg-badge.badge-gemini {
+    background: rgba(168, 85, 247, 0.16) !important;
+    border: 1px solid rgba(168, 85, 247, 0.45) !important;
+    color: #e9d5ff !important;
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.25);
+}
+
+.chat-msg-badge.badge-local {
+    background: rgba(0, 255, 102, 0.1) !important;
+    border: 1px solid rgba(0, 255, 102, 0.25) !important;
+    color: var(--matrix-green) !important;
+}
+
 .chat-msg-time {
     font-family: var(--font-mono);
     font-size: 0.68rem;
@@ -3189,4 +3260,486 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     font-size: 0.82rem;
     line-height: 1.5;
 }
+
+/* ─── Compact Top HUD Row: Continuous Perception + Hardware Observability ─── */
+.hud-top-row {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
+    height: 235px;
+    flex-shrink: 0;
+}
+
+.hud-top-row .card-vision {
+    flex: 1.35;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px;
+}
+
+.hud-top-row .card-hardware {
+    flex: 0.85;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px;
+}
+
+.hud-top-row .vision-grid {
+    display: grid;
+    grid-template-columns: 195px 1fr;
+    gap: 10px;
+    align-items: stretch;
+    flex: 1;
+    height: 100%;
+    min-height: 0;
+}
+
+.hud-top-row .camera-stream-box {
+    width: 100%;
+    min-width: 160px;
+    max-width: 210px;
+    height: 100%;
+}
+
+.hud-top-row .world-state-yaml {
+    height: 100%;
+    padding: 8px 10px;
+    overflow: hidden;
+}
+
+.hud-top-row .world-state-yaml pre {
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+.hud-top-row .hardware-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    flex: 1;
+    align-content: center;
+    padding: 4px 0;
+}
+
+.hud-top-row .hardware-grid .hw-item:last-child {
+    grid-column: span 2;
+}
+
+.hud-top-row .hw-item {
+    padding: 6px 8px;
+}
+
+.hud-top-row .hw-lbl {
+    font-size: 8.5px;
+    margin-bottom: 2px;
+}
+
+.hud-top-row .hw-val {
+    font-size: 12px;
+}
+
+/* ─── HUD Bottom Split: Latency Targets on Left, Image Studio on Right ─── */
+.hud-bottom-split {
+    display: grid;
+    grid-template-columns: 1.12fr 0.88fr;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+}
+
+.hud-bottom-split .card-metrics {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 12px 14px;
+    min-height: 0;
+    margin-bottom: 0;
+    height: 100%;
+}
+
+.hud-bottom-split .card-metrics .card-header {
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+}
+
+.integrated-pipeline-flow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 3px;
+    padding: 4px 6px;
+    margin: 4px 0;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(0, 255, 102, 0.12);
+    border-radius: 8px;
+}
+
+.integrated-pipeline-flow .pipe-node {
+    padding: 3px 6px;
+    min-width: 44px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.integrated-pipeline-flow .pipe-node .node-name {
+    font-size: 8px;
+}
+
+.integrated-pipeline-flow .pipe-node .node-status {
+    font-size: 7.5px;
+    margin-top: 1px;
+}
+
+.integrated-pipeline-flow .pipe-arrow {
+    font-size: 8px;
+    color: var(--text-dim);
+}
+
+.hud-bottom-split .card-metrics .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+
+.hud-bottom-split .card-metrics .metric-box {
+    padding: 5px 8px;
+}
+
+.hud-bottom-split .card-metrics .m-lbl {
+    font-size: 8px;
+}
+
+.hud-bottom-split .card-metrics .m-val {
+    font-size: 13px;
+    margin: 1px 0 3px 0;
+}
+
+/* ─── Asynchronous Image Generation Studio in Bottom HUD ─── */
+.card-image-studio {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px;
+    height: 100%;
+    min-height: 0;
+    margin-bottom: 0;
+    background: rgba(4, 14, 8, 0.75);
+    border: 1px solid rgba(0, 255, 102, 0.22);
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.card-image-studio .card-header {
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.12);
+}
+
+.card-image-studio .card-title {
+    font-size: 11px;
+    letter-spacing: 0.8px;
+}
+
+.card-image-studio .image-gen-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-height: 0;
+}
+
+.card-image-studio .image-input-row {
+    display: flex;
+    gap: 6px;
+}
+
+.card-image-studio .img-prompt-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(0, 255, 102, 0.3);
+    border-radius: 6px;
+    color: var(--text-main);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 5px 10px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.card-image-studio .img-prompt-input:focus {
+    border-color: var(--matrix-bright);
+    box-shadow: 0 0 8px rgba(0, 255, 102, 0.3);
+}
+
+.card-image-studio .img-gen-btn,
+.card-image-studio .img-cancel-btn {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.5px;
+}
+
+.card-image-studio .img-gen-btn {
+    background: linear-gradient(135deg, rgba(0, 255, 102, 0.25), rgba(0, 242, 254, 0.2));
+    border: 1px solid rgba(0, 255, 102, 0.5);
+    color: var(--matrix-bright);
+}
+
+.card-image-studio .img-gen-btn:hover:not(:disabled) {
+    background: rgba(0, 255, 102, 0.4);
+    box-shadow: 0 0 10px rgba(0, 255, 102, 0.5);
+}
+
+.card-image-studio .img-gen-btn.generating {
+    animation: btnPulse 1.2s infinite;
+}
+
+.card-image-studio .img-cancel-btn {
+    background: rgba(255, 0, 68, 0.15);
+    border: 1px solid rgba(255, 0, 68, 0.35);
+    color: #ff4d6d;
+}
+
+.card-image-studio .img-cancel-btn:hover:not(:disabled) {
+    background: rgba(255, 0, 68, 0.3);
+}
+
+.card-image-studio .image-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.card-image-studio .img-ctrl-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.card-image-studio .img-select,
+.card-image-studio .img-steps-input {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    border-radius: 4px;
+    color: var(--matrix-bright);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 2px 6px;
+}
+
+.card-image-studio .img-progress-wrap {
+    flex: 1;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.card-image-studio .img-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, var(--matrix-green), var(--primary-cyan));
+    transition: width 0.25s ease;
+}
+
+/* Image Preview Area - Fixed height box so layout NEVER shifts during synthesis */
+.card-image-studio .image-preview-area {
+    flex: 1;
+    min-height: 130px;
+    max-height: 180px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px dashed rgba(0, 255, 102, 0.2);
+    border-radius: 8px;
+    overflow: hidden;
+    padding: 6px;
+}
+
+.card-image-studio .img-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-align: center;
+    padding: 8px;
+}
+
+.card-image-studio .img-placeholder-icon {
+    font-size: 22px;
+    opacity: 0.6;
+}
+
+.card-image-studio #imgGeneratingStatus {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px;
+    font-family: var(--font-mono);
+}
+
+.card-image-studio .img-spinner {
+    width: 28px;
+    height: 28px;
+    border: 3px solid rgba(0, 255, 102, 0.15);
+    border-top-color: var(--matrix-bright);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+.card-image-studio .img-status-info {
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+
+.card-image-studio .img-status-title {
+    font-weight: 700;
+    color: var(--matrix-bright);
+    margin-bottom: 2px;
+}
+
+.card-image-studio #imgPreviewImg {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+}
+
+.card-image-studio #imgMetaBlock {
+    margin-top: 4px;
+    width: 100%;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+}
+
+.card-image-studio .img-meta-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.card-image-studio .img-meta-row b {
+    color: var(--primary-cyan);
+}
+
+/* ─── Chat Quick Chips: Available Tools ─── */
+.chat-quick-chips {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+}
+
+.chat-quick-chips::-webkit-scrollbar {
+    display: none;
+}
+
+.chat-chips-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    color: var(--primary-cyan);
+    white-space: nowrap;
+    margin-right: 4px;
+}
+
+.chat-chips-label .pulse-dot {
+    width: 6px;
+    height: 6px;
+    background: var(--primary-cyan);
+    border-radius: 50%;
+    animation: pulseGlow 1.5s infinite;
+}
+
+.chat-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: rgba(0, 255, 102, 0.06);
+    border: 1px solid rgba(0, 255, 102, 0.22);
+    border-radius: 14px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.chat-chip:hover {
+    background: rgba(0, 255, 102, 0.16);
+    border-color: var(--matrix-bright);
+    color: var(--matrix-bright);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 10px rgba(0, 255, 102, 0.25);
+}
+
+/* ─── Responsive Adjustments Across All Screen Sizes ─── */
+@media (max-width: 1200px) {
+    .hud-top-row {
+        flex-direction: column;
+        height: auto;
+    }
+
+    .hud-top-row .card-vision,
+    .hud-top-row .card-hardware {
+        width: 100%;
+        height: auto;
+    }
+
+    .hud-bottom-split {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+
+    .hud-bottom-split .card-metrics,
+    .hud-bottom-split .card-image-studio {
+        min-height: 280px;
+        height: auto;
+    }
+}
+
+@media (max-width: 768px) {
+    .hud-bottom-split .card-metrics .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .chat-msg-row.user .chat-msg-content,
+    .chat-msg-row.msg-user .chat-msg-content,
+    .chat-msg-row.assistant .chat-msg-content,
+    .chat-msg-row.msg-assistant .chat-msg-content {
+        max-width: 95%;
+    }
+
+    .chat-quick-chips {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+    }
+}
+
 

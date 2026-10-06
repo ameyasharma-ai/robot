@@ -270,11 +270,18 @@ async def test_music_player_service():
     assert sc_res["source"] == "soundcloud"
     assert "synthwave" in sc_res["url"]
 
-    # Controls
+    # Controls & Status
+    status = svc.get_status()
+    assert isinstance(status, dict)
+    assert "is_playing" in status
+    assert "current_track" in status
+    assert "volume" in status
     assert svc.pause()["status"] == "paused"
+    assert svc.get_status()["is_paused"] is True
     assert svc.resume()["status"] == "resumed"
     assert svc.set_volume(0.5)["volume"] == 0.5
     assert svc.stop()["status"] == "stopped"
+    assert svc.get_status()["is_playing"] is False
 
 
 def test_tool_skill_manager():
@@ -353,6 +360,92 @@ async def test_personality_persistence_and_memory_clear_turn():
     finally:
         if os.path.exists(db_path):
             os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_music_history_replay_and_title_preservation():
+    from robot.tools.builtins.music import MusicPlayerService
+    svc = MusicPlayerService()
+
+    # 1. Title preservation: querying "paranoid by juice wrld" should not be replaced with "No Good"
+    res1 = svc.play_ytdlp("paranoid by juice wrld")
+    assert "Paranoid" in res1["resolved_name"]
+    assert "No Good" not in res1["resolved_name"]
+    svc.stop()
+
+    # 2. History tracking: recently played history should contain the track
+    history = svc.get_history(5)
+    assert len(history) >= 1
+    assert "Paranoid" in history[0]["resolved_name"]
+
+    # 3. Status reflection
+    status = svc.get_status()
+    assert "history" in status
+    assert len(status["history"]) >= 1
+
+    # 4. Auto Replay & Smart Resume
+    replay_res = svc.replay()
+    assert replay_res["status"] == "playing"
+    assert "Paranoid" in replay_res["resolved_name"]
+    svc.stop()
+
+    # Resume when stopped should auto-replay from history
+    resume_res = svc.resume()
+    assert resume_res["status"] == "resumed"
+    assert "Paranoid" in resume_res["resolved_name"]
+    svc.stop()
+
+
+def test_tool_router_music_and_volume_keywords():
+    """Verify ToolRouter matches music and volume actions reliably."""
+    from robot.tools import ToolRegistry, ToolRouter
+    from robot.tools.builtins import register_builtin_tools
+    from unittest.mock import MagicMock
+
+    engine = MagicMock()
+    tr = ToolRegistry()
+    engine.tool_registry = tr
+    register_builtin_tools(engine)
+    router = ToolRouter(tr)
+
+    for q in [
+        "set the volume to 20%",
+        "what song did you last play?",
+        "play it again",
+        "play that song again on youtube",
+        "turn it down",
+        "mute",
+        "louder",
+        "stop the song",
+        "resume the song",
+    ]:
+        selected = router.select_tools(q)
+        assert any("music" in name for name in selected), f"Failed to route music tools for: {q}"
+
+
+@pytest.mark.asyncio
+async def test_music_play_relative_replay():
+    """Verify music.play auto-delegates 'that song again' to replay."""
+    from robot.tools import ToolRegistry
+    from robot.tools.builtins import register_builtin_tools, MusicPlayerService
+    from unittest.mock import MagicMock
+
+    engine = MagicMock()
+    tr = ToolRegistry()
+    engine.tool_registry = tr
+    register_builtin_tools(engine)
+
+    svc = MusicPlayerService.get_instance()
+    svc._history = [{"resolved_name": "Cornelia Street", "source": "ytdlp", "query": "cornelia street"}]
+
+    play_tool = tr.get("music.play")
+    assert play_tool is not None
+
+    res = await play_tool.handler(query="that song again on youtube")
+    assert res.get("status") in {"playing", "resumed"}
+    svc.stop()
+
+
 
 
 

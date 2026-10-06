@@ -53,7 +53,8 @@ class AudioCapture:
         crashes when PipeWire is down and ALSA rejects non-native rates.
         """
         self._loop = loop
-        self._queue = asyncio.Queue()
+        if self._queue is None:
+            self._queue = asyncio.Queue()
 
         # Try sample rates in preference order
         rates_to_try = [self.sample_rate]
@@ -126,23 +127,32 @@ class AudioCapture:
         return _callback
 
     def pause(self) -> None:
-        """Pause audio input capture and release/stop the microphone stream."""
-        if self._stream and not self._stream.stopped:
+        """Pause audio input capture, close stream, and release hardware microphone."""
+        if self._stream is not None:
             try:
                 self._stream.stop()
-                logger.info("capture_stream_paused")
+                self._stream.close()
             except Exception as e:
                 logger.debug("capture_stream_pause_error", error=str(e))
+            self._stream = None
+            logger.info("capture_stream_paused_and_hardware_released")
         self._pre_roll.clear()
 
     def resume(self) -> None:
-        """Resume audio input capture and restart microphone stream."""
-        if self._stream and self._stream.stopped and not getattr(self._stream, "closed", False):
+        """Resume audio input capture and recreate microphone stream."""
+        if self._stream is None:
+            try:
+                if self._loop:
+                    self.start(self._loop)
+                    logger.info("capture_stream_resumed")
+            except Exception as e:
+                logger.warning("capture_stream_resume_error", error=str(e))
+        elif self._stream.stopped:
             try:
                 self._stream.start()
-                logger.info("capture_stream_resumed")
+                logger.info("capture_stream_restarted")
             except Exception as e:
-                logger.debug("capture_stream_resume_error", error=str(e))
+                logger.debug("capture_stream_restart_error", error=str(e))
 
     @property
     def is_paused(self) -> bool:

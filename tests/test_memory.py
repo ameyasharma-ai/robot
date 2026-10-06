@@ -79,3 +79,67 @@ async def test_memory_manager_get_relevant_memories_formats(tmp_db):
     formatted = _format_memories(results, budget_tokens=500)
     assert "User loves Python" in formatted
     assert "Direct text string memory" in formatted
+
+
+@pytest.mark.asyncio
+async def test_history_search_broad_queries_and_deduplication(tmp_db):
+    history = ConversationHistory(tmp_db)
+    await history.initialize()
+
+    # Add multiple near-duplicate facts and distinct facts
+    await history.add_fact("Ameya's crush is Anubha Anand", user_id="user")
+    await history.add_fact("Ameya's crush is Anubha Anand, and he finds her cold", user_id="user")
+    await history.add_fact("User favorite food is spicy chicken ramen", user_id="user")
+    await history.add_fact("User favorite color is electric blue", user_id="user")
+
+    # Broad query: should retrieve distinct facts without redundant crush duplicates
+    results = await history.search_facts("What durable facts and memories do you have saved about me?", user_id="user", limit=5)
+    assert len(results) >= 2
+    memories = [r["memory"] for r in results]
+    # Check that diverse facts are retrieved
+    assert any("ramen" in m for m in memories)
+    assert any("blue" in m for m in memories)
+    assert any("Anubha" in m for m in memories)
+    # Check that crush is not duplicated multiple times
+    anubha_matches = [m for m in memories if "Anubha" in m]
+    assert len(anubha_matches) == 1
+
+    # query="all" should also return all distinct facts
+    all_res = await history.search_facts("all", user_id="user", limit=10)
+    assert len(all_res) >= 3
+
+
+@pytest.mark.asyncio
+async def test_memory_all_and_search_tool_execution(tmp_db):
+    from unittest.mock import MagicMock
+    from robot.tools import ToolRegistry, PermissionManager
+    from robot.tools.builtins import register_builtin_tools
+    from robot.memory import MemoryManager
+
+    mem = MemoryManager({}, tmp_db)
+    await mem.history.initialize()
+    await mem.history.add_fact("Ameya lives in Mumbai", user_id="default")
+    await mem.history.add_fact("Ameya favorite food is ramen", user_id="default")
+
+    mock_engine = MagicMock()
+    mock_engine.tool_registry = ToolRegistry()
+    mock_engine.memory = mem
+    mock_engine.personalities.active = MagicMock(memory_namespace="default")
+
+    register_builtin_tools(mock_engine)
+
+    # Verify memory.all tool is registered
+    tool_all = mock_engine.tool_registry.get("memory.all")
+    assert tool_all is not None
+
+    res_all = await tool_all.handler(limit=10)
+    assert len(res_all) == 2
+    facts = [f["fact"] for f in res_all]
+    assert "Ameya lives in Mumbai" in facts
+    assert "Ameya favorite food is ramen" in facts
+
+    # Verify memory.search with query="all" or empty string
+    tool_search = mock_engine.tool_registry.get("memory.search")
+    res_search = await tool_search.handler(query="all")
+    assert len(res_search) == 2
+
