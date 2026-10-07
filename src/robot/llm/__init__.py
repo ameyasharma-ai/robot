@@ -35,11 +35,34 @@ class LLMProvider(ABC):
 
 
 def parse_qwen_tool_call_block(block: str) -> list[dict]:
-    """Parse Qwen-style XML or JSON tool calls from a <tool_call> block."""
+    """Parse Qwen-style XML or JSON tool calls from a <tool_call> or [tools] block."""
     import time as _time
     content = re.sub(r"</?tool_call>", "", block).strip()
+    if content.startswith("[tools]"):
+        content = content[len("[tools]"):].strip()
     if not content:
         return []
+
+    # Check for multiple JSON tool call candidates: {"name": ..., ...}
+    json_candidates = re.findall(r"\{\s*\"name\"\s*:\s*\"[^\"]+\"[^}]*\}", content, re.DOTALL)
+    if json_candidates:
+        parsed_calls = []
+        for cand in json_candidates:
+            try:
+                d = json.loads(cand)
+                fn = d.get("name") or d.get("function", "")
+                args = d.get("arguments", {})
+                if fn:
+                    parsed_calls.append({
+                        "id": f"call_{int(_time.time()*1000)}_{len(parsed_calls)}",
+                        "type": "function",
+                        "function": {"name": fn, "arguments": json.dumps(args) if isinstance(args, dict) else str(args)},
+                    })
+            except Exception:
+                pass
+        if parsed_calls:
+            return parsed_calls
+
     if content.startswith("{") and content.endswith("}"):
         try:
             d = json.loads(content)
@@ -123,10 +146,13 @@ class LlamaServerLLM(LLMProvider):
                             # Auto-recovery for context overflow: strip tools and prune older messages
                             if response.status_code == 400 and ("exceeds" in err_str or "context" in err_str):
                                 logger.warning("llm_context_overflow_recovery", attempt=attempt)
+                                msgs = payload.get("messages", [])
+                                if len(msgs) > 2:
+                                    payload["messages"] = [msgs[0], msgs[-1]]
+                                    if attempt < max_retries:
+                                        continue
                                 if "tools" in payload:
                                     del payload["tools"]
-                                if len(payload.get("messages", [])) > 2:
-                                    payload["messages"] = [payload["messages"][0], payload["messages"][-1]]
                                 if attempt < max_retries:
                                     continue
                             yield "I encountered an error connecting to my local inference model."

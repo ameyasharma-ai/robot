@@ -29,7 +29,7 @@ def register_motion_tools(engine: "RobotEngine") -> None:
         **kwargs,
     ) -> dict[str, Any]:
         """Execute a validated semantic movement on the 3D character and future physical robot."""
-        eff_action = action or kwargs.get("gesture") or kwargs.get("motion") or kwargs.get("name") or kwargs.get("type") or "nod"
+        eff_action = action or kwargs.get("gesture") or kwargs.get("motion") or kwargs.get("name") or kwargs.get("type") or kwargs.get("value") or "nod"
         eff_side = side or kwargs.get("hand") or kwargs.get("arm")
         eff_emotion = emotion or kwargs.get("mood")
         req = {

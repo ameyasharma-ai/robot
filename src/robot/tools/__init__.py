@@ -56,6 +56,41 @@ class ToolDefinition:
 class ToolRegistry:
     """Central tool registration and lookup."""
 
+    ALIASES: dict[str, str] = {
+        "web_search": "web.search",
+        "web-search": "web.search",
+        "search": "web.search",
+        "google": "web.search",
+        "web_deep_search": "web.deep_search",
+        "motion": "character.execute_action",
+        "gesture": "character.execute_action",
+        "action": "character.execute_action",
+        "execute_action": "character.execute_action",
+        "stop_motion": "character.stop",
+        "music_play": "music.play",
+        "play_music": "music.play",
+        "music_control": "music.control",
+        "control_music": "music.control",
+        "volume": "music.control",
+        "music_status": "music.status",
+        "music_history": "music.history",
+        "music_equalizer": "music.equalizer",
+        "equalizer": "music.equalizer",
+        "calculator": "system.calculate",
+        "calculate": "system.calculate",
+        "hardware": "system.hardware",
+        "camera_snapshot": "perception.snapshot",
+        "snapshot": "perception.snapshot",
+        "world_state": "perception.world_state",
+        "what_do_you_see": "perception.what_do_you_see",
+        "vision": "perception.what_do_you_see",
+        "see": "perception.what_do_you_see",
+        "generate_image": "image.generate",
+        "create_image": "image.generate",
+        "wikipedia": "knowledge.wikipedia",
+        "wiki": "knowledge.wikipedia",
+    }
+
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
 
@@ -64,7 +99,15 @@ class ToolRegistry:
         logger.info("tool_registered", name=tool.name, family=tool.family)
 
     def get(self, name: str) -> ToolDefinition | None:
-        return self._tools.get(name)
+        if name in self._tools:
+            return self._tools[name]
+        canonical = self.ALIASES.get(name) or self.ALIASES.get(name.lower())
+        if canonical and canonical in self._tools:
+            return self._tools[canonical]
+        dotted = name.replace("_", ".")
+        if dotted in self._tools:
+            return self._tools[dotted]
+        return None
 
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())
@@ -180,12 +223,17 @@ class ToolRouter:
                         break
 
         # If chaining conjunctions are detected and at least one tool family matched,
-        # ensure all potentially relevant tools for multi-step reasoning are available.
+        # add any families referenced in the chained sub-clauses without returning ALL tools blindly
         has_chaining = any(conj in text_lower for conj in self.CHAINING_CONJUNCTIONS)
         if has_chaining and selected_families:
-            # If multiple actions requested in sequence, include all registered tools so model can plan full chain
-            if len(selected_families) >= 2 or any(w in text_lower for w in ["check", "play", "set", "volume", "look", "do", "wave", "search", "tell", "also"]):
-                return self._registry.list_tools()
+            if any(w in text_lower for w in ["look", "see", "camera", "inspect", "check"]):
+                selected_families.add("perception")
+            if any(w in text_lower for w in ["play", "song", "music", "volume", "sound", "track", "restart", "vol"]):
+                selected_families.add("music")
+            if any(w in text_lower for w in ["search", "find", "online", "web", "date", "when", "google"]):
+                selected_families.add("web")
+            if any(w in text_lower for w in ["wave", "gesture", "motion", "walk", "kick", "lean", "lean_in", "hand"]):
+                selected_families.add("motion")
 
         if not selected_families:
             return []

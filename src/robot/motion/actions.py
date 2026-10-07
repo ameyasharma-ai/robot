@@ -88,6 +88,20 @@ def validate_action(action_dict: dict[str, Any]) -> tuple[bool, Optional[Semanti
         return False, None, "Missing or invalid 'action' name"
 
     name = name.lower().strip()
+    action_aliases = {
+        "lean_in": "think",
+        "lean_forward": "think",
+        "listening": "nod",
+        "listen": "nod",
+        "yes": "nod",
+        "no": "shake_head",
+        "look": "look_at",
+        "wave_hand": "wave",
+        "raise_arm": "raise_hand",
+    }
+    if name in action_aliases:
+        name = action_aliases[name]
+
     valid_actions = {
         "idle",
         "raise_hand",
