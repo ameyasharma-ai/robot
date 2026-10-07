@@ -33,7 +33,7 @@ from robot.observability.models import SpanStatus
 from robot.personality import PersonalityManager
 from robot.perception import CameraCapture, PerceptionEngine
 from robot.services import HealthMonitor
-from robot.stt import WhisperServerSTT
+from robot.stt import StreamingSTT, WhisperServerSTT
 from robot.telemetry import Telemetry, Timer, get_logger, setup_logging
 from robot.tools import (
     CoordinatorState,
@@ -212,6 +212,11 @@ class RobotEngine:
             url=stt_cfg.get("url", "http://127.0.0.1:8081/inference"),
             language=stt_cfg.get("language", "en"),
             temperature=stt_cfg.get("temperature", 0.0),
+        )
+        self.streaming_stt = StreamingSTT(
+            provider=self.stt,
+            sample_rate=self.config.get("audio", {}).get("sample_rate", 16000),
+            chunk_seconds=stt_cfg.get("chunk_seconds", 2.0),
         )
 
         # TTS
@@ -733,17 +738,43 @@ class RobotEngine:
                     if not is_speaking:
                         is_speaking = True
                         was_barge_in = False
-                        audio_buffer = list(self.capture.get_pre_roll())
+                        pre_roll = list(self.capture.get_pre_roll())
+                        audio_buffer = list(pre_roll)
+                        self.streaming_stt.start()
+                        self.streaming_stt.feed_frame(pre_roll)
                         await self.state.set_mode(RobotMode.LISTENING)
 
                 if is_speaking:
                     audio_buffer.extend(frame.flatten().tolist())
                     silence_frames = 0
+                    chunk_task = self.streaming_stt.feed_frame(frame)
+                    if chunk_task is not None:
+                        async def _emit_partial(t=chunk_task):
+                            try:
+                                await t
+                                p = self.streaming_stt.get_partial_transcript()
+                                if p:
+                                    await self.events.emit("partial_transcript", partial_transcript=p)
+                            except Exception:
+                                pass
+                        asyncio.create_task(_emit_partial())
             else:
                 barge_in_consecutive = max(0, barge_in_consecutive - 1)
                 if is_speaking:
                     audio_buffer.extend(frame.flatten().tolist())
                     silence_frames += 1
+                    chunk_task = self.streaming_stt.feed_frame(frame)
+                    if chunk_task is not None:
+                        async def _emit_partial_silence(t=chunk_task):
+                            try:
+                                await t
+                                p = self.streaming_stt.get_partial_transcript()
+                                if p:
+                                    await self.events.emit("partial_transcript", partial_transcript=p)
+                            except Exception:
+                                pass
+                        asyncio.create_task(_emit_partial_silence())
+
                     if silence_frames >= silence_threshold:
                         end_time = time.time()
                         is_speaking = False
@@ -772,7 +803,13 @@ class RobotEngine:
                                 )
 
                                 with Timer(self.telemetry, "STT_FINAL_LATENCY"):
-                                    text = await self.stt.transcribe(audio_np, sample_rate)
+                                    if len(audio_buffer) >= int(sample_rate * 2.0):
+                                        text = await self.streaming_stt.finalize()
+                                        if not text:
+                                            text = await self.stt.transcribe(audio_np, sample_rate)
+                                    else:
+                                        self.streaming_stt.reset()
+                                        text = await self.stt.transcribe(audio_np, sample_rate)
 
                                 if text:
                                     stt_ms = self.telemetry.get_metric("STT_FINAL_LATENCY").last
@@ -1424,22 +1461,45 @@ class RobotEngine:
         active_pers = self.personalities.active
         ns = getattr(active_pers, "memory_namespace", active_pers_name)
 
+        is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
+
         # 1. Fetch recent conversation history strictly isolated to target_session
         recent_history = []
         if self.memory:
-            recent_history = await self.memory.get_recent_conversation(target_session, limit=12)
+            recent_limit = 20 if is_gemini else 6
+            recent_history = await self.memory.get_recent_conversation(target_session, limit=recent_limit)
+            if not is_gemini and recent_history:
+                compacted_recent = []
+                for turn in recent_history[-3:]:
+                    c = turn.get("content", "")
+                    if turn.get("role") == "assistant" and len(c) > 200:
+                        compacted_recent.append({"role": "assistant", "content": c[:200] + "..."})
+                    else:
+                        compacted_recent.append(turn)
+                recent_history = compacted_recent
 
         # 2. Shared persistent memory across all instances and voice
         retrieved_memories = []
+        all_facts = None
+        conversation_archive = None
         if self.memory:
-            retrieved_memories = await self.memory.get_relevant_memories(text, user_id=ns, limit=5)
+            memory_limit = 20 if is_gemini else 5
+            retrieved_memories = await self.memory.get_relevant_memories(text, user_id=ns, limit=memory_limit)
+            try:
+                all_facts = await self.memory.get_all_facts(user_id=ns, limit=100 if is_gemini else 5)
+            except Exception:
+                all_facts = None
+            if is_gemini:
+                try:
+                    conversation_archive = await self.memory.get_conversation_archive(limit=150, exclude_session_id=target_session)
+                except Exception:
+                    conversation_archive = None
 
         # 3. World state grounding
         world_compact = None
         if hasattr(self, "perception") and self.perception:
             world_compact = self.perception.world_state.to_compact()
 
-        is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
         pers_prompt = (
             active_pers.system_prompt
             if active_pers and getattr(active_pers, "system_prompt", None)
@@ -1449,7 +1509,9 @@ class RobotEngine:
             system_prompt=pers_prompt,
             user_text=text,
             recent_conversation=recent_history,
+            conversation_archive=conversation_archive,
             memories=retrieved_memories,
+            all_facts=all_facts,
             world_state=world_compact,
             high_intelligence=is_gemini,
         )

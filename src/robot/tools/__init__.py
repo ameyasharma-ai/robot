@@ -105,8 +105,17 @@ class ToolRouter:
     FAMILY_KEYWORDS: dict[str, list[str]] = {
         "memory": ["remember", "recall", "forget", "memory", "memories", "facts", "fact", "durable facts", "preference", "favorite", "crush", "keep in mind", "store", "who is", "who's", "what is my", "did i tell you", "what was", "know about me", "remember about me", "saved about me", "all memories", "all facts"],
         "history": ["what did you say", "what did i say", "past conversation", "yesterday", "last time", "earlier conversation"],
-        "system": ["system status", "robot status", "system health", "system uptime", "restart service", "what time", "what's the time", "current time", "what day", "what date", "clock"],
+        "system": [
+            "system status", "robot status", "system health", "system uptime", "restart service",
+            "what time", "what's the time", "current time", "what day", "what date", "clock",
+            "calculate", "calculator", "math", "sqrt", "multiply", "divide", "plus", "minus", "sum", "equation", "formula",
+            "hardware", "cpu", "gpu", "vram", "ram", "memory usage", "disk", "temperature", "specs"
+        ],
         "personality": ["switch personality", "change personality", "switch character", "change character", "switch mode"],
+        "knowledge": [
+            "wikipedia", "wiki", "who was", "who is", "what is", "tell me about", "history of",
+            "explain the", "biography", "biography of", "encyclopedia", "concept of", "theory of"
+        ],
         "web": ["search online", "search web", "look up", "find online", "browse web", "google", "duckduckgo", "latest news", "price of", "release date", "current weather", "weather in", "sports score", "stock price", "specs of", "specifications", "deep search", "search deeply"],
         "music": [
             "play", "song", "music", "track", "spotify", "soundcloud", "youtube", "ytdlp", "listen to", "put on",
@@ -213,6 +222,7 @@ class PermissionManager:
             "timezone_str": ["timezone", "tz", "country", "city", "location", "place", "region"],
             "source": ["platform", "src", "provider", "music_source"],
             "volume": ["vol", "level", "val"],
+            "expression": ["expr", "calc", "formula", "math", "equation"],
         }
 
         try:

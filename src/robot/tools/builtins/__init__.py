@@ -446,6 +446,172 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
+    # --- Wikipedia Knowledge Tool ---
+    async def wikipedia_lookup(query: str) -> dict:
+        """Lookup encyclopedic summary and facts from Wikipedia."""
+        import urllib.parse
+        clean_q = query.strip()
+        encoded = urllib.parse.quote(clean_q)
+        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
+        headers = {"User-Agent": "AntigravityRobot/2.0 (open-source; educational-robotics)"}
+
+        try:
+            import requests
+
+            def _fetch():
+                return requests.get(url, headers=headers, timeout=4.0)
+
+            resp = await asyncio.to_thread(_fetch)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "found": True,
+                    "title": data.get("title", clean_q),
+                    "description": data.get("description", ""),
+                    "summary": data.get("extract", ""),
+                    "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                }
+            elif resp.status_code == 404:
+                search_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={encoded}&limit=1&namespace=0&format=json"
+
+                def _s_fetch():
+                    return requests.get(search_url, headers=headers, timeout=4.0)
+
+                s_resp = await asyncio.to_thread(_s_fetch)
+                if s_resp.status_code == 200:
+                    s_data = s_resp.json()
+                    if len(s_data) >= 2 and s_data[1]:
+                        alt_title = s_data[1][0]
+                        alt_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(alt_title)}"
+                        r2 = await asyncio.to_thread(lambda: requests.get(alt_url, headers=headers, timeout=4.0))
+                        if r2.status_code == 200:
+                            d2 = r2.json()
+                            return {
+                                "found": True,
+                                "title": d2.get("title", alt_title),
+                                "description": d2.get("description", ""),
+                                "summary": d2.get("extract", ""),
+                                "url": d2.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                            }
+        except Exception as e:
+            return {"found": False, "error": str(e), "query": clean_q}
+        return {"found": False, "message": f"No Wikipedia article found for '{clean_q}'"}
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="knowledge.wikipedia",
+            description="Lookup encyclopedic knowledge, historical events, scientific concepts, or biographies on Wikipedia",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The topic, entity, person, or concept to look up on Wikipedia"},
+                },
+                "required": ["query"],
+            },
+            handler=wikipedia_lookup,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="knowledge",
+            timeout_s=6.0,
+        )
+    )
+
+    # --- Math & Calculation Tool ---
+    async def system_calculate(expression: str) -> dict:
+        """Safely calculate mathematical and scientific expressions without hallucinating."""
+        import math
+
+        safe_dict = {
+            "abs": abs, "round": round, "min": min, "max": max, "sum": sum, "pow": pow,
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "log": math.log, "log10": math.log10, "exp": math.exp,
+            "pi": math.pi, "e": math.e, "ceil": math.ceil, "floor": math.floor,
+        }
+        clean_expr = expression.strip().replace("^", "**").replace("×", "*").replace("÷", "/")
+        try:
+            code = compile(clean_expr, "<string>", "eval")
+            for name in code.co_names:
+                if name not in safe_dict:
+                    return {"status": "error", "message": f"Disallowed function or symbol: '{name}'"}
+            result = eval(code, {"__builtins__": {}}, safe_dict)
+            return {"status": "success", "expression": expression, "result": result}
+        except Exception as e:
+            return {"status": "error", "expression": expression, "error": str(e)}
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="system.calculate",
+            description="Calculate mathematical, trigonometric, and scientific expressions accurately without hallucination",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "expression": {"type": "string", "description": "Mathematical expression to evaluate (e.g. 'sqrt(144) + 15 * 3')"},
+                },
+                "required": ["expression"],
+            },
+            handler=system_calculate,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="system",
+        )
+    )
+
+    # --- Hardware Telemetry Tool ---
+    async def system_hardware() -> dict:
+        """Get live hardware performance telemetry (CPU, RAM, Disk, RTX 3050 GPU VRAM)."""
+        import psutil
+        import shutil
+
+        cpu_pct = psutil.cpu_percent(interval=None)
+        ram = psutil.virtual_memory()
+        disk = shutil.disk_usage("/")
+
+        hw_info: dict = {
+            "cpu": {
+                "utilization_percent": cpu_pct,
+                "cores": psutil.cpu_count(logical=True),
+            },
+            "ram": {
+                "total_gb": round(ram.total / (1024**3), 2),
+                "used_gb": round(ram.used / (1024**3), 2),
+                "free_gb": round(ram.available / (1024**3), 2),
+                "percent": ram.percent,
+            },
+            "disk": {
+                "total_gb": round(disk.total / (1024**3), 1),
+                "free_gb": round(disk.free / (1024**3), 1),
+            },
+            "gpu": {"name": "NVIDIA GeForce RTX 3050 Laptop GPU (4GB)"},
+        }
+
+        try:
+            cmd = ["nvidia-smi", "--query-gpu=utilization.gpu,memory.total,memory.used,memory.free,temperature.gpu", "--format=csv,noheader,nounits"]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0 and stdout:
+                parts = [p.strip() for p in stdout.decode().split(",")]
+                if len(parts) >= 5:
+                    hw_info["gpu"].update({
+                        "utilization_percent": float(parts[0]),
+                        "vram_total_mb": float(parts[1]),
+                        "vram_used_mb": float(parts[2]),
+                        "vram_free_mb": float(parts[3]),
+                        "temperature_c": float(parts[4]),
+                    })
+        except Exception:
+            pass
+
+        return hw_info
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="system.hardware",
+            description="Retrieve real-time hardware status: CPU usage, RAM, RTX 3050 GPU utilization, VRAM, and temperatures",
+            parameters={"type": "object", "properties": {}},
+            handler=system_hardware,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="system",
+        )
+    )
+
     # --- Music Tools (Spotify, SoundCloud, Local audio) ---
     music_service = MusicPlayerService.get_instance()
 

@@ -338,6 +338,66 @@ class CharacterEngine {
         };
     }
 
+    nod(duration = 1.4) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "nod", duration, elapsed: 0 };
+    }
+
+    shakeHead(duration = 1.4) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "shake_head", duration, elapsed: 0 };
+    }
+
+    tiltHead(duration = 1.5) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "tilt_head", duration, elapsed: 0 };
+    }
+
+    shrug(duration = 1.6) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "shrug", duration, elapsed: 0 };
+    }
+
+    bow(duration = 2.2) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "bow", duration, elapsed: 0 };
+    }
+
+    clap(duration = 2.2) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "clap", duration, elapsed: 0 };
+    }
+
+    think(duration = 2.5) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "think", duration, elapsed: 0 };
+    }
+
+    cheer(duration = 2.0) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "cheer", duration, elapsed: 0 };
+    }
+
+    handsOnHips(duration = 2.5) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "hands_on_hips", duration, elapsed: 0 };
+    }
+
+    heartGesture(duration = 2.2) {
+        if (!this.animationSystem) return;
+        this.animationSystem._returnBlend = null;
+        this.animationSystem.activeActions.upperBody = { type: "heart_gesture", duration, elapsed: 0 };
+    }
+
     kick(side = "right", direction = "forward", intensity = 0.85, duration = 1.1) {
         if (!this.animationSystem) return;
         this.animationSystem.activeActions.lowerBody = {
@@ -479,6 +539,36 @@ class CharacterEngine {
                 break;
             case "stand":
                 this.stand();
+                break;
+            case "nod":
+                this.nod(duration);
+                break;
+            case "shake_head":
+                this.shakeHead(duration);
+                break;
+            case "tilt_head":
+                this.tiltHead(duration);
+                break;
+            case "shrug":
+                this.shrug(duration);
+                break;
+            case "bow":
+                this.bow(duration);
+                break;
+            case "clap":
+                this.clap(duration);
+                break;
+            case "think":
+                this.think(duration);
+                break;
+            case "cheer":
+                this.cheer(duration);
+                break;
+            case "hands_on_hips":
+                this.handsOnHips(duration);
+                break;
+            case "heart_gesture":
+                this.heartGesture(duration);
                 break;
             case "set_emotion":
                 if (actionObj.emotion) this.setEmotion(actionObj.emotion);

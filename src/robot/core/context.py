@@ -25,6 +25,7 @@ import re
 
 GROUNDING_POLICY = (
     "Truth, Tools & Real-Time Action Directives:\n"
+    "- User Entity Ownership & Attribution Directive: The human speaking with you is your creator and conversational partner. All facts, likes, dislikes, family members, friends, and romantic interests (e.g. 'crush', 'partner', 'friends', 'goals') stored in user memories belong exclusively to the USER. NEVER claim or misattribute the user's personal relationships or crushes as your own! If a fact states 'Crush: Anubha', Anubha is the USER'S crush, not yours. You must refer to them accurately as 'your crush Anubha'.\n"
     "- Mandatory Tool Calling Directive: You possess real, executable tools for music, volume, time, memory, vision, motion, and web search. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'I am adjusting the volume for you' or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction.\n"
     "- Volume & Music Controls: Whenever the user asks to change volume ('set volume to 20%', 'louder', 'turn it down', 'mute'), replay or play again ('play it again', 'replay', 'play that song again'), pause, resume, or stop, you MUST immediately emit a `music.control` tool call. Never narrate volume adjustments in text.\n"
     "- Track Truth: When asked what song was last played or what song is playing, you MUST check `music.status` or `music.history`. NEVER guess, assume, or hallucinate a song title.\n"
@@ -138,12 +139,13 @@ class ContextEngine:
         if high_intelligence and all_facts and not is_direct_action:
             facts_str = _format_all_facts(all_facts, budget_tokens=100000)
             if facts_str:
-                grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts]:\n{facts_str}")
-        elif resolved_memories and not is_direct_action:
+                grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts (Belonging to User)]:\n{facts_str}")
+        elif (resolved_memories or all_facts) and not is_direct_action:
+            mems_to_format = resolved_memories if resolved_memories else (all_facts or [])
             mem_budget = 50000 if high_intelligence else self._budget["retrieved_memories"]
-            mem_str = _format_memories(resolved_memories, mem_budget)
+            mem_str = _format_memories(mems_to_format, mem_budget)
             if mem_str:
-                grounding_parts.append(f"[Relevant Memories]:\n{mem_str}")
+                grounding_parts.append(f"[User Personal Profile & Durable Facts (Belonging to User)]:\n{mem_str}")
 
         # 3. Physical World State & Music Player State
         if world_state and (world_state.get("people") or world_state.get("objects")):

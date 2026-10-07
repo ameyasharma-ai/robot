@@ -275,20 +275,95 @@ class ToolSkillManager:
                 tool_name="character.execute_action",
                 summary="Trigger animated physical humanoid movements and avatar gestures.",
                 capabilities=[
-                    "Perform predefined bodily animations (wave, nod, point, bow, dance, shrug, kick).",
+                    "Perform expressive animations: wave, nod, shake_head, tilt_head, shrug, bow, clap, think, cheer, hands_on_hips, heart_gesture, kick, walk.",
                 ],
                 parameters_guide={
-                    "action_name": "Name of the action: 'wave', 'nod', 'point', 'bow', 'shrug', 'stop'.",
+                    "action": "Name of the action: 'wave', 'nod', 'shake_head', 'tilt_head', 'shrug', 'bow', 'clap', 'think', 'cheer', 'hands_on_hips', 'heart_gesture', 'kick', 'stop'.",
                 },
                 when_to_use=[
                     "Greeting the user with a physical gesture.",
-                    "Expressing agreement or pointing at something.",
+                    "Expressing agreement, excitement, curiosity, or reverence physically.",
                 ],
                 when_not_to_use=[
                     "Internal software logic.",
                 ],
                 examples=[
-                    {"user": "Wave at me", "args": {"action_name": "wave"}},
+                    {"user": "Wave at me", "args": {"action": "wave"}},
+                    {"user": "Can you nod?", "args": {"action": "nod"}},
+                    {"user": "Take a bow", "args": {"action": "bow"}},
+                    {"user": "Give me a heart", "args": {"action": "heart_gesture"}},
                 ],
             )
         )
+
+        # 9. knowledge.wikipedia
+        self.register(
+            ToolSkill(
+                tool_name="knowledge.wikipedia",
+                summary="Fetch encyclopedic summaries, history, science, and biographical information from Wikipedia.",
+                capabilities=[
+                    "Instant overview of historical events, scientific theories, world leaders, artists, and geography.",
+                ],
+                parameters_guide={
+                    "query": "The person, topic, historical event, or concept to look up.",
+                },
+                when_to_use=[
+                    "User asks 'Who was Albert Einstein?', 'What is quantum entanglement?', 'Tell me about the Roman Empire'.",
+                    "Encyclopedic, historical, or academic background questions.",
+                ],
+                when_not_to_use=[
+                    "Current breaking news from today (use web.search instead).",
+                    "User personal memories (use memory.search instead).",
+                ],
+                examples=[
+                    {"user": "Who was Marie Curie?", "args": {"query": "Marie Curie"}},
+                    {"user": "What is the theory of relativity?", "args": {"query": "Theory of relativity"}},
+                ],
+            )
+        )
+
+        # 10. system.calculate
+        self.register(
+            ToolSkill(
+                tool_name="system.calculate",
+                summary="Safely evaluate mathematical and scientific expressions accurately without hallucinating.",
+                capabilities=[
+                    "Arithmetic, powers, roots, trigonometry, logarithms, and percentages.",
+                ],
+                parameters_guide={
+                    "expression": "The mathematical formula to calculate (e.g. 'sqrt(256) * 12 + 45').",
+                },
+                when_to_use=[
+                    "User asks to compute or verify complex math, geometry, or unit conversions.",
+                ],
+                when_not_to_use=[
+                    "Conversational questions.",
+                ],
+                examples=[
+                    {"user": "What is the square root of 529 multiplied by 14?", "args": {"expression": "sqrt(529) * 14"}},
+                ],
+            )
+        )
+
+        # 11. system.hardware
+        self.register(
+            ToolSkill(
+                tool_name="system.hardware",
+                summary="Retrieve real-time hardware status: CPU usage, RAM, RTX 3050 GPU utilization, VRAM, and temperatures.",
+                capabilities=[
+                    "Check RTX 3050 VRAM usage and temperature.",
+                    "Check system RAM and CPU load.",
+                ],
+                parameters_guide={},
+                when_to_use=[
+                    "User asks 'How is your GPU doing?', 'How much VRAM is left?', 'What is your CPU usage?'.",
+                ],
+                when_not_to_use=[
+                    "General robot status (use system.status).",
+                ],
+                examples=[
+                    {"user": "How is your GPU running?", "args": {}},
+                ],
+            )
+        )
+

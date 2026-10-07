@@ -137,3 +137,124 @@ class WhisperServerSTT(STTProvider):
             return resp.status_code == 200
         except Exception:
             return False
+
+
+class StreamingSTT:
+    """Manages streaming/chunked audio processing for low-latency parallel STT.
+
+    Enables chunking speech while the user is actively talking, transcribing chunks
+    in the background in parallel, and finalizing with only the short tail when speech ends.
+    """
+
+    def __init__(
+        self,
+        provider: STTProvider,
+        sample_rate: int = 16000,
+        chunk_seconds: float = 2.0,
+    ) -> None:
+        self.provider = provider
+        self.sample_rate = sample_rate
+        self.chunk_seconds = chunk_seconds
+        self.chunk_samples = int(sample_rate * chunk_seconds)
+        self._current_buffer: list[float] = []
+        self._completed_transcripts: list[str] = []
+        self._in_flight_tasks: list[asyncio.Task[str]] = []
+        self._is_active = False
+
+    def start(self) -> None:
+        """Initialize or reset state for a new speech turn."""
+        self.reset()
+        self._is_active = True
+
+    def feed_frame(self, frame: np.ndarray | list[float]) -> asyncio.Task[str] | None:
+        """Feed audio frame into streaming buffer. Dispatches chunk if threshold is reached."""
+        if not self._is_active:
+            self.start()
+
+        if isinstance(frame, np.ndarray):
+            self._current_buffer.extend(frame.flatten().tolist())
+        else:
+            self._current_buffer.extend(frame)
+
+        if len(self._current_buffer) >= self.chunk_samples:
+            return self._dispatch_chunk()
+        return None
+
+    def _dispatch_chunk(self) -> asyncio.Task[str]:
+        """Find a clean energy dip split point and dispatch chunk transcription."""
+        import asyncio
+        buf = np.array(self._current_buffer, dtype=np.float32)
+        search_window = int(self.sample_rate * 0.4)
+        split_idx = len(buf)
+
+        if len(buf) > search_window:
+            recent_slice = buf[-search_window:]
+            step = int(self.sample_rate * 0.02)  # 20ms steps
+            min_energy = float("inf")
+            best_offset = len(recent_slice)
+            for i in range(0, len(recent_slice) - step, step):
+                chunk_rms = float(np.sqrt(np.mean(recent_slice[i : i + step] ** 2)))
+                if chunk_rms < min_energy:
+                    min_energy = chunk_rms
+                    best_offset = i + (step // 2)
+            split_idx = len(buf) - search_window + best_offset
+
+        chunk_audio = buf[:split_idx]
+        self._current_buffer = buf[split_idx:].tolist()
+
+        task = asyncio.create_task(self.provider.transcribe(chunk_audio, self.sample_rate))
+        self._in_flight_tasks.append(task)
+        return task
+
+    def get_partial_transcript(self) -> str:
+        """Return partial transcript of finished background chunks so far."""
+        texts = list(self._completed_transcripts)
+        for t in list(self._in_flight_tasks):
+            if t.done() and not t.cancelled():
+                try:
+                    res = t.result()
+                    if res:
+                        texts.append(res)
+                except Exception:
+                    pass
+        return " ".join(t for t in texts if t).strip()
+
+    async def finalize(self, remaining_audio: np.ndarray | None = None) -> str:
+        """Finalize the stream when speech ends, await in-flight tasks, transcribe tail, and merge."""
+        import asyncio
+        self._is_active = False
+        parts: list[str] = list(self._completed_transcripts)
+
+        # Collect in-flight tasks
+        if self._in_flight_tasks:
+            results = await asyncio.gather(*self._in_flight_tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, str) and r:
+                    parts.append(r)
+
+        # Transcribe remaining audio tail
+        tail_audio = None
+        if remaining_audio is not None and len(remaining_audio) > 0:
+            tail_audio = remaining_audio
+        elif self._current_buffer:
+            tail_audio = np.array(self._current_buffer, dtype=np.float32)
+
+        if tail_audio is not None and len(tail_audio) >= int(self.sample_rate * 0.25):
+            tail_text = await self.provider.transcribe(tail_audio, self.sample_rate)
+            if tail_text:
+                parts.append(tail_text)
+
+        self.reset()
+        merged = " ".join(parts).strip()
+        return clean_transcript(merged) if merged else ""
+
+    def reset(self) -> None:
+        """Reset internal buffers and cancel pending tasks."""
+        for t in self._in_flight_tasks:
+            if not t.done():
+                t.cancel()
+        self._current_buffer.clear()
+        self._completed_transcripts.clear()
+        self._in_flight_tasks.clear()
+        self._is_active = False
+

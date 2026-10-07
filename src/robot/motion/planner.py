@@ -192,7 +192,29 @@ class MotionPlanner:
         elif "stand" in text_lower:
             actions.append({"action": "stand", "duration": 2.0})
 
-        # 10. Emotions
+        # 10. Expressive gestures
+        if re.search(r"\b(nod|agree|yes)\b", text_lower) and not re.search(r"\b(say yes|yesterday)\b", text_lower):
+            actions.append({"action": "nod", "duration": 1.4, "repetitions": 2})
+        elif re.search(r"\b(shake head|disagree|no)\b", text_lower) and not re.search(r"\b(say no|not)\b", text_lower):
+            actions.append({"action": "shake_head", "duration": 1.4, "repetitions": 2})
+        elif re.search(r"\b(tilt head|curious|wonder)\b", text_lower):
+            actions.append({"action": "tilt_head", "duration": 1.5})
+        elif re.search(r"\b(shrug|dunno|who knows|i don'?t know)\b", text_lower):
+            actions.append({"action": "shrug", "duration": 1.6})
+        elif re.search(r"\b(bow|take a bow|curtsey|respect)\b", text_lower):
+            actions.append({"action": "bow", "duration": 2.2})
+        elif re.search(r"\b(clap|applaud|applause|bravo)\b", text_lower):
+            actions.append({"action": "clap", "duration": 2.2, "repetitions": 4})
+        elif re.search(r"\b(think|ponder|contemplate|hmm)\b", text_lower):
+            actions.append({"action": "think", "duration": 2.5})
+        elif re.search(r"\b(cheer|hooray|celebrate|yay)\b", text_lower):
+            actions.append({"action": "cheer", "duration": 2.0})
+        elif re.search(r"\b(hands on hips|pose|confident)\b", text_lower):
+            actions.append({"action": "hands_on_hips", "duration": 2.5})
+        elif re.search(r"\b(heart|love you|affection)\b", text_lower):
+            actions.append({"action": "heart_gesture", "duration": 2.2})
+
+        # 11. Emotions
         for emotion in ["happy", "sad", "surprised", "angry", "confused", "thinking", "neutral"]:
             if emotion in text_lower:
                 actions.append({"action": "set_emotion", "emotion": emotion})

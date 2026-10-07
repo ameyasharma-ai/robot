@@ -378,20 +378,178 @@ class AnimationSystem {
             }
         }
 
-        // Keep the contralateral (other) arm hanging down naturally during gesture
-        const otherArm = rig.getBone(isRight ? "leftUpperArm" : "rightUpperArm");
-        const otherInit = rig.initialRotations[isRight ? "leftUpperArm" : "rightUpperArm"];
-        if (otherArm && otherInit) {
-            const otherZ = isRight ? -1.25 : 1.25;
-            const deltaOther = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, otherZ));
-            otherArm.quaternion.copy(otherInit).multiply(deltaOther);
+        } else if (act.type === "nod") {
+            const head = rig.getBone("head");
+            const ease = Math.sin(t * Math.PI * 4) * (1.0 - t * 0.3);
+            if (head && rig.initialRotations["head"]) {
+                const initQ = rig.initialRotations["head"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(ease * 0.28, 0, 0));
+                head.quaternion.copy(initQ).multiply(deltaQ);
+            }
+        } else if (act.type === "shake_head") {
+            const head = rig.getBone("head");
+            const ease = Math.sin(t * Math.PI * 4) * (1.0 - t * 0.3);
+            if (head && rig.initialRotations["head"]) {
+                const initQ = rig.initialRotations["head"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, ease * 0.32, 0));
+                head.quaternion.copy(initQ).multiply(deltaQ);
+            }
+        } else if (act.type === "tilt_head") {
+            const head = rig.getBone("head");
+            const ease = Math.sin(t * Math.PI);
+            if (head && rig.initialRotations["head"]) {
+                const initQ = rig.initialRotations["head"];
+                const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.05 * ease, 0, ease * 0.25));
+                head.quaternion.copy(initQ).multiply(deltaQ);
+            }
+        } else if (act.type === "shrug") {
+            const ease = Math.sin(t * Math.PI);
+            const chest = rig.getBone("chest");
+            const lArm = rig.getBone("leftUpperArm");
+            const rArm = rig.getBone("rightUpperArm");
+            const lFore = rig.getBone("leftLowerArm");
+            const rFore = rig.getBone("rightLowerArm");
+            if (chest && rig.initialRotations["chest"]) {
+                chest.quaternion.copy(rig.initialRotations["chest"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.06 * ease, 0, 0)));
+            }
+            if (lArm && rig.initialRotations["leftUpperArm"]) {
+                lArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2 * ease, 0, -1.25 + 0.45 * ease)));
+            }
+            if (rArm && rig.initialRotations["rightUpperArm"]) {
+                rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2 * ease, 0, 1.25 - 0.45 * ease)));
+            }
+            if (lFore && rig.initialRotations["leftLowerArm"]) {
+                lFore.quaternion.copy(rig.initialRotations["leftLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0.5 * ease)));
+            }
+            if (rFore && rig.initialRotations["rightLowerArm"]) {
+                rFore.quaternion.copy(rig.initialRotations["rightLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -0.5 * ease)));
+            }
+        } else if (act.type === "bow") {
+            const ease = Math.sin(t * Math.PI);
+            const spine = rig.getBone("spine");
+            const chest = rig.getBone("chest");
+            const head = rig.getBone("head");
+            if (spine && rig.initialRotations["spine"]) {
+                spine.quaternion.copy(rig.initialRotations["spine"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.35 * ease, 0, 0)));
+            }
+            if (chest && rig.initialRotations["chest"]) {
+                chest.quaternion.copy(rig.initialRotations["chest"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2 * ease, 0, 0)));
+            }
+            if (head && rig.initialRotations["head"]) {
+                head.quaternion.copy(rig.initialRotations["head"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.15 * ease, 0, 0)));
+            }
+        } else if (act.type === "clap") {
+            const ease = Math.sin(t * Math.PI);
+            const clapOsc = Math.sin(t * Math.PI * 8);
+            const lArm = rig.getBone("leftUpperArm");
+            const rArm = rig.getBone("rightUpperArm");
+            const lFore = rig.getBone("leftLowerArm");
+            const rFore = rig.getBone("rightLowerArm");
+            if (lArm && rig.initialRotations["leftUpperArm"]) {
+                lArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.7 * ease, 0.3 * ease, -0.6 * ease)));
+            }
+            if (rArm && rig.initialRotations["rightUpperArm"]) {
+                rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.7 * ease, -0.3 * ease, 0.6 * ease)));
+            }
+            if (lFore && rig.initialRotations["leftLowerArm"]) {
+                lFore.quaternion.copy(rig.initialRotations["leftLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, (0.6 + clapOsc * 0.2) * ease)));
+            }
+            if (rFore && rig.initialRotations["rightLowerArm"]) {
+                rFore.quaternion.copy(rig.initialRotations["rightLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, (-0.6 - clapOsc * 0.2) * ease)));
+            }
+        } else if (act.type === "think") {
+            const ease = Math.sin(t * Math.PI);
+            const rArm = rig.getBone("rightUpperArm");
+            const rFore = rig.getBone("rightLowerArm");
+            const head = rig.getBone("head");
+            if (rArm && rig.initialRotations["rightUpperArm"]) {
+                rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.9 * ease, 0.4 * ease, 0.2 * ease)));
+            }
+            if (rFore && rig.initialRotations["rightLowerArm"]) {
+                rFore.quaternion.copy(rig.initialRotations["rightLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -1.2 * ease)));
+            }
+            if (head && rig.initialRotations["head"]) {
+                head.quaternion.copy(rig.initialRotations["head"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.15 * ease, 0.1 * ease, 0.18 * ease)));
+            }
+        } else if (act.type === "cheer") {
+            const ease = Math.sin(t * Math.PI);
+            const bounce = Math.abs(Math.sin(t * Math.PI * 4)) * 0.04 * ease;
+            const lArm = rig.getBone("leftUpperArm");
+            const rArm = rig.getBone("rightUpperArm");
+            const hips = rig.getBone("hips");
+            if (lArm && rig.initialRotations["leftUpperArm"]) {
+                lArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.5 * ease, 0, (-1.25 + 2.5 * ease))));
+            }
+            if (rArm && rig.initialRotations["rightUpperArm"]) {
+                rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.5 * ease, 0, (1.25 - 2.5 * ease))));
+            }
+            if (hips && rig.initialPositions["hips"]) {
+                hips.position.y = (rig.initialPositions["hips"].y || 1.0) + bounce;
+            }
+        } else if (act.type === "hands_on_hips") {
+            const ease = Math.sin(t * Math.PI);
+            const lArm = rig.getBone("leftUpperArm");
+            const rArm = rig.getBone("rightUpperArm");
+            const lFore = rig.getBone("leftLowerArm");
+            const rFore = rig.getBone("rightLowerArm");
+            if (lArm && rig.initialRotations["leftUpperArm"]) {
+                lArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2 * ease, 0, -0.6 * ease)));
+            }
+            if (rArm && rig.initialRotations["rightUpperArm"]) {
+                rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2 * ease, 0, 0.6 * ease)));
+            }
+            if (lFore && rig.initialRotations["leftLowerArm"]) {
+                lFore.quaternion.copy(rig.initialRotations["leftLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 1.3 * ease)));
+            }
+            if (rFore && rig.initialRotations["rightLowerArm"]) {
+                rFore.quaternion.copy(rig.initialRotations["rightLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -1.3 * ease)));
+            }
+        } else if (act.type === "heart_gesture") {
+            const ease = Math.sin(t * Math.PI);
+            const lArm = rig.getBone("leftUpperArm");
+            const rArm = rig.getBone("rightUpperArm");
+            const lFore = rig.getBone("leftLowerArm");
+            const rFore = rig.getBone("rightLowerArm");
+            if (lArm && rig.initialRotations["leftUpperArm"]) {
+                lArm.quaternion.copy(rig.initialRotations["leftUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.85 * ease, 0.4 * ease, -0.3 * ease)));
+            }
+            if (rArm && rig.initialRotations["rightUpperArm"]) {
+                rArm.quaternion.copy(rig.initialRotations["rightUpperArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.85 * ease, -0.4 * ease, 0.3 * ease)));
+            }
+            if (lFore && rig.initialRotations["leftLowerArm"]) {
+                lFore.quaternion.copy(rig.initialRotations["leftLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 1.4 * ease)));
+            }
+            if (rFore && rig.initialRotations["rightLowerArm"]) {
+                rFore.quaternion.copy(rig.initialRotations["rightLowerArm"]).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, -1.4 * ease)));
+            }
+        }
+
+        const isBilateral = ["shrug", "bow", "clap", "cheer", "hands_on_hips", "heart_gesture", "nod", "shake_head", "tilt_head", "think"].includes(act.type);
+        if (!isBilateral) {
+            // Keep the contralateral (other) arm hanging down naturally during gesture
+            const otherArm = rig.getBone(isRight ? "leftUpperArm" : "rightUpperArm");
+            const otherInit = rig.initialRotations[isRight ? "leftUpperArm" : "rightUpperArm"];
+            if (otherArm && otherInit) {
+                const otherZ = isRight ? -1.25 : 1.25;
+                const deltaOther = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, otherZ));
+                otherArm.quaternion.copy(otherInit).multiply(deltaOther);
+            }
         }
 
         if (t >= 1.0) {
             // Return to idle smoothly after duration
             this.activeActions.upperBody = null;
-            this.resetLimb(isRight ? "rightUpperArm" : "leftUpperArm");
-            this.resetLimb(isRight ? "rightLowerArm" : "leftLowerArm");
+            this.resetLimb("rightUpperArm");
+            this.resetLimb("leftUpperArm");
+            this.resetLimb("rightLowerArm");
+            this.resetLimb("leftLowerArm");
+            this.resetLimb("head");
+            this.resetLimb("spine");
+            this.resetLimb("chest");
+            if (rig.initialPositions["hips"]) {
+                const hips = rig.getBone("hips");
+                if (hips) hips.position.y = rig.initialPositions["hips"].y || 1.0;
+            }
         }
     }
 

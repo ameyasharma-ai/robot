@@ -3353,7 +3353,8 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 .hud-bottom-split .card-metrics {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
+    gap: 8px;
+    justify-content: flex-start;
     padding: 12px 14px;
     min-height: 0;
     margin-bottom: 0;
@@ -3361,8 +3362,92 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 }
 
 .hud-bottom-split .card-metrics .card-header {
-    margin-bottom: 6px;
+    margin-bottom: 2px;
     padding-bottom: 4px;
+}
+
+.tool-monitor-strip {
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(0, 255, 102, 0.16);
+    border-radius: 8px;
+    padding: 7px 10px;
+    margin-top: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.tool-monitor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.tool-monitor-title {
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    color: var(--primary-cyan);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.tool-pulse-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--primary-cyan);
+    box-shadow: 0 0 6px var(--primary-cyan);
+    animation: pulseGlow 1.6s infinite;
+}
+
+.tool-count-badge {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(0, 242, 254, 0.12);
+    border: 1px solid rgba(0, 242, 254, 0.3);
+    color: var(--primary-cyan);
+    letter-spacing: 0.5px;
+}
+
+.tool-stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 5px;
+}
+
+.tool-stat-chip {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 5px;
+    padding: 3px 5px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+}
+
+.tool-stat-chip .ts-lbl {
+    font-family: var(--font-mono);
+    font-size: 7.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.5px;
+}
+
+.tool-stat-chip .ts-val {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--matrix-bright);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
 }
 
 .integrated-pipeline-flow {
@@ -3445,9 +3530,61 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 .card-image-studio .image-gen-content {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 7px;
     flex: 1;
     min-height: 0;
+}
+
+/* Quick Style Preset Chips */
+.img-style-chips {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+}
+
+.img-style-chips::-webkit-scrollbar {
+    display: none;
+}
+
+.img-style-chip {
+    background: rgba(0, 255, 102, 0.05);
+    border: 1px solid rgba(0, 255, 102, 0.2);
+    color: var(--text-secondary);
+    border-radius: 12px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    padding: 3px 8px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.img-style-chip:hover,
+.img-style-chip.active {
+    background: rgba(0, 255, 102, 0.18);
+    border-color: var(--matrix-bright);
+    color: var(--matrix-bright);
+    box-shadow: 0 0 8px rgba(0, 255, 102, 0.25);
+}
+
+/* Cybernetic Scanner Laser Bar during synthesis */
+.img-scanner-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--matrix-bright), var(--primary-cyan), transparent);
+    box-shadow: 0 0 10px var(--matrix-bright);
+    animation: scannerMove 1.8s ease-in-out infinite alternate;
+    z-index: 5;
+}
+
+@keyframes scannerMove {
+    from { top: 5%; opacity: 0.6; }
+    to { top: 92%; opacity: 1.0; }
 }
 
 .card-image-studio .image-input-row {

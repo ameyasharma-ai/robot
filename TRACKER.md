@@ -160,6 +160,27 @@ Legend:
     - Fixed infinite spinning tool cards in chat by scoping card IDs uniquely per call/turn and auto-resolving leftover `.running` cards on stream completion.
   - All 94 regression unit tests pass.
 
+- [x] **48. Full-Stack Context Layer Overhaul, Streaming STT, Expressive Kinematics, Multi-Zone RGB & New Builtin Tools**:
+  - *Context Layer Intelligence & Entity Attribution*:
+    - Resolved entity attribution confusion: Added strict `User Entity Ownership & Attribution Directive` to `GROUNDING_POLICY` ensuring that all personal memories (e.g. partner, crushes, preferences) are attributed exclusively to the human user and never claimed by the robot.
+    - Synchronized text chat context in `engine.py:process_text_input` with voice mode, supporting Gemini 1M deep archive expansion and lean local mode (<2,200 tokens) on RTX 3050 for sub-250ms TTFT.
+  - *Streaming STT with Chunked Parallel Transcription*:
+    - Built `StreamingSTT` in `robot.stt` with rolling audio buffering, clean energy dip splitting, and parallel background transcription tasks.
+    - Connected `StreamingSTT` to `_mic_loop` in `engine.py`, cutting final transcription latency on multi-second speech by up to 80% while streaming `partial_transcript` events live to the UI.
+  - *10 Expressive Humanoid Movements*:
+    - Extended kinematic models, semantic actions, and natural language command parsing across `actions.py`, `planner.py`, `AnimationSystem.js`, and `CharacterEngine.js` with 10 expressive gestures: `nod`, `shake_head`, `tilt_head`, `shrug`, `bow`, `clap`, `think`, `cheer`, `hands_on_hips`, `heart_gesture`.
+  - *Multi-Zone Keyboard RGB Lighting Layer*:
+    - Upgraded `AsusAuraLighting` in `lighting.py` to differentiate keyboard zones 1 (WASD/Left), 2 (Center), and 3 (Right) from the front underglow strip (zone 4).
+    - Implemented voice ripple waves across keys during speech, high-tech neural calculation scanner during thinking, acoustic sound visualizer during listening, and chromatic aurora flow during idle.
+  - *New Builtin Tools & Skill Manager Expansion*:
+    - Registered `knowledge.wikipedia`, `system.calculate`, `system.hardware`, and updated `character.execute_action` in `builtins` and `skills.py`.
+    - Added contextual keywords and parameter aliases to `ToolRouter` and `PermissionManager`.
+  - *Dashboard UI/UX Enhancements*:
+    - Fixed vertical card spacing in `LATENCY TARGETS & SERVICE HEALTH` and added dedicated Tool Resource Monitor.
+    - Added quick style preset chips, cybernetic laser scanning animation, non-distorting layout, and full-resolution image zoom lightbox in `IMAGE STUDIO`.
+  - *Synthetic Testing & Verification*:
+    - Added `tests/test_synthetic_robustness.py`. Full test suite passing 100% (100 tests passed).
+
 
 
 

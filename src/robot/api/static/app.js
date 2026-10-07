@@ -1528,6 +1528,16 @@ class RobotUI {
             this.setRobotMode(data.mode);
         }
 
+        if (data.partial_transcript) {
+            if (this.bubbleTag) {
+                this.bubbleTag.textContent = "LISTENING (STREAMING)...";
+                this.bubbleTag.style.color = "var(--primary-cyan)";
+            }
+            if (this.bubbleContent) {
+                this.bubbleContent.textContent = data.partial_transcript + " ...";
+            }
+        }
+
         if (data.user_text) {
             if (this.bubbleTag) {
                 this.bubbleTag.textContent = "USER SPEECH";
@@ -1643,14 +1653,22 @@ class RobotUI {
                 toolBadge.style.background = "rgba(0, 242, 254, 0.2)";
                 toolBadge.style.borderColor = "var(--primary-cyan)";
             }
+            const elToolName = document.getElementById("activeToolName");
+            if (elToolName) elToolName.textContent = (data.tool || "ACTIVE").toUpperCase();
+            const elToolStatus = document.getElementById("lastToolStatus");
+            if (elToolStatus) {
+                elToolStatus.textContent = "RUNNING";
+                elToolStatus.style.color = "var(--primary-cyan)";
+            }
             this.logEvent("TOOL", `Executing: ${data.tool}`, "system");
             this.updatePipelineStatus({ TOOLS: "RUNNING" });
         }
 
         if (data.event === "tool_completed" || data.event === "tool_error") {
             const toolBadge = document.getElementById("activeToolBadge");
+            const isOk = data.event === "tool_completed";
             if (toolBadge) {
-                if (data.event === "tool_completed") {
+                if (isOk) {
                     toolBadge.textContent = `TOOL: DONE`;
                     toolBadge.style.background = "rgba(0, 245, 160, 0.2)";
                     toolBadge.style.borderColor = "var(--accent-emerald)";
@@ -1665,6 +1683,18 @@ class RobotUI {
                     }
                 }, 3000);
             }
+            const elToolStatus = document.getElementById("lastToolStatus");
+            if (elToolStatus) {
+                elToolStatus.textContent = isOk ? "SUCCESS" : "ERROR";
+                elToolStatus.style.color = isOk ? "var(--matrix-bright)" : "#ff4d6d";
+            }
+            const elToolLat = document.getElementById("lastToolLatency");
+            if (elToolLat && data.duration_ms) {
+                elToolLat.textContent = `${Math.round(data.duration_ms)} ms`;
+            }
+            this._toolInvocations = (this._toolInvocations || 0) + 1;
+            const elTotalRuns = document.getElementById("totalToolInvocations");
+            if (elTotalRuns) elTotalRuns.textContent = this._toolInvocations;
             this.updatePipelineStatus({ TOOLS: data.event === "tool_completed" ? "COMPLETED" : "ERROR" });
         }
 
@@ -2059,6 +2089,30 @@ class RobotUI {
                     await fetch(`/images/cancel/${this.activeImageJob}`, { method: "POST" });
                     this.logEvent("IMAGE", `Cancelled job ${this.activeImageJob}`, "system");
                     this.updatePipelineStatus({ IMAGE: "CANCELLED" });
+                }
+            });
+        }
+
+        // Quick style presets
+        document.querySelectorAll(".img-style-chip").forEach((chip) => {
+            chip.addEventListener("click", (e) => {
+                e.preventDefault();
+                document.querySelectorAll(".img-style-chip").forEach(c => c.classList.remove("active"));
+                chip.classList.add("active");
+                const stylePrompt = chip.getAttribute("data-style");
+                if (stylePrompt && input) {
+                    input.value = stylePrompt;
+                    input.focus();
+                }
+            });
+        });
+
+        const previewImg = document.getElementById("imgPreviewImg");
+        if (previewImg) {
+            previewImg.style.cursor = "zoom-in";
+            previewImg.addEventListener("click", () => {
+                if (previewImg.src) {
+                    window.open(previewImg.src, "_blank");
                 }
             });
         }

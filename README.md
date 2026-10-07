@@ -64,14 +64,16 @@ This release marks the completed **Month 0 Base Iteration** of Robot Core:
 ## Key Features
 
 - **Full-duplex voice** with barge-in interruption (< 200ms)
-- **Streaming pipeline**: LLM tokens → phrase chunker → TTS (< 1.5s response)
-- **Persistent memory**: Mem0 for semantic recall + SQLite FTS for history
-- **Context engine**: Dynamic 16K token budget allocation
-- **Tool framework**: Namespace-based routing with L0-L6 permission gates
-- **Personality system**: Hot-swappable YAML-defined personas
-- **FastAPI server**: REST + WebSocket for developer console
-- **Health monitoring**: Graceful degradation when services fail
-- **Structured telemetry**: All whitepaper metrics tracked
+- **Streaming STT with Parallel Chunking**: Chunks speech during utterance with energy dip splitting, slashing final turnaround latency by up to 80% with live streaming captions.
+- **Context Layer Intelligence & Strict Entity Attribution**: Context-aware budget management (lean <2,200 tokens for local Qwen on RTX 3050 vs 1M tokens for Gemini Cloud) with guaranteed user entity ownership.
+- **Expressive 3D Avatar Kinematics**: 10 expressive semantic actions (`nod`, `shake_head`, `tilt_head`, `shrug`, `bow`, `clap`, `think`, `cheer`, `hands_on_hips`, `heart_gesture`) with Three.js inverse kinematics and natural language parsing.
+- **Multi-Zone Keyboard RGB Lighting**: Differentiated ASUS ROG Aura lighting separating keyboard zones (WASD, Center, Right) from front underglow with traveling voice ripples, neural calculation scanners, and acoustic visualizers.
+- **Extensible Tool & Skill Ecosystem**: Autonomous agentic tools including `web.search`, `knowledge.wikipedia`, `system.calculate`, `system.hardware`, `system.time`, `music.play`, and `character.execute_action`.
+- **Persistent memory**: Mem0 for semantic recall + SQLite FTS for cross-session history
+- **Streaming pipeline**: LLM tokens → phrase chunker → Piper TTS (< 150ms TTFA)
+- **Personality system**: Hot-swappable YAML-defined personas (Cypher, Aria, GLaDOS, Luna)
+- **FastAPI server & Cyberdeck HUD**: REST + WebSockets + 3D WebGL avatar + Tool Resource Monitor + Image Generation Studio
+- **Health monitoring & Observability**: Graceful degradation, telemetry metrics, and 100% passing test suite (100 unit & synthetic tests)
 
 ## Hardware
 

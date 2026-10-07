@@ -196,49 +196,50 @@ can restart without crashing Robot Core.
 
 For each inference turn, Robot Core assembles:
 
-1.  Active personality
-2.  Core robot/system policy
-3.  Current task state
-4.  Relevant Mem0 memories
-5.  Recent conversation
-6.  Current user input
-7.  Relevant tool definitions only
-8.  Current system/robot state
-9.  Relevant tool results
-10. Compact visual/world state
-11. Actual image only when visual reasoning is necessary
+1.  Active personality prompt
+2.  Core robot grounding policy & strict User Entity Ownership & Attribution Directive
+3.  Current task & conversation history
+4.  Relevant Mem0 user memories & durable personal facts
+5.  Recent conversation (compacted for local mode KV cache invariance)
+6.  Current user input & telemetry separation
+7.  Relevant tool definitions only (routed via ToolRouter)
+8.  Current system & hardware telemetry metrics
+9.  Relevant tool execution outputs
+10. Compact visual world state
+11. Actual image snapshots only when multimodal visual reasoning is actively required
 
-Old conversations are retrieved or summarized rather than continuously
-carried in context.
+### Adaptive Dual-Tier Context Architecture
+- **Local Mode (RTX 3050)**: Strict budget enforcement keeping prompt tokens under 2,200 tokens (3 recent turns, 5 memories). This maintains 100% KV-cache invariance on llama-server with Time-to-First-Token (TTFT) < 250ms and zero VRAM exhaustion.
+- **Cloud Mode (Gemini 1M Context)**: Deep multi-session archive expansion (up to 100 recent turns, 50 memories, and complete durable facts up to 800,000 tokens) with multi-session cross-referencing.
+- **Entity Ownership & Attribution Directive**: Grounding policy strictly assigns user preferences, relationships, and romantic interests (e.g. crushes, family) exclusively to the human user, ensuring the robot assistant never claims or confuses user entities as its own.
 
 ------------------------------------------------------------------------
 
 ## 7. Speech-to-Text
 
-### Locked stack
+### Locked stack & Streaming Architecture
 
-**Whisper Small Multilingual + whisper.cpp**
+**Whisper Small Multilingual / Tiny + whisper.cpp + StreamingSTT**
 
-Target accelerator: Radeon 680M through Vulkan if benchmarks show a
-benefit; CPU fallback remains valid.
+Target accelerator: Radeon 680M through Vulkan (`-dev 0 -fa`); CPU fallback remains valid.
 
 ``` text
 Microphone
   ↓
 Audio Front End
   ↓
-Silero VAD
+Silero VAD (Speech Active)
   ↓
-whisper.cpp
+StreamingSTT (Background Chunking @ ~2.0s with Energy-Dip Splitting)
   ↓
-Whisper Small Multilingual
+whisper.cpp parallel workers
   ↓
-partial/final transcripts
+Partial Transcripts (HUD Live Stream) & Fast Tail Finalization (<50ms turnaround)
   ↓
 Robot Core
 ```
 
-Whisper Base is the fallback if Small fails the latency target.
+Whisper Base/Tiny is the low-latency target for real-time speech, supported by parallel chunking that transcribes speech while the user is actively speaking.
 
 ------------------------------------------------------------------------
 

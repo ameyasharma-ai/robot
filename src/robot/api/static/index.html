@@ -265,6 +265,32 @@
                             <div class="m-bar"><div class="m-fill" id="barE2e" style="width: 60%"></div></div>
                         </div>
                     </div>
+
+                    <!-- Active Tool Telemetry & Resource Monitor (ToDo #9) -->
+                    <div class="tool-monitor-strip" id="toolMonitorStrip">
+                        <div class="tool-monitor-header">
+                            <span class="tool-monitor-title"><span class="tool-pulse-dot"></span> TOOL RESOURCE MONITOR</span>
+                            <span class="tool-count-badge" id="toolCountBadge">14 TOOLS ACTIVE</span>
+                        </div>
+                        <div class="tool-stats-row">
+                            <div class="tool-stat-chip">
+                                <span class="ts-lbl">ACTIVE TOOL</span>
+                                <span class="ts-val" id="activeToolName">IDLE</span>
+                            </div>
+                            <div class="tool-stat-chip">
+                                <span class="ts-lbl">LAST CALL</span>
+                                <span class="ts-val" id="lastToolLatency">-- ms</span>
+                            </div>
+                            <div class="tool-stat-chip">
+                                <span class="ts-lbl">STATUS</span>
+                                <span class="ts-val" id="lastToolStatus">READY</span>
+                            </div>
+                            <div class="tool-stat-chip">
+                                <span class="ts-lbl">TOTAL RUNS</span>
+                                <span class="ts-val" id="totalToolInvocations">0</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Asynchronous Non-blocking Image Studio (Side-by-Side in Dev Panel) -->
@@ -278,6 +304,13 @@
                         </div>
                     </div>
                     <div class="image-gen-content">
+                        <!-- Quick Style Presets -->
+                        <div class="img-style-chips" id="imgStyleChips">
+                            <button class="img-style-chip active" data-style="" title="Direct custom prompt">✨ Custom</button>
+                            <button class="img-style-chip" data-style="cyberpunk humanoid robot in neon tokyo rain, 8k resolution, cinematic lighting" title="Cyberpunk style">🌆 Cyberpunk</button>
+                            <button class="img-style-chip" data-style="masterpiece anime aesthetic, beautiful android companion, detailed digital art" title="Anime style">🌸 Anime</button>
+                            <button class="img-style-chip" data-style="photorealistic futuristic robotic laboratory, octanerender, ultra high definition" title="Photoreal style">📸 Photoreal</button>
+                        </div>
                         <div class="image-input-row">
                             <input type="text" class="img-prompt-input" id="imgPromptInput" placeholder="Prompt (e.g. Cyberpunk robot in Tokyo)..." autocomplete="off" />
                             <button class="img-gen-btn" id="btnGenImage">Generate</button>
@@ -304,6 +337,7 @@
                                 <span class="img-placeholder-text">Non-blocking background image generation. Generates on CPU/SD without blocking LLM.</span>
                             </div>
                             <div id="imgGeneratingStatus" style="display: none;">
+                                <div class="img-scanner-bar"></div>
                                 <div class="img-spinner"></div>
                                 <div class="img-status-info">
                                     <div class="img-status-title">Synthesizing Artwork...</div>
@@ -313,7 +347,7 @@
                                     <div id="imgGenElapsed" class="img-status-sub">Elapsed: 0.0s</div>
                                 </div>
                             </div>
-                            <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none;" />
+                            <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none;" title="Click to view full size" />
                             <div id="imgMetaBlock" style="display: none;">
                                 <div class="img-meta-row">
                                     <span>Model: <b id="metaModel">--</b></span>
@@ -437,6 +471,6 @@
     <script src="/static/character/AnimationSystem.js"></script>
     <script src="/static/character/GazeSystem.js"></script>
     <script src="/static/character/CharacterEngine.js"></script>
-    <script src="/static/app.js?v=2.6"></script>
+    <script src="/static/app.js?v=2.7"></script>
 </body>
 </html>

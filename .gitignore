@@ -60,3 +60,4 @@ graphify-out/
 # Qdrant data
 qdrant_storage/
 .aider*
+.cache

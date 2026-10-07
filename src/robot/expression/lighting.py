@@ -45,6 +45,7 @@ class AsusAuraLighting:
         self._current_rgb: tuple[float, float, float] = (0.0, 80.0, 160.0)
         self._last_voice_update: float = 0.0
         self._last_set_time: float = 0.0
+        self._last_zone_rgb: dict[int, tuple[int, int, int]] = {}
 
         if not self.enabled:
             return
@@ -62,13 +63,19 @@ class AsusAuraLighting:
             self._dbus_props = None
 
     def set_color(self, r: int, g: int, b: int, zone: int = 0) -> None:
-        """Set RGB color for a zone (zone 0 = all zones, 1..4 = individual zones)."""
+        """Set RGB color for a zone (zone 0 = all zones, 1=WASD/Left, 2=Center, 3=Right, 4=Front Strip)."""
         if not self.enabled:
             return
 
         r = max(0, min(255, int(r)))
         g = max(0, min(255, int(g)))
         b = max(0, min(255, int(b)))
+
+        # Cache check to avoid redundant DBus / IPC messages
+        last = self._last_zone_rgb.get(zone)
+        if last and abs(r - last[0]) < 2 and abs(g - last[1]) < 2 and abs(b - last[2]) < 2:
+            return
+        self._last_zone_rgb[zone] = (r, g, b)
 
         if self._dbus_props is not None:
             try:
@@ -159,12 +166,10 @@ class AsusAuraLighting:
         self.set_color(0, 160, 255)
 
     async def _animation_loop(self) -> None:
-        """Vibrant, high-contrast, silky-smooth lighting animation loop."""
+        """Vibrant, multi-zone ROG lighting animation separating keyboard zones from front lightbar."""
         t_start = time.time()
         # Always enforce 100% High brightness
         self.set_brightness(3)
-
-        cur_r, cur_g, cur_b = self._current_rgb
 
         while not self._stop_event.is_set():
             now = time.time()
@@ -172,71 +177,88 @@ class AsusAuraLighting:
             mode = self._current_mode
 
             if mode == RobotMode.SPEAKING:
-                # ── Voice Audio-Reactive Modulation (50% more amplified) ──
-                # Ultra-sensitive energy tracking: speech volume mapped aggressively to [0.0, 1.0]
+                # ── Voice Audio-Reactive Modulation ──
                 raw_target = min(1.0, max(0.0, (self._voice_rms - 0.002) / 0.038))
                 if raw_target > self._smooth_energy:
                     self._smooth_energy += (raw_target - self._smooth_energy) * 0.55
                 else:
                     self._smooth_energy += (raw_target - self._smooth_energy) * 0.14
 
-                # High-contrast hue sweep across the entire spectrum:
-                # Base quiet tone = Electric Neon Cyan (hue 0.50 -> RGB 0, 255, 255)
-                # Syllable accent = Electric Violet (hue 0.78 -> RGB 180, 0, 255)
-                # Peak volume = Hot Electric Pink / Crimson (hue 0.95 -> RGB 255, 0, 90)
-                hue = (0.50 + 0.45 * self._smooth_energy) % 1.0
-                sat = 1.0
-                val = 1.0
+                # Front Underglow Lightbar (Zone 4): Solid reactive grounding bar
+                strip_hue = (0.50 + 0.45 * self._smooth_energy) % 1.0
+                strip_r, strip_g, strip_b = [c * 255.0 for c in colorsys.hsv_to_rgb(strip_hue, 1.0, 1.0)]
 
-                target_r, target_g, target_b = [c * 255.0 for c in colorsys.hsv_to_rgb(hue, sat, val)]
-                lerp_speed = 0.35
+                # Keyboard (Zones 1, 2, 3): Traveling Voice Ripple wave across keys
+                ripple = elapsed * 6.5
+                p1 = 0.5 + 0.5 * math.sin(ripple)
+                p2 = 0.5 + 0.5 * math.sin(ripple - 1.2)
+                p3 = 0.5 + 0.5 * math.sin(ripple - 2.4)
 
-            elif mode == RobotMode.LISTENING:
-                # ── Deep Emerald to Neon Lime Pulse (0.8 Hz) ──
-                # Very distinct vivid electric green clearly different from all other modes
-                pulse = 0.5 + 0.5 * math.sin(elapsed * 2.8)
-                target_r = 10.0 + 80.0 * pulse   # Adds electric lime tint at peak
-                target_g = 255.0                  # Pure max green
-                target_b = 40.0 * (1.0 - pulse)  # Drops blue to zero at peak for max green contrast
-                lerp_speed = 0.22
+                h1 = (0.52 + 0.40 * (self._smooth_energy * 0.6 + p1 * 0.4)) % 1.0
+                h2 = (0.58 + 0.40 * (self._smooth_energy * 0.6 + p2 * 0.4)) % 1.0
+                h3 = (0.64 + 0.40 * (self._smooth_energy * 0.6 + p3 * 0.4)) % 1.0
+
+                z1_r, z1_g, z1_b = [c * 255.0 for c in colorsys.hsv_to_rgb(h1, 1.0, 1.0)]
+                z2_r, z2_g, z2_b = [c * 255.0 for c in colorsys.hsv_to_rgb(h2, 1.0, 1.0)]
+                z3_r, z3_g, z3_b = [c * 255.0 for c in colorsys.hsv_to_rgb(h3, 1.0, 1.0)]
 
             elif mode == RobotMode.THINKING:
-                # ── Burning Solar Flare (Orange -> Pure Golden Yellow) ──
-                pulse = 0.5 + 0.5 * math.sin(elapsed * 4.0)
-                target_r = 255.0
-                target_g = 30.0 + 190.0 * pulse  # Swells between deep lava orange (255, 30, 0) and golden yellow (255, 220, 0)
-                target_b = 0.0
-                lerp_speed = 0.25
+                # Front Underglow Lightbar (Zone 4): Gentle golden breathing aura
+                b_pulse = 0.5 + 0.5 * math.sin(elapsed * 2.5)
+                strip_r, strip_g, strip_b = 255.0, 90.0 + 80.0 * b_pulse, 0.0
+
+                # Keyboard (Zones 1, 2, 3): High-tech Neural Calculation ping-pong scanner!
+                scan = 0.5 + 0.5 * math.sin(elapsed * 6.0)
+                w1 = max(0.0, 1.0 - abs(scan - 0.0) * 2.5)
+                w2 = max(0.0, 1.0 - abs(scan - 0.5) * 2.5)
+                w3 = max(0.0, 1.0 - abs(scan - 1.0) * 2.5)
+
+                z1_r, z1_g, z1_b = 255.0, 30.0 + 210.0 * w1, 20.0 * w1
+                z2_r, z2_g, z2_b = 255.0, 30.0 + 210.0 * w2, 20.0 * w2
+                z3_r, z3_g, z3_b = 255.0, 30.0 + 210.0 * w3, 20.0 * w3
+
+            elif mode == RobotMode.LISTENING:
+                # Front Underglow Lightbar (Zone 4): Steady vigilant electric emerald indicator
+                strip_r, strip_g, strip_b = 10.0, 255.0, 40.0
+
+                # Keyboard (Zones 1, 2, 3): Acoustic focus wave
+                pulse = 0.5 + 0.5 * math.sin(elapsed * 3.0)
+                z1_r, z1_g, z1_b = 0.0, 200.0 + 40.0 * pulse, 120.0 * (1.0 - pulse)
+                z2_r, z2_g, z2_b = 20.0 + 60.0 * pulse, 255.0, 30.0
+                z3_r, z3_g, z3_b = 0.0, 180.0 + 40.0 * pulse, 160.0 * (1.0 - pulse)
 
             elif mode == RobotMode.ERROR:
-                # ── Pure Warning Crimson Flash ──
                 flash = 1.0 if (int(elapsed * 6.0) % 2 == 0) else 0.15
-                target_r = 255.0 * flash
-                target_g = 0.0
-                target_b = 0.0
-                lerp_speed = 0.40
+                strip_r, strip_g, strip_b = 200.0, 0.0, 0.0
+                z1_r = z2_r = z3_r = 255.0 * flash
+                z1_g = z2_g = z3_g = 0.0
+                z1_b = z2_b = z3_b = 0.0
 
             elif mode == RobotMode.SLEEPING:
-                # ── Deep Midnight Indigo ──
                 pulse = 0.5 + 0.5 * math.sin(elapsed * 1.0)
-                target_r = 40.0 * pulse
-                target_g = 0.0
-                target_b = 180.0 + 75.0 * pulse
-                lerp_speed = 0.12
+                strip_r, strip_g, strip_b = 20.0 * pulse, 0.0, 80.0 + 40.0 * pulse
+                z1_r = z2_r = z3_r = 10.0 * pulse
+                z1_g = z2_g = z3_g = 0.0
+                z1_b = z2_b = z3_b = 25.0 * pulse
 
             else:
-                # ── IDLE: Deep Royal Blue into Electric Cyan Swell ──
+                # ── IDLE: Front Underglow = Cyberpunk Deep Indigo, Keyboard = Chromatic Aurora Flow ──
                 pulse = 0.5 + 0.5 * math.sin(elapsed * 2.0)
-                target_r = 0.0
-                target_g = 20.0 + 200.0 * pulse   # Sweeps from pure Royal Blue (0, 20, 255) to Electric Cyan (0, 220, 255)
-                target_b = 255.0
-                lerp_speed = 0.18
+                strip_r, strip_g, strip_b = 0.0, 40.0 + 80.0 * pulse, 255.0
 
-            # Smooth exponential interpolation (lerp) towards target color
-            cur_r += (target_r - cur_r) * lerp_speed
-            cur_g += (target_g - cur_g) * lerp_speed
-            cur_b += (target_b - cur_b) * lerp_speed
-            self._current_rgb = (cur_r, cur_g, cur_b)
+                # Flowing aurora across keyboard keys
+                flow = elapsed * 1.4
+                h1 = (0.50 + 0.15 * math.sin(flow)) % 1.0
+                h2 = (0.58 + 0.15 * math.sin(flow - 0.8)) % 1.0
+                h3 = (0.66 + 0.15 * math.sin(flow - 1.6)) % 1.0
 
-            self.set_color(int(cur_r), int(cur_g), int(cur_b))
-            await asyncio.sleep(0.035)  # Responsive ~28 FPS update rate
+                z1_r, z1_g, z1_b = [c * 255.0 for c in colorsys.hsv_to_rgb(h1, 1.0, 1.0)]
+                z2_r, z2_g, z2_b = [c * 255.0 for c in colorsys.hsv_to_rgb(h2, 1.0, 1.0)]
+                z3_r, z3_g, z3_b = [c * 255.0 for c in colorsys.hsv_to_rgb(h3, 1.0, 1.0)]
+
+            # Dispatch multi-zone colors
+            self.set_color(int(z1_r), int(z1_g), int(z1_b), zone=1)
+            self.set_color(int(z2_r), int(z2_g), int(z2_b), zone=2)
+            self.set_color(int(z3_r), int(z3_g), int(z3_b), zone=3)
+            self.set_color(int(strip_r), int(strip_g), int(strip_b), zone=4)
+            await asyncio.sleep(0.038)
