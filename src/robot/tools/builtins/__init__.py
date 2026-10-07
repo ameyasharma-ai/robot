@@ -38,11 +38,14 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     """Register all built-in tools with the engine's tool registry."""
 
     # --- Memory Tools ---
-    async def memory_write(fact: str) -> str:
+    async def memory_write(fact: str = "", **kwargs) -> str:
+        target_fact = (fact or kwargs.get("text") or kwargs.get("content") or kwargs.get("note") or kwargs.get("message") or "").strip()
+        if not target_fact:
+            return "No fact text provided to remember."
         pers = engine.personalities.active
         ns = getattr(pers, "memory_namespace", "default")
-        await engine.memory.add_memory(fact, user_id=ns)
-        return f"Successfully remembered: '{fact}' in {ns} workspace"
+        await engine.memory.add_memory(target_fact, user_id=ns)
+        return f"Successfully remembered: '{target_fact}' in {ns} workspace"
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -112,7 +115,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     _search_cache: dict[str, tuple[float, list[dict]]] = {}
     SEARCH_CACHE_TTL = 600.0
 
-    async def web_search(query: str, max_results: int = 3, deep: bool = False) -> list[dict]:
+    async def web_search(query: str = "", max_results: int = 3, deep: bool = False, **kwargs) -> list[dict]:
         """Perform an ultra-fast, extensive web search with multi-engine failover."""
         import asyncio
         import html as html_lib
@@ -122,10 +125,14 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         import urllib.parse
         import urllib.request
 
+        eff_q = (query or kwargs.get("q") or kwargs.get("search") or kwargs.get("term") or kwargs.get("topic") or kwargs.get("keyword") or "").strip()
+        if not eff_q:
+            return [{"error": "No search query provided."}]
+
         eff_max = 8 if deep else max_results
 
         # Clean search query: strip natural language conversational filler
-        clean_q = query.strip()
+        clean_q = eff_q
         lower_q = clean_q.lower()
         for prefix in [
             "search deeply about", "search deeply for", "deep search for", "deep search",
@@ -337,8 +344,9 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def history_search(query: str, limit: int = 10) -> Any:
-        return await engine.memory.search_history(query, limit)
+    async def history_search(query: str = "", limit: int = 10, **kwargs) -> Any:
+        eff_q = (query or kwargs.get("q") or kwargs.get("search") or kwargs.get("term") or "").strip()
+        return await engine.memory.search_history(eff_q, limit)
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -376,7 +384,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def get_current_time(timezone_str: str | None = None) -> dict:
+    async def get_current_time(timezone_str: str | None = None, **kwargs) -> dict:
         """Get exact current time, date, day of week, and timezone.
         
         Defaults to Indian Standard Time (Asia/Kolkata), configurable via config/tools/tools.yaml.
@@ -394,11 +402,12 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         target_country = default_country
         tz_label = default_tz_name
 
-        if timezone_str:
-            clean = timezone_str.strip().lower()
+        eff_tz = timezone_str or kwargs.get("tz") or kwargs.get("timezone") or kwargs.get("location") or kwargs.get("country") or kwargs.get("city")
+        if eff_tz:
+            clean = eff_tz.strip().lower()
             if clean in country_map:
                 target_tz = country_map[clean]
-                target_country = timezone_str.strip().title()
+                target_country = eff_tz.strip().title()
                 tz_label = target_tz
             else:
                 tz_alias = {
@@ -409,8 +418,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                     "california": "America/Los_Angeles", "san francisco": "America/Los_Angeles", "pst": "America/Los_Angeles", "la": "America/Los_Angeles",
                     "paris": "Europe/Paris", "berlin": "Europe/Berlin", "sydney": "Australia/Sydney",
                 }
-                target_tz = tz_alias.get(clean, timezone_str.strip())
-                target_country = timezone_str.strip().title()
+                target_tz = tz_alias.get(clean, eff_tz.strip())
+                target_country = eff_tz.strip().title()
                 tz_label = target_tz
         else:
             target_tz = default_tz_name
@@ -447,10 +456,12 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     )
 
     # --- Wikipedia Knowledge Tool ---
-    async def wikipedia_lookup(query: str) -> dict:
+    async def wikipedia_lookup(query: str = "", **kwargs) -> dict:
         """Lookup encyclopedic summary and facts from Wikipedia."""
         import urllib.parse
-        clean_q = query.strip()
+        clean_q = (query or kwargs.get("topic") or kwargs.get("entity") or kwargs.get("term") or kwargs.get("title") or "").strip()
+        if not clean_q:
+            return {"found": False, "message": "No topic provided for Wikipedia lookup."}
         encoded = urllib.parse.quote(clean_q)
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
         headers = {"User-Agent": "AntigravityRobot/2.0 (open-source; educational-robotics)"}
@@ -516,7 +527,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     )
 
     # --- Math & Calculation Tool ---
-    async def system_calculate(expression: str) -> dict:
+    async def system_calculate(expression: str = "", **kwargs) -> dict:
         """Safely calculate mathematical and scientific expressions without hallucinating."""
         import math
 
@@ -526,16 +537,19 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             "log": math.log, "log10": math.log10, "exp": math.exp,
             "pi": math.pi, "e": math.e, "ceil": math.ceil, "floor": math.floor,
         }
-        clean_expr = expression.strip().replace("^", "**").replace("×", "*").replace("÷", "/")
+        raw_expr = (expression or kwargs.get("expr") or kwargs.get("calc") or kwargs.get("math") or kwargs.get("formula") or kwargs.get("equation") or "").strip()
+        if not raw_expr:
+            return {"status": "error", "message": "No mathematical expression provided."}
+        clean_expr = raw_expr.replace("^", "**").replace("×", "*").replace("÷", "/")
         try:
             code = compile(clean_expr, "<string>", "eval")
             for name in code.co_names:
                 if name not in safe_dict:
                     return {"status": "error", "message": f"Disallowed function or symbol: '{name}'"}
             result = eval(code, {"__builtins__": {}}, safe_dict)
-            return {"status": "success", "expression": expression, "result": result}
+            return {"status": "success", "expression": raw_expr, "result": result}
         except Exception as e:
-            return {"status": "error", "expression": expression, "error": str(e)}
+            return {"status": "error", "expression": raw_expr, "error": str(e)}
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -615,8 +629,28 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Music Tools (Spotify, SoundCloud, Local audio) ---
     music_service = MusicPlayerService.get_instance()
 
-    async def music_play(query: str, source: str = "ytdlp") -> dict:
-        clean_q = query.strip().lower()
+    async def music_play(query: str | None = None, source: str = "ytdlp", **kwargs) -> dict:
+        raw_q = (query or kwargs.get("song") or kwargs.get("track") or kwargs.get("title") or
+                 kwargs.get("song_name") or kwargs.get("track_name") or kwargs.get("name") or
+                 kwargs.get("youtube") or kwargs.get("url") or kwargs.get("q") or kwargs.get("search") or "").strip()
+
+        # Handle composite artist + song
+        artist = kwargs.get("artist")
+        if artist and not raw_q:
+            raw_q = str(artist).strip()
+        elif artist and str(artist).lower() not in raw_q.lower():
+            raw_q = f"{artist} {raw_q}".strip()
+
+        # Fallback if no query provided
+        if not raw_q:
+            st = music_service.get_status()
+            if st.get("is_paused"):
+                return await asyncio.to_thread(music_service.resume, wait_speech_engine=engine)
+            elif st.get("last_played"):
+                return await asyncio.to_thread(music_service.replay, wait_speech_engine=engine)
+            return {"status": "error", "message": "Please specify a song title, track, or artist to play."}
+
+        clean_q = raw_q.lower()
         # Auto-delegate relative replay references to replay
         replay_queries = {
             "that song again", "that song", "it again", "play it again", "play that again",
@@ -626,26 +660,27 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         if clean_q in replay_queries:
             return await asyncio.to_thread(music_service.replay, wait_speech_engine=engine)
 
-        clean_src = source.strip().lower()
+        src_arg = source or kwargs.get("platform") or kwargs.get("src") or "ytdlp"
+        clean_src = str(src_arg).strip().lower()
         if clean_src in {"auto", "default", ""}:
-            if any(w in query.lower() for w in ["local", "library", "offline", "stored"]):
+            if any(w in raw_q.lower() for w in ["local", "library", "offline", "stored"]):
                 clean_src = "local"
-            elif "soundcloud" in query.lower():
+            elif "soundcloud" in raw_q.lower():
                 clean_src = "soundcloud"
-            elif "spotify" in query.lower():
+            elif "spotify" in raw_q.lower():
                 clean_src = "spotify"
             else:
                 clean_src = "ytdlp"
 
         if clean_src in {"ytdlp", "yt-dlp", "youtube"}:
-            return await asyncio.to_thread(music_service.play_ytdlp, query, wait_speech_engine=engine)
+            return await asyncio.to_thread(music_service.play_ytdlp, raw_q, wait_speech_engine=engine)
         elif clean_src == "spotify":
-            return await asyncio.to_thread(music_service.play_spotify, query, wait_speech_engine=engine)
+            return await asyncio.to_thread(music_service.play_spotify, raw_q, wait_speech_engine=engine)
         elif clean_src == "soundcloud":
-            return await asyncio.to_thread(music_service.play_soundcloud, query, wait_speech_engine=engine)
+            return await asyncio.to_thread(music_service.play_soundcloud, raw_q, wait_speech_engine=engine)
         elif clean_src == "local":
-            return await asyncio.to_thread(music_service.play_local, query, wait_speech_engine=engine)
-        return await asyncio.to_thread(music_service.play_ytdlp, query, wait_speech_engine=engine)
+            return await asyncio.to_thread(music_service.play_local, raw_q, wait_speech_engine=engine)
+        return await asyncio.to_thread(music_service.play_ytdlp, raw_q, wait_speech_engine=engine)
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -834,19 +869,22 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     )
 
     # --- Personality Tools ---
-    async def switch_personality(name: str) -> str:
-        if engine.personalities.set_active(name):
-            engine.state.state.active_personality = name
-            pers = engine.personalities.get(name)
+    async def switch_personality(name: str = "", **kwargs) -> str:
+        target_name = (name or kwargs.get("personality") or kwargs.get("character") or kwargs.get("mode") or kwargs.get("persona") or "").strip()
+        if not target_name:
+            return f"No personality specified. Available: {engine.personalities.list_personalities()}"
+        if engine.personalities.set_active(target_name):
+            engine.state.state.active_personality = target_name
+            pers = engine.personalities.get(target_name)
             if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
                 engine.tts.set_active_voice(pers.voice_model)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
-                coro = engine.warm_up_llm(name)
+                coro = engine.warm_up_llm(target_name)
                 if asyncio.iscoroutine(coro):
                     asyncio.create_task(coro)
-            return f"Switched to {name} personality"
+            return f"Switched to {target_name} personality"
         available = engine.personalities.list_personalities()
-        return f"Personality '{name}' not found. Available: {available}"
+        return f"Personality '{target_name}' not found. Available: {available}"
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -874,17 +912,20 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     register_motion_tools(engine)
 
     # --- Image Generation Tools ---
-    async def generate_image(prompt: str, width: int = 512, height: int = 512, steps: int = 15) -> dict:
+    async def generate_image(prompt: str = "", width: int = 512, height: int = 512, steps: int = 15, **kwargs) -> dict:
         if not getattr(engine, "image_service", None):
             return {"error": "Image generation service is not initialized"}
+        raw_p = (prompt or kwargs.get("text") or kwargs.get("description") or kwargs.get("query") or kwargs.get("caption") or "").strip()
+        if not raw_p:
+            return {"error": "No visual prompt provided for image generation."}
         # Bound steps between 12 and 20 for optimal quality and responsiveness
         clamped_steps = max(12, min(20, steps)) if steps else 15
         span = None
         if getattr(engine, "observability", None):
-            span = engine.observability.start_span("IMAGE", "GENERATE", metadata={"prompt": prompt})
+            span = engine.observability.start_span("IMAGE", "GENERATE", metadata={"prompt": raw_p})
 
         job = engine.image_service.submit_job(
-            prompt=prompt,
+            prompt=raw_p,
             width=width,
             height=height,
             steps=clamped_steps,
@@ -897,7 +938,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         return {
             "status": "queued",
             "job_id": job.job_id,
-            "message": f"Image generation started in background for '{prompt}'. Check dashboard or /images/jobs for status.",
+            "message": f"Image generation started in background for '{raw_p}'. Check dashboard or /images/jobs for status.",
         }
 
     engine.tool_registry.register(
@@ -920,11 +961,14 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def cancel_image(job_id: str) -> dict:
+    async def cancel_image(job_id: str = "", **kwargs) -> dict:
         if not getattr(engine, "image_service", None):
             return {"error": "Image generation service is not initialized"}
-        ok = await engine.image_service.cancel_job(job_id)
-        return {"cancelled": ok, "job_id": job_id}
+        jid = (job_id or kwargs.get("id") or kwargs.get("task_id") or "").strip()
+        if not jid:
+            return {"error": "No job ID provided to cancel."}
+        ok = await engine.image_service.cancel_job(jid)
+        return {"cancelled": ok, "job_id": jid}
 
     engine.tool_registry.register(
         ToolDefinition(

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 def register_perception_tools(engine: "RobotEngine") -> None:
     """Register camera and perception tools with the engine's tool registry."""
 
-    async def get_world_state() -> dict[str, Any]:
+    async def get_world_state(**kwargs) -> dict[str, Any]:
         """Return the current continuous perception world state."""
         if hasattr(engine, "perception") and engine.perception:
             return engine.perception.world_state.to_compact()
@@ -33,7 +33,7 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def capture_snapshot(format: str = "base64", quality: int = 80) -> dict[str, Any]:
+    async def capture_snapshot(format: str = "base64", quality: int = 80, **kwargs) -> dict[str, Any]:
         """Capture a snapshot from the robot's camera for inspection or visual reasoning."""
         if not hasattr(engine, "perception") or not engine.perception or not engine.perception.camera:
             return {"error": "Camera not available"}
@@ -50,12 +50,13 @@ def register_perception_tools(engine: "RobotEngine") -> None:
             return {"error": "Failed to encode frame"}
 
         b64_str = base64.b64encode(encimg.tobytes()).decode("utf-8")
+        eff_format = format or kwargs.get("encoding", "base64")
         return {
             "width": w,
             "height": h,
             "format": "jpeg",
-            "image_base64": b64_str if format == "base64" else None,
-            "data_url": f"data:image/jpeg;base64,{b64_str}" if format == "data_url" else None,
+            "image_base64": b64_str if eff_format == "base64" else None,
+            "data_url": f"data:image/jpeg;base64,{b64_str}" if eff_format == "data_url" else None,
             "size_bytes": len(encimg),
         }
 
@@ -85,7 +86,7 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def what_do_you_see() -> dict[str, Any]:
+    async def what_do_you_see(**kwargs) -> dict[str, Any]:
         """Perform visual inspection through the camera to report what the robot sees."""
         if not hasattr(engine, "perception") or not engine.perception:
             return {

@@ -547,6 +547,46 @@ def test_api_equalizer_endpoint():
     assert data2.get("preset") == "robot"
 
 
+async def test_tool_kwargs_and_missing_arguments_robustness():
+    """Verify that builtin tools handle loose LLM arguments, kwargs, and missing positional args without TypeError."""
+    from robot.tools.builtins import register_builtin_tools
+    from unittest.mock import MagicMock, AsyncMock
+
+    engine = MagicMock()
+    engine.memory.search_history = AsyncMock(return_value=[])
+    tr = ToolRegistry()
+    engine.tool_registry = tr
+    register_builtin_tools(engine)
+
+    # 1. history.search with kwargs
+    h_tool = tr.get("history.search")
+    res_h = await h_tool.handler(q="quantum physics", extra_param=123)
+    assert isinstance(res_h, list)
+
+    # 2. system.calculate with kwargs and expr alias
+    calc_tool = tr.get("system.calculate")
+    res_calc = await calc_tool.handler(calc="2 + 2 * 10", dummy_kwarg=True)
+    assert res_calc.get("status") == "success"
+    assert res_calc.get("result") == 22
+
+    # 3. system.calculate empty
+    res_calc_empty = await calc_tool.handler()
+    assert res_calc_empty.get("status") == "error"
+
+    # 4. character.execute_action with kwargs and motion alias
+    motion_tool = tr.get("character.execute_action")
+    res_motion = await motion_tool.handler(gesture="wave", arm="right", arbitrary=True)
+    assert res_motion.get("status") == "executing"
+    assert res_motion.get("action") == "wave"
+
+    # 5. music.control with arbitrary kwargs and no action specified
+    music_ctrl = tr.get("music.control")
+    res_m = await music_ctrl.handler(volume="50%", random_flag="yes")
+    assert res_m.get("status") == "volume_set"
+    assert res_m.get("volume") == 0.5
+
+
+
 
 
 

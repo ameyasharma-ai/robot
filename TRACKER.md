@@ -905,6 +905,21 @@ Legend:
          - Added URL parameter support (`?view=chat` / `?view=dual`) for instant deep-linking.
       5. Added regression tests `test_api_transcribe_audio_endpoint` and `test_api_transcribe_empty_file_fails` in `tests/test_chat_sessions.py` (105/105 tests passing).
 
+69. **System-Wide Builtin Tool `**kwargs` Tolerance & Argument Resilience**:
+    - *Symptoms*: When LLMs (especially Gemini Cloud API or small quantized models) generate tool calls with extraneous or aliased parameters (e.g. `calc="2 + 2"`, `gesture="wave"`, `encoding="base64"`, or arbitrary telemetry parameters), Python handlers without `**kwargs` threw `TypeError: missing required positional argument` or `unexpected keyword argument`.
+    - *Fixes Applied*:
+      1. Updated `src/robot/tools/__init__.py`: `ToolDefinition.execute()` now automatically inspects handler signature parameters and filters incoming keyword arguments if the handler does not accept `**kwargs`, preventing unhandled argument rejection.
+      2. Upgraded all builtin tool handlers across `builtins/__init__.py`, `perception.py`, and `motion.py` to accept `**kwargs` and provide intelligent default parameter extraction:
+         - `history.search`: accepts `q` or `query` via kwargs with fallback to `""`.
+         - `system.calculate`: extracts expression from `expr`, `expression`, `calc`, `equation`, or `query`.
+         - `knowledge.wikipedia`: extracts query from `query`, `topic`, `title`, or `search`.
+         - `character.execute_action`: defaults `action = None` and checks `gesture`, `motion`, `name`, `type` with safe fallback to `"nod"`.
+         - `character.stop`: accepts `**kwargs`.
+         - `perception.capture_snapshot`: extracts `encoding` or `format` with `**kwargs`.
+         - `perception.get_world_state` and `what_do_you_see`: accept `**kwargs`.
+      3. Added regression unit test `test_tool_kwargs_and_missing_arguments_robustness` in `tests/test_tools.py`.
+      4. All 106 unit tests passing 100% (`.venv/bin/pytest tests/`).
+
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.

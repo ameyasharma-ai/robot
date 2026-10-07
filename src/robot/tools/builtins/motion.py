@@ -17,7 +17,7 @@ def register_motion_tools(engine: "RobotEngine") -> None:
     planner = MotionPlanner()
 
     async def execute_action(
-        action: str,
+        action: str | None = None,
         side: str | None = None,
         duration: float = 1.0,
         intensity: float = 1.0,
@@ -26,18 +26,22 @@ def register_motion_tools(engine: "RobotEngine") -> None:
         angle: float = 0.0,
         distance: float = 1.0,
         emotion: str | None = None,
+        **kwargs,
     ) -> dict[str, Any]:
         """Execute a validated semantic movement on the 3D character and future physical robot."""
+        eff_action = action or kwargs.get("gesture") or kwargs.get("motion") or kwargs.get("name") or kwargs.get("type") or "nod"
+        eff_side = side or kwargs.get("hand") or kwargs.get("arm")
+        eff_emotion = emotion or kwargs.get("mood")
         req = {
-            "action": action,
-            "side": side,
+            "action": eff_action,
+            "side": eff_side,
             "duration": duration,
             "intensity": intensity,
             "repetitions": repetitions,
             "direction": direction,
             "angle": angle,
             "distance": distance,
-            "emotion": emotion,
+            "emotion": eff_emotion,
         }
         valid, semantic_action, err = validate_action(req)
         if not valid or semantic_action is None:
@@ -142,7 +146,7 @@ def register_motion_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def stop_motion() -> dict[str, Any]:
+    async def stop_motion(**kwargs) -> dict[str, Any]:
         """Emergency stop all ongoing character motions and blend gracefully to neutral idle."""
         await engine.events.emit("character.interrupt", interrupt=True)
         return {"status": "stopped", "mode": "idle"}

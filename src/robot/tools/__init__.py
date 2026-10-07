@@ -116,7 +116,12 @@ class ToolRouter:
             "wikipedia", "wiki", "who was", "who is", "what is", "tell me about", "history of",
             "explain the", "biography", "biography of", "encyclopedia", "concept of", "theory of"
         ],
-        "web": ["search online", "search web", "look up", "find online", "browse web", "google", "duckduckgo", "latest news", "price of", "release date", "current weather", "weather in", "sports score", "stock price", "specs of", "specifications", "deep search", "search deeply"],
+        "web": [
+            "search online", "search web", "search for", "search", "look up", "find online", "browse web",
+            "google", "duckduckgo", "latest news", "price of", "release date", "current weather", "weather in",
+            "sports score", "stock price", "specs of", "specifications", "deep search", "search deeply",
+            "date of", "when is", "tell me the date", "event", "news on", "look for", "find out", "lookup"
+        ],
         "music": [
             "play", "song", "music", "track", "spotify", "soundcloud", "youtube", "ytdlp", "listen to", "put on",
             "pause music", "pause the music", "pause song", "pause the song", "pause",
@@ -147,7 +152,8 @@ class ToolRouter:
 
     CHAINING_CONJUNCTIONS: list[str] = [
         "and then", "after that", "then next", "next", "then play", "then do", "then check",
-        "and also", "as well as", "followed by", "and next", "first", "afterwards"
+        "and also", "as well as", "followed by", "and next", "first", "afterwards",
+        "also", ". also", ";", "plus", "along with", "while", "as well", "and"
     ]
 
     def __init__(self, registry: ToolRegistry) -> None:
@@ -178,7 +184,7 @@ class ToolRouter:
         has_chaining = any(conj in text_lower for conj in self.CHAINING_CONJUNCTIONS)
         if has_chaining and selected_families:
             # If multiple actions requested in sequence, include all registered tools so model can plan full chain
-            if len(selected_families) >= 2 or any(w in text_lower for w in ["check", "play", "set", "volume", "look", "do", "wave"]):
+            if len(selected_families) >= 2 or any(w in text_lower for w in ["check", "play", "set", "volume", "look", "do", "wave", "search", "tell", "also"]):
                 return self._registry.list_tools()
 
         if not selected_families:
@@ -234,16 +240,30 @@ class PermissionManager:
         # Normalize common LLM parameter name discrepancies and aliases
         normalized_args = dict(arguments or {})
         param_aliases = {
-            "fact": ["text", "memory", "content", "note", "information", "info", "data", "message"],
-            "query": ["q", "search", "search_query", "term", "keyword", "keywords", "topic", "text", "song", "title", "name", "prompt"],
-            "action": ["act", "motion", "command", "type", "operation", "gesture", "movement"],
+            "fact": ["text", "memory", "content", "note", "information", "info", "data", "message", "value"],
+            "query": [
+                "q", "search", "search_query", "term", "keyword", "keywords", "topic", "text",
+                "song", "track", "title", "name", "prompt", "song_name", "track_name", "artist",
+                "music", "audio", "video", "url", "target", "item", "subject"
+            ],
+            "action": ["act", "motion", "command", "type", "operation", "gesture", "movement", "mode"],
             "prompt": ["text", "description", "query", "image_prompt", "caption"],
-            "name": ["personality", "character", "persona", "mode", "bot_name"],
+            "name": ["personality", "character", "persona", "mode", "bot_name", "name_str"],
             "timezone_str": ["timezone", "tz", "country", "city", "location", "place", "region"],
             "source": ["platform", "src", "provider", "music_source"],
             "volume": ["vol", "level", "val"],
-            "expression": ["expr", "calc", "formula", "math", "equation"],
+            "expression": ["expr", "calc", "formula", "math", "equation", "calculation", "query"],
+            "job_id": ["id", "job", "task_id", "jobId"],
+            "preset": ["preset_name", "profile", "eq", "name"],
         }
+
+        # Handle composite artist + title for music tools
+        if "artist" in normalized_args and "query" not in normalized_args:
+            other_title = normalized_args.get("track") or normalized_args.get("song") or normalized_args.get("title") or ""
+            if other_title:
+                normalized_args["query"] = f"{normalized_args['artist']} - {other_title}"
+            else:
+                normalized_args["query"] = str(normalized_args["artist"])
 
         try:
             import inspect
@@ -259,6 +279,17 @@ class PermissionManager:
                     for alias in aliases:
                         if alias in normalized_args:
                             normalized_args[target_param] = normalized_args[alias]
+                            break
+
+            # Universal single-string fallback:
+            # If the handler expects a required parameter without default that is still missing,
+            # and normalized_args contains string values, bind the first available string value.
+            for p_name, p_param in handler_params.items():
+                if p_param.default == inspect.Parameter.empty and p_name not in normalized_args:
+                    # Look for any string value in normalized_args that was not mapped
+                    for k, v in list(normalized_args.items()):
+                        if isinstance(v, str) and v.strip() and k not in handler_params:
+                            normalized_args[p_name] = v
                             break
 
             # If handler does not accept **kwargs, prune unknown keys so invocation does not raise TypeError
