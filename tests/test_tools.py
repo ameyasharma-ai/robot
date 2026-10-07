@@ -502,6 +502,52 @@ async def test_music_control_composite_and_equalizer():
     svc.stop()
 
 
+def test_tool_router_chaining():
+    tr = ToolRegistry()
+    from robot.tools.builtins import register_builtin_tools
+    from unittest.mock import MagicMock
+    engine = MagicMock()
+    engine.tool_registry = tr
+    register_builtin_tools(engine)
+
+    router = ToolRouter(tr)
+
+    # 1. Single intent
+    tools_music = router.select_tools("play some music")
+    assert "music.play" in tools_music
+
+    # 2. Chained intent with "and then"
+    tools_chained = router.select_tools("check what is in front of you and then play juice wrld and do a wave")
+    assert "music.play" in tools_chained
+    assert "character.execute_action" in tools_chained
+    assert "perception.what_do_you_see" in tools_chained or "perception.inspect_view" in tools_chained
+
+
+def test_api_equalizer_endpoint():
+    from starlette.testclient import TestClient
+    from robot.api import create_app
+    from unittest.mock import MagicMock
+
+    engine = MagicMock()
+    app = create_app(engine)
+
+    client = TestClient(app)
+    # GET status
+    resp = client.get("/api/music/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "status" in data
+    assert "equalizer" in data
+
+    # POST switch equalizer preset
+    resp2 = client.post("/api/equalizer", json={"preset": "robot"})
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2.get("status") == "ok"
+    assert data2.get("preset") == "robot"
+
+
+
 
 
 

@@ -40,6 +40,8 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Real-Time Observability** | `ObservabilityHub` (WebSockets) | ✅ **Active** | Core Engine | Live latency metrics, span hierarchy, pipeline flow visualization in HUD. |
 | **Async Image Generation** | `ImageGenerationService` (Local SD) | ✅ **Active** | AMD Ryzen 7 6800H + Radeon 680M | Multi-core thread-optimized AVX-512/AVX2 + attention slicing; RTX 3050 isolated. |
 | **ChatGPT AI Workspace** | Real-Time SSE + SQLite Sessions + Shared Mem0 Vector Store | ✅ **Active** | Core Engine / Browser | Multi-session threads, hardware mic unloading, live tok/s telemetry & tool execution cards. |
+| **EasyEffects Equalizer** | EasyEffects CLI + `music.equalizer` + Live Spectrum HUD | ✅ **Active** | Host Audio / PipeWire | 6 high-fidelity sound profiles (`robot`, `bass_boost`, `spatial`, etc.) + 32-bar visualizer. |
+| **Sequential Tool Chaining** | Multi-Action Tool Coordinator + Paced Pipelines | ✅ **Active** | Core Engine | Sequential execution for compound queries ("check this, then play that, then do this") without popping. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -870,6 +872,19 @@ Legend:
          - `sub_bass` (`Immersive_Sub75_ClearVocals`): Deep rumble with crisp dialogue.
       3. Created dedicated `music.equalizer` tool and added `action="equalizer"` / `action="equalizers"` support to `music.control`.
       4. Added unit tests in `tests/test_tools.py` verifying preset switching and listing (101/101 tests passing).
+
+67. **Sequential Multi-Action Tool Chaining & Macro Execution Pacing**:
+    - *Symptoms*: When user asked the model to perform compound or chained requests (*"check this and then play that and do this"*), all tools popped simultaneously without sequential pacing, or secondary tool keywords were omitted by the tool router.
+    - *Root Causes*:
+      1. `ToolRouter.select_tools` only checked individual keywords and did not detect chaining conjunctions (`"and then"`, `"after that"`, `"next"`), dropping secondary tool families.
+      2. In both voice mode (`process_input`) and text mode (`process_text_input`), multiple tools in `collected_tool_calls` were executed in a tight zero-delay loop, creating simultaneous UI jumps.
+      3. System prompt lacked an explicit Sequential Multi-Action Chaining Directive.
+    - *Fixes Applied*:
+      1. Expanded `ToolRouter` with `CHAINING_CONJUNCTIONS` and broadened intent triggers for perception, music, and motion, enabling full tool registry access on chained intents.
+      2. Added human-perceptible sequential pacing (`await asyncio.sleep(0.35)`) between chained tool executions in both voice and text processing pipelines.
+      3. Added `Sequential Multi-Action Chaining Directive` to `GROUNDING_POLICY` in `src/robot/core/context.py`.
+      4. Added cyberdeck audio & equalizer console with interactive chained task quick-macro triggers in the dashboard HUD.
+      5. Added regression tests `test_tool_router_chaining` and `test_api_equalizer_endpoint` (103/103 tests passing).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

@@ -19,12 +19,24 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ─── 1. Clean Hardware Mic Calibration ───────────────────────────────
+# ─── 1. Clean Hardware Mic Calibration & EasyEffects Daemon ───────────
 echo "[AUDIO] Calibrating clean hardware microphone capture (35% volume)..."
 pactl unload-module module-echo-cancel 2>/dev/null || true
 pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 35% 2>/dev/null || true
 pactl set-default-source alsa_input.pci-0000_05_00.6.analog-stereo 2>/dev/null || true
 amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
+
+if command -v easyeffects >/dev/null 2>&1; then
+    if ! pgrep -f "easyeffects" >/dev/null 2>&1; then
+        echo "[AUDIO] Starting EasyEffects audio processing service in background..."
+        nohup easyeffects --gapplication-service >/dev/null 2>&1 &
+        sleep 0.6
+        easyeffects -l robot >/dev/null 2>&1 || true
+    else
+        echo "[AUDIO] EasyEffects service already active. Loading robot equalizer preset..."
+        easyeffects -l robot >/dev/null 2>&1 || true
+    fi
+fi
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
 ACTIVE_PROVIDER="local"

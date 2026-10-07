@@ -137,8 +137,18 @@ class ToolRouter:
         ],
         "image": ["generate image", "generate an image", "create image", "create an image", "draw an image", "paint an image", "illustration of", "render image", "generate picture"],
         "motion": ["wave", "raise hand", "kick", "walk", "turn around", "point at", "dance", "gesture", "stop motion", "reset pose", "nod head"],
-        "perception": ["what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that", "look at this", "look around", "look at me", "who is here", "who is this", "can you see me", "do you see me", "what am i holding", "what i am holding", "inspect scene"],
+        "perception": [
+            "what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that",
+            "look at this", "look around", "look at me", "who is here", "who is this", "can you see me", "do you see me",
+            "what am i holding", "what i am holding", "inspect scene", "check", "check this", "check that", "check what",
+            "inspect", "look", "see", "camera", "vision", "describe scene", "describe what you see"
+        ],
     }
+
+    CHAINING_CONJUNCTIONS: list[str] = [
+        "and then", "after that", "then next", "next", "then play", "then do", "then check",
+        "and also", "as well as", "followed by", "and next", "first", "afterwards"
+    ]
 
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
@@ -162,6 +172,14 @@ class ToolRouter:
                     if re.search(rf"\b{re.escape(kw)}\b", text_lower):
                         selected_families.add(family)
                         break
+
+        # If chaining conjunctions are detected and at least one tool family matched,
+        # ensure all potentially relevant tools for multi-step reasoning are available.
+        has_chaining = any(conj in text_lower for conj in self.CHAINING_CONJUNCTIONS)
+        if has_chaining and selected_families:
+            # If multiple actions requested in sequence, include all registered tools so model can plan full chain
+            if len(selected_families) >= 2 or any(w in text_lower for w in ["check", "play", "set", "volume", "look", "do", "wave"]):
+                return self._registry.list_tools()
 
         if not selected_families:
             return []

@@ -19,6 +19,30 @@ from robot.telemetry import get_logger
 logger = get_logger("tools.music")
 
 
+def ensure_easyeffects_running() -> bool:
+    """Ensure the EasyEffects audio processing service is running in background.
+    
+    If not already running, launches it in service mode so PipeWire audio filters
+    and equalizer profiles work reliably without manual user intervention.
+    """
+    try:
+        check = subprocess.run(["pgrep", "-f", "easyeffects"], capture_output=True, text=True, timeout=1.0)
+        if check.returncode == 0 and check.stdout.strip():
+            return True
+        logger.info("starting_easyeffects_service_daemon")
+        subprocess.Popen(
+            ["easyeffects", "--gapplication-service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        time.sleep(0.4)
+        return True
+    except Exception as e:
+        logger.warning("ensure_easyeffects_running_failed", error=str(e))
+        return False
+
+
 class MusicPlayerService:
     """Singleton-like music player service handling local playback and streaming links."""
 
@@ -38,6 +62,8 @@ class MusicPlayerService:
         self._music_started_event = asyncio.Event()
         self._music_active = False
         self._active_preset = "robot"
+        # Ensure EasyEffects audio daemon is active in background from startup
+        ensure_easyeffects_running()
 
     @property
     def is_playing(self) -> bool:
@@ -1187,6 +1213,9 @@ class MusicPlayerService:
 
         target_info = self.PRESETS[matched_key]
         target_file = target_info["file"]
+
+        # Guarantee EasyEffects background daemon is running before sending preset load command
+        ensure_easyeffects_running()
 
         try:
             res = subprocess.run(

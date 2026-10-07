@@ -361,6 +361,68 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Audio & EasyEffects Equalizer Cyberdeck Console -->
+                <div class="card card-audio-deck" id="cardAudioDeck">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="icon">🎛️</span> AUDIO & EQUALIZER DECK
+                        </div>
+                        <div class="card-badges">
+                            <span class="badge badge-accent" id="audioPresetBadge">EQ: ROBOT</span>
+                            <span class="badge" id="audioPlaybackBadge">STATUS: READY</span>
+                        </div>
+                    </div>
+                    <div class="audio-deck-content">
+                        <!-- Spectrum Visualizer Canvas -->
+                        <div class="spectrum-canvas-wrap">
+                            <canvas id="audioSpectrumCanvas" class="audio-spectrum-canvas" height="40"></canvas>
+                            <div class="spectrum-freq-axis">
+                                <span>30Hz</span><span>120Hz</span><span>500Hz</span><span>2kHz</span><span>8kHz</span><span>16kHz</span>
+                            </div>
+                        </div>
+
+                        <!-- Equalizer Preset Profile Chips -->
+                        <div class="eq-section-header">
+                            <span class="eq-dot"></span> EASYEFFECTS PROFILES:
+                        </div>
+                        <div class="eq-preset-chips" id="eqPresetChips">
+                            <button class="eq-chip active" data-preset="robot" title="User's signature tuned robot profile">🤖 Robot</button>
+                            <button class="eq-chip" data-preset="bass_boost" title="Max Bass Pristine Reverb">💥 Bass+</button>
+                            <button class="eq-chip" data-preset="spatial" title="Apple Spatial Max Bass Vocals">🎧 Spatial</button>
+                            <button class="eq-chip" data-preset="clear_vocals" title="SubBass 75Hz Clear Vocals">🎙️ Vocals</button>
+                            <button class="eq-chip" data-preset="reverb" title="Pristine Hall Reverb">🏛️ Reverb</button>
+                            <button class="eq-chip" data-preset="sub_bass" title="Immersive Sub 75Hz Clear Vocals">🌊 Sub-Bass</button>
+                        </div>
+
+                        <!-- Music Player Mini-Controller -->
+                        <div class="music-mini-dock">
+                            <div class="music-now-playing" id="musicNowPlaying">
+                                <span class="music-note-icon">🎵</span>
+                                <span class="track-title-marquee" id="trackTitleDisplay">Juice Wrld Acapella</span>
+                            </div>
+                            <div class="music-vol-control">
+                                <span class="vol-icon" id="volIcon">🔊</span>
+                                <input type="range" class="music-vol-slider" id="musicVolSlider" min="0" max="100" value="80" title="Adjust Music Volume" />
+                                <span class="vol-val" id="musicVolVal">80%</span>
+                            </div>
+                            <div class="music-quick-actions">
+                                <button class="music-ctrl-btn" id="btnRestartMusic" title="Restart track at active volume">⏮ Restart</button>
+                                <button class="music-ctrl-btn" id="btnTogglePlayback" title="Toggle Play / Pause">⏯ Play</button>
+                            </div>
+                        </div>
+
+                        <!-- Chained Task Quick Triggers -->
+                        <div class="chained-tasks-bar">
+                            <span class="chain-lbl">⚡ CHAINED ACTIONS:</span>
+                            <div class="chain-buttons">
+                                <button class="chain-btn" data-prompt="Check what you see and then play some music and set volume to 50%" title="Execute vision inspection followed by music playback">👁️ Check & 🎵 Play</button>
+                                <button class="chain-btn" data-prompt="Set equalizer to bass boost and restart music at 40% volume" title="Switch to Bass+ and restart track at 40%">💥 Bass+ 40%</button>
+                                <button class="chain-btn" data-prompt="Look around, introduce yourself, and wave your hand" title="Inspect scene, speak greeting, and trigger gesture">👋 Look & Wave</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </section>
 

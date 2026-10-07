@@ -40,12 +40,25 @@
     padding: 0;
 }
 
+html, body {
+    width: 100%;
+    min-width: 100%;
+    max-width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    box-sizing: border-box;
+}
+
 body {
     background-color: var(--bg-dark);
     color: var(--text-main);
     font-family: var(--font-ui);
     height: 100vh;
-    width: 100vw;
+    width: 100%;
+    min-width: 100%;
+    max-width: 100%;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -544,8 +557,10 @@ body {
 .main-viewport {
     height: calc(100vh - 60px);
     max-height: calc(100vh - 60px);
+    width: 100%;
+    min-width: 100%;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(420px, 0.9fr) minmax(680px, 1.45fr);
     gap: 16px;
     padding: 14px 18px;
     overflow: hidden;
@@ -3256,14 +3271,15 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     font-size: 12px;
 }
 
-/* ─── HUD Bottom Split: Latency Targets on Left, Image Studio on Right ─── */
+/* ─── HUD Bottom Split: Latency Targets, Image Studio & Audio Deck ─── */
 .hud-bottom-split {
     display: grid;
-    grid-template-columns: 1.12fr 0.88fr;
+    grid-template-columns: 1.15fr 0.95fr 0.9fr;
     gap: 12px;
     flex: 1;
     min-height: 0;
     align-items: stretch;
+    width: 100%;
 }
 
 .hud-bottom-split .card-metrics {
@@ -3690,6 +3706,242 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 
 .card-image-studio .img-meta-row b {
     color: var(--primary-cyan);
+}
+
+/* ─── Audio & EasyEffects Equalizer Cyberdeck Console ─── */
+.card-audio-deck {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px;
+    height: 100%;
+    min-height: 0;
+    margin-bottom: 0;
+    background: rgba(3, 14, 8, 0.78);
+    border: 1px solid rgba(0, 255, 102, 0.22);
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.card-audio-deck .card-header {
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(0, 255, 102, 0.12);
+}
+
+.card-audio-deck .card-title {
+    font-size: 11px;
+    letter-spacing: 0.8px;
+}
+
+.audio-deck-content {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    flex: 1;
+    min-height: 0;
+}
+
+.spectrum-canvas-wrap {
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(0, 255, 102, 0.2);
+    border-radius: 8px;
+    padding: 6px 8px 3px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.audio-spectrum-canvas {
+    width: 100%;
+    height: 38px;
+    display: block;
+}
+
+.spectrum-freq-axis {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 7.5px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    letter-spacing: 0.5px;
+}
+
+.eq-section-header {
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    font-weight: 700;
+    color: var(--text-muted);
+    letter-spacing: 0.8px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 1px;
+}
+
+.eq-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--matrix-bright);
+    box-shadow: 0 0 6px var(--matrix-bright);
+}
+
+.eq-preset-chips {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+}
+
+.eq-chip {
+    background: rgba(0, 255, 102, 0.05);
+    border: 1px solid rgba(0, 255, 102, 0.2);
+    color: var(--text-muted);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 4px 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.eq-chip:hover {
+    background: rgba(0, 255, 102, 0.15);
+    border-color: var(--matrix-bright);
+    color: var(--matrix-bright);
+}
+
+.eq-chip.active {
+    background: rgba(0, 255, 102, 0.25);
+    border-color: var(--matrix-bright);
+    color: var(--matrix-bright);
+    box-shadow: 0 0 10px rgba(0, 255, 102, 0.35);
+}
+
+.music-mini-dock {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid rgba(0, 255, 102, 0.15);
+    border-radius: 8px;
+    padding: 5px 8px;
+}
+
+.music-now-playing {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex: 1;
+    min-width: 0;
+}
+
+.music-note-icon {
+    font-size: 12px;
+    color: var(--matrix-bright);
+}
+
+.track-title-marquee {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 700;
+    color: var(--text-main);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.3px;
+}
+
+.music-vol-control {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.vol-icon {
+    font-size: 10px;
+    color: var(--text-dim);
+}
+
+.music-vol-slider {
+    width: 55px;
+    height: 4px;
+    accent-color: var(--matrix-bright);
+    cursor: pointer;
+}
+
+.vol-val {
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    color: var(--matrix-bright);
+    min-width: 22px;
+}
+
+.music-quick-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.music-ctrl-btn {
+    background: rgba(0, 255, 102, 0.08);
+    border: 1px solid rgba(0, 255, 102, 0.25);
+    color: var(--matrix-bright);
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 700;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.music-ctrl-btn:hover {
+    background: rgba(0, 255, 102, 0.2);
+    box-shadow: 0 0 8px rgba(0, 255, 102, 0.3);
+}
+
+.chained-tasks-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 1px;
+}
+
+.chain-lbl {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 700;
+    color: var(--primary-cyan);
+    letter-spacing: 0.8px;
+}
+
+.chain-buttons {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.chain-btn {
+    background: rgba(0, 242, 254, 0.08);
+    border: 1px solid rgba(0, 242, 254, 0.25);
+    color: var(--primary-cyan);
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    padding: 3px 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.chain-btn:hover {
+    background: rgba(0, 242, 254, 0.2);
+    border-color: var(--primary-cyan);
+    box-shadow: 0 0 8px rgba(0, 242, 254, 0.35);
 }
 
 /* ─── Chat Quick Chips: Available Tools ─── */

@@ -73,6 +73,7 @@ class RobotUI {
         this.initBlinking();
         this.initWebsocket();
         this.initImageGen();
+        this.initAudioDeck();
         this.startPollers();
     }
 
@@ -2240,6 +2241,202 @@ class RobotUI {
                 if (previewImg) previewImg.style.display = "none";
                 if (metaBlock) metaBlock.style.display = "none";
             }
+        }
+    }
+
+    initAudioDeck() {
+        const spectrumCanvas = document.getElementById("audioSpectrumCanvas");
+        const presetBadge = document.getElementById("audioPresetBadge");
+        const playbackBadge = document.getElementById("audioPlaybackBadge");
+        const eqChips = document.querySelectorAll("#eqPresetChips .eq-chip");
+        const trackTitle = document.getElementById("trackTitleDisplay");
+        const volSlider = document.getElementById("musicVolSlider");
+        const volVal = document.getElementById("musicVolVal");
+        const btnRestart = document.getElementById("btnRestartMusic");
+        const btnPlay = document.getElementById("btnTogglePlayback");
+        const chainBtns = document.querySelectorAll(".chain-btn");
+
+        // 1. Equalizer preset switcher
+        eqChips.forEach(chip => {
+            chip.addEventListener("click", async () => {
+                const preset = chip.dataset.preset;
+                eqChips.forEach(c => c.classList.remove("active"));
+                chip.classList.add("active");
+                if (presetBadge) presetBadge.textContent = `EQ: ${preset.toUpperCase()}`;
+
+                try {
+                    const res = await fetch("/api/equalizer", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ preset: preset })
+                    });
+                    const data = await res.json();
+                    if (data && data.status === "ok") {
+                        if (presetBadge) presetBadge.textContent = `EQ: ${data.preset.toUpperCase()}`;
+                    }
+                } catch (err) {
+                    console.error("Failed to switch equalizer preset:", err);
+                }
+            });
+        });
+
+        // 2. Fetch initial music & equalizer state
+        const refreshMusicState = async () => {
+            try {
+                const res = await fetch("/api/music/status");
+                const data = await res.json();
+                if (data && data.status) {
+                    const st = data.status;
+                    if (trackTitle && st.current_track && st.current_track !== "None") {
+                        trackTitle.textContent = st.current_track;
+                    }
+                    if (playbackBadge) {
+                        playbackBadge.textContent = st.is_playing ? "STATUS: PLAYING" : (st.is_paused ? "STATUS: PAUSED" : "STATUS: READY");
+                        playbackBadge.classList.toggle("badge-accent", !!st.is_playing);
+                    }
+                    if (st.volume !== undefined && volSlider && !volSlider.matches(':active')) {
+                        const pct = Math.round(st.volume * 100);
+                        volSlider.value = pct;
+                        if (volVal) volVal.textContent = `${pct}%`;
+                    }
+                }
+                if (data && data.equalizer && data.equalizer.active_preset) {
+                    const act = data.equalizer.active_preset;
+                    if (presetBadge) presetBadge.textContent = `EQ: ${act.toUpperCase()}`;
+                    eqChips.forEach(c => {
+                        c.classList.toggle("active", c.dataset.preset === act);
+                    });
+                }
+            } catch (err) {
+                // Ignore transient errors
+            }
+        };
+        refreshMusicState();
+        setInterval(refreshMusicState, 6000);
+
+        // 3. Volume slider
+        if (volSlider) {
+            volSlider.addEventListener("input", () => {
+                if (volVal) volVal.textContent = `${volSlider.value}%`;
+            });
+            volSlider.addEventListener("change", async () => {
+                const volPct = parseInt(volSlider.value, 10);
+                if (volVal) volVal.textContent = `${volPct}%`;
+                try {
+                    await fetch("/chat/send", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            message: `set music volume to ${volPct}%`,
+                            mode: "voice"
+                        })
+                    });
+                } catch (err) {
+                    console.error("Volume set error:", err);
+                }
+            });
+        }
+
+        // 4. Play / Restart buttons
+        if (btnRestart) {
+            btnRestart.addEventListener("click", async () => {
+                try {
+                    await fetch("/chat/send", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            message: `restart the song with ${volSlider ? volSlider.value : 80}% vol`,
+                            mode: "voice"
+                        })
+                    });
+                } catch (err) {
+                    console.error("Restart music error:", err);
+                }
+            });
+        }
+
+        if (btnPlay) {
+            btnPlay.addEventListener("click", async () => {
+                try {
+                    await fetch("/chat/send", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            message: "resume music",
+                            mode: "voice"
+                        })
+                    });
+                } catch (err) {
+                    console.error("Toggle music playback error:", err);
+                }
+            });
+        }
+
+        // 5. Chained macro buttons
+        chainBtns.forEach(btn => {
+            btn.addEventListener("click", () => {
+                const prompt = btn.dataset.prompt;
+                if (!prompt) return;
+
+                const dualInput = document.getElementById("chatInput");
+                const dualForm = document.getElementById("chatForm");
+                const wsInput = document.getElementById("chatWsTextarea");
+                const wsSendBtn = document.getElementById("chatWsSendBtn");
+
+                if (document.body.classList.contains("mode-chat") && wsInput && wsSendBtn) {
+                    wsInput.value = prompt;
+                    wsSendBtn.click();
+                } else if (dualInput && dualForm) {
+                    dualInput.value = prompt;
+                    dualForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+                }
+            });
+        });
+
+        // 6. Cybernetic Audio Spectrum Visualizer Animation
+        if (spectrumCanvas) {
+            const ctx = spectrumCanvas.getContext("2d");
+            const numBars = 32;
+            const barHeights = new Float32Array(numBars);
+            const barTargets = new Float32Array(numBars);
+
+            const animateSpectrum = () => {
+                const w = spectrumCanvas.width = spectrumCanvas.clientWidth || 280;
+                const h = spectrumCanvas.height = 38;
+                ctx.clearRect(0, 0, w, h);
+
+                const isSpeaking = this.currentMode === "speaking" || (playbackBadge && playbackBadge.textContent.includes("PLAYING"));
+                const barWidth = Math.max(3, (w - (numBars - 1) * 3) / numBars);
+
+                for (let i = 0; i < numBars; i++) {
+                    if (isSpeaking) {
+                        if (Math.random() < 0.3) {
+                            barTargets[i] = Math.random() * (h * 0.85) + 5;
+                        }
+                    } else {
+                        // Ambient cybernetic breathing pulse
+                        barTargets[i] = Math.sin(Date.now() * 0.003 + i * 0.3) * 4 + 6;
+                    }
+                    barHeights[i] += (barTargets[i] - barHeights[i]) * 0.25;
+
+                    const barH = Math.max(3, Math.min(h, barHeights[i]));
+                    const x = i * (barWidth + 3);
+                    const y = h - barH;
+
+                    const grad = ctx.createLinearGradient(0, h, 0, y);
+                    grad.addColorStop(0, "rgba(0, 242, 254, 0.65)");
+                    grad.addColorStop(1, "rgba(0, 255, 102, 0.95)");
+
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(x, y, barWidth, barH);
+
+                    ctx.fillStyle = "#55ff99";
+                    ctx.fillRect(x, y, barWidth, 1.5);
+                }
+
+                requestAnimationFrame(animateSpectrum);
+            };
+            requestAnimationFrame(animateSpectrum);
         }
     }
 }

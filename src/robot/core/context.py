@@ -30,6 +30,7 @@ GROUNDING_POLICY = (
     "- Volume & Music Controls: Whenever the user asks to change volume ('set volume to 20%', 'louder', 'turn it down', 'mute'), replay or play again ('play it again', 'replay', 'play that song again'), pause, resume, or stop, you MUST immediately emit a `music.control` tool call. Never narrate volume adjustments in text.\n"
     "- Track Truth: When asked what song was last played or what song is playing, you MUST check `music.status` or `music.history`. NEVER guess, assume, or hallucinate a song title.\n"
     "- Natural Memory & Autonomous Persistence: When the user asks you to remember something, acknowledge it naturally. Do NOT call `memory.write` for casual conversational remarks. Call `memory.write` only when a vital enduring user preference or fact must be permanently stored across sessions.\n"
+    "- Sequential Multi-Action Chaining Directive: When the user asks you to perform a sequence of chained tasks (e.g. 'check what you see and then play some music and set volume to 50%', or 'inspect this and then do that'), perform them in orderly sequence. In multi-step turns, address each step sequentially. When invoking tools, execute each tool step in the exact order requested, and explain or present the outcome of each action sequentially rather than rushing or popping everything at once.\n"
     "- Grounding Context Separation: Any environment grounding, player status, or tool results provided are background telemetry. Never repeat background labels to the user."
 )
 

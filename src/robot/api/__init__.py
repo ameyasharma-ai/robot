@@ -61,6 +61,10 @@ class ImageGenRequest(BaseModel):
     seed: int | None = -1
 
 
+class EqualizerRequest(BaseModel):
+    preset: str
+
+
 def create_app(engine: "RobotEngine") -> FastAPI:
     """Create the FastAPI application with all routes."""
     app = FastAPI(
@@ -271,6 +275,37 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 </body></html>""",
                 status_code=500,
             )
+
+    @app.get("/api/equalizer")
+    async def get_equalizer():
+        """Get active equalizer profile and list of all available EasyEffects presets."""
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            return MusicPlayerService.get_instance().list_equalizer_presets()
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.post("/api/equalizer")
+    async def set_equalizer(req: EqualizerRequest):
+        """Set active equalizer profile using EasyEffects."""
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            return MusicPlayerService.get_instance().set_equalizer_preset(req.preset)
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.get("/api/music/status")
+    async def get_music_status():
+        """Get live music playback status and active equalizer profile."""
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            ms = MusicPlayerService.get_instance()
+            return {
+                "status": ms.get_status(),
+                "equalizer": ms.list_equalizer_presets(),
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     @app.get("/chat/sessions")
     async def list_chat_sessions(limit: int = 150):

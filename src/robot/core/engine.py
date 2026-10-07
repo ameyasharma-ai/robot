@@ -287,6 +287,14 @@ class RobotEngine:
             echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.45),
         )
 
+        # EasyEffects background service & default robot equalizer profile
+        try:
+            from robot.tools.builtins.music import MusicPlayerService, ensure_easyeffects_running
+            ensure_easyeffects_running()
+            MusicPlayerService.get_instance().set_equalizer_preset("robot")
+        except Exception as _e:
+            logger.debug("easyeffects_init_warning", error=str(_e))
+
         # Tools
         self.tool_router = ToolRouter(self.tool_registry)
         self.tool_coordinator = ToolConversationCoordinator(self, self.config)
@@ -1135,6 +1143,8 @@ class RobotEngine:
                         try:
                             await self.permissions.execute(t_def, a_args)
                             logger.info("chained_tool_executed", tool=t_nm)
+                            # Sequential pacing so actions do not pop simultaneously
+                            await asyncio.sleep(0.35)
                         except Exception as e:
                             logger.warning("chained_tool_exec_error", tool=t_nm, error=str(e))
 
@@ -1599,7 +1609,11 @@ class RobotEngine:
 
             # If tool calls were initiated, execute them and run second-pass continuation
             if collected_tool_calls:
-                for tc in collected_tool_calls:
+                for t_idx, tc in enumerate(collected_tool_calls):
+                    if t_idx > 0:
+                        # Sequential pacing so multiple tool calls do not pop simultaneously
+                        await asyncio.sleep(0.35)
+
                     func_info = tc.get("function", tc)
                     t_name = func_info.get("name", "")
                     raw_args = func_info.get("arguments", "{}")
