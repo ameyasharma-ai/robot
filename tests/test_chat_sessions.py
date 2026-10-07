@@ -471,6 +471,76 @@ async def test_stream_text_chat_filters_tool_call_token():
     assert stored_kwargs["tool_name"] == "memory.write"
 
 
+@pytest.mark.asyncio
+async def test_transcribe_audio_endpoint():
+    """Verify /api/transcribe processes audio WAV data and returns transcribed text."""
+    from unittest.mock import AsyncMock, MagicMock
+    from starlette.testclient import TestClient
+    from robot.api import create_app
+
+    engine = MagicMock()
+    engine.stt = MagicMock()
+    engine.stt.transcribe = AsyncMock(return_value="Testing audio dictation")
+    engine.player = MagicMock()
+    engine.player.is_playing = False
+    engine.capture = MagicMock()
+    engine.telemetry = MagicMock()
+    engine.telemetry.snapshot.return_value = {}
+
+    app = create_app(engine)
+    client = TestClient(app)
+
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00" * 3200)
+    fake_wav = buf.getvalue()
+
+    response = client.post(
+        "/api/transcribe",
+        content=fake_wav,
+        headers={"content-type": "audio/wav"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["text"] == "Testing audio dictation"
+    assert engine.stt.transcribe.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_empty():
+    """Verify /api/transcribe handles empty audio payload gracefully."""
+    from unittest.mock import MagicMock
+    from starlette.testclient import TestClient
+    from robot.api import create_app
+
+    engine = MagicMock()
+    engine.stt = MagicMock()
+    engine.player = MagicMock()
+    engine.player.is_playing = False
+    engine.capture = MagicMock()
+    engine.telemetry = MagicMock()
+    engine.telemetry.snapshot.return_value = {}
+
+    app = create_app(engine)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/transcribe",
+        content=b"",
+        headers={"content-type": "audio/wav"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["text"] == ""
+
+
+
+
 
 
 

@@ -63,6 +63,7 @@ class RobotUI {
         this.activeChatSessionId = null;
         this.chatStreaming = false;
         this.chatAbortController = null;
+        this.chatRecording = false;
 
         this.initViewControls();
         this.initPersonalitySelector();
@@ -273,10 +274,55 @@ class RobotUI {
         this.chatMicPill = document.getElementById("chatMicPill");
         this.chatMicLabel = document.getElementById("chatMicLabel");
         this.chatMessagesContainer = document.getElementById("chatMessagesContainer");
+        this.chatBoxWrapper = document.getElementById("chatBoxWrapper");
+        this.chatRecordDock = document.getElementById("chatRecordDock");
+        this.btnChatMicRecord = document.getElementById("btnChatMicRecord");
+        this.btnChatRecordCancel = document.getElementById("btnChatRecordCancel");
+        this.btnChatRecordDone = document.getElementById("btnChatRecordDone");
+        this.chatRecordTimer = document.getElementById("chatRecordTimer");
+        this.chatRecordStatus = document.getElementById("chatRecordStatus");
+        this.chatRecordWaveform = document.getElementById("chatRecordWaveform");
         this.chatTextarea = document.getElementById("chatTextarea");
         this.btnChatSubmit = document.getElementById("btnChatSubmit");
         this.btnChatStopStream = document.getElementById("btnChatStopStream");
         this.chatLiveSpeed = document.getElementById("chatLiveSpeed");
+
+        if (this.btnChatMicRecord) {
+            this.btnChatMicRecord.addEventListener("click", (e) => {
+                e.preventDefault();
+                if (this.chatRecording) {
+                    this.finishChatVoiceRecord();
+                } else {
+                    this.startChatVoiceRecord();
+                }
+            });
+        }
+
+        if (this.btnChatRecordCancel) {
+            this.btnChatRecordCancel.addEventListener("click", (e) => {
+                e.preventDefault();
+                this.cancelChatVoiceRecord();
+            });
+        }
+
+        if (this.btnChatRecordDone) {
+            this.btnChatRecordDone.addEventListener("click", (e) => {
+                e.preventDefault();
+                this.finishChatVoiceRecord();
+            });
+        }
+
+        // Global hotkeys while recording: Enter = Finish/Transcribe, Escape = Cancel
+        window.addEventListener("keydown", (e) => {
+            if (!this.chatRecording) return;
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                this.finishChatVoiceRecord();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                this.cancelChatVoiceRecord();
+            }
+        });
 
         if (this.btnToggleChatSidebar && this.chatSidebar) {
             this.btnToggleChatSidebar.addEventListener("click", () => {
@@ -956,6 +1002,278 @@ class RobotUI {
         }
     }
 
+    async startChatVoiceRecord() {
+        if (this.chatRecording) return;
+        this.chatRecording = true;
+        this.chatPreRecordText = this.chatTextarea ? this.chatTextarea.value : "";
+        this.chatAudioChunks = [];
+        this.chatFinalSpeechTranscript = "";
+
+        // UI state transitions
+        if (this.chatBoxWrapper) this.chatBoxWrapper.classList.add("is-recording");
+        if (this.btnChatMicRecord) this.btnChatMicRecord.classList.add("recording");
+        if (this.chatRecordDock) this.chatRecordDock.style.display = "flex";
+        if (this.chatRecordTimer) this.chatRecordTimer.textContent = "0:00";
+        if (this.chatRecordStatus) {
+            this.chatRecordStatus.textContent = "Listening...";
+            this.chatRecordStatus.classList.remove("interim-text");
+        }
+
+        // Start elapsed timer
+        this.chatRecordStartTime = Date.now();
+        if (this.chatRecordTimerInterval) clearInterval(this.chatRecordTimerInterval);
+        this.chatRecordTimerInterval = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - this.chatRecordStartTime) / 1000);
+            const m = Math.floor(elapsed / 60);
+            const s = elapsed % 60;
+            if (this.chatRecordTimer) {
+                this.chatRecordTimer.textContent = `${m}:${s < 10 ? "0" : ""}${s}`;
+            }
+        }, 500);
+
+        try {
+            // Request browser mic stream
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                },
+            });
+            this.chatMediaStream = stream;
+
+            // Setup Web Audio API analyser & script processor for high fidelity raw PCM
+            const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+            this.chatAudioContext = new AudioCtxClass();
+            const source = this.chatAudioContext.createMediaStreamSource(stream);
+
+            const analyser = this.chatAudioContext.createAnalyser();
+            analyser.fftSize = 64;
+            this.chatAnalyser = analyser;
+            source.connect(analyser);
+
+            const processor = this.chatAudioContext.createScriptProcessor(4096, 1, 1);
+            this.chatScriptNode = processor;
+            processor.onaudioprocess = (e) => {
+                if (!this.chatRecording) return;
+                const channelData = e.inputBuffer.getChannelData(0);
+                this.chatAudioChunks.push(new Float32Array(channelData));
+            };
+            source.connect(processor);
+            processor.connect(this.chatAudioContext.destination);
+
+            // Animate dynamic waveform bars reacting to real volume
+            const waveBars = document.querySelectorAll("#chatRecordWaveform .chat-wave-bar");
+            const updateWave = () => {
+                if (!this.chatRecording || !this.chatAnalyser) return;
+                const data = new Uint8Array(this.chatAnalyser.frequencyBinCount);
+                this.chatAnalyser.getByteFrequencyData(data);
+                for (let i = 0; i < waveBars.length; i++) {
+                    const val = data[i * 2] || data[0] || 0;
+                    const h = Math.max(4, Math.min(22, (val / 255) * 26));
+                    waveBars[i].style.height = `${h}px`;
+                    waveBars[i].style.animation = "none";
+                }
+                this.chatWaveAnimFrame = requestAnimationFrame(updateWave);
+            };
+            this.chatWaveAnimFrame = requestAnimationFrame(updateWave);
+
+            // Optional Web Speech API for real-time speech preview
+            const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (SpeechRec) {
+                try {
+                    const recognition = new SpeechRec();
+                    recognition.continuous = true;
+                    recognition.interimResults = true;
+                    recognition.lang = "en-US";
+                    recognition.onresult = (event) => {
+                        let interim = "";
+                        let final = "";
+                        for (let i = event.resultIndex; i < event.results.length; ++i) {
+                            if (event.results[i].isFinal) {
+                                final += event.results[i][0].transcript;
+                            } else {
+                                interim += event.results[i][0].transcript;
+                            }
+                        }
+                        if (final) this.chatFinalSpeechTranscript += " " + final;
+                        const displayText = (this.chatFinalSpeechTranscript + " " + interim).trim();
+                        if (displayText && this.chatRecordStatus) {
+                            this.chatRecordStatus.textContent = `"${displayText}"`;
+                            this.chatRecordStatus.classList.add("interim-text");
+                        }
+                    };
+                    recognition.onerror = () => {};
+                    recognition.start();
+                    this.chatSpeechRecognition = recognition;
+                } catch (e) {
+                    // Ignore speech recognition error; Whisper will process audio
+                }
+            }
+        } catch (err) {
+            console.error("Microphone access error:", err);
+            this.cancelChatVoiceRecord();
+            alert("Could not access microphone. Please grant microphone permission in your browser.");
+        }
+    }
+
+    cancelChatVoiceRecord() {
+        this.cleanupChatVoiceRecord();
+        if (this.chatTextarea) {
+            this.chatTextarea.value = this.chatPreRecordText;
+            this.chatTextarea.focus();
+        }
+    }
+
+    async finishChatVoiceRecord() {
+        if (!this.chatRecording) return;
+        if (this.chatRecordStatus) {
+            this.chatRecordStatus.textContent = "Transcribing audio...";
+            this.chatRecordStatus.classList.remove("interim-text");
+        }
+        if (this.btnChatRecordDone) this.btnChatRecordDone.disabled = true;
+
+        const chunks = this.chatAudioChunks.slice();
+        const sampleRate = this.chatAudioContext ? this.chatAudioContext.sampleRate : 16000;
+        const liveTranscript = this.chatFinalSpeechTranscript.trim();
+
+        this.cleanupChatVoiceRecord();
+
+        let transcribedText = "";
+        if (chunks.length > 0) {
+            try {
+                const wavBlob = this.encodePcmToWav(chunks, sampleRate);
+                const res = await fetch("/api/transcribe", {
+                    method: "POST",
+                    headers: { "Content-Type": "audio/wav" },
+                    body: wavBlob,
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    transcribedText = (data.text || "").trim();
+                }
+            } catch (e) {
+                console.warn("Backend Whisper STT failed, using live transcript fallback:", e);
+            }
+        }
+
+        // Fallback to Web Speech API transcript if Whisper was empty or silent
+        if (!transcribedText && liveTranscript) {
+            transcribedText = liveTranscript;
+        }
+
+        if (this.chatTextarea) {
+            if (transcribedText) {
+                const prev = this.chatPreRecordText ? this.chatPreRecordText.trim() + " " : "";
+                this.chatTextarea.value = prev + transcribedText;
+            } else {
+                this.chatTextarea.value = this.chatPreRecordText;
+            }
+            this.chatTextarea.style.height = "auto";
+            this.chatTextarea.style.height = `${Math.min(220, this.chatTextarea.scrollHeight)}px`;
+            this.chatTextarea.focus();
+            const len = this.chatTextarea.value.length;
+            this.chatTextarea.setSelectionRange(len, len);
+        }
+    }
+
+    cleanupChatVoiceRecord() {
+        this.chatRecording = false;
+        if (this.chatRecordTimerInterval) {
+            clearInterval(this.chatRecordTimerInterval);
+            this.chatRecordTimerInterval = null;
+        }
+        if (this.chatWaveAnimFrame) {
+            cancelAnimationFrame(this.chatWaveAnimFrame);
+            this.chatWaveAnimFrame = null;
+        }
+        if (this.chatSpeechRecognition) {
+            try {
+                this.chatSpeechRecognition.stop();
+            } catch (e) {}
+            this.chatSpeechRecognition = null;
+        }
+        if (this.chatScriptNode) {
+            try {
+                this.chatScriptNode.disconnect();
+            } catch (e) {}
+            this.chatScriptNode = null;
+        }
+        if (this.chatAnalyser) {
+            try {
+                this.chatAnalyser.disconnect();
+            } catch (e) {}
+            this.chatAnalyser = null;
+        }
+        if (this.chatAudioContext) {
+            try {
+                this.chatAudioContext.close();
+            } catch (e) {}
+            this.chatAudioContext = null;
+        }
+        if (this.chatMediaStream) {
+            this.chatMediaStream.getTracks().forEach((track) => track.stop());
+            this.chatMediaStream = null;
+        }
+        if (this.chatBoxWrapper) this.chatBoxWrapper.classList.remove("is-recording");
+        if (this.btnChatMicRecord) this.btnChatMicRecord.classList.remove("recording");
+        if (this.chatRecordDock) this.chatRecordDock.style.display = "none";
+        if (this.btnChatRecordDone) this.btnChatRecordDone.disabled = false;
+    }
+
+    encodePcmToWav(chunks, inputSampleRate) {
+        let totalLength = 0;
+        for (let i = 0; i < chunks.length; i++) totalLength += chunks[i].length;
+        const merged = new Float32Array(totalLength);
+        let offset = 0;
+        for (let i = 0; i < chunks.length; i++) {
+            merged.set(chunks[i], offset);
+            offset += chunks[i].length;
+        }
+
+        const targetRate = 16000;
+        let outputSamples = merged;
+        if (inputSampleRate !== targetRate && totalLength > 0) {
+            const ratio = inputSampleRate / targetRate;
+            const newLength = Math.round(totalLength / ratio);
+            outputSamples = new Float32Array(newLength);
+            for (let i = 0; i < newLength; i++) {
+                outputSamples[i] = merged[Math.round(i * ratio)] || 0;
+            }
+        }
+
+        const buffer = new ArrayBuffer(44 + outputSamples.length * 2);
+        const view = new DataView(buffer);
+
+        const writeString = (view, offset, str) => {
+            for (let i = 0; i < str.length; i++) {
+                view.setUint8(offset + i, str.charCodeAt(i));
+            }
+        };
+
+        writeString(view, 0, "RIFF");
+        view.setUint32(4, 36 + outputSamples.length * 2, true);
+        writeString(view, 8, "WAVE");
+        writeString(view, 12, "fmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, 1, true); // Mono
+        view.setUint32(24, targetRate, true);
+        view.setUint32(28, targetRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeString(view, 36, "data");
+        view.setUint32(40, outputSamples.length * 2, true);
+
+        let p = 44;
+        for (let i = 0; i < outputSamples.length; i++) {
+            const s = Math.max(-1, Math.min(1, outputSamples[i]));
+            view.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+            p += 2;
+        }
+        return new Blob([view], { type: "audio/wav" });
+    }
+
     scrollChatToBottom() {
         if (this.chatMessagesContainer) {
             this.chatMessagesContainer.scrollTop = this.chatMessagesContainer.scrollHeight;
@@ -1144,6 +1462,12 @@ class RobotUI {
 
         if (btnDual) btnDual.addEventListener("click", () => this.setView("dual"));
         if (btnChat) btnChat.addEventListener("click", () => this.setView("chat"));
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const requestedView = urlParams.get("view");
+        if (requestedView === "chat") {
+            setTimeout(() => this.setView("chat"), 30);
+        }
 
         btnFs.addEventListener("click", () => {
             if (!document.fullscreenElement) {

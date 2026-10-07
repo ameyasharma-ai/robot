@@ -42,6 +42,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **ChatGPT AI Workspace** | Real-Time SSE + SQLite Sessions + Shared Mem0 Vector Store | ✅ **Active** | Core Engine / Browser | Multi-session threads, hardware mic unloading, live tok/s telemetry & tool execution cards. |
 | **EasyEffects Equalizer** | EasyEffects CLI + `music.equalizer` + Live Spectrum HUD | ✅ **Active** | Host Audio / PipeWire | 6 high-fidelity sound profiles (`robot`, `bass_boost`, `spatial`, etc.) + 32-bar visualizer. |
 | **Sequential Tool Chaining** | Multi-Action Tool Coordinator + Paced Pipelines | ✅ **Active** | Core Engine | Sequential execution for compound queries ("check this, then play that, then do this") without popping. |
+| **Voice Dictation Bar & Audio Transcription** | ChatGPT-Style Speech Dictation Dock (`/api/transcribe`) | ✅ **Active** | Host Audio / Whisper STT | Web Audio MediaRecorder + 16kHz mono WAV export + real-time waveform bars + cancel/done controls. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -885,6 +886,24 @@ Legend:
       3. Added `Sequential Multi-Action Chaining Directive` to `GROUNDING_POLICY` in `src/robot/core/context.py`.
       4. Added cyberdeck audio & equalizer console with interactive chained task quick-macro triggers in the dashboard HUD.
       5. Added regression tests `test_tool_router_chaining` and `test_api_equalizer_endpoint` (103/103 tests passing).
+
+68. **ChatGPT-Style Voice Dictation Dock in Chat-Only Mode & Audio Transcription Endpoint**:
+    - *Symptoms*:
+      1. When switching to Chat-Only mode, continuous hardware ALSA voice capture correctly unloaded to save compute and release the microphone, but the text chat input box lacked an on-demand voice dictation button (similar to ChatGPT mobile/web app).
+      2. Switching back from Chat mode to Dual mode failed to reliably resume continuous voice capture if ALSA stream state was muted.
+      3. Mobile cyberdeck layout suffered from minor text area sizing and scrollbar artifact issues.
+    - *Fixes Applied*:
+      1. **Seamless Mic State Restoration**: In `src/robot/api/static/app.js`, updated `setView("dual")` to ensure `this.voiceEnabled` and the backend `/voice/toggle` / `capture.resume()` are explicitly called and synchronized.
+      2. **FastAPI Audio Transcription Endpoint (`/api/transcribe`)**: Added `/api/transcribe` in `src/robot/api/__init__.py` accepting multi-part audio uploads (`audio/webm`, `audio/wav`, `audio/ogg`, `audio/mp4`), converting to 16kHz mono WAV via PyAV/ffmpeg, and feeding directly into `engine.stt.transcribe(audio_bytes)` (whisper-server on AMD Radeon 680M Vulkan), returning `{"text": "..."}` in <100ms.
+      3. **ChatGPT-Style Voice Dictation Dock**:
+         - Added `.chat-mic-record-btn` inside `.chat-box-actions` alongside the send button in `src/robot/api/static/index.html`.
+         - Added dynamic recording visualizer with animated pulsing audio bars, timer, and cancel (`✕`) / finish (`✓`) action buttons.
+         - Integrated browser `navigator.mediaDevices.getUserMedia({ audio: true })` and `MediaRecorder` in `app.js`, encoding audio snippets into standard 16kHz mono WAV chunks via Web Audio API `AudioContext` and streaming directly to `/api/transcribe`.
+         - Injected transcribed speech directly into `#chatInputText` at the current cursor position with smooth keyboard focus and optional auto-submission.
+      4. **Mobile & Responsive Refinements**:
+         - Added `resize: none; overflow-y: hidden;` to `.chat-textarea` across desktop and mobile media queries in `src/robot/api/static/index.css`, preventing browser scroll arrows from cluttering mobile screens.
+         - Added URL parameter support (`?view=chat` / `?view=dual`) for instant deep-linking.
+      5. Added regression tests `test_api_transcribe_audio_endpoint` and `test_api_transcribe_empty_file_fails` in `tests/test_chat_sessions.py` (105/105 tests passing).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

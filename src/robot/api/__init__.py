@@ -11,8 +11,11 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import structlog
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+
+logger = structlog.get_logger()
 
 from robot.core.state import RobotMode
 
@@ -387,6 +390,81 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             personality=engine.state.state.active_personality,
             session_id=req.session_id or engine._session_id,
         )
+
+    @app.post("/api/transcribe")
+    async def transcribe_audio(request: Request):
+        """Transcribe uploaded voice recording (WAV binary or JSON base64) via Whisper STT for chat dictation."""
+        try:
+            ctype = request.headers.get("content-type", "")
+            if "application/json" in ctype:
+                data = await request.json()
+                import base64
+                b64_audio = data.get("audio", "")
+                content = base64.b64decode(b64_audio) if b64_audio else b""
+            else:
+                content = await request.body()
+
+            if not content or len(content) < 44:
+                return {"status": "ok", "text": ""}
+
+            from robot.stt import STTProvider, WhisperServerSTT
+            stt = getattr(engine, "stt", None)
+            if stt is None or not hasattr(stt, "transcribe"):
+                stt = WhisperServerSTT()
+
+            import io
+            import wave
+            import numpy as np
+
+            try:
+                with wave.open(io.BytesIO(content), "rb") as wf:
+                    channels = wf.getnchannels()
+                    width = wf.getsampwidth()
+                    rate = wf.getframerate()
+                    frames = wf.readframes(wf.getnframes())
+
+                    if width == 2:
+                        pcm_int16 = np.frombuffer(frames, dtype=np.int16)
+                    elif width == 4:
+                        pcm_int16 = (np.frombuffer(frames, dtype=np.int32) >> 16).astype(np.int16)
+                    else:
+                        pcm_int16 = np.frombuffer(frames, dtype=np.int8).astype(np.int16) << 8
+
+                    if channels > 1:
+                        pcm_int16 = pcm_int16.reshape(-1, channels).mean(axis=1).astype(np.int16)
+
+                    pcm_float32 = pcm_int16.astype(np.float32) / 32768.0
+
+                    # Resample if sample rate != 16000
+                    if rate != 16000 and len(pcm_float32) > 0:
+                        target_len = int(len(pcm_float32) * 16000 / rate)
+                        pcm_float32 = np.interp(
+                            np.linspace(0, len(pcm_float32), target_len, endpoint=False),
+                            np.arange(len(pcm_float32)),
+                            pcm_float32,
+                        ).astype(np.float32)
+
+                    import inspect
+                    res = stt.transcribe(pcm_float32, sample_rate=16000)
+                    text = await res if inspect.isawaitable(res) else str(res)
+                    return {"status": "ok", "text": text}
+            except wave.Error:
+                import asyncio
+                import requests
+                def _forward():
+                    files = {"file": ("audio.wav", content, "audio/wav")}
+                    data = {"temperature": "0.0", "language": getattr(stt, "language", "en"), "response_format": "json"}
+                    url = getattr(stt, "url", "http://127.0.0.1:8081/inference")
+                    return requests.post(url, files=files, data=data, timeout=8)
+                resp = await asyncio.to_thread(_forward)
+                if resp.status_code == 200:
+                    raw_text = resp.json().get("text", "").strip()
+                    from robot.stt import clean_transcript
+                    return {"status": "ok", "text": clean_transcript(raw_text)}
+                return {"status": "error", "error": f"Whisper server returned {resp.status_code}", "text": ""}
+        except Exception as e:
+            logger.error("api_transcribe_error", error=str(e))
+            return {"status": "error", "error": str(e), "text": ""}
 
     @app.post("/interrupt")
     async def interrupt_execution():
