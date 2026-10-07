@@ -288,9 +288,24 @@ class ToolConversationCoordinator:
             src = music_play_match.group(1) or music_play_match.group(3) or "auto"
             return "music.play", {"query": q.strip(" .?!"), "source": src.lower()}, ToolCategory.LLM_REQUIRED
 
-        if any(w in text for w in ("pause music", "pause the music", "pause playback", "pause the song", "pause song", "stop music", "stop the music", "stop playing", "stop the song", "stop song", "stop it", "stop that", "resume music", "resume playback", "resume the song", "resume song", "resume", "replay", "replay the song", "replay song", "play again", "repeat", "repeat the song", "repeat that", "unpause")):
-            act = "pause" if "pause" in text else ("stop" if any(s in text for s in ("stop", "halt")) else ("replay" if any(r in text for r in ("replay", "again", "repeat")) else "resume"))
-            return "music.control", {"action": act}, ToolCategory.DIRECT
+        # Check volume adjustment or composite restart + volume
+        vol_match = re.search(r"(?:volume\s+(?:to\s+)?(\d{1,3})%?|(\d{1,3})%\s+vol(?:ume)?)", text)
+        extracted_vol = float(vol_match.group(1) or vol_match.group(2)) / 100.0 if vol_match else None
+
+        if any(w in text for w in ("pause music", "pause the music", "pause playback", "pause the song", "pause song", "stop music", "stop the music", "stop playing", "stop the song", "stop song", "stop it", "stop that", "resume music", "resume playback", "resume the song", "resume song", "resume", "replay", "replay the song", "replay song", "play again", "repeat", "repeat the song", "repeat that", "unpause", "restart", "restart it", "restart the song")):
+            act = "pause" if "pause" in text else ("stop" if any(s in text for s in ("stop", "halt")) else ("replay" if any(r in text for r in ("replay", "again", "repeat", "restart")) else "resume"))
+            args = {"action": act}
+            if extracted_vol is not None:
+                args["volume"] = extracted_vol
+            return "music.control", args, ToolCategory.DIRECT
+
+        if vol_match and any(w in text for w in ("volume", "vol", "sound", "turn it up", "turn it down")):
+            return "music.control", {"action": "volume", "volume": extracted_vol}, ToolCategory.DIRECT
+
+        eq_match = re.search(r"(?:equalizer|equaliser|eq|sound\s+profile|audio\s+profile)\s+(?:to\s+)?([a-z0-9_]+)|(?:switch|change|set)\s+(?:the\s+)?(?:preset|profile)\s+to\s+([a-z0-9_]+)", text)
+        if eq_match:
+            preset_val = eq_match.group(1) or eq_match.group(2)
+            return "music.equalizer", {"preset": preset_val}, ToolCategory.DIRECT
 
         if any(k in text for k in ("what is playing", "what's playing", "what song is playing", "what is currently playing", "did it finish playing", "id it finish playing", "music status")):
             return "music.status", {}, ToolCategory.DIRECT
@@ -334,6 +349,7 @@ class ToolConversationCoordinator:
             "perception.what_do_you_see",
             "perception.inspect_view",
             "music.control",
+            "music.equalizer",
             "music.status",
             "music.history",
             "character.execute_action",

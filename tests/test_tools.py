@@ -446,6 +446,63 @@ async def test_music_play_relative_replay():
     svc.stop()
 
 
+@pytest.mark.asyncio
+async def test_music_control_composite_and_equalizer():
+    from robot.tools.builtins import register_builtin_tools, MusicPlayerService
+    from unittest.mock import MagicMock
+
+    engine = MagicMock()
+    tr = ToolRegistry()
+    engine.tool_registry = tr
+    register_builtin_tools(engine)
+
+    svc = MusicPlayerService.get_instance()
+    svc._history = [{"resolved_name": "Juice Wrld Acapella", "source": "ytdlp", "query": "Juice Wrld Acapella"}]
+
+    ctrl_tool = tr.get("music.control")
+    eq_tool = tr.get("music.equalizer")
+    assert ctrl_tool is not None
+    assert eq_tool is not None
+
+    # 1. No action specified, only volume -> auto-infer action='volume'
+    res_vol = await ctrl_tool.handler(volume=0.4)
+    assert res_vol.get("status") == "volume_set"
+    assert res_vol.get("volume") == 0.4
+
+    # 2. String percentage volume -> "40%"
+    res_pct = await ctrl_tool.handler(action="volume", volume="40%")
+    assert res_pct.get("status") == "volume_set"
+    assert res_pct.get("volume") == 0.4
+
+    # 3. Composite restart with 40% volume
+    res_composite = await ctrl_tool.handler(action="restart", volume=0.4)
+    assert res_composite.get("volume") == 0.4
+    assert res_composite.get("status") in {"playing", "resumed", "error"}
+
+    # 4. Equalizer preset switch via music.control
+    res_eq1 = await ctrl_tool.handler(action="equalizer", preset="robot")
+    assert res_eq1.get("status") == "ok"
+    assert res_eq1.get("preset") == "robot"
+
+    # 5. Equalizer preset list via music.control
+    res_list = await ctrl_tool.handler(action="equalizers")
+    assert res_list.get("status") == "ok"
+    assert "presets" in res_list
+    assert "robot" in res_list["presets"]
+    assert "bass_boost" in res_list["presets"]
+    assert "spatial" in res_list["presets"]
+
+    # 6. Equalizer tool directly
+    res_eq2 = await eq_tool.handler(preset="spatial")
+    assert res_eq2.get("status") == "ok"
+    assert res_eq2.get("preset") == "spatial"
+
+    # Restore default robot preset
+    await eq_tool.handler(preset="robot")
+    svc.stop()
+
+
+
 
 
 

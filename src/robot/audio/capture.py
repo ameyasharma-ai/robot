@@ -45,18 +45,8 @@ class AudioCapture:
         if self._loop and self._queue:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.copy())
 
-    async def start(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue[np.ndarray]:
-        """Start capturing audio, return queue of frames.
-
-        Tries the configured sample rate first (16 kHz), then falls back to
-        the device's native rate with software resampling. This prevents
-        crashes when PipeWire is down and ALSA rejects non-native rates.
-        """
-        self._loop = loop
-        if self._queue is None:
-            self._queue = asyncio.Queue()
-
-        # Try sample rates in preference order
+    def _open_stream(self) -> None:
+        """Open and start sounddevice InputStream."""
         rates_to_try = [self.sample_rate]
         try:
             dev_info = sd.query_devices(sd.default.device[0], "input")
@@ -106,6 +96,18 @@ class AudioCapture:
         except Exception:
             pass
 
+    async def start(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue[np.ndarray]:
+        """Start capturing audio, return queue of frames.
+
+        Tries the configured sample rate first (16 kHz), then falls back to
+        the device's native rate with software resampling. This prevents
+        crashes when PipeWire is down and ALSA rejects non-native rates.
+        """
+        self._loop = loop
+        if self._queue is None:
+            self._queue = asyncio.Queue()
+
+        self._open_stream()
         logger.info("capture_started", sample_rate=self._actual_rate, frame_size=self.frame_size)
         return self._queue
 
@@ -137,14 +139,27 @@ class AudioCapture:
             self._stream = None
             logger.info("capture_stream_paused_and_hardware_released")
         self._pre_roll.clear()
+        if self._queue is not None:
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                except Exception:
+                    break
 
     def resume(self) -> None:
         """Resume audio input capture and recreate microphone stream."""
+        if self._loop is None:
+            try:
+                self._loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+        if self._queue is None:
+            self._queue = asyncio.Queue()
+
         if self._stream is None:
             try:
-                if self._loop:
-                    self.start(self._loop)
-                    logger.info("capture_stream_resumed")
+                self._open_stream()
+                logger.info("capture_stream_resumed", sample_rate=getattr(self, "_actual_rate", self.sample_rate))
             except Exception as e:
                 logger.warning("capture_stream_resume_error", error=str(e))
         elif self._stream.stopped:

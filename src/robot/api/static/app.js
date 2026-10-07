@@ -259,6 +259,7 @@ class RobotUI {
 
     initChatWorkspace() {
         this.chatSidebar = document.getElementById("chatSidebar");
+        this.chatSidebarBackdrop = document.getElementById("chatSidebarBackdrop");
         this.btnToggleChatSidebar = document.getElementById("btnToggleChatSidebar");
         this.btnNewChat = document.getElementById("btnNewChat");
         this.btnRefreshSessions = document.getElementById("btnRefreshSessions");
@@ -278,7 +279,21 @@ class RobotUI {
 
         if (this.btnToggleChatSidebar && this.chatSidebar) {
             this.btnToggleChatSidebar.addEventListener("click", () => {
-                this.chatSidebar.classList.toggle("collapsed");
+                if (window.innerWidth <= 768) {
+                    const isOpen = this.chatSidebar.classList.toggle("mobile-open");
+                    if (this.chatSidebarBackdrop) {
+                        this.chatSidebarBackdrop.classList.toggle("active", isOpen);
+                    }
+                } else {
+                    this.chatSidebar.classList.toggle("collapsed");
+                }
+            });
+        }
+
+        if (this.chatSidebarBackdrop && this.chatSidebar) {
+            this.chatSidebarBackdrop.addEventListener("click", () => {
+                this.chatSidebar.classList.remove("mobile-open");
+                this.chatSidebarBackdrop.classList.remove("active");
             });
         }
 
@@ -401,13 +416,19 @@ class RobotUI {
 
     async onExitChatMode() {
         try {
-            await fetch("/voice-mode", {
+            const res = await fetch("/voice-mode", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ enabled: true }),
             });
-            this.voiceEnabled = true;
-            if (this.updateVoiceUI) this.updateVoiceUI(true);
+            if (res.ok) {
+                const data = await res.json();
+                this.voiceEnabled = data.voice_enabled !== undefined ? data.voice_enabled : true;
+                if (this.updateVoiceUI) this.updateVoiceUI(this.voiceEnabled);
+            } else {
+                this.voiceEnabled = true;
+                if (this.updateVoiceUI) this.updateVoiceUI(true);
+            }
             this.logEvent("AUDIO", "Returned to Voice Interface: Microphone restored.", "system");
         } catch (e) {
             console.error("Failed to restore voice mode:", e);
@@ -513,6 +534,11 @@ class RobotUI {
     async selectChatSession(sessionId) {
         this.activeChatSessionId = sessionId;
         this.renderSessionsList();
+
+        if (window.innerWidth <= 768 && this.chatSidebar) {
+            this.chatSidebar.classList.remove("mobile-open");
+            if (this.chatSidebarBackdrop) this.chatSidebarBackdrop.classList.remove("active");
+        }
 
         if (this.chatSessionIdPill) {
             this.chatSessionIdPill.textContent = `SESSION: ${sessionId.substring(0, 8)}...`;
@@ -1371,6 +1397,14 @@ class RobotUI {
         } else {
             this.onExitChatMode();
         }
+        // Recalibrate 3D avatar viewport and matrix canvas immediately
+        setTimeout(() => {
+            this.resize();
+            this._forEachEngine((eng) => {
+                if (eng.onResize) eng.onResize();
+            });
+            window.dispatchEvent(new Event("resize"));
+        }, 60);
     }
 
     initBlinking() {
@@ -1518,6 +1552,11 @@ class RobotUI {
             this.currentLlmProvider = data.provider;
             this.updateLlmToggleUi(data.provider, data.mode);
             this.syncChatTopBar();
+        }
+
+        if (data.event === "voice_mode_changed" && this.updateVoiceUI) {
+            this.voiceEnabled = Boolean(data.voice_enabled);
+            this.updateVoiceUI(this.voiceEnabled);
         }
 
         if (data.event === "pipeline_updated" || data.pipeline) {

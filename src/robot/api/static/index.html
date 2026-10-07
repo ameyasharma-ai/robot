@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Robot Core — HUD & Face System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Share+Tech+Mono&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=2.5">
+    <link rel="stylesheet" href="/static/index.css?v=2.8">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -366,6 +366,9 @@
 
         <!-- CHATGPT-LIKE AI WORKSPACE (ISOLATED SESSIONS, SHARED MEMORY & REAL-TIME STREAMING) -->
         <section class="chat-workspace-panel" id="chatWorkspacePanel">
+            <!-- Mobile Backdrop for Off-Canvas Sidebar -->
+            <div class="chat-sidebar-backdrop" id="chatSidebarBackdrop"></div>
+
             <!-- Left Sidebar: Conversations & Threads -->
             <aside class="chat-sidebar" id="chatSidebar">
                 <div class="chat-sidebar-top">
@@ -471,6 +474,6 @@
     <script src="/static/character/AnimationSystem.js"></script>
     <script src="/static/character/GazeSystem.js"></script>
     <script src="/static/character/CharacterEngine.js"></script>
-    <script src="/static/app.js?v=2.7"></script>
+    <script src="/static/app.js?v=2.8"></script>
 </body>
 </html>

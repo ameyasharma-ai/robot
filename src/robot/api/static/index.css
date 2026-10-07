@@ -1410,91 +1410,7 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     box-shadow: 0 0 10px rgba(255, 8, 68, 0.3);
 }
 
-/* ─── Responsive Layout Media Queries ───────────────────────────────── */
-@media (max-width: 1200px) {
-    .main-viewport {
-        grid-template-columns: 1fr;
-        overflow-y: auto;
-        gap: 16px;
-        padding: 14px;
-    }
-
-    .face-panel {
-        min-height: 520px;
-        height: 580px;
-    }
-
-    .dev-panel {
-        overflow-y: visible;
-    }
-
-    .vision-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .camera-stream-box {
-        width: 100%;
-        max-width: 100%;
-        height: 240px;
-    }
-
-    .char-metrics-row {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
-    .char-btn-grid {
-        grid-template-columns: repeat(4, 1fr);
-    }
-}
-
-@media (max-width: 768px) {
-    .top-nav {
-        padding: 0 12px;
-        height: 54px;
-    }
-
-    .brand-title {
-        font-size: 15px;
-    }
-
-    .brand-ver {
-        display: none;
-    }
-
-    .persona-badge {
-        padding: 3px 8px;
-        font-size: 11px;
-    }
-
-    .telemetry-pill {
-        display: none;
-    }
-
-    .main-viewport {
-        padding: 10px;
-        gap: 12px;
-    }
-
-    .face-panel {
-        min-height: 420px;
-        height: 460px;
-    }
-
-    .speech-bubble {
-        left: 12px;
-        right: 12px;
-        bottom: 12px;
-        padding: 10px 14px;
-    }
-
-    .char-btn-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
-    .stats-row {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
+/* Legacy responsive media queries consolidated at the bottom of file */
 
 /* ─── Real-Time Pipeline Observability Flow ──────────────────────────────── */
 .card-pipeline .pipeline-flow {
@@ -3836,11 +3752,46 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     box-shadow: 0 2px 10px rgba(0, 255, 102, 0.25);
 }
 
-/* ─── Responsive Adjustments Across All Screen Sizes ─── */
+/* ─── Modern Responsive Architecture Across All Screen Sizes ─── */
+
+/* --- Tablet Landscape / Laptops (<= 1200px) --- */
 @media (max-width: 1200px) {
+    .main-viewport {
+        display: flex;
+        flex-direction: column;
+        height: auto;
+        min-height: calc(100vh - 60px);
+        max-height: none;
+        overflow-y: auto;
+        padding: 12px 14px;
+        gap: 16px;
+    }
+
+    body.mode-chat .main-viewport {
+        height: calc(100vh - 60px);
+        max-height: calc(100vh - 60px);
+        overflow: hidden;
+    }
+
+    .face-panel {
+        width: 100%;
+        height: 500px;
+        min-height: 420px;
+        flex-shrink: 0;
+    }
+
+    .dev-panel {
+        width: 100%;
+        overflow-y: visible;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+
     .hud-top-row {
         flex-direction: column;
         height: auto;
+        gap: 12px;
     }
 
     .hud-top-row .card-vision,
@@ -3852,31 +3803,511 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     .hud-bottom-split {
         grid-template-columns: 1fr;
         height: auto;
+        gap: 14px;
     }
 
     .hud-bottom-split .card-metrics,
     .hud-bottom-split .card-image-studio {
-        min-height: 280px;
+        min-height: auto;
         height: auto;
     }
 }
 
+/* --- Tablets & Compact Viewports (<= 992px) --- */
+@media (max-width: 992px) {
+    .telemetry-pill {
+        display: none;
+    }
+
+    .llm-toggle-info .llm-toggle-sub {
+        display: none;
+    }
+
+    .llm-toggle-btn {
+        padding: 5px 9px;
+    }
+
+    .brand-ver {
+        display: none;
+    }
+}
+
+/* --- Mobile / Handheld Viewports (<= 768px) --- */
 @media (max-width: 768px) {
+    /* Top Navigation Header */
+    .top-nav {
+        height: auto;
+        min-height: 54px;
+        padding: 6px 10px;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: space-between;
+    }
+
+    .brand {
+        gap: 6px;
+    }
+
+    .brand-title {
+        font-size: 13.5px;
+        letter-spacing: 0.5px;
+    }
+
+    .brand-pulse {
+        width: 8px;
+        height: 8px;
+    }
+
+    .header-center {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .status-pill {
+        padding: 3px 8px;
+        font-size: 10px;
+    }
+
+    .persona-selector-wrap {
+        padding: 2px 6px;
+    }
+
+    .persona-icon {
+        font-size: 12px;
+    }
+
+    .persona-select {
+        font-size: 11px;
+        padding: 3px 6px;
+        max-width: 110px;
+    }
+
+    .llm-toggle-btn {
+        padding: 4px 7px;
+        gap: 4px;
+    }
+
+    .llm-toggle-icon {
+        font-size: 12px;
+    }
+
+    .llm-toggle-label {
+        font-size: 10px;
+    }
+
+    .llm-mode-badge {
+        display: none;
+    }
+
+    .nav-controls {
+        gap: 6px;
+    }
+
+    .stop-btn {
+        padding: 4px 8px;
+        font-size: 10px;
+    }
+
+    .view-btn {
+        padding: 5px 9px;
+        font-size: 10.5px;
+    }
+
+    .fullscreen-btn {
+        display: none;
+    }
+
+    /* Main Viewport in Dual Mode */
+    .main-viewport {
+        padding: 8px;
+        gap: 12px;
+    }
+
+    body.mode-chat .main-viewport {
+        padding: 4px;
+        height: calc(100vh - 56px);
+        max-height: calc(100vh - 56px);
+    }
+
+    .face-panel {
+        height: 380px;
+        min-height: 330px;
+        border-radius: 14px;
+    }
+
+    /* CRITICAL FIX: Speech bubble sits cleanly above chat input bar with zero overlap */
+    .speech-bubble {
+        left: 10px;
+        right: 10px;
+        bottom: 58px;
+        padding: 8px 12px;
+        border-radius: 10px;
+        z-index: 30;
+    }
+
+    .bubble-tag {
+        font-size: 9px;
+    }
+
+    .bubble-content {
+        font-size: 12px;
+        max-height: 52px;
+    }
+
+    /* Dual Chat Input Bar */
+    .chat-input-bar {
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        gap: 6px;
+        z-index: 31;
+    }
+
+    .voice-toggle-btn {
+        padding: 0 10px;
+        height: 36px;
+        min-width: 36px;
+        justify-content: center;
+        border-radius: 8px;
+    }
+
+    .voice-toggle-btn .voice-label {
+        display: none;
+    }
+
+    .chat-input {
+        padding: 6px 10px;
+        font-size: 13px;
+        border-radius: 8px;
+    }
+
+    .chat-send-btn {
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        border-radius: 8px;
+    }
+
+    /* Vision Grid */
+    .hud-top-row .vision-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .hud-top-row .camera-stream-box {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        aspect-ratio: 16/9;
+        max-height: 220px;
+    }
+
+    .hud-top-row .world-state-yaml {
+        max-height: 160px;
+        padding: 6px 8px;
+    }
+
+    /* Hardware Grid */
+    .hud-top-row .hardware-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+    }
+
+    /* Latency & Metrics Card */
+    .hud-bottom-split .card-metrics {
+        padding: 12px;
+    }
+
     .hud-bottom-split .card-metrics .metrics-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+    }
+
+    .metric-box {
+        padding: 6px 8px;
+    }
+
+    .m-lbl {
+        font-size: 8px;
+    }
+
+    .m-val {
+        font-size: 13px;
+    }
+
+    .integrated-pipeline-flow {
+        overflow-x: auto;
+        flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 6px;
+        scrollbar-width: none;
+    }
+
+    .integrated-pipeline-flow::-webkit-scrollbar {
+        display: none;
+    }
+
+    .pipe-node {
+        min-width: 50px;
+        padding: 4px 6px;
+    }
+
+    .tool-stats-row {
         grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+    }
+
+    /* Image Studio Card */
+    .hud-bottom-split .card-image-studio {
+        padding: 12px;
+    }
+
+    .img-style-chips {
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+
+    .img-style-chip {
+        padding: 4px 8px;
+        font-size: 10.5px;
+    }
+
+    .image-input-row {
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .image-input-row .img-prompt-input {
+        width: 100%;
+    }
+
+    .image-controls-row {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* Chat Workspace Mobile Drawer */
+    .chat-workspace-panel {
+        border-radius: 12px;
+    }
+
+    .chat-sidebar-backdrop {
+        display: none;
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.75);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        z-index: 99;
+        transition: opacity 0.2s ease;
+    }
+
+    .chat-sidebar-backdrop.active {
+        display: block;
+    }
+
+    .chat-sidebar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 82%;
+        max-width: 310px;
+        min-width: 0;
+        height: 100%;
+        z-index: 100;
+        box-shadow: 12px 0 36px rgba(0, 0, 0, 0.9);
+        transform: translateX(-100%);
+        transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .chat-sidebar.mobile-open {
+        transform: translateX(0);
+    }
+
+    .chat-sidebar.collapsed {
+        transform: translateX(-100%);
+        width: 82%;
+        min-width: 0;
+    }
+
+    .chat-main-area {
+        width: 100%;
+        height: 100%;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .chat-top-bar {
+        padding: 6px 10px;
+        gap: 6px;
+    }
+
+    .chat-session-id {
+        display: none;
+    }
+
+    .chat-active-title {
+        font-size: 12.5px;
+        max-width: 130px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .chat-stat-pill {
+        padding: 3px 6px;
+        font-size: 10px;
+        gap: 4px;
+    }
+
+    #chatMicLabel {
+        display: none;
+    }
+
+    /* Chat Messages */
+    .chat-messages-container {
+        padding: 12px 10px;
+        gap: 14px;
     }
 
     .chat-msg-row.user .chat-msg-content,
     .chat-msg-row.msg-user .chat-msg-content,
     .chat-msg-row.assistant .chat-msg-content,
     .chat-msg-row.msg-assistant .chat-msg-content {
-        max-width: 95%;
+        max-width: 96%;
+    }
+
+    .chat-msg-body {
+        font-size: 0.88rem;
+        padding: 9px 12px;
+        line-height: 1.55;
+    }
+
+    .chat-msg-body pre {
+        max-width: 100%;
+        overflow-x: auto;
+        font-size: 11px;
+    }
+
+    .chat-welcome-hero {
+        padding: 16px 8px;
+    }
+
+    .chat-welcome-avatar {
+        width: 56px;
+        height: 56px;
+        font-size: 1.5rem;
+        margin-bottom: 12px;
+    }
+
+    .chat-welcome-title {
+        font-size: 1.25rem;
+    }
+
+    .chat-welcome-desc {
+        font-size: 0.84rem;
+        margin-bottom: 16px;
+    }
+
+    .chat-starter-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    /* Chat Input Dock */
+    .chat-input-dock {
+        padding: 8px 10px 10px 10px;
+        gap: 6px;
+    }
+
+    .chat-chips-label {
+        display: none;
     }
 
     .chat-quick-chips {
-        flex-wrap: nowrap;
+        display: flex;
+        gap: 5px;
         overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 2px;
+        scrollbar-width: none;
+    }
+
+    .chat-quick-chips::-webkit-scrollbar {
+        display: none;
+    }
+
+    .chat-chip {
+        font-size: 0.74rem;
+        padding: 3px 9px;
+    }
+
+    .chat-box-wrapper {
+        padding: 6px 10px;
+        border-radius: 10px;
+        gap: 6px;
+    }
+
+    .chat-textarea {
+        font-size: 0.9rem;
+        min-height: 22px;
+        max-height: 120px;
+    }
+
+    .chat-send-action-btn {
+        width: 34px;
+        height: 34px;
+        min-width: 34px;
+    }
+
+    .chat-bottom-footnote {
+        font-size: 8.5px;
     }
 }
+
+/* --- Ultra-Small Mobile Viewports (<= 480px) --- */
+@media (max-width: 480px) {
+    .face-panel {
+        height: 330px;
+        min-height: 290px;
+    }
+
+    .speech-bubble {
+        bottom: 54px;
+        padding: 6px 10px;
+    }
+
+    .chat-input-bar {
+        bottom: 8px;
+    }
+
+    .hud-top-row .hardware-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .hud-bottom-split .card-metrics .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .brand-title {
+        font-size: 12.5px;
+    }
+
+    .persona-select {
+        max-width: 85px;
+        font-size: 10px;
+    }
+
+    .chat-active-title {
+        max-width: 90px;
+    }
+}
+
 
 

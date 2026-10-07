@@ -821,43 +821,55 @@ Legend:
       6. **Dashboard View Switcher**: Removed legacy `btnDev` references from `app.js` and restricted `setView` exclusively to `"dual"` and `"chat"`.
       7. Verified with unit tests (`tests/` passing 94/94) and targeted intent routing verification.
 
-61. **Chat Workspace Model Dynamic State Sync & Vector Mic-Off Icon**:
-    - *Symptoms*:
-      1. When switching between local and Cloud Gemini in the top header, the chat top-right model pill remained stuck showing `⚡ RTX 3050 (4K)` in green, failing to reflect Gemini cloud status.
-      2. Chat messages rendered with green `LOCAL QWEN (4K)` badges even when Gemini was active, because historical turns lacked `"provider"` metadata in SQLite and the message template lacked purple Gemini badges (`.badge-gemini`).
-      3. The "MIC UNLOADED" pill displayed an ugly overlapping cross centered directly on the microphone icon (`🎙️⃠`).
+63. **Microphone Capture Auto-Resume on Chat-to-Dual Mode Switch**:
+    - *Symptoms*: When switching to `chat-only` mode, the microphone is shut off as expected to free audio hardware and ensure privacy. However, switching back to `dual` mode left the microphone muted/unresponsive, failing to capture user speech.
     - *Root Causes*:
-      1. Combining enclosing circle-backslash (`U+20E0`) does not compose cleanly with `🎙️` (Noto Color Emoji) on Linux Chromium/WebKit, causing glyph collision.
-      2. `syncChatTopBar()` in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) only updated `chatModelLabel.textContent` without changing `.model-icon` or toggling pill styling classes (`pill-gemini` vs `pill-local`).
-      3. Message streaming and historical rendering lacked dynamic provider fallback and purple badge CSS styles.
+      1. `/voice/toggle` and `/voice-mode` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) did not check or unpause `AudioCapture` if it had been paused or if the stream loop was waiting in a paused state.
+      2. In [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js), `onExitChatMode()` was not broadcasting or synchronizing `this.voiceEnabled` and UI state immediately across dual mode controls.
     - *Fixes Applied*:
-      1. **Crisp Vector SVG Mic-Off**: Replaced Unicode `🎙️⃠` with a clean, non-overlapping inline SVG `mic-off` icon in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html).
-      2. **Full Dynamic Top-Bar Sync**: Enhanced `syncChatTopBar()` to update text (`GEMINI (1M)` vs `LOCAL QWEN (4K)`), icon (`✨` vs `⚡`), tooltip, and CSS classes (`pill-gemini` vs `pill-local`).
-      3. **Gemini & Local Pill / Badge CSS**: Added styles for `.chat-stat-pill.pill-gemini`, `.chat-stat-pill.pill-local`, `.chat-msg-badge.badge-gemini`, and `.chat-msg-badge.badge-local` in [`index.css`](file:///home/ameya/robot/src/robot/api/static/index.css).
-      4. **End-to-End State Sync**: Hooked `syncChatTopBar()` into `selectChatSession`, `sendChatMessage` (on SSE `start`), `updateLlmToggleUi`, and `handleServerEvent` (`llm.provider_changed`).
-      5. **Backend Turn Persistence**: Updated `process_input` and `process_text_input` in [`engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) to persist `metadata={"provider": ...}` into SQLite.
-      6. **Cache Busting**: Bumped asset versions to `?v=2.5` in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html).
+      1. Updated `set_voice_mode` and `toggle_voice` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) to invoke `engine.capture.resume()` explicitly on `enabled: true`, broadcast `voice_mode_changed` over WebSockets, and clear muted state.
+      2. Enhanced `onExitChatMode()` and `setView("dual")` in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) to re-sync `voiceEnabled = true`, update mic button UI, and trigger resize recalibration.
 
-62. **HUD Bottom Split Integration, Image Studio Fix, Indian Standard Time Grounding, Music Ducking Removal & Chat Formatting**:
-    - *Symptoms & Requirements*:
-      1. `LATENCY TARGETS & SERVICE HEALTH` card was excessively stretched vertically, leaving a massive empty void.
-      2. `IMAGE STUDIO` was docked floating over the 3D VRM character, blocking Luna.
-      3. Image generation button was non-responsive (due to FastAPI 422 schema lookup error on inner BaseModel with `from __future__ import annotations`).
-      4. User chat messages collapsed into a single-character-wide vertical column without markdown or newline formatting.
-      5. Chat quick chips automatically sent fixed pre-written prompts instead of presenting available tools and inserting clean command prefixes.
-      6. Music playback aggressively ducked and faded out TTS and avatar speech instead of letting the model speak freely.
-      7. Model was unaware of local system time (Indian Standard Time / IST).
-      8. Dashboard responsiveness on smaller screens needed comprehensive optimization.
-    - *Root Causes & Fixes Applied*:
-      1. **HUD Bottom Split (`.hud-bottom-split`)**: Removed `#cardImageGen` from `#facePanel` to give the 3D avatar unobstructed canvas space. Placed both `card-metrics` and `card-image-studio` side-by-side in `.hud-bottom-split` inside `.dev-panel`. Reorganized metrics into a clean 3×2 grid (`repeat(3, 1fr)`), eliminating the empty void.
-      2. **Zero-Distortion Image Studio**: Created `#imgPreviewArea` with fixed min/max heights (`min-height: 130px; max-height: 180px; overflow: hidden;`) and `object-fit: contain;` so neither synthesis nor loaded images shift or distort surrounding UI.
-      3. **FastAPI Image Route Fix**: Moved `ImageGenRequest` to module top level in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) with explicit `Body(...)` binding, resolving type hint introspection and 422 errors. Tested endpoint with `fastapi.testclient.TestClient` (200 OK).
-      4. **Chat User Bubble Collapse Fix**: Removed nested `max-width: 82%` from `.chat-msg-body`, set `.chat-msg-row.msg-user .chat-msg-content` to `align-items: flex-end; max-width: 82%; width: auto;`, and `.chat-msg-body` to `width: fit-content; max-width: 100%; white-space: pre-wrap; word-break: break-word;`. Rendered user messages through `renderChatMarkdown` in both active send and session restore.
-      5. **Available Tools Quick Chips**: Redesigned `.chat-quick-chips` with `<span class="chat-chips-label"><span class="pulse-dot"></span> CURRENTLY AVAILABLE TOOLS:</span>` and chips (`🔍 Web Search`, `🎵 Play Music`, `👁️ Camera Vision`, `🎨 Generate Image`, `🧠 Check Memory`). Click handlers now insert clean tool prefixes into `chatTextarea` and focus without auto-submitting.
-      6. **Complete Audio Ducking & TTS Fade Removal**: Unconditionally locked `_duck_target = 1.0` and `_volume = 1.0` in [`src/robot/audio/playback.py`](file:///home/ameya/robot/src/robot/audio/playback.py) and stripped out `_apply_ducking()` and `wait_speech_engine.player.fade_out()` in [`src/robot/tools/builtins/music.py`](file:///home/ameya/robot/src/robot/tools/builtins/music.py). Stripped avatar mouth/speech interruptions from `app.js` upon music start.
-      7. **Indian Standard Time (IST) Grounding**: Injected `[Current Local System Time (Indian Standard Time / IST)]` with formatted time (`%I:%M:%S %p IST`), date (`%A, %B %d, %Y`), and ISO-8601 string on every conversational turn in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py).
-      8. **Universal Responsive Design**: Added fluid media queries in [`src/robot/api/static/index.css`](file:///home/ameya/robot/src/robot/api/static/index.css) for <=1200px (single-column stack, auto-height cards) and <=768px (2-column metrics, horizontal scrolling chips, 95% chat width).
-      9. **Verification**: 94/94 pytest suite passing. Bumped cache-buster to `?v=2.6`.
+64. **`music.control` Missing Positional Argument & Composite Actions**:
+    - *Symptoms*: User commanded *"restart it with 40% vol"*, causing Gemini to invoke `music.control` with keyword arguments, throwing `TypeError: register_builtin_tools.<locals>.music_control() missing 1 required positional argument: 'action'`.
+    - *Root Causes*:
+      1. `music_control` in [`src/robot/tools/builtins/__init__.py`](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) defined `action: str` as a mandatory positional argument with no default value.
+      2. Tool failed to infer `action` when only `volume` or `query` was supplied.
+      3. Composite commands (e.g. setting volume AND restarting playback simultaneously) were not supported in a single tool call.
+    - *Fixes Applied*:
+      1. Made `action: str | None = None` optional with smart fallback: auto-infers `"volume"` if `volume` is passed, `"replay"` if `query` or restart keywords are passed, and `"equalizer"` if `preset` is passed.
+      2. Supported composite execution: if both `volume` and playback actions (`"restart"`, `"replay"`, `"resume"`) are provided, volume is adjusted first, followed by immediate track playback.
+      3. Added robust percentage string normalization (`"40%"` -> `0.4`).
+      4. Updated tool schemas in `ToolRegistry` and direct intent router regex in `coordinator.py`.
+
+65. **Mobile & Cross-Viewport Cyberdeck Responsive Overhaul**:
+    - *Symptoms*: The dashboard suffered layout breakages across differing viewports: the speech bubble overlapped directly on top of the chat input bar on mobile screens (`bottom: 12px` collision); dev panel cards overflowed horizontally; the chat workspace was unusable on handheld screens.
+    - *Root Causes*:
+      1. Conflicting duplicate legacy media queries in [`src/robot/api/static/index.css`](file:///home/ameya/robot/src/robot/api/static/index.css) (lines 1413–1498 and 3840–3880) overwrote styles with stale fixed heights and collision-causing positions.
+      2. Fixed viewport constraints prevented smooth vertical flow on mobile.
+      3. Missing off-canvas drawer and touch-friendly mobile navigation in the chat workspace.
+    - *Fixes Applied*:
+      1. Removed duplicate legacy media queries and established a unified responsive system at the bottom of `index.css`.
+      2. Resolved speech bubble collision: elevated speech bubble to `bottom: 58px` (mobile) / `bottom: 66px` (desktop) with distinct z-indexes, guaranteeing zero overlap with the chat input bar.
+      3. Transformed the chat sidebar into an animated off-canvas drawer on mobile (`<= 768px`) with touch backdrop overlay (`.chat-sidebar-backdrop`), auto-closing upon session selection.
+      4. Collapsed the voice toggle button on mobile to a clean 36px icon button (`🎙️`/`🔇`), giving full horizontal width to the input box.
+      5. Configured horizontal touch scrolling (`-webkit-overflow-scrolling: touch`) with hidden scrollbars for tool chips, pipeline flow nodes, and code blocks.
+      6. Updated viewport meta tag: `width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover`.
+      7. Verified across desktop (1280px+), tablet (768px–1024px), and mobile (360px–480px) viewports.
+
+66. **EasyEffects Audio Equalizer Profiles & AI Tool Control**:
+    - *Symptoms*: Music playback sounded generic and user lacked dynamic sound equalization or audio profiling control through AI voice or chat commands.
+    - *Fixes Applied*:
+      1. Integrated EasyEffects CLI (`easyeffects -l <preset>`) into the audio toolchain.
+      2. Pre-configured 6 high-fidelity sound presets discovered on user's system:
+         - `robot`: User's custom default robot acoustic profile.
+         - `bass_boost` (`Max_Bass_Pristine_Reverb`): Deep punchy low-end with acoustic space.
+         - `spatial` (`Apple_Spatial_MaxBass_Vocals`): Wide soundstage with vocal clarity.
+         - `clear_vocals` (`SubBass75_ClearVocals`): Emphasized vocal mid-range.
+         - `reverb` (`Pristine_Reverb`): High-dimension ambient reverb.
+         - `sub_bass` (`Immersive_Sub75_ClearVocals`): Deep rumble with crisp dialogue.
+      3. Created dedicated `music.equalizer` tool and added `action="equalizer"` / `action="equalizers"` support to `music.control`.
+      4. Added unit tests in `tests/test_tools.py` verifying preset switching and listing (101/101 tests passing).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
@@ -868,7 +880,126 @@ Legend:
 
 ---
 
-## 5. Instructions for AI Agents Updating This Tracker
+## 5. Comprehensive Bot Improvement & Evolution Roadmap
+
+A holistic blueprint for advancing the robot brain across latency, context, multimodality, physical embodiment, acoustic spatialization, and autonomous cognition.
+
+```mermaid
+graph TD
+    A[Robot Core Brain] --> B[1. Ultra-Low Latency & Pipeline Acceleration]
+    A --> C[2. Context & Long-Term Memory Evolution]
+    A --> D[3. Multimodal & Continuous Perception]
+    A --> E[4. Physical Embodiment & Kinematics]
+    A --> F[5. Spatial Audio & Acoustic Environment]
+    A --> G[6. Proactive Cognition & Autonomy]
+
+    B --> B1[Speculative Decoding Draft Model]
+    B --> B2[Streaming Chunked Neural Vocoder]
+    B --> B3[Vulkan/DirectML GPU VAD]
+
+    C --> C1[Hierarchical Memory Consolidation]
+    C --> C2[Sleep-Cycle Memory Reflection]
+    C --> C3[Dynamic Token Compaction & Entity Graphs]
+
+    D --> D1[Local 4-bit VLM on AMD iGPU]
+    D --> D2[Continuous 3D Spatial Scene Graph]
+    D --> D3[Visual Saccades & Face Re-identification]
+
+    E --> E1[High-Speed CAN / Dynamixel Serial Bridge]
+    E --> E2[Inverse Kinematics & Balance Controller]
+    E --> E3[Failsafe Current/Torque Collision Guard]
+
+    F --> F1[Microphone Array Beamforming & DOA]
+    F --> F2[SoundSpaces 3D Binaural HRTF]
+    F --> F3[Dynamic Room Acoustic Compensation]
+
+    G --> G1[Autonomous Idle Routine & Day/Night Cycles]
+    G --> G2[Proactive Curiosity Engine]
+    G --> G3[Smart Home & IoT Mesh Bridging]
+```
+
+---
+
+### Category 1: Ultra-Low Latency & Pipeline Acceleration (<400ms E2E)
+Current baseline is ~714ms E2E time-to-first-audio. To achieve conversational parity with human turn-taking (~250–350ms):
+1. **Speculative Decoding with Draft Model**:
+   - Pair `Qwen3.5-4B` on RTX 3050 with a micro draft model (e.g. `Qwen2.5-0.5B-Q4` or speculative n-gram caching) inside `llama-server`.
+   - Generates 2–3 tokens in parallel per forward pass, pushing generation from 47 tok/s to **85–110 tok/s** and shaving 60–80ms off first-sentence completion.
+2. **Streaming Chunked Neural Vocoder (Piper TTS Zero-Buffer)**:
+   - Piper currently synthesizes complete clauses (e.g. 2–3 words) before playing raw PCM chunks.
+   - Refactor ONNX Piper runtime to stream audio phoneme-by-phoneme or frame-by-frame directly to ALSA ring buffers, lowering TTS first-byte latency from **69ms down to <25ms**.
+3. **Hardware-Accelerated Silero VAD (Vulkan / DirectML)**:
+   - Move Silero VAD evaluation off the CPU onto the AMD Radeon 680M iGPU or NPU via ONNX Runtime DirectML/Vulkan, cutting continuous audio processing jitter and enabling zero-latency audio framing.
+4. **Predictive Interruption & Turn Anticipation**:
+   - Implement an acoustic pitch/prosody fall detector (falling intonation indicates user is concluding their sentence). The robot begins LLM pre-fill 100ms *before* the VAD silence boundary is crossed.
+
+---
+
+### Category 2: Context, Long-Term Memory & Cognitive Continuity
+1. **Two-Tier Hierarchical Memory Architecture**:
+   - **Tier 1 (Fast Working Memory / Scratchpad)**: In-memory KV cache and active conversation context holding the last 8–10 turns with zero latency.
+   - **Tier 2 (Episodic & Semantic Knowledge Graph)**: Qdrant vector space + SQLite relational entity database.
+2. **Autonomous Sleep-Cycle Memory Consolidation & Reflection**:
+   - When the robot enters sleep/idle mode (e.g. at night or when inactive for >30 minutes), trigger a background consolidation task.
+   - Analyzes all turns from the day, extracts user preferences, relationship milestones, emotional states, and synthesizes them into long-term biographical facts while purging redundant transcripts.
+3. **Graph-RAG Entity Linker**:
+   - Combine Mem0 dense vector search with a lightweight local knowledge graph (e.g. NetworkX / SQLite). If the user mentions a person ("Ameya", "Mom"), link facts through relational edges (`[Ameya] --brother_of--> [...]`) to resolve multi-hop queries instantaneously.
+4. **Dynamic Context Budgeting & Compaction**:
+   - Replace linear history pruning with LLM semantic summarization of older conversational turns, preserving context length indefinitely without overflowing the 4096-token KV window.
+
+---
+
+### Category 3: Multimodal Intelligence & Continuous Perception
+1. **Continuous 3D Spatial Scene Graph**:
+   - Fuse YOLOv8n object bounding boxes with depth estimation (e.g. MiDaS or Intel RealSense depth map) to maintain a persistent 3D map of objects in the room:
+     `{"desk": [x, y, z], "laptop": [x, y, z], "coffee_cup": [x, y, z]}`.
+   - Enables spatial queries: *"Where did I leave my keys?"* or *"Hand me the water bottle on your left"*.
+2. **Visual Saccades & Human Re-Identification**:
+   - Implement biometric facial embeddings (FaceNet / InsightFace ONNX) so the robot instantly recognizes known individuals across days and greets them by name without re-introduction.
+   - Add micro-saccades to the camera pan-tilt or 3D avatar eyes, glancing naturally between human eyes, hands, and points of interest.
+3. **Local Low-Bit Multimodal VLM (Moondream2 / SmolVLM)**:
+   - Run a dedicated lightweight vision-language model (1.8B–2B params) on the AMD 680M iGPU via Vulkan/llama.cpp, providing continuous ambient scene awareness without touching the RTX 3050.
+
+---
+
+### Category 4: Physical Embodiment & Real-World Kinematics
+1. **High-Speed Serial Bus (Dynamixel / CAN / ROS2)**:
+   - Upgrade the current USB serial bridge to high-baudrate (1M–3M baud) bus communication for servo feedback.
+   - Read position, velocity, temperature, and electrical current from all joint servos at 50Hz.
+2. **Inverse Kinematics (IK) & Expressive Gestures**:
+   - Deploy analytical 6-DOF / 12-DOF Inverse Kinematics for arms and head.
+   - Allow natural pointing (*"point at the screen"* calculates the exact yaw/pitch angle to direct the physical finger toward detected 3D objects).
+3. **Torque-Sensing Collision Guard & Soft Compliance**:
+   - Implement active compliance: if an arm encounters external resistance (human touch or obstacle), automatically yield and enter zero-torque gravity compensation mode, preventing motor burnout or human injury.
+4. **Physical Expressive Lighting (Aura Sync Integration)**:
+   - Multi-zone ASUS ROG keyboard & chassis lighting dynamically synched to emotional states (e.g. cyan breathing in idle, pulsing amber during speech synthesis, soft violet in Luna personality mode).
+
+---
+
+### Category 5: Audio & Acoustic Spatialization
+1. **Microphone Array Beamforming & Direction of Arrival (DOA)**:
+   - Integrate a 4-mic or 6-mic circular array (e.g. ReSpeaker / Matrix Voice).
+   - Use GCC-PHAT algorithm to compute the sound arrival angle in real time; physically turn the robot head and avatar gaze directly toward the speaker before answering.
+2. **SoundSpaces 3D Binaural HRTF Audio Output**:
+   - Pass TTS speech and sound effects through Head-Related Transfer Functions (HRTF). When the robot moves or turns its head, sound shifts dynamically in the stereo field.
+3. **Active Room Acoustic Equalization (EasyEffects Automation)**:
+   - Continuously measure room acoustic impulse response and adjust EasyEffects equalizer profiles automatically to optimize vocal intelligibility in reflective rooms.
+
+---
+
+### Category 6: Proactive Autonomy, Personality & Ecosystem Bridging
+1. **Autonomous Wake/Sleep Circadian Rhythm**:
+   - Give the robot an internal state clock: wakes up at scheduled morning times, yawns, stretches, greets the user with morning briefings (weather, schedule, news), and dims lights at night.
+2. **Proactive Idle Commentary & Curiosity Engine**:
+   - When idle in a room, the robot should not just be passive. If it detects a sudden scene change (e.g. user entering room, holding a new object, or looking frustrated), gently initiate conversation: *"Hey Ameya, working on that new Python project?"*.
+3. **Home Assistant & Smart IoT Ecosystem Integration**:
+   - Register native Home Assistant REST/WebSocket tools: allow the robot to control room lighting, thermostat, smart plugs, and music speakers upon natural speech commands.
+4. **Custom Wake-Word Engine (openWakeWord)**:
+   - Add zero-latency local wake-word models (*"Hey Luna"*, *"Computer"*, *"Hey Cypher"*) so the microphone can operate in continuous ultra-low-power listening mode without manual push-to-talk.
+
+---
+
+## 6. Instructions for AI Agents Updating This Tracker
 
 When you perform work on this repository:
 1. **Consult this tracker** before designing new systems to understand existing capabilities and dependencies.
@@ -884,3 +1015,4 @@ When you perform work on this repository:
    ```bash
    .venv/bin/pytest tests/
    ```
+

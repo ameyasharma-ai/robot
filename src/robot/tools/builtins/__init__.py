@@ -665,14 +665,63 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def music_control(action: str, volume: float | None = None, query: str | None = None, **kwargs) -> dict:
-        act = action.strip().lower()
+    async def music_control(
+        action: str | None = None,
+        volume: float | str | None = None,
+        query: str | None = None,
+        preset: str | None = None,
+        **kwargs,
+    ) -> dict:
+        # 1. Parse and extract volume if supplied anywhere
+        v_raw = volume if volume is not None else (kwargs.get("level") or kwargs.get("vol") or kwargs.get("v"))
+        parsed_vol: float | None = None
+        if v_raw is not None:
+            try:
+                if isinstance(v_raw, str) and "%" in v_raw:
+                    parsed_vol = float(v_raw.replace("%", "").strip()) / 100.0
+                else:
+                    v_num = float(v_raw)
+                    if v_num > 1.0:
+                        parsed_vol = v_num / 100.0
+                    else:
+                        parsed_vol = v_num
+                parsed_vol = max(0.0, min(1.0, parsed_vol))
+            except Exception:
+                pass
+
+        # 2. Extract action with fallbacks to kwargs and parameter inference
+        act = (action or kwargs.get("command") or kwargs.get("act") or kwargs.get("mode") or kwargs.get("operation") or "").strip().lower()
+        preset_target = preset or kwargs.get("preset_name") or kwargs.get("profile") or kwargs.get("eq")
+
+        if not act:
+            if preset_target:
+                act = "equalizer"
+            elif query:
+                act = "replay"
+            elif parsed_vol is not None:
+                act = "volume"
+            else:
+                act = "status"
+
+        # 3. Apply volume adjustment if provided (even when composite, e.g. restart + 40% vol)
+        vol_result = None
+        if parsed_vol is not None:
+            vol_result = music_service.set_volume(parsed_vol)
+
+        # 4. Handle playback and control actions
         if act in {"pause", "hold", "freeze"}:
             return music_service.pause()
         elif act in {"resume", "unpause", "continue"}:
-            return music_service.resume(wait_speech_engine=engine)
+            res = music_service.resume(wait_speech_engine=engine)
+            if vol_result:
+                res["volume"] = parsed_vol
+            return res
         elif act in {"replay", "restart", "repeat", "again", "play again"}:
-            return music_service.replay(query=query, wait_speech_engine=engine)
+            res = music_service.replay(query=query, wait_speech_engine=engine)
+            if vol_result:
+                res["volume"] = parsed_vol
+                res["message"] = f"Set volume to {int(parsed_vol * 100)}% and {res.get('message', 'replaying track')}."
+            return res
         elif act in {"stop", "cancel", "kill"}:
             return music_service.stop()
         elif act in {"status", "current", "what is playing", "what's playing"}:
@@ -682,36 +731,67 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             return {"status": "ok", "local_collection": tracks, "total_songs": len(tracks)}
         elif act in {"history", "recent", "queue", "list"}:
             return {"history": music_service.get_history(limit=10)}
-        elif act == "volume":
-            v_val = volume if volume is not None else kwargs.get("level")
-            if v_val is not None:
-                try:
-                    if isinstance(v_val, str) and "%" in v_val:
-                        v_float = float(v_val.replace("%", "").strip()) / 100.0
-                    else:
-                        v_float = float(v_val)
-                        if v_float > 1.0:
-                            v_float = v_float / 100.0
-                    return music_service.set_volume(v_float)
-                except Exception:
-                    pass
-            return {"status": "error", "message": "Volume action requires volume level (e.g. 0.2 for 20%, 1.0 for 100%)"}
+        elif act in {"volume", "vol", "level", "sound"}:
+            if vol_result is not None:
+                return vol_result
+            return {"status": "error", "message": "Volume action requires volume level (e.g. 0.2 for 20%, 0.4 for 40%, 1.0 for 100%)"}
+        elif act in {"equalizer", "eq", "preset", "profile", "sound_profile"}:
+            p_to_set = preset_target or query
+            return music_service.set_equalizer_preset(p_to_set)
+        elif act in {"equalizers", "list_eq", "eq_list", "presets", "list_presets"}:
+            return music_service.list_equalizer_presets()
+
+        # Check if action itself is a preset name (e.g. action="robot", action="spatial")
+        if act in music_service.PRESETS or act in {"bass", "apple", "3d", "concert"}:
+            return music_service.set_equalizer_preset(act)
+
+        if vol_result is not None:
+            return vol_result
+
         return {"status": "error", "message": f"Unknown music action '{action}'"}
 
     engine.tool_registry.register(
         ToolDefinition(
             name="music.control",
-            description="Control music playback, volume, and local collection: action='volume' (requires volume float between 0.0 and 1.0, e.g. 0.2 for 20%, 1.0 for 100%), action='library' (list all local downloaded songs in library collection), action='replay' (immediately re-stream the last played song from start), action='resume', action='pause', action='stop', action='status' (what is playing), action='history' (recently played songs).",
+            description="Control music playback, volume, and sound profiles: action='replay'/'restart' (optionally with volume, e.g. 0.4 for 40%), action='volume' (volume between 0.0 and 1.0), action='equalizer' (preset='robot' [signature preset], 'bass_boost', 'spatial', 'sub_bass', 'reverb', 'immersive', 'list'), action='resume', action='pause', action='stop', action='status', action='library', action='history'.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "description": "Action: 'volume', 'library', 'replay', 'resume', 'pause', 'stop', 'status', 'history'"},
-                    "volume": {"type": "number", "description": "Volume between 0.0 and 1.0 (e.g. 0.2 for 20%, 0.5 for 50%, 1.0 for 100%)"},
-                    "query": {"type": "string", "description": "Optional song name if replaying a specific track"},
+                    "action": {
+                        "type": "string",
+                        "description": "Action: 'replay', 'restart', 'volume', 'equalizer', 'resume', 'pause', 'stop', 'status', 'library', 'history'",
+                        "default": "status",
+                    },
+                    "volume": {"type": "number", "description": "Volume level between 0.0 and 1.0 (e.g. 0.4 for 40%, 1.0 for 100%)"},
+                    "preset": {"type": "string", "description": "Equalizer preset: 'robot', 'bass_boost', 'spatial', 'sub_bass', 'reverb', 'immersive', or 'list'"},
+                    "query": {"type": "string", "description": "Optional song name or query"},
                 },
-                "required": ["action"],
             },
             handler=music_control,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="music",
+        )
+    )
+
+    async def music_equalizer(preset: str = "robot", **kwargs) -> dict:
+        target = preset or kwargs.get("name") or kwargs.get("profile") or "robot"
+        return music_service.set_equalizer_preset(target)
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="music.equalizer",
+            description="Change audio equalizer profiles via EasyEffects: preset='robot' (user's saved preset, default), 'bass_boost' (Max Bass Pristine Reverb), 'spatial' (Apple Spatial Max Bass Vocals), 'sub_bass' (Sub Bass 75Hz Clear Vocals), 'reverb' (Pristine Reverb), 'immersive' (Immersive Sub 75Hz Clear Vocals). Pass preset='list' to inspect available sound profiles.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "preset": {
+                        "type": "string",
+                        "description": "Preset name: 'robot', 'bass_boost', 'spatial', 'sub_bass', 'reverb', 'immersive', or 'list'",
+                        "default": "robot",
+                    },
+                },
+            },
+            handler=music_equalizer,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="music",
         )

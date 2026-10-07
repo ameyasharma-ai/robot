@@ -131,7 +131,9 @@ class ToolRouter:
             "recently played", "song history", "music history", "last played", "last song",
             "what did you play", "what song did you play", "what song did you last play", "which song did you play",
             "local collection", "local songs", "local files", "downloaded songs", "my collection", "library", "what songs do you have", "what songs are there", "what music do you have",
-            "volume", "set volume", "music volume", "turn it up", "turn it down", "louder", "quieter", "mute", "unmute", "audio"
+            "volume", "set volume", "music volume", "turn it up", "turn it down", "louder", "quieter", "mute", "unmute", "audio", "vol",
+            "restart", "restart it", "restart the song", "restart song", "restart music",
+            "equalizer", "equaliser", "eq", "preset", "sound profile", "audio profile", "robot preset", "bass boost", "spatial audio", "sub bass", "reverb preset"
         ],
         "image": ["generate image", "generate an image", "create image", "create an image", "draw an image", "paint an image", "illustration of", "render image", "generate picture"],
         "motion": ["wave", "raise hand", "kick", "walk", "turn around", "point at", "dance", "gesture", "stop motion", "reset pose", "nod head"],

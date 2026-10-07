@@ -37,6 +37,7 @@ class MusicPlayerService:
         # Event set when music audio frames actually begin playing (for TTS coordination)
         self._music_started_event = asyncio.Event()
         self._music_active = False
+        self._active_preset = "robot"
 
     @property
     def is_playing(self) -> bool:
@@ -70,6 +71,7 @@ class MusicPlayerService:
             "current_track": current,
             "source": source,
             "volume": self._volume,
+            "equalizer_preset": getattr(self, "_active_preset", "robot"),
             "history": self.get_history(5),
             "last_played": last,
             "local_collection": local_tracks[:30],
@@ -1080,3 +1082,139 @@ class MusicPlayerService:
             "volume": self._volume,
             "message": f"Volume set to {int(self._volume * 100)}%.",
         }
+
+    PRESETS: dict[str, dict[str, str]] = {
+        "robot": {
+            "name": "robot",
+            "file": "robot",
+            "description": "User's signature robot preset with dynamic warmth, tuned clarity, and rich staging",
+        },
+        "bass_boost": {
+            "name": "Max_Bass_Pristine_Reverb",
+            "file": "Max_Bass_Pristine_Reverb",
+            "description": "Max bass punch with pristine studio reverb and powerful low-end resonance",
+        },
+        "spatial": {
+            "name": "Apple_Spatial_MaxBass_Vocals",
+            "file": "Apple_Spatial_MaxBass_Vocals",
+            "description": "Apple spatial 3D audio emulation with elevated sub-bass and crystal-clear vocal projection",
+        },
+        "sub_bass": {
+            "name": "SubBass75_ClearVocals",
+            "file": "SubBass75_ClearVocals",
+            "description": "Deep 75Hz sub-bass rumble paired with high-definition vocal separation",
+        },
+        "reverb": {
+            "name": "Pristine_Reverb",
+            "file": "Pristine_Reverb",
+            "description": "Spacious acoustic concert hall reverb with airy harmonics",
+        },
+        "immersive": {
+            "name": "Immersive_Sub75_ClearVocals",
+            "file": "Immersive_Sub75_ClearVocals",
+            "description": "Wide immersive stage acoustics with deep sub-bass and crisp vocal imaging",
+        },
+    }
+
+    def list_equalizer_presets(self) -> dict[str, Any]:
+        """List all available EasyEffects equalizer presets."""
+        presets_info = {}
+        for key, info in self.PRESETS.items():
+            presets_info[key] = {
+                "name": info["name"],
+                "description": info["description"],
+                "active": getattr(self, "_active_preset", "robot") == key,
+            }
+        return {
+            "status": "ok",
+            "current_preset": getattr(self, "_active_preset", "robot"),
+            "presets": presets_info,
+            "message": f"Available equalizer profiles: {', '.join(self.PRESETS.keys())}. Current active preset: '{getattr(self, '_active_preset', 'robot')}'.",
+        }
+
+    def set_equalizer_preset(self, preset_name: str | None = None) -> dict[str, Any]:
+        """Load an equalizer profile via EasyEffects CLI.
+        
+        Supported profiles: 'robot', 'bass_boost', 'spatial', 'sub_bass', 'reverb', 'immersive'.
+        """
+        if not preset_name or preset_name.strip().lower() in {"", "list", "status", "show"}:
+            return self.list_equalizer_presets()
+
+        p_clean = preset_name.strip().lower().replace("-", "_").replace(" ", "_")
+
+        alias_map = {
+            "robot": "robot",
+            "default": "robot",
+            "signature": "robot",
+            "bass": "bass_boost",
+            "bass_boost": "bass_boost",
+            "max_bass": "bass_boost",
+            "bassboost": "bass_boost",
+            "max_bass_pristine_reverb": "bass_boost",
+            "spatial": "spatial",
+            "spatial_audio": "spatial",
+            "apple_spatial": "spatial",
+            "apple": "spatial",
+            "3d": "spatial",
+            "apple_spatial_maxbass_vocals": "spatial",
+            "sub_bass": "sub_bass",
+            "subbass": "sub_bass",
+            "deep_bass": "sub_bass",
+            "subbass75_clearvocals": "sub_bass",
+            "reverb": "reverb",
+            "concert": "reverb",
+            "hall": "reverb",
+            "pristine_reverb": "reverb",
+            "immersive": "immersive",
+            "stage": "immersive",
+            "immersive_stage": "immersive",
+            "immersive_sub75_clearvocals": "immersive",
+        }
+
+        matched_key = alias_map.get(p_clean)
+        if not matched_key:
+            for k in self.PRESETS:
+                if k in p_clean or p_clean in k:
+                    matched_key = k
+                    break
+
+        if not matched_key or matched_key not in self.PRESETS:
+            return {
+                "status": "error",
+                "message": f"Unknown equalizer preset '{preset_name}'. Available options: {list(self.PRESETS.keys())}.",
+                "available_presets": list(self.PRESETS.keys()),
+            }
+
+        target_info = self.PRESETS[matched_key]
+        target_file = target_info["file"]
+
+        try:
+            res = subprocess.run(
+                ["easyeffects", "-l", target_file],
+                capture_output=True,
+                text=True,
+                timeout=2.5,
+            )
+            if res.returncode == 0:
+                self._active_preset = matched_key
+                logger.info("equalizer_preset_loaded", preset=matched_key, file=target_file)
+                return {
+                    "status": "ok",
+                    "preset": matched_key,
+                    "profile_name": target_info["name"],
+                    "description": target_info["description"],
+                    "message": f"Equalizer preset switched to '{matched_key}' ({target_info['description']}).",
+                }
+            else:
+                logger.warning("easyeffects_load_failed", returncode=res.returncode, stderr=res.stderr)
+                return {
+                    "status": "error",
+                    "message": f"EasyEffects returned code {res.returncode}: {res.stderr.strip() or 'Unknown error'}",
+                }
+        except Exception as e:
+            logger.error("easyeffects_exec_exception", error=str(e))
+            return {
+                "status": "error",
+                "message": f"Failed to execute EasyEffects command: {str(e)}",
+            }
+
