@@ -104,7 +104,7 @@ import urllib.request, json
 try:
     from robot.personality import PersonalityManager
     from robot.core.context import ContextEngine, format_system_prompt
-    from robot.tools import ToolRegistry
+    from robot.tools import ToolRegistry, ToolRouter
     from robot.tools.builtins import register_builtin_tools
     import yaml
 
@@ -124,12 +124,13 @@ try:
 
     mock = MockEngine()
     register_builtin_tools(mock)
-    tools_schema = mock.tool_registry.get_schemas()
-
     silent_arrival_prompt = (
         '[System Event: Robot Core online and sensors active. The user has arrived / entered the room. '
         'In your next response, warmly acknowledge and greet the user.]'
     )
+    router = ToolRouter(mock.tool_registry)
+    selected_tools = router.select_tools(silent_arrival_prompt)
+    tools_schema = mock.tool_registry.get_schemas(selected_tools) if selected_tools else None
     msgs = [
         {'role': 'system', 'content': system_content},
         {'role': 'user', 'content': silent_arrival_prompt},

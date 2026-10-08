@@ -9,15 +9,42 @@ Features:
 
 from __future__ import annotations
 
+import contextlib
+import os
 import threading
 import time
-from typing import Optional
+from typing import Generator, Optional
 
 import numpy as np
 
 from robot.telemetry import get_logger
 
 logger = get_logger("perception.camera")
+
+
+@contextlib.contextmanager
+def silence_c_stderr() -> Generator[None, None, None]:
+    """Temporarily redirect C-level stderr (fd 2) to devnull.
+
+    Suppresses noisy C++ backend warning spam from OpenCV and ffmpeg
+    when probing nonexistent or loopback video capture devices.
+
+    Yields:
+        None.
+    """
+    try:
+        stderr_fd = 2
+        saved_stderr = os.dup(stderr_fd)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, stderr_fd)
+        os.close(devnull)
+        try:
+            yield
+        finally:
+            os.dup2(saved_stderr, stderr_fd)
+            os.close(saved_stderr)
+    except Exception:
+        yield
 
 
 class CameraCapture:
@@ -62,7 +89,10 @@ class CameraCapture:
         """Continuously reads frames from camera into the cached buffer."""
         import cv2
 
-        cap = cv2.VideoCapture(self.device_index)
+        os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+        os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
+        with silence_c_stderr():
+            cap = cv2.VideoCapture(self.device_index)
         if not cap.isOpened():
             logger.warning("camera_open_failed", device_index=self.device_index)
             self._is_opened = False

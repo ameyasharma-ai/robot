@@ -559,6 +559,26 @@ class ConversationHistory:
             "title": row[5] or "Conversation",
         }
 
+    async def get_stats(self) -> dict[str, int]:
+        """Return memory statistics including fact count and total conversation messages.
+
+        Returns:
+            dict[str, int]: Dictionary containing facts_count, messages_count, and sessions_count.
+        """
+        if not self._conn:
+            return {"facts_count": 0, "messages_count": 0, "sessions_count": 0}
+
+        def _query() -> dict[str, int]:
+            f_cur = self._conn.execute("SELECT COUNT(*) FROM facts")
+            f_count = int(f_cur.fetchone()[0])
+            m_cur = self._conn.execute("SELECT COUNT(*) FROM conversations")
+            m_count = int(m_cur.fetchone()[0])
+            s_cur = self._conn.execute("SELECT COUNT(*) FROM sessions")
+            s_count = int(s_cur.fetchone()[0])
+            return {"facts_count": f_count, "messages_count": m_count, "sessions_count": s_count}
+
+        return await asyncio.to_thread(_query)
+
     async def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict]:
         """Get all messages for an isolated session, including tool call details and metrics."""
         if not self._conn:
@@ -1007,6 +1027,14 @@ class MemoryManager:
     async def search_history(self, query: str, limit: int = 10) -> list[dict]:
         """Full-text search across all conversations."""
         return await self.history.search(query, limit)
+
+    async def get_stats(self) -> dict[str, int]:
+        """Retrieve aggregate memory and conversation statistics.
+
+        Returns:
+            dict[str, int]: Counts of persistent facts, stored messages, and sessions.
+        """
+        return await self.history.get_stats()
 
     async def close(self) -> None:
         """Cleanly close database and vector store handles."""

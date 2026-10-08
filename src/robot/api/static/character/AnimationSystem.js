@@ -77,6 +77,7 @@ class AnimationSystem {
             if (t >= 1.0) {
                 this._returnBlend = null; // blend complete
             }
+            this._syncSecondarySleeves();
             // While blending back, skip the normal layer updates
             // so we don't fight the blend with fresh gestures
             return;
@@ -171,6 +172,23 @@ class AnimationSystem {
                 leftForearm.quaternion.copy(rig.initialRotations["leftLowerArm"]);
             }
         }
+
+        // Keep secondary sleeve and clothing aim bones synchronized with upper arm kinematics
+        this._syncSecondarySleeves();
+    }
+
+    /**
+     * Synchronize secondary clothing and sleeve aim bones with the upper arms.
+     */
+    _syncSecondarySleeves() {
+        const rig = this.rig;
+        if (!rig) return;
+        const leftArm = rig.getBone("leftUpperArm");
+        const rightArm = rig.getBone("rightUpperArm");
+        const leftSleeve = rig.getBone("leftSleeveAim");
+        const rightSleeve = rig.getBone("rightSleeveAim");
+        if (leftSleeve && leftArm) leftSleeve.quaternion.copy(leftArm.quaternion);
+        if (rightSleeve && rightArm) rightSleeve.quaternion.copy(rightArm.quaternion);
     }
 
     _updateLocomotion(delta) {
@@ -376,8 +394,6 @@ class AnimationSystem {
                 const deltaQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0));
                 forearm.quaternion.copy(initQ).multiply(deltaQ);
             }
-        }
-
         } else if (act.type === "nod") {
             const head = rig.getBone("head");
             const ease = Math.sin(t * Math.PI * 4) * (1.0 - t * 0.3);

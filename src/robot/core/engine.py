@@ -546,11 +546,16 @@ class RobotEngine:
             {"role": "user", "content": "hi"},
         ]
 
-        # Pre-warm system prompt prefix together with tools schema so Turn 1 hits 100% KV cache
+        # Pre-warm system prompt prefix together with contextual tools schema so Turn 1 hits 100% KV cache
         t0 = time.perf_counter()
         try:
             reg = getattr(self, "tool_registry", None)
-            tools_schema = reg.get_schemas() if reg is not None else None
+            router = getattr(self, "tool_router", None)
+            tools_schema = None
+            if reg is not None and router is not None:
+                selected_warmup = router.select_tools("hi")
+                if selected_warmup:
+                    tools_schema = reg.get_schemas(selected_warmup)
             async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
@@ -622,6 +627,13 @@ class RobotEngine:
             if self.memory:
                 await self.memory.close()
 
+    async def stop(self) -> None:
+        """Signal the engine and embedded API server to gracefully shut down."""
+        logger.info("engine_stop_signaled")
+        self._running = False
+        if hasattr(self, "_api_server") and self._api_server:
+            self._api_server.should_exit = True
+
     async def _run_api(self) -> None:
         """Start the FastAPI server."""
         try:
@@ -641,7 +653,8 @@ class RobotEngine:
             self._api_server = server
             await server.serve()
         except asyncio.CancelledError:
-            pass
+            if hasattr(self, "_api_server") and self._api_server:
+                self._api_server.should_exit = True
         except Exception as e:
             logger.error("api_server_error", error=str(e))
 

@@ -83,8 +83,12 @@ class CharacterEngine {
         // 5. Load Humanoid Avatar
         await this._loadCharacter();
 
-        // 6. Window resize listener
+        // 6. Window resize listener and container ResizeObserver
         window.addEventListener("resize", () => this.onResize());
+        if (window.ResizeObserver) {
+            this._resizeObserver = new ResizeObserver(() => this.onResize());
+            this._resizeObserver.observe(this.container);
+        }
 
         // 7. Start render loop
         this.animate();
@@ -224,19 +228,58 @@ class CharacterEngine {
     }
 
     async _loadCharacter() {
-        const { scene, isProcedural } = await this.loader.load(this.modelUrl);
-        this.scene.add(scene);
+        try {
+            const { scene, isProcedural } = await this.loader.load(this.modelUrl);
+            this.scene.add(scene);
 
-        // Bind CharacterRig
-        this.rig.bind(scene);
+            // Bind CharacterRig
+            this.rig.bind(scene);
 
-        // Initialize sub-systems
-        this.animationSystem = new AnimationSystem(this.rig);
-        this.gazeSystem = new GazeSystem(this.rig);
-        this.facialSystem = new FacialSystem(this.rig);
+            // Initialize sub-systems
+            if (typeof AnimationSystem !== "undefined") {
+                this.animationSystem = new AnimationSystem(this.rig);
+            }
+            if (typeof GazeSystem !== "undefined") {
+                this.gazeSystem = new GazeSystem(this.rig);
+            }
+            if (typeof FacialSystem !== "undefined") {
+                this.facialSystem = new FacialSystem(this.rig);
+            }
 
-        this.isLoaded = true;
-        console.log(`[CharacterEngine:${this.variant}] Humanoid character system online!`);
+            this.isLoaded = true;
+            this.onResize();
+            console.log(`[CharacterEngine:${this.variant}] Humanoid character system online! (procedural: ${isProcedural})`);
+        } catch (e) {
+            console.error(`[CharacterEngine:${this.variant}] Failed loading avatar GLB:`, e);
+            try {
+                const { scene } = this.loader.buildProceduralHumanoid();
+                this.scene.add(scene);
+                this.rig.bind(scene);
+                if (typeof AnimationSystem !== "undefined") this.animationSystem = new AnimationSystem(this.rig);
+                if (typeof GazeSystem !== "undefined") this.gazeSystem = new GazeSystem(this.rig);
+                this.isLoaded = true;
+                this.onResize();
+                console.log(`[CharacterEngine:${this.variant}] Fallback procedural humanoid active!`);
+            } catch (fallbackErr) {
+                console.error(`[CharacterEngine:${this.variant}] Critical avatar error:`, fallbackErr);
+            }
+        }
+    }
+
+    /**
+     * Active AnimationSystem instance.
+     * @returns {AnimationSystem|null}
+     */
+    get animation() {
+        return this.animationSystem;
+    }
+
+    /**
+     * Active GazeSystem instance.
+     * @returns {GazeSystem|null}
+     */
+    get gaze() {
+        return this.gazeSystem;
     }
 
     onResize() {

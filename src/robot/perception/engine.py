@@ -19,7 +19,7 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from robot.perception.camera import CameraCapture
+from robot.perception.camera import CameraCapture, silence_c_stderr
 from robot.perception.world import DetectedObject, DetectedPerson, WorldState
 from robot.telemetry import get_logger
 
@@ -85,14 +85,15 @@ class PerceptionEngine:
             return False
 
         try:
-            self._detector = cv2.FaceDetectorYN_create(
-                model=str(model_p),
-                config="",
-                input_size=(320, 240),
-                score_threshold=0.6,
-                nms_threshold=0.3,
-                top_k=10,
-            )
+            with silence_c_stderr():
+                self._detector = cv2.FaceDetectorYN_create(
+                    model=str(model_p),
+                    config="",
+                    input_size=(320, 240),
+                    score_threshold=0.6,
+                    nms_threshold=0.3,
+                    top_k=10,
+                )
             self._last_yunet_size = (320, 240)
             logger.info("yunet_detector_initialized", model=self.yunet_model_path)
             return True

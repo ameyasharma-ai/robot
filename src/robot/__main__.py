@@ -8,7 +8,10 @@ import sys
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*Setting the shape on a NumPy array.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*path is deprecated.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="sounddevice")
+warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.jit\.load is deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 
 from robot.core.engine import RobotEngine
 
@@ -32,6 +35,7 @@ def main() -> None:
 
         def _handle_signal() -> None:
             if not engine_task.done():
+                asyncio.create_task(engine.stop())
                 engine_task.cancel()
 
         for sig in (signal.SIGINT, signal.SIGTERM):

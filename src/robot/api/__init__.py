@@ -68,6 +68,10 @@ class EqualizerRequest(BaseModel):
     preset: str
 
 
+class MusicVolumeRequest(BaseModel):
+    volume: float
+
+
 def create_app(engine: "RobotEngine") -> FastAPI:
     """Create the FastAPI application with all routes."""
     app = FastAPI(
@@ -310,6 +314,50 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    @app.post("/api/music/toggle")
+    async def toggle_music_playback():
+        """Toggle music playback between playing and paused."""
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            ms = MusicPlayerService.get_instance()
+            if ms.is_playing:
+                res = ms.pause()
+            else:
+                res = ms.resume()
+            return {"status": "ok", "playback": res, "is_playing": ms.is_playing}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.post("/api/music/restart")
+    async def restart_music_track():
+        """Restart playback of the current or last played track."""
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            ms = MusicPlayerService.get_instance()
+            res = ms.replay()
+            return {"status": "ok", "playback": res, "is_playing": ms.is_playing}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.post("/api/music/volume")
+    async def set_music_volume(req: MusicVolumeRequest):
+        """Set output volume level for music playback."""
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            ms = MusicPlayerService.get_instance()
+            res = ms.set_volume(req.volume)
+            return {"status": "ok", "volume": ms._volume, "result": res}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    @app.get("/api/memory/stats")
+    async def get_memory_stats():
+        """Get live memory facts count, chat messages count, and vector store health."""
+        if hasattr(engine, "memory") and engine.memory:
+            stats = await engine.memory.get_stats()
+            return {"status": "ok", **stats}
+        return {"status": "ok", "facts_count": 0, "messages_count": 0, "sessions_count": 0}
+
     @app.get("/chat/sessions")
     async def list_chat_sessions(limit: int = 150):
         """List all isolated conversation sessions stored in the SQLite database."""
@@ -512,15 +560,18 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         import cv2
 
         async def frame_generator():
-            while True:
-                if hasattr(engine, "perception") and engine.perception:
-                    frame = engine.perception.get_annotated_frame()
-                    if frame is not None:
-                        success, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                        if success:
-                            yield (b"--frame\r\n"
-                                   b"Content-Type: image/jpeg\r\n\r\n" + enc.tobytes() + b"\r\n")
-                await asyncio.sleep(1.0 / 60.0)
+            try:
+                while True:
+                    if hasattr(engine, "perception") and engine.perception:
+                        frame = engine.perception.get_annotated_frame()
+                        if frame is not None:
+                            success, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                            if success:
+                                yield (b"--frame\r\n"
+                                       b"Content-Type: image/jpeg\r\n\r\n" + enc.tobytes() + b"\r\n")
+                    await asyncio.sleep(1.0 / 60.0)
+            except (asyncio.CancelledError, GeneratorExit):
+                return
 
         return StreamingResponse(
             frame_generator(),

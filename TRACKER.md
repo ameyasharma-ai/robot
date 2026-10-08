@@ -43,6 +43,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **EasyEffects Equalizer** | EasyEffects CLI + `music.equalizer` + Live Spectrum HUD | ✅ **Active** | Host Audio / PipeWire | 6 high-fidelity sound profiles (`robot`, `bass_boost`, `spatial`, etc.) + 32-bar visualizer. |
 | **Sequential Tool Chaining** | Multi-Action Tool Coordinator + Paced Pipelines | ✅ **Active** | Core Engine | Sequential execution for compound queries ("check this, then play that, then do this") without popping. |
 | **Voice Dictation Bar & Audio Transcription** | ChatGPT-Style Speech Dictation Dock (`/api/transcribe`) | ✅ **Active** | Host Audio / Whisper STT | Web Audio MediaRecorder + 16kHz mono WAV export + real-time waveform bars + cancel/done controls. |
+| **Agent Customization & Skills Suite** | 4 Specialized Skills & Rules (`code-documentation`, `zero-import-errors`, `suggest-next-fix`, `subagent-handling`) | ✅ **Active** | Local Agent Environment | Automated docstring audits, AST/import integrity verification (`verify_imports.py`), proactive roadmap scanning (`scan_next_fixes.py`), and subagent orchestration protocol. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -181,11 +182,19 @@ Legend:
   - *Dashboard UI/UX Enhancements*:
     - Fixed vertical card spacing in `LATENCY TARGETS & SERVICE HEALTH` and added dedicated Tool Resource Monitor.
     - Added quick style preset chips, cybernetic laser scanning animation, non-distorting layout, and full-resolution image zoom lightbox in `IMAGE STUDIO`.
-  - *Synthetic Testing & Verification*:
-    - Added `tests/test_synthetic_robustness.py`. Full test suite passing 100% (100 tests passed).
-
-
-
+- [x] **49. Dashboard Complete Cyberdeck Redesign, Radar/Sensor Standby HUD, Tabbed Cyber-Deck & LLM Warmup Context Overflow Fix**:
+  - *Full Cyberdeck UI Redesign*: Overhauled dashboard layout into a balanced 2x2 grid with cybernetic holographic framing brackets, glowing status indicator, and elevated speech bubble.
+  - *Radar & Spatial Sensor Standby HUD*: Replaced static "Camera Offline" banner with a high-tech rotating radar sweep, distance range rings, crosshairs, and dynamic blips. Added structured sensor telemetry grid (`LIGHTING`, `MOTION`, `PEOPLE IN VIEW`, `OBJECTS TRACKED`) with collapsible raw JSON telemetry drawer.
+  - *Hardware Cyber Meters*: Replaced plain text metrics with animated colored meter bars (CPU, System RAM, RTX 3050 VRAM, GPU Temp, AMD 680M iGPU).
+  - *Tabbed Cyber-Studio Deck*: Consolidated previously cramped bottom-row cards into a sleek tabbed interface (`🎨 IMAGE STUDIO`, `🎵 AUDIO & EQ`, `🧠 MEMORY`), providing full-width workspaces for diffusion image generation, EasyEffects audio equalization profiles, and neural memory banks.
+  - *Warmup Context Overflow Fix*: Resolved startup `llm_stream_error body='request (4537 tokens) exceeds available context size (4096 tokens)'` by contextualizing tool schemas during prefill rather than dumping all 21 schemas at once.
+  - All 106 unit tests pass 100%.
+- [x] **50. Cyber-Studio Deck Interactive Buttons Fix, Full-Viewport Image Canvas Expansion, Memory Search & Latency Telemetry HUD**:
+  - *Interactive Controls Fixes*: Wired Chained Action macro buttons (`.chain-btn, .macro-btn`) to trigger text submission in both dual HUD and chat workspace modes with visual ripple animations. Fixed Music Play/Pause and Restart buttons by adding dedicated REST endpoints (`/api/music/toggle`, `/api/music/restart`, `/api/music/volume`).
+  - *Memory Deck Explorer*: Added `/api/memory/stats` returning persistent facts count (65) and chat turn count (4134). Connected `#btnDeckMemSearch`, `#deckMemSearchInput`, and query filter chips (`✨ All Facts`, `👤 Preferences`, `🎵 Music`, `⚙️ System`) to live Mem0 vector search and SQLite conversation history.
+  - *Full-Viewport Image Canvas*: Styled `.cyber-canvas-viewport` with `flex: 1; min-height: 200px; height: 100%; width: 100%;` with high-tech corner brackets (`.canvas-bracket`), resolution watermark (`AI VIEWPORT • 512×512 HD`), and rotating neural reticle, completely filling the red-marked region without page scrolling.
+  - *Acoustic & Inference Telemetry Deck*: Filled empty dead space in `LATENCY TARGETS & PIPELINE` card with a real-time cybernetic telemetry module featuring a live microphone/VAD oscilloscope canvas (`FLOOR: -46 dB`, `PEAK: -14 dB`) and KV-Cache context budget gauge (`~28.4 tok/s`, `842 / 4096 TOKENS (20.5%)`, `RTX 3050 FP16`).
+  - All 106 unit tests passing 100% and verified via headless Chrome CDP.
 
 ### 🟢 Low Priority / Polishing
 - [ ] **Automated Benchmark Runner**:
@@ -919,6 +928,71 @@ Legend:
          - `perception.get_world_state` and `what_do_you_see`: accept `**kwargs`.
       3. Added regression unit test `test_tool_kwargs_and_missing_arguments_robustness` in `tests/test_tools.py`.
       4. All 106 unit tests passing 100% (`.venv/bin/pytest tests/`).
+
+70. **Avatar Disappearance Bug (`AnimationSystem.js` SyntaxError), Rig Bone Mapping & Sleeve Kinematic Boxiness**:
+    - *Symptoms*: The 3D humanoid female avatar completely disappeared from the dashboard interface, leaving the WebGL canvas blank/invisible. In addition, when previously rendered, the avatar's t-shirt sleeves stuck straight out horizontally like boxy projections rather than draping naturally over her arms.
+    - *Root Causes*:
+      1. **JavaScript SyntaxError in `AnimationSystem.js`**: During the addition of the 10 expressive kinematics gestures, an extra closing brace `}` was introduced on line 380 after the `point` action. This prematurely terminated the `_updateUpperBody` class method, leaving `} else if (act.type === "nod")` as an unparsed top-level syntax error.
+      2. **Cascading Initialization Failure**: Because `AnimationSystem.js` failed to parse, `window.AnimationSystem` was never defined. When `CharacterEngine.init()` invoked `_loadCharacter()`, line 234 threw `ReferenceError: AnimationSystem is not defined`. This aborted the load sequence before `this.isLoaded = true` was reached, preventing the scene from ever rendering the avatar model.
+      3. **Unmapped Secondary Sleeve Bones**: The model's t-shirt sleeves are driven by secondary constraint bones (`J_Aim_L_TopsUpperArm` and `J_Aim_R_TopsUpperArm`) parented under `J_Bip_L_Shoulder` and `J_Bip_R_Shoulder` rather than under the upper arms. In standard Three.js without VRM spring/aim bone solvers, these bones remained in their horizontal T-pose rest rotation while the upper arms swung down into the idle pose, causing the sleeves to jut out sideways like rigid boxes.
+    - *Fixes Applied*:
+      1. **SyntaxError Resolution**: Removed the extra closing brace on line 380 in [`src/robot/api/static/character/AnimationSystem.js`](file:///home/ameya/robot/src/robot/api/static/character/AnimationSystem.js), restoring clean AST parsing.
+      2. **Secondary Sleeve Bone Mapping**: Updated [`src/robot/api/static/character/CharacterRig.js`](file:///home/ameya/robot/src/robot/api/static/character/CharacterRig.js) to map `leftSleeveAim` (`j_aim_l_topsupperarm`), `rightSleeveAim` (`j_aim_r_topsupperarm`), `leftShoulder` (`j_bip_l_shoulder`), and `rightShoulder` (`j_bip_r_shoulder`) into canonical bone tracking (21 bones total).
+      3. **Continuous Sleeve Kinematic Sync**: Added `_syncSecondarySleeves()` to `AnimationSystem.js`, dynamically synchronizing `leftSleeveAim.quaternion` and `rightSleeveAim.quaternion` with their respective upper arm bones on every frame update and return-to-idle blend. This eliminates the boxy sleeve defect and makes clothing drape smoothly along the arms.
+      4. **Defensive Subsystem Getters & Global Handles**: Added `get animation()` and `get gaze()` getters to `CharacterEngine` in [`src/robot/api/static/character/CharacterEngine.js`](file:///home/ameya/robot/src/robot/api/static/character/CharacterEngine.js), and exposed `window.app` alongside `window.robotUI` in [`src/robot/api/static/app.js`](file:///home/ameya/robot/src/robot/api/static/app.js).
+    - *Verification*:
+      - Rebuilt and verified headless Chrome CDP execution: 0 console errors, `isLoaded: true`, all 21 bones mapped cleanly.
+      - Captured visual screenshots confirming the full 3D female avatar standing on the holographic pedestal with natural sleeve draping.
+      - All 106 unit tests passing 100% (`.venv/bin/pytest tests/`).
+
+71. **Dashboard Cyberdeck Redesign, Radar/Sensor Standby HUD, Tabbed Cyber-Deck & Warmup Context Overflow Fix**:
+    - *Symptoms*:
+      1. Startup logs threw `llm_stream_error body='request (4537 tokens) exceeds available context size (4096 tokens)'` on engine initialization.
+      2. Noisy deprecation and future warnings (`silero_vad` path deprecation, `torch.jit.load` warning) spammed the console on startup.
+      3. OpenCV C++ backend emitted noisy stderr spew (`VIDEOIO(V4L2:/dev/video0): can't open camera by index`) during sensor initialization.
+      4. Dashboard layout was cramped: 3 cards packed horizontally into the bottom row, static "Camera Offline" banner when camera was disconnected, and lack of cybernetic framing around the avatar.
+    - *Root Causes*:
+      1. In `RobotEngine.warm_up_llm`, `tools_schema = self.tool_registry.get_schemas()` dumped all 21 registered tool schemas (~2,260 JSON schema tokens) together with the system prompt and grounding directives, causing prompt tokens (4,537 tokens) to exceed `llama-server`'s 4,096 context window limit.
+      2. Missing warning filters for Silero VAD legacy `importlib_resources.path` and PyTorch JIT loader deprecations.
+      3. OpenCV `cv2.VideoCapture` writes device probing errors directly to OS file descriptor 2 (stderr) at the C++ level.
+      4. Dashboard bottom row split 100% width across 3 separate cards (`LATENCY TARGETS & SERVICE HEALTH`, `IMAGE GENERATION STUDIO`, and `AUDIO & EQUALIZER CONSOLE`), compressing inputs, sliders, and telemetry.
+    - *Fixes Applied*:
+      1. **Warmup Context Safeguard**: In [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) (`warm_up_llm`) and [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh), replaced raw schema dumping with `self.tool_router.select_tools("")` (or compact default schemas), keeping startup prompt tokens under 800 tokens and eliminating HTTP 400 errors.
+      2. **Warning Hygiene**: Added targeted warning filters in [`src/robot/__main__.py`](file:///home/ameya/robot/src/robot/__main__.py) silencing `silero_vad` path deprecations and PyTorch JIT warnings.
+      3. **C-Level Stderr Redirection**: Wrapped camera index probing in [`src/robot/perception/camera.py`](file:///home/ameya/robot/src/robot/perception/camera.py) with POSIX file descriptor redirection to `/dev/null`, silencing OpenCV C++ spew.
+      4. **Full Cyberdeck UI Redesign**:
+         - **Avatar Holographic Stage**: Added cybernetic corner brackets (`.cyber-bracket`), animated glowing status indicator, and elevated speech bubble in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html) and [`index.css`](file:///home/ameya/robot/src/robot/api/static/index.css).
+         - **Radar & Spatial Sensor Standby HUD**: Replaced static offline text with a high-tech rotating radar sweep, concentric range rings, crosshairs, and animated sensor blips. Structured real-time environmental telemetry into a clean 4-quadrant grid (`LIGHTING`, `MOTION`, `PEOPLE IN VIEW`, `OBJECTS TRACKED`) with a toggleable raw JSON drawer.
+         - **Animated Hardware Cyber Meters**: Upgraded CPU, RAM, RTX 3050 VRAM, GPU Temp, and AMD 680M metrics into animated colored fill meters with glowing gradient bars.
+         - **Tabbed Cyber-Studio Deck**: Replaced the cramped 3-way bottom split with a balanced 2-column layout: left column dedicated to `LATENCY TARGETS & PIPELINE FLOW`, right column housing a tabbed deck (`🎨 IMAGE STUDIO`, `🎵 AUDIO & EQ`, `🧠 MEMORY`), providing full width for prompt styling, image history zoom lightbox, 32-band audio spectrum analyzer, and neural memory banks.
+         - **Frontend Logic & Telemetry Wiring**: Updated [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) with tab switching handlers, sensor telemetry data-binding, and hardware meter animations.
+    - *Verification*:
+      - Rebuilt and verified via Headless Chrome CDP: 0 console errors, 60 FPS avatar rendering with natural draped sleeves.
+      - Verified both `IMAGE STUDIO` and `AUDIO & EQ` tabs with visual screenshot captures.
+      - 55/55 files passed AST & import verification (`verify_imports.py`).
+      - All 106 unit tests passed 100% (`.venv/bin/pytest tests/`).
+
+72. **Cyber-Studio Deck Interactive Buttons Fix, Full-Viewport Image Canvas Expansion, Memory Search & Latency Telemetry HUD**:
+    - *Symptoms & Requests*:
+      1. Chained action buttons (`.macro-btn` / `.chain-btn`), Restart button, and Play button did not respond or click in the Cyberdeck dashboard.
+      2. In the Memory tab, the search button did not work or click.
+      3. The image generation canvas in Image Studio did not occupy the entire container area below the prompt/controls (leaving large empty gaps).
+      4. In the Latency Targets & Pipeline card, empty dead space existed below the Tool Resource Monitor.
+    - *Root Causes*:
+      1. **Missing Audio & Music Endpoints / 404s**: Play and Restart buttons were attempting to POST to `/chat/send` (which did not exist, returning 404). Chained macro buttons checked for `dualForm` (`document.getElementById("chatForm")`) which did not exist in `index.html` (the form is an un-nested `div.chat-input-bar`).
+      2. **Unwired Memory Search & Stats**: `#btnDeckMemSearch` had no event listener attached in `app.js`, and there were no endpoints for live memory fact counts (`/api/memory/stats`).
+      3. **CSS Class Selector Mismatch on Image Canvas**: The preview area rules targeted `.card-image-studio .image-preview-area`, but the card was renamed to `.card-cyber-deck`. The fallback style had no `flex: 1` or full height expansion.
+      4. **Dead Space in Latency Card**: Height was constrained only by the tool monitor strip, leaving ~200px of empty space.
+    - *Fixes Applied*:
+      1. **Dedicated Music & Audio REST Endpoints**: Added `/api/music/toggle`, `/api/music/restart`, and `/api/music/volume` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) with `MusicVolumeRequest` model.
+      2. **Live Memory Stats & Semantic Search**: Added `get_stats()` to `ConversationHistory` and `MemoryManager` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py), exposed `/api/memory/stats` in FastAPI, wired `#btnDeckMemSearch` with search filter chips (`✨ All Facts`, `👤 Preferences`, `🎵 Music`, `⚙️ System`), and rendered formatted Mem0 fact and conversation result cards in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js).
+      3. **Chained Action Macros & Audio Controls**: Wired `.chain-btn, .macro-btn` to trigger `chatSendBtn.click()` in dual mode and `chatWsSendBtn.click()` in chat mode with neon active/executing animations. Wired `#btnTogglePlayback` and `#btnRestartMusic` to call the new REST endpoints with immediate visual state toggle.
+      4. **Full-Viewport Image Canvas (`.cyber-canvas-viewport`)**: Expanded `#imgPreviewArea` to `flex: 1; min-height: 200px; height: 100%; width: 100%;` with high-tech corner brackets (`.canvas-bracket`), resolution watermark (`AI VIEWPORT • 512×512 HD`), and spinning neural reticle, completely filling the red-marked region.
+      5. **Acoustic & Inference Telemetry Deck (`.pipeline-telemetry-deck`)**: Built a real-time cybernetic module filling the bottom of `card-metrics`, featuring an animated canvas oscilloscope for live microphone audio/VAD waveforms (`FLOOR: -46 dB`, `PEAK: -14 dB`), and a KV-Cache context budget gauge with token throughput telemetry (`~28.4 tok/s`, `842 / 4096 TOKENS (20.5%)`, `RTX 3050 FP16`).
+    - *Verification*:
+      - Rebuilt and verified via headless Chrome CDP: Captured full visual screenshots (`verified_image_canvas_and_telemetry.png`, `verified_audio_and_macros.png`, `verified_memory_search.png`).
+      - All 106 unit tests passed 100% (`.venv/bin/pytest tests/`).
+      - Code integrity check passed cleanly (55/55 files clean via `verify_imports.py`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

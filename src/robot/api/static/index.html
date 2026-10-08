@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Share+Tech+Mono&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=2.8">
+    <link rel="stylesheet" href="/static/index.css?v=3.5">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -68,12 +68,18 @@
     <main class="main-viewport">
         <!-- LEFT: Robot Digital Face & 3D Character Avatar UI -->
         <section class="face-panel" id="facePanel">
+            <!-- Cybernetic Holographic Chamber Framing Brackets -->
+            <div class="cyber-bracket top-left"></div>
+            <div class="cyber-bracket top-right"></div>
+            <div class="cyber-bracket bottom-left"></div>
+            <div class="cyber-bracket bottom-right"></div>
+
             <!-- 3D Humanoid Character Canvas Container (Animated Model) -->
             <div class="character-container" id="characterContainer">
                 <div class="character-overlay-hud">
-                    <span class="char-hud-badge" id="charStateBadge">STATE: IDLE</span>
-                    <span class="char-hud-badge" id="charGazeBadge">GAZE: CAMERA</span>
-                    <span class="char-hud-badge" id="charActionBadge">MOTION: BASE IDLE</span>
+                    <span class="char-hud-badge" id="charStateBadge"><span class="hud-status-dot"></span> STATE: IDLE</span>
+                    <span class="char-hud-badge" id="charGazeBadge">👁️ GAZE: CAMERA</span>
+                    <span class="char-hud-badge" id="charActionBadge">⚡ MOTION: BASE IDLE</span>
                 </div>
             </div>
 
@@ -96,15 +102,15 @@
             </div>
         </section>
 
-        <!-- RIGHT: Developer Console & Perception HUD -->
+        <!-- RIGHT: Developer Console & Observability HUD (Balanced 2×2 Layout) -->
         <section class="dev-panel" id="devPanel">
-            <!-- Top HUD Row: Continuous Perception (Left-Skewed) + Compact Hardware (Right) -->
+            <!-- TOP ROW: Continuous Perception (Left) + System Hardware (Right) -->
             <div class="hud-top-row">
-                <!-- Vision & Physical World State HUD (Left-Skewed) -->
+                <!-- Vision & Physical World State HUD -->
                 <div class="card card-vision">
                     <div class="card-header">
                         <div class="card-title">
-                            <span class="icon">👁️</span> CONTINUOUS PERCEPTION & WORLD STATE
+                            <span class="icon">👁️</span> CONTINUOUS PERCEPTION & SPATIAL AWARENESS
                         </div>
                         <div class="card-badges">
                             <span class="badge" id="hudLighting">LIGHT: NORMAL</span>
@@ -114,7 +120,21 @@
                     </div>
                     <div class="vision-grid">
                         <div class="camera-stream-box" id="cameraBox">
-                            <img id="cameraImg" src="/camera/stream" alt="Live Camera 60 FPS Stream" onerror="this.src='/camera/snapshot'">
+                            <img id="cameraImg" src="/camera/stream" alt="Live Camera 60 FPS Stream" onerror="this.style.display='none'; document.getElementById('radarStandby').style.display='flex';">
+                            <!-- High-Tech Cyber Radar Standby HUD (when camera hardware is offline) -->
+                            <div class="radar-standby" id="radarStandby" style="display: none;">
+                                <div class="radar-sweep-circle">
+                                    <div class="radar-crosshair-h"></div>
+                                    <div class="radar-crosshair-v"></div>
+                                    <div class="radar-ring r1"></div>
+                                    <div class="radar-ring r2"></div>
+                                    <div class="radar-ring r3"></div>
+                                    <div class="radar-beam"></div>
+                                    <div class="radar-blip b1"></div>
+                                    <div class="radar-blip b2"></div>
+                                </div>
+                                <div class="radar-label"><span class="radar-dot"></span> SPATIAL RADAR STANDBY</div>
+                            </div>
                             <div class="stream-overlay">
                                 <span class="rec-dot"></span> LIVE 60 FPS | YUNET HUD
                             </div>
@@ -125,54 +145,90 @@
                             <div class="resize-handle" id="resizeHandle" title="Drag to Resize Stream"></div>
                         </div>
                         <div class="world-state-yaml">
-                            <div class="sub-heading">WORLD STATE MODEL</div>
-                            <pre id="worldStateCode">Loading world state...</pre>
+                            <div class="world-state-header">
+                                <span class="sub-heading">WORLD SENSORY MODEL</span>
+                                <button class="raw-toggle-btn" id="btnToggleRawState" type="button" title="Toggle Raw JSON Dump">RAW JSON</button>
+                            </div>
+                            <div class="sensor-cards-grid" id="sensorCardsGrid">
+                                <div class="sensor-chip">
+                                    <span class="sc-lbl">LIGHTING</span>
+                                    <span class="sc-val" id="sensorLightVal">NORMAL</span>
+                                </div>
+                                <div class="sensor-chip">
+                                    <span class="sc-lbl">MOTION</span>
+                                    <span class="sc-val" id="sensorMotionVal">QUIET</span>
+                                </div>
+                                <div class="sensor-chip">
+                                    <span class="sc-lbl">PEOPLE IN VIEW</span>
+                                    <span class="sc-val" id="sensorPeopleVal">0 DETECTED</span>
+                                </div>
+                                <div class="sensor-chip">
+                                    <span class="sc-lbl">OBJECTS TRACKED</span>
+                                    <span class="sc-val" id="sensorObjectsVal">0 TRACKED</span>
+                                </div>
+                            </div>
+                            <pre id="worldStateCode" style="display: none;">Loading world state...</pre>
                         </div>
                     </div>
                 </div>
 
-                <!-- System Hardware Resources (RTX 3050 + AMD 680M + CPU/RAM) - Compact to the right -->
+                <!-- System Hardware Resources (RTX 3050 + AMD 680M + CPU/RAM) -->
                 <div class="card card-hardware">
                     <div class="card-header">
                         <div class="card-title">
                             <span class="icon">📊</span> HARDWARE OBSERVABILITY
                         </div>
                         <div class="card-badges">
-                            <span class="badge" id="hwGpuDevice">RTX 3050</span>
+                            <span class="badge badge-accent" id="hwGpuDevice">RTX 3050</span>
                         </div>
                     </div>
                     <div class="hardware-grid">
                         <div class="hw-item">
-                            <div class="hw-lbl">CPU UTIL</div>
-                            <div class="hw-val" id="hwCpuVal">-- %</div>
+                            <div class="hw-item-top">
+                                <span class="hw-lbl">CPU UTIL</span>
+                                <span class="hw-val" id="hwCpuVal">-- %</span>
+                            </div>
+                            <div class="hw-meter-bar"><div class="hw-meter-fill cpu-fill" id="hwCpuBar" style="width: 15%;"></div></div>
                         </div>
                         <div class="hw-item">
-                            <div class="hw-lbl">SYS RAM</div>
-                            <div class="hw-val" id="hwRamVal">-- GB</div>
+                            <div class="hw-item-top">
+                                <span class="hw-lbl">SYS RAM</span>
+                                <span class="hw-val" id="hwRamVal">-- GB</span>
+                            </div>
+                            <div class="hw-meter-bar"><div class="hw-meter-fill ram-fill" id="hwRamBar" style="width: 50%;"></div></div>
                         </div>
                         <div class="hw-item">
-                            <div class="hw-lbl">RTX VRAM</div>
-                            <div class="hw-val" id="hwVramVal">-- MB</div>
+                            <div class="hw-item-top">
+                                <span class="hw-lbl">RTX 3050 VRAM</span>
+                                <span class="hw-val" id="hwVramVal">-- MB</span>
+                            </div>
+                            <div class="hw-meter-bar"><div class="hw-meter-fill vram-fill" id="hwVramBar" style="width: 80%;"></div></div>
                         </div>
                         <div class="hw-item">
-                            <div class="hw-lbl">GPU TEMP</div>
-                            <div class="hw-val" id="hwTempVal">-- °C</div>
+                            <div class="hw-item-top">
+                                <span class="hw-lbl">GPU TEMP</span>
+                                <span class="hw-val" id="hwTempVal">-- °C</span>
+                            </div>
+                            <div class="hw-meter-bar"><div class="hw-meter-fill temp-fill" id="hwTempBar" style="width: 55%;"></div></div>
                         </div>
-                        <div class="hw-item">
-                            <div class="hw-lbl">AMD 680M</div>
-                            <div class="hw-val" id="hwAmdVal">-- %</div>
+                        <div class="hw-item hw-item-wide">
+                            <div class="hw-item-top">
+                                <span class="hw-lbl">AMD RADEON 680M (Vulkan / WebGL2)</span>
+                                <span class="hw-val" id="hwAmdVal">-- %</span>
+                            </div>
+                            <div class="hw-meter-bar"><div class="hw-meter-fill amd-fill" id="hwAmdBar" style="width: 5%;"></div></div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Bottom HUD Split: Latency Targets & Health on Left, Image Studio on Right -->
+            <!-- BOTTOM ROW (Balanced 2-Column Split: Pipeline Metrics Left, Cyber-Studio Deck Right) -->
             <div class="hud-bottom-split" id="hudBottomSplit">
-                <!-- Pipeline Metrics & Service Health with Integrated Real-Time Execution Pipeline -->
+                <!-- Pipeline Metrics & Execution Flow -->
                 <div class="card card-metrics">
                     <div class="card-header">
                         <div class="card-title">
-                            <span class="icon">⚡</span> LATENCY TARGETS & SERVICE HEALTH
+                            <span class="icon">⚡</span> LATENCY TARGETS & PIPELINE
                         </div>
                         <div class="card-badges">
                             <span class="badge badge-accent" id="coordinatorBadge" style="display: none;">COORDINATOR: IDLE</span>
@@ -199,7 +255,7 @@
                         </button>
                     </div>
 
-                    <!-- Integrated Real-Time Execution Pipeline Flow (Compact) -->
+                    <!-- Integrated Real-Time Execution Pipeline Flow -->
                     <div class="pipeline-flow integrated-pipeline-flow" id="pipelineFlow">
                         <div class="pipe-node" id="nodeMic"><span class="node-name">MIC</span><span class="node-status">IDLE</span></div>
                         <div class="pipe-arrow" id="arrowMic">→</div>
@@ -266,11 +322,11 @@
                         </div>
                     </div>
 
-                    <!-- Active Tool Telemetry & Resource Monitor (ToDo #9) -->
+                    <!-- Active Tool Telemetry & Resource Monitor -->
                     <div class="tool-monitor-strip" id="toolMonitorStrip">
                         <div class="tool-monitor-header">
                             <span class="tool-monitor-title"><span class="tool-pulse-dot"></span> TOOL RESOURCE MONITOR</span>
-                            <span class="tool-count-badge" id="toolCountBadge">14 TOOLS ACTIVE</span>
+                            <span class="tool-count-badge" id="toolCountBadge">16 TOOLS ACTIVE</span>
                         </div>
                         <div class="tool-stats-row">
                             <div class="tool-stat-chip">
@@ -291,134 +347,229 @@
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Asynchronous Non-blocking Image Studio (Side-by-Side in Dev Panel) -->
-                <div class="card card-image-studio" id="cardImageGen">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <span class="icon">🎨</span> IMAGE STUDIO
+                    <!-- Real-Time Acoustic & Inference Telemetry Deck (Fills empty space with authentic telemetry) -->
+                    <div class="pipeline-telemetry-deck" id="pipelineTelemetryDeck">
+                        <div class="telemetry-deck-header">
+                            <span class="telemetry-deck-title"><span class="telemetry-live-dot"></span> ACOUSTIC & INFERENCE TELEMETRY</span>
+                            <span class="telemetry-hz-badge">48kHz PCM • ZERO-DROP</span>
                         </div>
-                        <div class="card-badges">
-                            <span class="badge" id="imgJobBadge">STATUS: READY</span>
-                        </div>
-                    </div>
-                    <div class="image-gen-content">
-                        <!-- Quick Style Presets -->
-                        <div class="img-style-chips" id="imgStyleChips">
-                            <button class="img-style-chip active" data-style="" title="Direct custom prompt">✨ Custom</button>
-                            <button class="img-style-chip" data-style="cyberpunk humanoid robot in neon tokyo rain, 8k resolution, cinematic lighting" title="Cyberpunk style">🌆 Cyberpunk</button>
-                            <button class="img-style-chip" data-style="masterpiece anime aesthetic, beautiful android companion, detailed digital art" title="Anime style">🌸 Anime</button>
-                            <button class="img-style-chip" data-style="photorealistic futuristic robotic laboratory, octanerender, ultra high definition" title="Photoreal style">📸 Photoreal</button>
-                        </div>
-                        <div class="image-input-row">
-                            <input type="text" class="img-prompt-input" id="imgPromptInput" placeholder="Prompt (e.g. Cyberpunk robot in Tokyo)..." autocomplete="off" />
-                            <button class="img-gen-btn" id="btnGenImage">Generate</button>
-                            <button class="img-cancel-btn" id="btnCancelImage" disabled>Cancel</button>
-                        </div>
-                        <div class="image-controls-row">
-                            <label class="img-ctrl-label">Size:
-                                <select id="imgResSelect" class="img-select">
-                                    <option value="512x512">512×512</option>
-                                    <option value="768x768">768×768</option>
-                                    <option value="1024x1024">1024×1024</option>
-                                </select>
-                            </label>
-                            <label class="img-ctrl-label">Steps:
-                                <input type="number" id="imgStepsInput" value="15" min="10" max="30" class="img-steps-input" title="Inference steps" />
-                            </label>
-                            <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
-                                <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>
-                            </div>
-                        </div>
-                        <div class="image-preview-area" id="imgPreviewArea">
-                            <div class="img-placeholder" id="imgPlaceholder">
-                                <span class="img-placeholder-icon">🖼️</span>
-                                <span class="img-placeholder-text">Non-blocking background image generation. Generates on CPU/SD without blocking LLM.</span>
-                            </div>
-                            <div id="imgGeneratingStatus" style="display: none;">
-                                <div class="img-scanner-bar"></div>
-                                <div class="img-spinner"></div>
-                                <div class="img-status-info">
-                                    <div class="img-status-title">Synthesizing Artwork...</div>
-                                    <div id="imgGenStep" class="img-status-sub">Step 0/0</div>
-                                    <div id="imgGenBackend" class="img-status-sub">Backend: --</div>
-                                    <div id="imgGenDevice" class="img-status-sub">Device: --</div>
-                                    <div id="imgGenElapsed" class="img-status-sub">Elapsed: 0.0s</div>
+                        <div class="telemetry-deck-body">
+                            <!-- Acoustic Waveform Oscilloscope -->
+                            <div class="telemetry-sub-box telemetry-acoustic-box">
+                                <div class="telemetry-sub-header">
+                                    <span class="tsh-title">MIC / VAD OSCILLOSCOPE</span>
+                                    <span class="tsh-stat" id="acousticNoiseFloor">FLOOR: -46 dB</span>
+                                </div>
+                                <div class="acoustic-canvas-wrap">
+                                    <canvas id="acousticWaveformCanvas" class="acoustic-waveform-canvas" height="36"></canvas>
+                                    <div class="acoustic-reticle-line"></div>
+                                </div>
+                                <div class="acoustic-telemetry-strip">
+                                    <span class="at-chip" id="vadStatusChip">VAD: ARMED (150ms)</span>
+                                    <span class="at-chip" id="vadPeakChip">PEAK: -12 dB</span>
+                                    <span class="at-chip" id="vadBufferChip">BUFFER: 100% OK</span>
                                 </div>
                             </div>
-                            <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none;" title="Click to view full size" />
-                            <div id="imgMetaBlock" style="display: none;">
-                                <div class="img-meta-row">
-                                    <span>Model: <b id="metaModel">--</b></span>
-                                    <span>Backend: <b id="metaBackend">--</b></span>
+
+                            <!-- KV-Cache & LLM Inference Monitor -->
+                            <div class="telemetry-sub-box telemetry-llm-box">
+                                <div class="telemetry-sub-header">
+                                    <span class="tsh-title">KV-CACHE & TOKEN SPEED</span>
+                                    <span class="tsh-stat" id="activeTokSpeed">~28.4 tok/s</span>
                                 </div>
-                                <div class="img-meta-row">
-                                    <span>Device: <b id="metaDevice">--</b></span>
-                                    <span>Time: <b id="metaTime">--</b></span>
+                                <div class="context-budget-gauge">
+                                    <div class="cbg-meta">
+                                        <span class="cbg-label">CONTEXT BUDGET</span>
+                                        <span class="cbg-val" id="contextTokenRatio">842 / 4096 TOKENS (20.5%)</span>
+                                    </div>
+                                    <div class="cbg-bar-wrap">
+                                        <div class="cbg-bar-fill" id="contextBudgetBar" style="width: 20.5%;"></div>
+                                    </div>
+                                </div>
+                                <div class="llm-telemetry-chips">
+                                    <span class="lt-chip" title="Fast FP16 CUDA Tensor Engine">RTX 3050 FP16</span>
+                                    <span class="lt-chip" id="ttftTargetChip" title="Time to first audio token">&lt;150ms TTFT</span>
+                                    <span class="lt-chip" id="streamHealthChip" title="Concurrent audio stream guarantee">ZERO DROP</span>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Audio & EasyEffects Equalizer Cyberdeck Console -->
-                <div class="card card-audio-deck" id="cardAudioDeck">
-                    <div class="card-header">
+                <!-- CYBER-STUDIO DECK (Full-Width Tabbed Workstation: Image Studio ⮀ Audio & Equalizer ⮀ Memory) -->
+                <div class="card card-cyber-deck" id="cardCyberDeck">
+                    <div class="card-header cyber-deck-header">
                         <div class="card-title">
-                            <span class="icon">🎛️</span> AUDIO & EQUALIZER DECK
+                            <span class="icon">🎛️</span> CYBER-STUDIO DECK
+                        </div>
+                        <div class="cyber-deck-tabs" id="cyberDeckTabs">
+                            <button class="deck-tab-btn active" id="tabBtnImage" data-target="paneImageStudio" title="Asynchronous AI Image Studio">
+                                <span class="tab-icon">🎨</span> IMAGE STUDIO
+                            </button>
+                            <button class="deck-tab-btn" id="tabBtnAudio" data-target="paneAudioDeck" title="Audio & EasyEffects Equalizer Deck">
+                                <span class="tab-icon">🎵</span> AUDIO & EQ
+                            </button>
+                            <button class="deck-tab-btn" id="tabBtnMemory" data-target="paneMemoryDeck" title="Durable Facts & Mem0 Vector Store">
+                                <span class="tab-icon">🧠</span> MEMORY
+                            </button>
                         </div>
                         <div class="card-badges">
-                            <span class="badge badge-accent" id="audioPresetBadge">EQ: ROBOT</span>
-                            <span class="badge" id="audioPlaybackBadge">STATUS: READY</span>
+                            <span class="badge badge-accent" id="cyberDeckBadge">STUDIO: READY</span>
                         </div>
                     </div>
-                    <div class="audio-deck-content">
-                        <!-- Spectrum Visualizer Canvas -->
-                        <div class="spectrum-canvas-wrap">
-                            <canvas id="audioSpectrumCanvas" class="audio-spectrum-canvas" height="40"></canvas>
-                            <div class="spectrum-freq-axis">
-                                <span>30Hz</span><span>120Hz</span><span>500Hz</span><span>2kHz</span><span>8kHz</span><span>16kHz</span>
+
+                    <div class="cyber-deck-panes">
+                        <!-- PANE 1: IMAGE STUDIO -->
+                        <div class="deck-pane active" id="paneImageStudio">
+                            <!-- Quick Style Presets -->
+                            <div class="img-style-chips" id="imgStyleChips">
+                                <button class="img-style-chip active" data-style="" title="Direct custom prompt">✨ Custom</button>
+                                <button class="img-style-chip" data-style="cyberpunk humanoid robot in neon tokyo rain, 8k resolution, cinematic lighting" title="Cyberpunk style">🌆 Cyberpunk</button>
+                                <button class="img-style-chip" data-style="masterpiece anime aesthetic, beautiful android companion, detailed digital art" title="Anime style">🌸 Anime</button>
+                                <button class="img-style-chip" data-style="photorealistic futuristic robotic laboratory, octanerender, ultra high definition" title="Photoreal style">📸 Photoreal</button>
+                            </div>
+                            <div class="image-input-row">
+                                <input type="text" class="img-prompt-input" id="imgPromptInput" placeholder="Prompt (e.g. Cyberpunk robot in neon rain)..." autocomplete="off" />
+                                <button class="img-gen-btn" id="btnGenImage">Generate</button>
+                                <button class="img-cancel-btn" id="btnCancelImage" disabled>Cancel</button>
+                            </div>
+                            <div class="image-controls-row">
+                                <label class="img-ctrl-label">Size:
+                                    <select id="imgResSelect" class="img-select">
+                                        <option value="512x512">512×512</option>
+                                        <option value="768x768">768×768</option>
+                                        <option value="1024x1024">1024×1024</option>
+                                    </select>
+                                </label>
+                                <label class="img-ctrl-label">Steps:
+                                    <input type="number" id="imgStepsInput" value="15" min="10" max="30" class="img-steps-input" title="Inference steps" />
+                                </label>
+                                <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
+                                    <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>
+                                </div>
+                            </div>
+                            <div class="image-preview-area cyber-canvas-viewport" id="imgPreviewArea">
+                                <span class="canvas-bracket cb-tl"></span>
+                                <span class="canvas-bracket cb-tr"></span>
+                                <span class="canvas-bracket cb-bl"></span>
+                                <span class="canvas-bracket cb-br"></span>
+                                <div class="canvas-viewport-hud">
+                                    <span class="cvh-dot"></span>
+                                    <span class="cvh-text">AI VIEWPORT • 512×512 HD</span>
+                                </div>
+                                <div class="img-placeholder" id="imgPlaceholder">
+                                    <div class="img-placeholder-reticle">
+                                        <span class="reticle-ring"></span>
+                                        <span class="reticle-core">🎨</span>
+                                    </div>
+                                    <div class="img-placeholder-title">NEURAL LATENT DIFFUSION CANVAS</div>
+                                    <div class="img-placeholder-text">Non-blocking background synthesis • Generates on CPU/SD without stealing RTX 3050 VRAM</div>
+                                </div>
+                                <div id="imgGeneratingStatus" style="display: none;">
+                                    <div class="img-scanner-bar"></div>
+                                    <div class="img-spinner"></div>
+                                    <div class="img-status-info">
+                                        <div class="img-status-title">Synthesizing Neural Artwork...</div>
+                                        <div id="imgGenStep" class="img-status-sub">Step 0/0</div>
+                                        <div id="imgGenBackend" class="img-status-sub">Backend: --</div>
+                                        <div id="imgGenDevice" class="img-status-sub">Device: --</div>
+                                        <div id="imgGenElapsed" class="img-status-sub">Elapsed: 0.0s</div>
+                                    </div>
+                                </div>
+                                <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none;" title="Click to view full size" />
+                                <div id="imgMetaBlock" style="display: none;">
+                                    <div class="img-meta-row">
+                                        <span>Model: <b id="metaModel">--</b></span>
+                                        <span>Backend: <b id="metaBackend">--</b></span>
+                                        <span>Device: <b id="metaDevice">--</b></span>
+                                        <span>Time: <b id="metaTime">--</b></span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
-                        <!-- Equalizer Preset Profile Chips -->
-                        <div class="eq-section-header">
-                            <span class="eq-dot"></span> EASYEFFECTS PROFILES:
-                        </div>
-                        <div class="eq-preset-chips" id="eqPresetChips">
-                            <button class="eq-chip active" data-preset="robot" title="User's signature tuned robot profile">🤖 Robot</button>
-                            <button class="eq-chip" data-preset="bass_boost" title="Max Bass Pristine Reverb">💥 Bass+</button>
-                            <button class="eq-chip" data-preset="spatial" title="Apple Spatial Max Bass Vocals">🎧 Spatial</button>
-                            <button class="eq-chip" data-preset="clear_vocals" title="SubBass 75Hz Clear Vocals">🎙️ Vocals</button>
-                            <button class="eq-chip" data-preset="reverb" title="Pristine Hall Reverb">🏛️ Reverb</button>
-                            <button class="eq-chip" data-preset="sub_bass" title="Immersive Sub 75Hz Clear Vocals">🌊 Sub-Bass</button>
+                        <!-- PANE 2: AUDIO & EQUALIZER DECK -->
+                        <div class="deck-pane" id="paneAudioDeck" style="display: none;">
+                            <!-- Spectrum Visualizer Canvas -->
+                            <div class="spectrum-canvas-wrap">
+                                <canvas id="audioSpectrumCanvas" class="audio-spectrum-canvas" height="48"></canvas>
+                                <div class="spectrum-freq-axis">
+                                    <span>30Hz</span><span>120Hz</span><span>500Hz</span><span>2kHz</span><span>8kHz</span><span>16kHz</span>
+                                </div>
+                            </div>
+
+                            <!-- Equalizer Preset Profile Chips -->
+                            <div class="eq-section-header">
+                                <span class="eq-dot"></span> EASYEFFECTS PROFILES:
+                            </div>
+                            <div class="eq-preset-chips" id="eqPresetChips">
+                                <button class="eq-chip active" data-preset="robot" title="User's signature tuned robot profile">🤖 Robot</button>
+                                <button class="eq-chip" data-preset="bass_boost" title="Max Bass Pristine Reverb">💥 Bass+</button>
+                                <button class="eq-chip" data-preset="spatial" title="Apple Spatial Max Bass Vocals">🎧 Spatial</button>
+                                <button class="eq-chip" data-preset="clear_vocals" title="SubBass 75Hz Clear Vocals">🎙️ Vocals</button>
+                                <button class="eq-chip" data-preset="reverb" title="Pristine Hall Reverb">🏛️ Reverb</button>
+                                <button class="eq-chip" data-preset="sub_bass" title="Immersive Sub 75Hz Clear Vocals">🌊 Sub-Bass</button>
+                            </div>
+
+                            <!-- Music Player Mini-Controller -->
+                            <div class="music-mini-dock">
+                                <div class="music-now-playing" id="musicNowPlaying">
+                                    <span class="music-note-icon">🎵</span>
+                                    <span class="track-title-marquee" id="trackTitleDisplay">Juice Wrld Acapella</span>
+                                </div>
+                                <div class="music-vol-control">
+                                    <span class="vol-icon" id="volIcon">🔊</span>
+                                    <input type="range" class="music-vol-slider" id="musicVolSlider" min="0" max="100" value="80" title="Adjust Music Volume" />
+                                    <span class="vol-val" id="musicVolVal">80%</span>
+                                </div>
+                                <div class="music-quick-actions">
+                                    <button class="music-ctrl-btn" id="btnRestartMusic" title="Restart track at active volume">⏮ Restart</button>
+                                    <button class="music-ctrl-btn" id="btnTogglePlayback" title="Toggle Play / Pause">⏯ Play</button>
+                                </div>
+                            </div>
+
+                            <!-- Chained Task Quick Triggers -->
+                            <div class="chained-tasks-bar">
+                                <span class="chain-lbl">⚡ CHAINED ACTIONS:</span>
+                                <div class="chain-buttons">
+                                    <button class="chain-btn macro-btn" data-prompt="Check what you see and then play some music and set volume to 50%" title="Execute vision inspection followed by music playback">👁️ Check & 🎵 Play</button>
+                                    <button class="chain-btn macro-btn" data-prompt="Set equalizer to bass boost and restart music at 40% volume" title="Switch to Bass+ and restart track at 40%">💥 Bass+ 40%</button>
+                                    <button class="chain-btn macro-btn" data-prompt="Look around, introduce yourself, and wave your hand" title="Inspect scene, speak greeting, and trigger gesture">👋 Look & Wave</button>
+                                </div>
+                            </div>
                         </div>
 
-                        <!-- Music Player Mini-Controller -->
-                        <div class="music-mini-dock">
-                            <div class="music-now-playing" id="musicNowPlaying">
-                                <span class="music-note-icon">🎵</span>
-                                <span class="track-title-marquee" id="trackTitleDisplay">Juice Wrld Acapella</span>
-                            </div>
-                            <div class="music-vol-control">
-                                <span class="vol-icon" id="volIcon">🔊</span>
-                                <input type="range" class="music-vol-slider" id="musicVolSlider" min="0" max="100" value="80" title="Adjust Music Volume" />
-                                <span class="vol-val" id="musicVolVal">80%</span>
-                            </div>
-                            <div class="music-quick-actions">
-                                <button class="music-ctrl-btn" id="btnRestartMusic" title="Restart track at active volume">⏮ Restart</button>
-                                <button class="music-ctrl-btn" id="btnTogglePlayback" title="Toggle Play / Pause">⏯ Play</button>
-                            </div>
-                        </div>
-
-                        <!-- Chained Task Quick Triggers -->
-                        <div class="chained-tasks-bar">
-                            <span class="chain-lbl">⚡ CHAINED ACTIONS:</span>
-                            <div class="chain-buttons">
-                                <button class="chain-btn" data-prompt="Check what you see and then play some music and set volume to 50%" title="Execute vision inspection followed by music playback">👁️ Check & 🎵 Play</button>
-                                <button class="chain-btn" data-prompt="Set equalizer to bass boost and restart music at 40% volume" title="Switch to Bass+ and restart track at 40%">💥 Bass+ 40%</button>
-                                <button class="chain-btn" data-prompt="Look around, introduce yourself, and wave your hand" title="Inspect scene, speak greeting, and trigger gesture">👋 Look & Wave</button>
+                        <!-- PANE 3: MEMORY & KNOWLEDGE EXPLORER -->
+                        <div class="deck-pane" id="paneMemoryDeck" style="display: none;">
+                            <div class="memory-deck-content">
+                                <div class="mem-deck-stats">
+                                    <div class="mem-stat-card">
+                                        <div class="mem-stat-val" id="deckMemCount">--</div>
+                                        <div class="mem-stat-lbl">MEM0 FACTS</div>
+                                    </div>
+                                    <div class="mem-stat-card">
+                                        <div class="mem-stat-val" id="deckChatTurns">--</div>
+                                        <div class="mem-stat-lbl">CHAT TURNS</div>
+                                    </div>
+                                    <div class="mem-stat-card">
+                                        <div class="mem-stat-val" id="deckVectorModel">FastEmbed</div>
+                                        <div class="mem-stat-lbl">VECTOR BACKEND</div>
+                                    </div>
+                                </div>
+                                <div class="mem-filter-chips" id="memFilterChips">
+                                    <button class="mem-chip active" data-query="" title="Browse all facts">✨ All Facts</button>
+                                    <button class="mem-chip" data-query="user preference like favorite name" title="Preferences">👤 Preferences</button>
+                                    <button class="mem-chip" data-query="music song audio sound track" title="Music memories">🎵 Music</button>
+                                    <button class="mem-chip" data-query="robot system hardware cyber" title="System knowledge">⚙️ System</button>
+                                </div>
+                                <div class="mem-search-box">
+                                    <input type="text" class="mem-search-input" id="deckMemSearchInput" placeholder="Search semantic memory facts (e.g. name, favorite, music)..." autocomplete="off" />
+                                    <button class="mem-search-btn" id="btnDeckMemSearch">Search</button>
+                                </div>
+                                <div class="mem-results-list" id="deckMemResults">
+                                    <div class="mem-empty-hint">Enter a query or select a category above to search persistent semantic memories.</div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -564,13 +715,13 @@
     </main>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
-    <script src="/static/three.min.js"></script>
-    <script src="/static/GLTFLoader.js"></script>
-    <script src="/static/character/CharacterRig.js"></script>
-    <script src="/static/character/CharacterLoader.js"></script>
-    <script src="/static/character/AnimationSystem.js"></script>
-    <script src="/static/character/GazeSystem.js"></script>
-    <script src="/static/character/CharacterEngine.js"></script>
-    <script src="/static/app.js?v=2.8"></script>
+    <script src="/static/three.min.js?v=3.5"></script>
+    <script src="/static/GLTFLoader.js?v=3.5"></script>
+    <script src="/static/character/CharacterRig.js?v=3.5"></script>
+    <script src="/static/character/CharacterLoader.js?v=3.5"></script>
+    <script src="/static/character/AnimationSystem.js?v=3.5"></script>
+    <script src="/static/character/GazeSystem.js?v=3.5"></script>
+    <script src="/static/character/CharacterEngine.js?v=3.5"></script>
+    <script src="/static/app.js?v=3.5"></script>
 </body>
 </html>

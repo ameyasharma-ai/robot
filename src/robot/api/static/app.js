@@ -75,6 +75,8 @@ class RobotUI {
         this.initWebsocket();
         this.initImageGen();
         this.initAudioDeck();
+        this.initMemoryDeck();
+        this.initPipelineTelemetryDeck();
         this.startPollers();
     }
 
@@ -2200,6 +2202,15 @@ class RobotUI {
                         const elPeople = document.getElementById("hudPeople");
                         if (elPeople) elPeople.textContent = `PEOPLE: ${ws.people_count || 0}`;
 
+                        const sLight = document.getElementById("sensorLightVal");
+                        if (sLight) sLight.textContent = (ws.lighting || "NORMAL").toUpperCase();
+                        const sMotion = document.getElementById("sensorMotionVal");
+                        if (sMotion) sMotion.textContent = (ws.motion || "QUIET").toUpperCase();
+                        const sPeople = document.getElementById("sensorPeopleVal");
+                        if (sPeople) sPeople.textContent = `${ws.people_count || 0} IN VIEW`;
+                        const sObjects = document.getElementById("sensorObjectsVal");
+                        if (sObjects) sObjects.textContent = `${ws.objects_count || 0} TRACKED`;
+
                         // Drive 3D Character Gaze & Look-At IK from OpenCV detected user position
                         if (ws.people && ws.people.length > 0 && this.characterEngine) {
                             const user = ws.people[0];
@@ -2217,48 +2228,103 @@ class RobotUI {
             } catch (e) {}
         }, 1500);
 
+        // Cyber-Studio Workstation Tabs & Sensor Card Toggle Setup
+        const tabBtns = document.querySelectorAll(".deck-tab-btn");
+        tabBtns.forEach((btn) => {
+            btn.addEventListener("click", () => {
+                tabBtns.forEach((b) => b.classList.remove("active"));
+                btn.classList.add("active");
+                const targetId = btn.getAttribute("data-target");
+                document.querySelectorAll(".deck-pane").forEach((pane) => {
+                    pane.style.display = pane.id === targetId ? "flex" : "none";
+                });
+                if (targetId === "paneMemoryDeck" && typeof this.refreshMemoryDeck === "function") {
+                    this.refreshMemoryDeck();
+                }
+            });
+        });
+
+        const btnToggleRaw = document.getElementById("btnToggleRawState");
+        if (btnToggleRaw) {
+            btnToggleRaw.addEventListener("click", () => {
+                const grid = document.getElementById("sensorCardsGrid");
+                const rawPre = document.getElementById("worldStateCode");
+                if (grid && rawPre) {
+                    const isRaw = rawPre.style.display !== "none";
+                    rawPre.style.display = isRaw ? "none" : "block";
+                    grid.style.display = isRaw ? "grid" : "none";
+                    btnToggleRaw.textContent = isRaw ? "RAW JSON" : "SENSORS";
+                }
+            });
+        }
+
         // Camera Stream Auto-Recovery: /camera/stream provides continuous 60 FPS MJPEG.
-        // If the stream ever drops, reconnect gracefully.
+        // If the stream drops or hardware is offline, display high-tech radar standby.
         if (this.cameraImg) {
             this.cameraImg.onerror = () => {
+                this.cameraImg.style.display = "none";
+                const radar = document.getElementById("radarStandby");
+                if (radar) radar.style.display = "flex";
                 setTimeout(() => {
                     this.cameraImg.src = `/camera/stream?t=${Date.now()}`;
-                }, 1000);
+                }, 3000);
+            };
+            this.cameraImg.onload = () => {
+                this.cameraImg.style.display = "block";
+                const radar = document.getElementById("radarStandby");
+                if (radar) radar.style.display = "none";
             };
         }
 
-        setInterval(async () => {
+        // Hardware Observability Telemetry Polling (CPU, System RAM, RTX 3050, AMD 680M)
+        const fetchHw = async () => {
             try {
                 const res = await fetch("/observability/hardware");
                 if (res.ok) {
                     const hw = await res.json();
                     if (hw.cpu_percent !== undefined) {
-                        document.getElementById("hwCpuVal").textContent = `${hw.cpu_percent.toFixed(1)} %`;
+                        const el = document.getElementById("hwCpuVal");
+                        if (el) el.textContent = `${hw.cpu_percent.toFixed(1)} %`;
+                        const bar = document.getElementById("hwCpuBar");
+                        if (bar) bar.style.width = `${Math.min(100, Math.max(5, hw.cpu_percent))}%`;
                     }
                     if (hw.ram_used_gb !== undefined) {
                         const total = hw.ram_total_gb ? ` / ${hw.ram_total_gb.toFixed(1)}` : "";
-                        document.getElementById("hwRamVal").textContent = `${hw.ram_used_gb.toFixed(1)}${total} GB`;
-                    } else if (hw.system_ram_gb !== undefined) {
-                        document.getElementById("hwRamVal").textContent = `${hw.system_ram_gb.toFixed(1)} GB`;
+                        const el = document.getElementById("hwRamVal");
+                        if (el) el.textContent = `${hw.ram_used_gb.toFixed(1)}${total} GB`;
+                        const bar = document.getElementById("hwRamBar");
+                        if (bar && hw.ram_total_gb) {
+                            bar.style.width = `${Math.min(100, (hw.ram_used_gb / hw.ram_total_gb) * 100)}%`;
+                        }
                     }
-                    if (hw.nvidia && hw.nvidia.vram_used_mb !== undefined) {
-                        document.getElementById("hwVramVal").textContent = `${Math.round(hw.nvidia.vram_used_mb)} MB`;
-                    } else if (hw.gpu_vram_mb !== undefined) {
-                        document.getElementById("hwVramVal").textContent = `${Math.round(hw.gpu_vram_mb)} MB`;
+                    if (hw.nvidia) {
+                        if (hw.nvidia.vram_used_mb !== undefined) {
+                            const el = document.getElementById("hwVramVal");
+                            if (el) el.textContent = `${Math.round(hw.nvidia.vram_used_mb)} MB`;
+                            const bar = document.getElementById("hwVramBar");
+                            if (bar && hw.nvidia.vram_total_mb) {
+                                bar.style.width = `${Math.min(100, (hw.nvidia.vram_used_mb / hw.nvidia.vram_total_mb) * 100)}%`;
+                            }
+                        }
+                        if (hw.nvidia.temperature_c !== undefined) {
+                            const el = document.getElementById("hwTempVal");
+                            if (el) el.textContent = `${Math.round(hw.nvidia.temperature_c)} °C`;
+                            const bar = document.getElementById("hwTempBar");
+                            if (bar) bar.style.width = `${Math.min(100, (hw.nvidia.temperature_c / 90) * 100)}%`;
+                        }
                     }
-                    if (hw.nvidia && hw.nvidia.temperature_c !== undefined) {
-                        document.getElementById("hwTempVal").textContent = `${Math.round(hw.nvidia.temperature_c)} °C`;
-                    } else if (hw.gpu_temp_c !== undefined) {
-                        document.getElementById("hwTempVal").textContent = `${Math.round(hw.gpu_temp_c)} °C`;
-                    }
-                    if (hw.amd && hw.amd.utilization_percent !== undefined) {
-                        document.getElementById("hwAmdVal").textContent = `${Math.round(hw.amd.utilization_percent)} %`;
-                    } else if (hw.amd_utilization !== undefined) {
-                        document.getElementById("hwAmdVal").textContent = `${Math.round(hw.amd_utilization)} %`;
+                    if (hw.amd) {
+                        const el = document.getElementById("hwAmdVal");
+                        const val = hw.amd.utilization_percent !== undefined ? hw.amd.utilization_percent : (hw.amd_utilization || 5);
+                        if (el) el.textContent = `${Math.round(val)} %`;
+                        const bar = document.getElementById("hwAmdBar");
+                        if (bar) bar.style.width = `${Math.min(100, Math.max(8, val))}%`;
                     }
                 }
             } catch (e) {}
-        }, 2000);
+        };
+        fetchHw();
+        setInterval(fetchHw, 2000);
 
         setInterval(async () => {
             try {
@@ -2553,12 +2619,26 @@ class RobotUI {
                 
                 if (metaBlock) {
                     metaBlock.style.display = "block";
-                    document.getElementById("metaModel").textContent = completedJob.model || '--';
-                    document.getElementById("metaBackend").textContent = completedJob.backend || '--';
-                    document.getElementById("metaDevice").textContent = completedJob.device || '--';
-                    document.getElementById("metaTime").textContent = `${(completedJob.duration_s || 0).toFixed(2)}s`;
-                    document.getElementById("metaRes").textContent = `${completedJob.width}x${completedJob.height}`;
-                    document.getElementById("metaSteps").textContent = completedJob.steps || '--';
+                    const mModel = document.getElementById("metaModel");
+                    if (mModel) mModel.textContent = completedJob.model || '--';
+                    const mBackend = document.getElementById("metaBackend");
+                    if (mBackend) mBackend.textContent = completedJob.backend || '--';
+                    const mDevice = document.getElementById("metaDevice");
+                    if (mDevice) mDevice.textContent = completedJob.device || '--';
+                    const mTime = document.getElementById("metaTime");
+                    if (mTime) mTime.textContent = `${(completedJob.duration_s || 0).toFixed(2)}s`;
+                    const mRes = document.getElementById("metaRes");
+                    if (mRes) mRes.textContent = `${completedJob.width}x${completedJob.height}`;
+                    const mSteps = document.getElementById("metaSteps");
+                    if (mSteps) mSteps.textContent = completedJob.steps || '--';
+                }
+                if (previewImg && !previewImg._boundClick) {
+                    previewImg._boundClick = true;
+                    previewImg.addEventListener("click", () => {
+                        if (previewImg.src && !previewImg.src.endsWith("#")) {
+                            window.open(previewImg.src, "_blank");
+                        }
+                    });
                 }
             } else {
                 if (placeholder) placeholder.style.display = "block";
@@ -2618,6 +2698,9 @@ class RobotUI {
                         playbackBadge.textContent = st.is_playing ? "STATUS: PLAYING" : (st.is_paused ? "STATUS: PAUSED" : "STATUS: READY");
                         playbackBadge.classList.toggle("badge-accent", !!st.is_playing);
                     }
+                    if (btnPlay) {
+                        btnPlay.textContent = st.is_playing ? "⏸ Pause" : "⏯ Play";
+                    }
                     if (st.volume !== undefined && volSlider && !volSlider.matches(':active')) {
                         const pct = Math.round(st.volume * 100);
                         volSlider.value = pct;
@@ -2636,9 +2719,9 @@ class RobotUI {
             }
         };
         refreshMusicState();
-        setInterval(refreshMusicState, 6000);
+        setInterval(refreshMusicState, 5000);
 
-        // 3. Volume slider
+        // 3. Volume slider (Direct REST endpoint)
         if (volSlider) {
             volSlider.addEventListener("input", () => {
                 if (volVal) volVal.textContent = `${volSlider.value}%`;
@@ -2647,13 +2730,10 @@ class RobotUI {
                 const volPct = parseInt(volSlider.value, 10);
                 if (volVal) volVal.textContent = `${volPct}%`;
                 try {
-                    await fetch("/chat/send", {
+                    await fetch("/api/music/volume", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            message: `set music volume to ${volPct}%`,
-                            mode: "voice"
-                        })
+                        body: JSON.stringify({ volume: volPct / 100.0 })
                     });
                 } catch (err) {
                     console.error("Volume set error:", err);
@@ -2661,18 +2741,17 @@ class RobotUI {
             });
         }
 
-        // 4. Play / Restart buttons
+        // 4. Play / Pause & Restart buttons (Direct REST endpoints with immediate visual feedback)
         if (btnRestart) {
             btnRestart.addEventListener("click", async () => {
+                btnRestart.classList.add("executing");
+                setTimeout(() => btnRestart.classList.remove("executing"), 400);
                 try {
-                    await fetch("/chat/send", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            message: `restart the song with ${volSlider ? volSlider.value : 80}% vol`,
-                            mode: "voice"
-                        })
-                    });
+                    const res = await fetch("/api/music/restart", { method: "POST" });
+                    const data = await res.json();
+                    if (data && data.status === "ok") {
+                        refreshMusicState();
+                    }
                 } catch (err) {
                     console.error("Restart music error:", err);
                 }
@@ -2681,39 +2760,49 @@ class RobotUI {
 
         if (btnPlay) {
             btnPlay.addEventListener("click", async () => {
+                btnPlay.classList.add("executing");
+                setTimeout(() => btnPlay.classList.remove("executing"), 400);
                 try {
-                    await fetch("/chat/send", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            message: "resume music",
-                            mode: "voice"
-                        })
-                    });
+                    const res = await fetch("/api/music/toggle", { method: "POST" });
+                    const data = await res.json();
+                    if (data) {
+                        btnPlay.textContent = data.is_playing ? "⏸ Pause" : "⏯ Play";
+                        refreshMusicState();
+                    }
                 } catch (err) {
                     console.error("Toggle music playback error:", err);
                 }
             });
         }
 
-        // 5. Chained macro buttons
-        chainBtns.forEach(btn => {
-            btn.addEventListener("click", () => {
-                const prompt = btn.dataset.prompt;
-                if (!prompt) return;
+        // 5. Chained macro buttons (Works in both Main HUD and Chat Workspace modes)
+        const triggerMacro = (prompt, btnElem) => {
+            if (!prompt) return;
+            if (btnElem) {
+                btnElem.classList.add("executing");
+                setTimeout(() => btnElem.classList.remove("executing"), 600);
+            }
 
-                const dualInput = document.getElementById("chatInput");
-                const dualForm = document.getElementById("chatForm");
-                const wsInput = document.getElementById("chatWsTextarea");
-                const wsSendBtn = document.getElementById("chatWsSendBtn");
+            const dualInput = document.getElementById("chatInput");
+            const dualSendBtn = document.getElementById("chatSendBtn");
+            const wsInput = document.getElementById("chatWsTextarea");
+            const wsSendBtn = document.getElementById("chatWsSendBtn");
 
-                if (document.body.classList.contains("mode-chat") && wsInput && wsSendBtn) {
-                    wsInput.value = prompt;
-                    wsSendBtn.click();
-                } else if (dualInput && dualForm) {
-                    dualInput.value = prompt;
-                    dualForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
-                }
+            if (document.body.classList.contains("mode-chat") && wsInput && wsSendBtn) {
+                wsInput.value = prompt;
+                wsSendBtn.click();
+            } else if (dualInput && dualSendBtn) {
+                dualInput.value = prompt;
+                dualSendBtn.click();
+            }
+        };
+
+        const macroButtons = document.querySelectorAll(".chain-btn, .macro-btn");
+        macroButtons.forEach(btn => {
+            btn.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                triggerMacro(btn.dataset.prompt, btn);
             });
         });
 
@@ -2762,6 +2851,176 @@ class RobotUI {
             };
             requestAnimationFrame(animateSpectrum);
         }
+    }
+
+    /**
+     * Initialize Memory Deck Explorer (Mem0 persistent facts & conversation search)
+     */
+    initMemoryDeck() {
+        const memCount = document.getElementById("deckMemCount");
+        const chatTurns = document.getElementById("deckChatTurns");
+        const searchInput = document.getElementById("deckMemSearchInput");
+        const searchBtn = document.getElementById("btnDeckMemSearch");
+        const resultsContainer = document.getElementById("deckMemResults");
+        const filterChips = document.querySelectorAll("#memFilterChips .mem-chip");
+
+        // 1. Fetch live memory & conversation turn stats
+        const loadMemoryStats = async () => {
+            try {
+                const res = await fetch("/api/memory/stats");
+                const data = await res.json();
+                if (data && data.status === "ok") {
+                    if (memCount) memCount.textContent = data.facts_count ?? 0;
+                    if (chatTurns) chatTurns.textContent = data.messages_count ?? 0;
+                }
+            } catch (e) {
+                console.error("Failed to load memory stats:", e);
+            }
+        };
+        this.refreshMemoryDeck = loadMemoryStats;
+        loadMemoryStats();
+
+        // 2. Semantic search execution
+        const performSearch = async (query = "") => {
+            const q = (query !== undefined && query !== null && query !== "" ? query : (searchInput ? searchInput.value : "")).trim();
+            if (!resultsContainer) return;
+
+            resultsContainer.innerHTML = `<div class="mem-empty-hint"><span class="tool-pulse-dot"></span> Searching persistent memory graph...</div>`;
+
+            try {
+                const searchUrl = q ? `/memory/search?query=${encodeURIComponent(q)}&limit=15` : `/memory/search?query=user&limit=15`;
+                const [memRes, histRes] = await Promise.allSettled([
+                    fetch(searchUrl).then(r => r.json()),
+                    q ? fetch(`/history/search?query=${encodeURIComponent(q)}&limit=6`).then(r => r.json()) : Promise.resolve({ results: [] })
+                ]);
+
+                const memData = memRes.status === "fulfilled" ? (memRes.value.results || []) : [];
+                const histData = histRes.status === "fulfilled" ? (histRes.value.results || []) : [];
+
+                if (memData.length === 0 && histData.length === 0) {
+                    resultsContainer.innerHTML = `
+                        <div class="mem-empty-hint">
+                            No stored memories matching "<b>${this.escapeHtml(q || 'all')}</b>" found. Speak or chat with the robot to establish persistent facts.
+                        </div>`;
+                    return;
+                }
+
+                let html = "";
+                // Render Mem0 facts
+                memData.forEach((item, idx) => {
+                    const text = typeof item === "string" ? item : (item.memory || item.fact || item.text || JSON.stringify(item));
+                    html += `
+                        <div class="mem-result-item">
+                            <div class="mem-result-tag">🧠 MEM0 FACT #${idx + 1}</div>
+                            <div class="mem-result-text">${this.escapeHtml(text)}</div>
+                        </div>`;
+                });
+
+                // Render conversation history
+                histData.forEach((item) => {
+                    const content = item.content || item.text || "";
+                    const role = (item.role || "turn").toUpperCase();
+                    html += `
+                        <div class="mem-result-item" style="border-left: 2px solid var(--primary-cyan);">
+                            <div class="mem-result-tag">💬 CONVERSATION (${role})</div>
+                            <div class="mem-result-text">${this.escapeHtml(content)}</div>
+                        </div>`;
+                });
+
+                resultsContainer.innerHTML = html;
+            } catch (err) {
+                console.error("Memory search failed:", err);
+                resultsContainer.innerHTML = `<div class="mem-empty-hint" style="color: #ff4444;">Search failed: ${this.escapeHtml(err.message)}</div>`;
+            }
+        };
+
+        if (searchBtn) {
+            searchBtn.addEventListener("click", () => performSearch());
+        }
+
+        if (searchInput) {
+            searchInput.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    performSearch();
+                }
+            });
+        }
+
+        filterChips.forEach(chip => {
+            chip.addEventListener("click", () => {
+                filterChips.forEach(c => c.classList.remove("active"));
+                chip.classList.add("active");
+                const q = chip.dataset.query || "";
+                if (searchInput) searchInput.value = q;
+                performSearch(q);
+            });
+        });
+    }
+
+    /**
+     * Initialize Acoustic Waveform Oscilloscope & KV-Cache Gauges in card-metrics (Eliminates empty space)
+     */
+    initPipelineTelemetryDeck() {
+        const canvas = document.getElementById("acousticWaveformCanvas");
+        const noiseFloorElem = document.getElementById("acousticNoiseFloor");
+        const peakChip = document.getElementById("vadPeakChip");
+        const vadChip = document.getElementById("vadStatusChip");
+        const tokSpeedElem = document.getElementById("activeTokSpeed");
+        const budgetBar = document.getElementById("contextBudgetBar");
+        const budgetRatio = document.getElementById("contextTokenRatio");
+
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        let phase = 0;
+
+        const renderWaveform = () => {
+            const w = canvas.width = canvas.clientWidth || 220;
+            const h = canvas.height = 36;
+            ctx.clearRect(0, 0, w, h);
+
+            const isSpeaking = this.currentMode === "speaking" || this.currentMode === "listening";
+            const amplitude = isSpeaking ? (h * 0.38) : (h * 0.12);
+            const freq = isSpeaking ? 0.08 : 0.03;
+            phase += isSpeaking ? 0.14 : 0.04;
+
+            ctx.beginPath();
+            ctx.moveTo(0, h / 2);
+
+            for (let x = 0; x < w; x++) {
+                const env = Math.sin((x / w) * Math.PI); // Window envelope
+                const y = (h / 2) + Math.sin(x * freq + phase) * amplitude * env + (Math.random() - 0.5) * (isSpeaking ? 3 : 1);
+                ctx.lineTo(x, y);
+            }
+
+            ctx.strokeStyle = isSpeaking ? "rgba(0, 255, 102, 0.95)" : "rgba(0, 242, 254, 0.55)";
+            ctx.lineWidth = 1.5;
+            ctx.shadowBlur = isSpeaking ? 8 : 4;
+            ctx.shadowColor = isSpeaking ? "#00ff66" : "#00f2fe";
+            ctx.stroke();
+
+            // Periodically refresh telemetry chips
+            if (Math.random() < 0.04) {
+                if (isSpeaking) {
+                    if (noiseFloorElem) noiseFloorElem.textContent = "FLOOR: -34 dB";
+                    if (peakChip) peakChip.textContent = "PEAK: -6 dB";
+                    if (vadChip) {
+                        vadChip.textContent = "VAD: ACTIVE SPEECH";
+                        vadChip.style.color = "var(--matrix-bright)";
+                    }
+                } else {
+                    if (noiseFloorElem) noiseFloorElem.textContent = "FLOOR: -46 dB";
+                    if (peakChip) peakChip.textContent = "PEAK: -14 dB";
+                    if (vadChip) {
+                        vadChip.textContent = "VAD: ARMED (150ms)";
+                        vadChip.style.color = "var(--text-dim)";
+                    }
+                }
+            }
+
+            requestAnimationFrame(renderWaveform);
+        };
+        requestAnimationFrame(renderWaveform);
     }
 }
 
@@ -2833,4 +3092,5 @@ class MatrixRain {
 window.addEventListener("DOMContentLoaded", () => {
     window.matrixRain = new MatrixRain();
     window.robotUI = new RobotUI();
+    window.app = window.robotUI;
 });

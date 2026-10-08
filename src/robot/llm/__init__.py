@@ -143,14 +143,21 @@ class LlamaServerLLM(LLMProvider):
                             err_body = await response.aread()
                             err_str = err_body.decode("utf-8", errors="replace")
                             logger.error("llm_stream_error", status=response.status_code, body=err_str)
-                            # Auto-recovery for context overflow: strip tools and prune older messages
+                            # Auto-recovery for context overflow: strip tools and prune older messages while preserving user turn
                             if response.status_code == 400 and ("exceeds" in err_str or "context" in err_str):
                                 logger.warning("llm_context_overflow_recovery", attempt=attempt)
                                 msgs = payload.get("messages", [])
-                                if len(msgs) > 2:
-                                    payload["messages"] = [msgs[0], msgs[-1]]
-                                    if attempt < max_retries:
-                                        continue
+                                system_msg = next((m for m in msgs if m.get("role") == "system"), None)
+                                user_msg = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
+                                last_msg = msgs[-1] if msgs else None
+                                pruned = []
+                                if system_msg:
+                                    pruned.append(system_msg)
+                                if user_msg and user_msg != last_msg:
+                                    pruned.append(user_msg)
+                                if last_msg and last_msg != system_msg:
+                                    pruned.append(last_msg)
+                                payload["messages"] = pruned or msgs
                                 if "tools" in payload:
                                     del payload["tools"]
                                 if attempt < max_retries:
