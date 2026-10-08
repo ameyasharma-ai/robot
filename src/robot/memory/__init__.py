@@ -933,9 +933,14 @@ class MemoryManager:
             metadata=metadata,
         )
 
-        # Store user statements that declare preferences into isolated SQLite facts
+        # Store user statements that declare preferences or biographical facts into isolated SQLite facts
         lower_u = user_text.lower()
-        remember_triggers = ["remember that", "remember this", "keep in mind that", "i like", "my favorite", "i am", "my name is", "i love", "my phone is"]
+        remember_triggers = [
+            "remember that", "remember this", "keep in mind that", "i like", "my favorite",
+            "i am", "my name is", "i love", "my phone is", "i live in", "i work as", "call me",
+            "my partner is", "my friend is", "i prefer", "my goal is", "don't forget",
+            "note that", "fyi", "by the way, i", "i hate", "i dislike"
+        ]
         if any(trig in lower_u for trig in remember_triggers):
             await self.history.add_fact(user_text, user_id=active_ns)
 

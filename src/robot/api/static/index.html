@@ -30,11 +30,11 @@
             </select>
         </div>
         <div class="llm-provider-wrap" id="llmProviderWrap">
-            <button class="llm-toggle-btn local-mode" id="btnLlmToggle" title="Toggle AI Provider: Local (RTX 3050, 4K Context) ⮀ Cloud Gemini (High-Intelligence, 1M Context)">
+            <button class="llm-toggle-btn local-mode" id="btnLlmToggle" title="Toggle AI Provider: Local (RTX 3050, 16K Context) ⮀ Cloud Gemini (High-Intelligence, 1M Context)">
                 <span class="llm-toggle-icon" id="llmToggleIcon">⚡</span>
                 <div class="llm-toggle-info">
                     <span class="llm-toggle-label" id="llmToggleLabel">LOCAL (RTX 3050)</span>
-                    <span class="llm-toggle-sub" id="llmToggleSub">LOW LATENCY • 4K</span>
+                    <span class="llm-toggle-sub" id="llmToggleSub">LOW LATENCY • 16K</span>
                 </div>
                 <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
             </button>
@@ -247,7 +247,7 @@
                     <div class="active-model-strip" id="activeModelStrip">
                         <div class="model-info-block">
                             <span class="model-type-tag" id="activeModelBadge">LOCAL GPU</span>
-                            <span class="model-title" id="activeModelName">Qwen 3.5 4B • RTX 3050 • 4K</span>
+                            <span class="model-title" id="activeModelName">Qwen 3.5 4B • RTX 3050 • 16K</span>
                         </div>
                         <button class="model-swap-btn" id="btnSwapModelPanel" title="Click to swap between Local Qwen (RTX 3050) and Gemini Cloud (1M Context)">
                             <span class="swap-icon" id="swapBtnIcon">✨</span>
@@ -626,7 +626,7 @@
                         </div>
                         <div class="chat-stat-pill pill-local" id="chatActiveModelPill" title="Current Active AI Model">
                             <span class="model-icon">⚡</span>
-                            <span id="chatModelLabel">LOCAL QWEN (4K)</span>
+                            <span id="chatModelLabel">LOCAL QWEN (16K)</span>
                         </div>
                         <div class="chat-stat-pill chat-mic-pill" id="chatMicPill" title="Microphone is automatically unloaded/paused in text chat mode">
                             <span class="mic-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px;"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></span>

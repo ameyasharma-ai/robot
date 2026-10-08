@@ -216,7 +216,7 @@ class RobotEngine:
         self.streaming_stt = StreamingSTT(
             provider=self.stt,
             sample_rate=self.config.get("audio", {}).get("sample_rate", 16000),
-            chunk_seconds=stt_cfg.get("chunk_seconds", 2.0),
+            chunk_seconds=stt_cfg.get("chunk_seconds", 0.8),
         )
 
         # TTS
@@ -768,33 +768,11 @@ class RobotEngine:
                 if is_speaking:
                     audio_buffer.extend(frame.flatten().tolist())
                     silence_frames = 0
-                    chunk_task = self.streaming_stt.feed_frame(frame)
-                    if chunk_task is not None:
-                        async def _emit_partial(t=chunk_task):
-                            try:
-                                await t
-                                p = self.streaming_stt.get_partial_transcript()
-                                if p:
-                                    await self.events.emit("partial_transcript", partial_transcript=p)
-                            except Exception:
-                                pass
-                        asyncio.create_task(_emit_partial())
             else:
                 barge_in_consecutive = max(0, barge_in_consecutive - 1)
                 if is_speaking:
                     audio_buffer.extend(frame.flatten().tolist())
                     silence_frames += 1
-                    chunk_task = self.streaming_stt.feed_frame(frame)
-                    if chunk_task is not None:
-                        async def _emit_partial_silence(t=chunk_task):
-                            try:
-                                await t
-                                p = self.streaming_stt.get_partial_transcript()
-                                if p:
-                                    await self.events.emit("partial_transcript", partial_transcript=p)
-                            except Exception:
-                                pass
-                        asyncio.create_task(_emit_partial_silence())
 
                     if silence_frames >= silence_threshold:
                         end_time = time.time()
@@ -812,7 +790,7 @@ class RobotEngine:
                                 trace = self.observability.start_trace(
                                     name="voice_turn",
                                     metadata={"barge_in": is_barge, "rms": round(buf_rms, 4)},
-                                )
+                                    )
                                 self.observability.set_pipeline_node("MIC", "COMPLETED")
                                 self.observability.set_pipeline_node("VAD", "COMPLETED")
 
@@ -824,13 +802,7 @@ class RobotEngine:
                                 )
 
                                 with Timer(self.telemetry, "STT_FINAL_LATENCY"):
-                                    if len(audio_buffer) >= int(sample_rate * 2.0):
-                                        text = await self.streaming_stt.finalize()
-                                        if not text:
-                                            text = await self.stt.transcribe(audio_np, sample_rate)
-                                    else:
-                                        self.streaming_stt.reset()
-                                        text = await self.stt.transcribe(audio_np, sample_rate)
+                                    text = await self.stt.transcribe(audio_np, sample_rate)
 
                                 if text:
                                     stt_ms = self.telemetry.get_metric("STT_FINAL_LATENCY").last
@@ -936,8 +908,8 @@ class RobotEngine:
             memory_limit = 50
             deep_expansion = True
         else:
-            recent_turns_limit = 3
-            memory_limit = 5
+            recent_turns_limit = 80
+            memory_limit = 50
             deep_expansion = False
 
         # Retrieve relevant memories isolated by personality workspace
@@ -953,18 +925,25 @@ class RobotEngine:
                         conversation_archive = await self.memory.get_conversation_archive(limit=150, exclude_session_id=self._session_id)
                     except Exception as e:
                         logger.warning("gemini_context_expansion_failed", error=str(e))
+                elif not is_gemini:
+                    try:
+                        all_facts = await self.memory.get_all_facts(user_id=ns, limit=50)
+                    except Exception as e:
+                        logger.debug("local_facts_retrieval_failed", error=str(e))
 
         # Get recent conversation
         recent = []
         if self.memory:
             recent = await self.memory.get_recent_conversation(self._session_id, recent_turns_limit)
-            # In Local mode, prevent prior large Gemini turns from blowing past the 4K KV cache slot
+            # In Local mode, prevent prior large turns from blowing past the budget while preserving conversation flow
             if not is_gemini and recent:
                 compacted_recent = []
-                for turn in recent[-2:]:
+                for turn in recent:
                     c = turn.get("content", "")
-                    if turn.get("role") == "assistant" and len(c) > 160:
-                        compacted_recent.append({"role": "assistant", "content": c[:160] + "..."})
+                    if turn.get("role") == "assistant" and len(c) > 1800:
+                        compacted_recent.append({"role": "assistant", "content": c[:1800] + "..."})
+                    elif turn.get("role") == "user" and len(c) > 1800:
+                        compacted_recent.append({"role": "user", "content": c[:1800] + "..."})
                     else:
                         compacted_recent.append(turn)
                 recent = compacted_recent
@@ -1140,11 +1119,12 @@ class RobotEngine:
             # If the model autonomously proposed tool calls, coordinate holding conversation and execution
             if collected_tool_calls and not interrupt.is_set():
                 # Execute any preceding tools in the chain before coordinating the primary/final tool
-                for tc in collected_tool_calls[:-1]:
+                for tc_item in collected_tool_calls[:-1]:
                     if interrupt.is_set():
                         break
-                    f_info = tc.get("function", tc)
+                    f_info = tc_item.get("function", tc_item)
                     t_nm = f_info.get("name", "")
+                    tc_id = tc_item.get("id", f"call_{int(time.time()*1000)}")
                     try:
                         import json as _json
                         r_args = f_info.get("arguments", "{}")
@@ -1152,14 +1132,34 @@ class RobotEngine:
                     except Exception:
                         a_args = {}
                     t_def = self.tool_registry.get(t_nm) if getattr(self, "tool_registry", None) else None
+                    exec_result = None
                     if t_def and getattr(self, "permissions", None):
                         try:
-                            await self.permissions.execute(t_def, a_args)
-                            logger.info("chained_tool_executed", tool=t_nm)
+                            exec_result = await self.permissions.execute(t_def, a_args)
+                            logger.info("chained_tool_executed", tool=t_nm, result=str(exec_result)[:100])
                             # Sequential pacing so actions do not pop simultaneously
                             await asyncio.sleep(0.35)
                         except Exception as e:
+                            exec_result = f"Error: {e}"
                             logger.warning("chained_tool_exec_error", tool=t_nm, error=str(e))
+
+                    # Append this tool call and its execution result into messages for complete context
+                    import json as _json
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": t_nm, "arguments": _json.dumps(a_args)},
+                        }]
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "name": t_nm,
+                        "tool_call_id": tc_id,
+                        "content": str(exec_result) if exec_result is not None else "Success",
+                    })
 
                 tc = collected_tool_calls[-1]
                 func_info = tc.get("function", tc)

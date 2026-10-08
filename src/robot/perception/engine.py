@@ -244,7 +244,7 @@ class PerceptionEngine:
                 results = self._yolo.predict(
                     frame,
                     verbose=False,
-                    conf=0.35,
+                    conf=0.22,
                     imgsz=320,
                     device="cpu"
                 )

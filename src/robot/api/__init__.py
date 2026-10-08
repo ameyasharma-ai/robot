@@ -162,12 +162,12 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             prov = "local"
         from robot.llm import LlamaServerManager
         llama_running = LlamaServerManager.is_running()
-        is_gemini = prov == "gemini"
+        local_ctx = int(getattr(engine, "config", {}).get("llm", {}).get("context_window", 16384)) if hasattr(engine, "config") else 16384
         return {
             "provider": prov,
             "mode": "high_intelligence" if is_gemini else "low_latency",
             "model": getattr(engine.llm, "model", "gemini-flash-latest" if is_gemini else "Qwen3.5-4B-Q4_K_M"),
-            "context_window": 1000000 if is_gemini else 4096,
+            "context_window": 1000000 if is_gemini else local_ctx,
             "llama_running": llama_running,
             "vram_freed": not llama_running,
         }

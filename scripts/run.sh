@@ -66,10 +66,12 @@ else
                 -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
                 $MMPROJ_ARG \
                 -ngl $NGL \
+                -t 8 \
+                -tb 8 \
                 -fa on \
-                -ctk q8_0 \
-                -ctv q8_0 \
-                -c 4096 \
+                -ctk q4_0 \
+                -ctv q4_0 \
+                -c 16384 \
                 -np 1 \
                 -b 4096 \
                 -ub 4096 \
@@ -179,12 +181,16 @@ fi
 
 if ! curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
     if [ -n "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ]; then
-        echo "[STT] Starting whisper-server on AMD Radeon 680M iGPU (Vulkan dev 0) with $WHISPER_MODEL..."
+        echo "[STT] Starting whisper-server with $WHISPER_MODEL (8 threads, no fallbacks, no timestamps)..."
         "$WHISPER_BIN" \
             -m "$WHISPER_MODEL" \
             -dev 0 \
             -fa \
-            -t 4 \
+            -t 8 \
+            -bo 1 \
+            -bs 1 \
+            -nf \
+            -nt \
             --host 127.0.0.1 \
             --port 8081 > "$DIR/logs/whisper-server.log" 2>&1 &
 

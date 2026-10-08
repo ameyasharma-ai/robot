@@ -625,7 +625,7 @@ class ToolConversationCoordinator:
         is_gemini = getattr(self.engine, "llm_provider_type", "local") == "gemini"
         if isinstance(ctx.tool_result, list):
             snippets = []
-            max_items = 8 if is_gemini else 3
+            max_items = 8 if is_gemini else 5
             for item in ctx.tool_result[:max_items]:
                 if isinstance(item, dict):
                     t = item.get("title", "").strip()
@@ -635,14 +635,14 @@ class ToolConversationCoordinator:
                     if is_gemini and content:
                         snippets.append(f"• Source: {t}\n  URL: {u}\n  Full Extracted Article Content:\n{content}")
                     else:
-                        if not is_gemini and len(s) > 160:
-                            s = s[:160] + "..."
+                        if not is_gemini and len(s) > 400:
+                            s = s[:400] + "..."
                         if t or s:
                             snippets.append(f"• {t}: {s}")
                 else:
                     s_str = str(item)
-                    if not is_gemini and len(s_str) > 160:
-                        s_str = s_str[:160]
+                    if not is_gemini and len(s_str) > 400:
+                        s_str = s_str[:400]
                     snippets.append(s_str)
             result_text = "\n\n".join(snippets)
         elif isinstance(ctx.tool_result, dict):

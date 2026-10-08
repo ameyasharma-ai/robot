@@ -29,9 +29,11 @@ GROUNDING_POLICY = (
     "- Mandatory Tool Calling Directive: You possess real, executable tools for music, volume, time, memory, vision, motion, and web search. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'I am adjusting the volume for you' or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction.\n"
     "- Volume & Music Controls: Whenever the user asks to change volume ('set volume to 20%', 'louder', 'turn it down', 'mute'), replay or play again ('play it again', 'replay', 'play that song again'), pause, resume, or stop, you MUST immediately emit a `music.control` tool call. Never narrate volume adjustments in text.\n"
     "- Track Truth: When asked what song was last played or what song is playing, you MUST check `music.status` or `music.history`. NEVER guess, assume, or hallucinate a song title.\n"
-    "- Natural Memory & Autonomous Persistence: When the user asks you to remember something, acknowledge it naturally. Do NOT call `memory.write` for casual conversational remarks. Call `memory.write` only when a vital enduring user preference or fact must be permanently stored across sessions.\n"
-    "- Sequential Multi-Action Chaining Directive: When the user asks you to perform a sequence of chained tasks (e.g. 'check what you see and then play some music and set volume to 50%', or 'inspect this and then do that'), perform them in orderly sequence. In multi-step turns, address each step sequentially. When invoking tools, execute each tool step in the exact order requested, and explain or present the outcome of each action sequentially rather than rushing or popping everything at once.\n"
-    "- Grounding Context Separation: Any environment grounding, player status, or tool results provided are background telemetry. Never repeat background labels to the user."
+    "- Memory Grounding & Awareness: You possess durable long-term memory across sessions. When asked about past facts, user preferences, prior conversations, or stored details, cross-reference the provided user profile and memories with 100% factual accuracy. Never claim to have forgotten something that is recorded in your memory facts.\n"
+    "- Autonomous Persistence: When the user asks you to remember something ('remember that ...', 'keep in mind that ...'), acknowledge it naturally. Emit a `memory.write` call only when a vital enduring user preference or fact must be permanently stored across sessions.\n"
+    "- Sequential Multi-Action Chaining Directive: When the user asks you to perform multiple actions or requests in a single turn (e.g. 'check what you see, play some music, and set volume to 50%'), you MUST invoke all required tools. NEVER stop after one tool and claim you did the others in text without calling the tool. In multi-step turns, address each step sequentially with real execution.\n"
+    "- Factual Truth & Zero Hallucination: Ground every factual assertion directly in tool results, system telemetry, or memory facts provided. If information is absent or unverified, state clearly and concisely that you do not know or ask for clarification rather than inventing facts.\n"
+    "- Grounding Context Separation: Any environment grounding, player status, or tool results provided are background telemetry. Never repeat raw background labels or formatting tags to the user."
 )
 
 
@@ -50,26 +52,26 @@ def format_system_prompt(personality_prompt: str, high_intelligence: bool = Fals
 class ContextEngine:
     """Dynamic context assembly with budget-aware allocation.
 
-    The 16K context window is divided into dynamic (not hard) partitions:
-    - System/personality:    1–1.5K tokens
-    - Relevant tool schemas: 1.5–2.5K tokens
-    - Retrieved memories:    1.5–2.5K tokens
-    - Recent conversation:   4–6K tokens
-    - World/vision state:    0.5–1K tokens
-    - Robot state:           0.25–0.5K tokens
+    The 16K context window is divided into dynamic partitions:
+    - System/personality:    0.5–1K tokens
+    - Relevant tool schemas: 1.5–2K tokens
+    - Retrieved memories:    2–3K tokens
+    - Recent conversation:   8–10K tokens
+    - World/vision state:    0.3–0.5K tokens
+    - Robot state:           0.2–0.3K tokens
     - User input:            Variable
-    - Generation headroom:   3–4K tokens
+    - Generation headroom:   1.5–2K tokens
     """
 
     def __init__(self, budget: dict[str, int] | None = None) -> None:
         self._budget = budget or {
-            "system_personality": 400,
-            "tool_schemas": 400,
-            "retrieved_memories": 300,
-            "recent_conversation": 450,
-            "world_state": 150,
-            "robot_state": 100,
-            "generation_headroom": 300,
+            "system_personality": 600,
+            "tool_schemas": 1500,
+            "retrieved_memories": 2000,
+            "recent_conversation": 9000,
+            "world_state": 300,
+            "robot_state": 200,
+            "generation_headroom": 1500,
         }
 
     def build_messages(
@@ -95,7 +97,7 @@ class ContextEngine:
         - Formats deep structured knowledge hierarchies so the model is not overwhelmed.
 
         In Local Mode (RTX 3050 4K context):
-        - Strict compact allocation (3 turns, 5 memories, compact tool snippets).
+        - Clean balanced allocation (up to 18-20 turns history, persistent facts & semantic recall).
         - Preserves KV cache slot invariance for <250ms TTFT.
         """
         resolved_system = system_prompt or kwargs.get("personality_prompt") or ""
@@ -121,9 +123,8 @@ class ContextEngine:
 
         grounding_parts.append(
             f"[Current Local System Time (Indian Standard Time / IST)]:\n"
-            f"  Current Time: {now_ist.strftime('%I:%M:%S %p IST')}\n"
-            f"  Current Date: {now_ist.strftime('%A, %B %d, %Y')}\n"
-            f"  ISO 8601: {now_ist.isoformat()}"
+            f"  Current Time: {now_ist.strftime('%I:%M %p IST')}\n"
+            f"  Current Date: {now_ist.strftime('%A, %B %d, %Y')}"
         )
 
         # Gate memories: do NOT inject irrelevant memories if user turn is an action/command
@@ -142,9 +143,21 @@ class ContextEngine:
             if facts_str:
                 grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts (Belonging to User)]:\n{facts_str}")
         elif (resolved_memories or all_facts) and not is_direct_action:
-            mems_to_format = resolved_memories if resolved_memories else (all_facts or [])
+            combined_mems: list[dict] = []
+            seen_texts = set()
+            for m in (resolved_memories or []) + (all_facts or []):
+                if isinstance(m, dict):
+                    txt = m.get("memory", m.get("fact", m.get("text", ""))).strip()
+                    m_item = m
+                else:
+                    txt = str(m).strip()
+                    m_item = {"memory": txt}
+                if txt and txt not in seen_texts:
+                    seen_texts.add(txt)
+                    combined_mems.append(m_item)
+
             mem_budget = 50000 if high_intelligence else self._budget["retrieved_memories"]
-            mem_str = _format_memories(mems_to_format, mem_budget)
+            mem_str = _format_memories(combined_mems, mem_budget)
             if mem_str:
                 grounding_parts.append(f"[User Personal Profile & Durable Facts (Belonging to User)]:\n{mem_str}")
 

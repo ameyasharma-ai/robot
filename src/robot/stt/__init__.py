@@ -81,27 +81,54 @@ class WhisperServerSTT(STTProvider):
         self._session = requests.Session()
 
     @staticmethod
-    def _pcm_to_wav(pcm: np.ndarray, sample_rate: int) -> bytes:
-        """Convert float32 PCM to normalized WAV bytes."""
-        # 1. DC offset removal
-        pcm = pcm - np.mean(pcm)
+    def _pcm_to_wav(pcm: np.ndarray, sample_rate: int = 16000) -> bytes:
+        """Convert float32 PCM array directly to 16-bit mono PCM WAV bytes in sub-millisecond time.
 
-        # 2. Peak normalization (boost quiet speech up to target 0.9 peak without clipping)
-        peak = np.max(np.abs(pcm))
-        if peak > 1e-4:
-            gain = min(0.9 / peak, 8.0)  # Max 8x gain boost
+        Args:
+            pcm: Audio sample buffer as 1D float32 NumPy array.
+            sample_rate: Audio sampling frequency in Hz (typically 16000).
+
+        Returns:
+            bytes: Valid 44-byte RIFF/WAVE header followed by raw 16-bit PCM byte stream.
+        """
+        import struct
+
+        # Peak normalization if signal is low
+        peak = float(np.max(np.abs(pcm))) if len(pcm) > 0 else 0.0
+        if 1e-4 < peak < 0.7:
+            gain = min(0.9 / peak, 4.0)
             pcm = pcm * gain
 
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            int16 = (pcm * 32767).clip(-32768, 32767).astype(np.int16)
-            wf.writeframes(int16.tobytes())
-        return buf.getvalue()
+        int16_data = (pcm * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
+        num_bytes = len(int16_data)
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF",
+            num_bytes + 36,
+            b"WAVE",
+            b"fmt ",
+            16,
+            1,
+            1,
+            sample_rate,
+            sample_rate * 2,
+            2,
+            16,
+            b"data",
+            num_bytes,
+        )
+        return header + int16_data
 
     async def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+        """Transcribe PCM audio buffer into text using the local whisper-server instance.
+
+        Args:
+            audio: 1D float32 PCM numpy array.
+            sample_rate: Audio sample rate in Hz.
+
+        Returns:
+            str: Normalized, hallucination-filtered transcript string.
+        """
         wav_bytes = self._pcm_to_wav(audio, sample_rate)
         audio_duration = len(audio) / sample_rate
 
@@ -110,11 +137,13 @@ class WhisperServerSTT(STTProvider):
             "temperature": "0.0",
             "language": self.language,
             "response_format": "json",
+            "best_of": "1",
+            "beam_size": "1",
         }
 
         try:
             import asyncio
-            def _do_post():
+            def _do_post() -> requests.Response:
                 return self._session.post(self.url, files=files, data=data, timeout=5)
 
             resp = await asyncio.to_thread(_do_post)
@@ -150,7 +179,7 @@ class StreamingSTT:
         self,
         provider: STTProvider,
         sample_rate: int = 16000,
-        chunk_seconds: float = 2.0,
+        chunk_seconds: float = 0.8,
     ) -> None:
         self.provider = provider
         self.sample_rate = sample_rate

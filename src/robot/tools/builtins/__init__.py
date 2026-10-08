@@ -152,125 +152,139 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             if now - ts < SEARCH_CACHE_TTL:
                 return cached_res
 
-        def _execute_search():
-            # 1. Primary Engine: DuckDuckGo Lite with paired Title, URL, and Snippet extraction
-            try:
-                url = "https://lite.duckduckgo.com/lite/"
-                data = urllib.parse.urlencode({"q": clean_q}).encode("utf-8")
-                req = urllib.request.Request(
-                    url,
-                    data=data,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                        "Referer": "https://lite.duckduckgo.com/",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                )
-                with urllib.request.urlopen(req, timeout=3.5) as resp:
-                    page_html = resp.read().decode("utf-8", errors="ignore")
+        async def _execute_parallel_search() -> list[dict]:
+            import httpx
+            results_list: list[dict] = []
+            seen_titles = set()
 
-                if "result-snippet" in page_html:
-                    link_pattern = re.compile(
-                        r'<a[^>]+href=[\x27\"]([^\x27\"]+)[\x27\"][^>]*class=[\x27\"]result-link[\x27\"][^>]*>(.*?)</a>',
-                        re.DOTALL,
-                    )
-                    snippet_pattern = re.compile(
-                        r'<td class=[\x27\"]result-snippet[\x27\"]>(.*?)</td>',
-                        re.DOTALL,
-                    )
-                    links = link_pattern.findall(page_html)
-                    snippets = snippet_pattern.findall(page_html)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            }
 
-                    results = []
-                    for i in range(min(len(snippets), max_results + 3)):
-                        if len(results) >= max_results:
-                            break
-                        clean_snip = html_lib.unescape(re.sub(r"<[^>]+>", "", snippets[i])).strip()
-                        u = "https://duckduckgo.com"
-                        clean_title = clean_q
-                        if i < len(links):
-                            u, t = links[i]
-                            clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", t)).strip()
-                        # Skip sponsored advertising links
-                        if "ad_domain=" in u or "aclick" in u or "duckduckgo.com/y.js" in u:
-                            continue
-                        if clean_snip:
-                            results.append({"title": clean_title, "snippet": clean_snip, "url": u})
-                    if results:
-                        return results
-            except Exception:
-                pass
+            async with httpx.AsyncClient(headers=headers, timeout=4.5, follow_redirects=True) as client:
+                # 1. Wikipedia Summary & Search API
+                async def _search_wiki():
+                    try:
+                        w_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(clean_q)}"
+                        resp = await client.get(w_url)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            ext = data.get("extract", "").strip()
+                            if ext and data.get("type") != "disambiguation":
+                                return [{
+                                    "title": f"{data.get('title', clean_q)} (Wikipedia)",
+                                    "snippet": ext,
+                                    "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                                }]
+                    except Exception:
+                        pass
+                    return []
 
-            # 2. Secondary Engine: Bing News & Web RSS (ultra-fast, highly current, no bot wall)
-            try:
-                bing_url = f"https://www.bing.com/news/search?q={urllib.parse.quote(clean_q)}&format=rss"
-                req = urllib.request.Request(
-                    bing_url,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-                )
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
-                    xml_data = resp.read().decode("utf-8", errors="ignore")
+                # 2. Bing News & Web RSS
+                async def _search_bing():
+                    try:
+                        b_url = f"https://www.bing.com/news/search?q={urllib.parse.quote(clean_q)}&format=rss"
+                        resp = await client.get(b_url)
+                        if resp.status_code == 200:
+                            items = re.findall(r"<item>(.*?)</item>", resp.text, re.DOTALL)
+                            b_res = []
+                            for it in items[:eff_max]:
+                                tm = re.search(r"<title>(.*?)</title>", it, re.DOTALL)
+                                lm = re.search(r"<link>(.*?)</link>", it, re.DOTALL)
+                                dm = re.search(r"<description>(.*?)</description>", it, re.DOTALL)
+                                t = html_lib.unescape(re.sub(r"<[^>]+>", "", tm.group(1))).strip() if tm else ""
+                                d = html_lib.unescape(re.sub(r"<[^>]+>", "", dm.group(1))).strip() if dm else ""
+                                u = lm.group(1).strip() if lm else ""
+                                if t or d:
+                                    b_res.append({"title": t, "snippet": d, "url": u})
+                            return b_res
+                    except Exception:
+                        pass
+                    return []
 
-                items = re.findall(r"<item>(.*?)</item>", xml_data, re.DOTALL)
-                if items:
-                    bing_results = []
-                    for item in items[:max_results]:
-                        title_m = re.search(r"<title>(.*?)</title>", item, re.DOTALL)
-                        link_m = re.search(r"<link>(.*?)</link>", item, re.DOTALL)
-                        desc_m = re.search(r"<description>(.*?)</description>", item, re.DOTALL)
+                # 3. DuckDuckGo Instant Answers API
+                async def _search_ddg_api():
+                    try:
+                        api_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(clean_q)}&format=json&no_html=1&skip_disambig=1"
+                        resp = await client.get(api_url)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            d_res = []
+                            if data.get("AbstractText"):
+                                d_res.append({
+                                    "title": data.get("Heading", clean_q),
+                                    "snippet": data.get("AbstractText"),
+                                    "url": data.get("AbstractURL", ""),
+                                })
+                            if data.get("Answer"):
+                                d_res.append({"title": "Direct Answer", "snippet": data.get("Answer"), "url": ""})
+                            for rel in data.get("RelatedTopics", [])[:eff_max]:
+                                if isinstance(rel, dict) and rel.get("Text"):
+                                    d_res.append({
+                                        "title": rel.get("Text").split(" - ")[0],
+                                        "snippet": rel.get("Text"),
+                                        "url": rel.get("FirstURL", ""),
+                                    })
+                            return d_res
+                    except Exception:
+                        pass
+                    return []
 
-                        t = html_lib.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
-                        d = html_lib.unescape(re.sub(r"<[^>]+>", "", desc_m.group(1))).strip() if desc_m else ""
-                        u = link_m.group(1).strip() if link_m else ""
-                        if d or t:
-                            bing_results.append({"title": t, "snippet": d, "url": u})
-                    if bing_results:
-                        return bing_results
-            except Exception:
-                pass
+                # 4. DuckDuckGo Lite HTML Search
+                async def _search_ddg_lite():
+                    try:
+                        lite_url = "https://lite.duckduckgo.com/lite/"
+                        data_post = {"q": clean_q}
+                        resp = await client.post(lite_url, data=data_post, headers={"Content-Type": "application/x-www-form-urlencoded"})
+                        if resp.status_code == 200 and "result-snippet" in resp.text:
+                            link_pattern = re.compile(
+                                r'<a[^>]+href=[\x27\"]([^\x27\"]+)[\x27\"][^>]*class=[\x27\"]result-link[\x27\"][^>]*>(.*?)</a>',
+                                re.DOTALL,
+                            )
+                            snippet_pattern = re.compile(
+                                r'<td class=[\x27\"]result-snippet[\x27\"]>(.*?)</td>',
+                                re.DOTALL,
+                            )
+                            links = link_pattern.findall(resp.text)
+                            snippets = snippet_pattern.findall(resp.text)
+                            dl_res = []
+                            for i in range(min(len(snippets), eff_max + 2)):
+                                clean_snip = html_lib.unescape(re.sub(r"<[^>]+>", "", snippets[i])).strip()
+                                u = "https://duckduckgo.com"
+                                clean_title = clean_q
+                                if i < len(links):
+                                    u, t = links[i]
+                                    clean_title = html_lib.unescape(re.sub(r"<[^>]+>", "", t)).strip()
+                                if "ad_domain=" in u or "aclick" in u or "duckduckgo.com/y.js" in u:
+                                    continue
+                                if clean_snip:
+                                    dl_res.append({"title": clean_title, "snippet": clean_snip, "url": u})
+                            return dl_res
+                    except Exception:
+                        pass
+                    return []
 
-            # 3. Tertiary Engine: DuckDuckGo Instant Answers API
-            try:
-                api_url = f"https://api.duckduckgo.com/?q={urllib.parse.quote(clean_q)}&format=json&no_html=1&skip_disambig=1"
-                req = urllib.request.Request(api_url, headers={"User-Agent": "RobotCore/1.0"})
-                with urllib.request.urlopen(req, timeout=2.5) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                results = []
-                if data.get("AbstractText"):
-                    results.append({
-                        "title": data.get("Heading", clean_q),
-                        "snippet": data.get("AbstractText"),
-                        "url": data.get("AbstractURL", ""),
-                    })
-                if data.get("Answer"):
-                    results.append({"title": "Direct Answer", "snippet": data.get("Answer"), "url": ""})
-                for rel in data.get("RelatedTopics", [])[:max_results]:
-                    if isinstance(rel, dict) and rel.get("Text"):
-                        results.append({
-                            "title": rel.get("Text").split(" - ")[0],
-                            "snippet": rel.get("Text"),
-                            "url": rel.get("FirstURL", ""),
-                        })
-                if results:
-                    return results[:max_results]
-            except Exception:
-                pass
+                engine_tasks = [_search_wiki(), _search_bing(), _search_ddg_api(), _search_ddg_lite()]
+                gathered = await asyncio.gather(*engine_tasks, return_exceptions=True)
 
-            # 4. Quaternary Engine: ddgs library with strict limit
-            try:
-                from ddgs import DDGS
-                res = list(DDGS().text(clean_q, max_results=max_results))
-                if res:
-                    return [
-                        {"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")}
-                        for r in res
-                    ]
-            except Exception:
-                pass
+                for item_list in gathered:
+                    if isinstance(item_list, list):
+                        for item in item_list:
+                            if isinstance(item, dict):
+                                title_key = item.get("title", "").lower().strip()
+                                if title_key and title_key not in seen_titles:
+                                    seen_titles.add(title_key)
+                                    results_list.append(item)
+                                    if len(results_list) >= eff_max:
+                                        break
+                    if len(results_list) >= eff_max:
+                        break
 
+            if results_list:
+                return results_list[:eff_max]
             return [{"error": f"No web search results could be retrieved for '{clean_q}'."}]
 
-        results = await asyncio.to_thread(_execute_search)
+        results = await _execute_parallel_search()
 
         # Ultimate Web Mode for Gemini Cloud & Deep Search:
         # Concurrently fetch and extract comprehensive readable article/page text from top sources
@@ -287,7 +301,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                         headers = {
                             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                         }
-                        async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
+                        async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client:
                             resp = await client.get(target_url, headers=headers)
                             if resp.status_code == 200:
                                 soup = BeautifulSoup(resp.text, "html.parser")
@@ -340,7 +354,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=web_search,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="web",
-            timeout_s=20.0,
+            timeout_s=30.0,
         )
     )
 

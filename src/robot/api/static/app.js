@@ -420,7 +420,7 @@ class RobotUI {
                          document.getElementById("activeModelStrip")?.classList.contains("gemini-active");
 
         if (modelLabel) {
-            modelLabel.textContent = isGemini ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+            modelLabel.textContent = this.formatModelBadgeText(isGemini);
         }
         if (modelIcon) {
             modelIcon.textContent = isGemini ? "✨" : "⚡";
@@ -428,10 +428,22 @@ class RobotUI {
         if (modelPill) {
             modelPill.classList.toggle("pill-gemini", isGemini);
             modelPill.classList.toggle("pill-local", !isGemini);
+            const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
             modelPill.title = isGemini 
                 ? "Active AI Model: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence)" 
-                : "Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, 4K Context)";
+                : `Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context)`;
         }
+    }
+
+    /**
+     * Return formatted model badge text depending on provider and local context size.
+     * @param {boolean} isGemini 
+     * @returns {string}
+     */
+    formatModelBadgeText(isGemini) {
+        if (isGemini) return "GEMINI (1M)";
+        const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
+        return `LOCAL QWEN (${ctxK}K)`;
     }
 
     async onEnterChatMode() {
@@ -718,7 +730,7 @@ class RobotUI {
             }
             const badgeClass = isGeminiMsg ? "badge-gemini" : "badge-local";
             const badgeIcon = isGeminiMsg ? "✨ " : "⚡ ";
-            const badgeText = isGeminiMsg ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+            const badgeText = this.formatModelBadgeText(isGeminiMsg);
             badgeHtml = `<span class="chat-msg-badge ${badgeClass}">${badgeIcon}${badgeText}</span>`;
 
             if (msg.metadata && (msg.metadata.tokens || msg.metadata.tok_per_sec)) {
@@ -792,7 +804,7 @@ class RobotUI {
                          (this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode")) ||
                          document.getElementById("btnLlmToggle")?.classList.contains("gemini-mode") ||
                          document.getElementById("activeModelStrip")?.classList.contains("gemini-active");
-        const currentModel = isGemini ? "GEMINI (1M)" : "LOCAL QWEN (4K)";
+        const currentModel = this.formatModelBadgeText(isGemini);
         const badgeClass = isGemini ? "badge-gemini" : "badge-local";
         const badgeIcon = isGemini ? "✨ " : "⚡ ";
 
@@ -881,7 +893,7 @@ class RobotUI {
                             const badgeEl = assistantRow.querySelector(".chat-msg-badge");
                             if (badgeEl) {
                                 badgeEl.className = `chat-msg-badge ${isGem ? "badge-gemini" : "badge-local"}`;
-                                badgeEl.textContent = `${isGem ? "✨ " : "⚡ "}${isGem ? "GEMINI (1M)" : "LOCAL QWEN (4K)"}`;
+                                badgeEl.textContent = `${isGem ? "✨ " : "⚡ "}${this.formatModelBadgeText(isGem)}`;
                             }
                             this.syncChatTopBar();
                         }
@@ -1658,16 +1670,17 @@ class RobotUI {
                     btn.classList.remove("gemini-mode");
                     btn.classList.add("local-mode");
                 }
+                const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
                 if (panelStrip) panelStrip.classList.remove("gemini-active");
                 if (icon) icon.textContent = "⚡";
                 if (label) label.textContent = "LOCAL (RTX 3050)";
-                if (sub) sub.textContent = "LOW LATENCY • 4K";
+                if (sub) sub.textContent = `LOW LATENCY • ${ctxK}K`;
                 if (badge) badge.textContent = "LOCAL";
                 if (panelBadge) panelBadge.textContent = "LOCAL GPU";
-                if (panelName) panelName.textContent = "Qwen 3.5 4B • RTX 3050 • 4K";
+                if (panelName) panelName.textContent = `Qwen 3.5 4B • RTX 3050 • ${ctxK}K`;
                 if (panelBtnText) panelBtnText.textContent = "SWAP TO GEMINI";
                 if (panelBtnIcon) panelBtnIcon.textContent = "✨";
-                if (btn) btn.title = "Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency). Click to swap to Cloud Gemini (1M Context).";
+                if (btn) btn.title = `Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to swap to Cloud Gemini (1M Context).`;
             }
             if (typeof this.syncChatTopBar === "function") this.syncChatTopBar();
         };
@@ -1677,6 +1690,9 @@ class RobotUI {
             const res = await fetch("/api/llm/status");
             if (res.ok) {
                 const data = await res.json();
+                if (data.context_window && data.provider !== "gemini") {
+                    this.localContextWindow = data.context_window;
+                }
                 this.updateLlmToggleUi(data.provider, data.mode);
             }
         } catch (e) {}

@@ -4,8 +4,8 @@ llm:
   provider: llama-server
   base_url: "http://127.0.0.1:8080/v1"
   model: "Qwen3.5-4B-Q4_K_M"
-  max_tokens: 300
-  context_window: 2048
+  max_tokens: 400
+  context_window: 16384
   enable_thinking: false
   stream: true
   multimodal: false
@@ -23,6 +23,7 @@ stt:
   url: "http://127.0.0.1:8081/inference"
   language: "en"
   temperature: 0.0
+  chunk_seconds: 0.8
 
 tts:
   provider: piper
@@ -32,7 +33,7 @@ tts:
 audio:
   sample_rate: 16000
   vad_frame_size: 512       # 32ms at 16kHz
-  silence_threshold_ms: 150 # Ultra-low latency voice turnaround (<160ms silence detection)
+  silence_threshold_ms: 130 # Ultra-low latency voice turnaround (<130ms silence detection)
   barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
   barge_in_frames: 4        # ~128ms consecutive speech required to interrupt
   barge_in_confidence: 0.92 # High confidence required during playback to prevent self-interruption
@@ -93,13 +94,13 @@ api:
   port: 8888
 
 context_budget:
-  system_personality: 400
-  tool_schemas: 800
-  retrieved_memories: 300
-  recent_conversation: 600
-  world_state: 250
-  robot_state: 150
-  generation_headroom: 300
+  system_personality: 600
+  tool_schemas: 1500
+  retrieved_memories: 2000
+  recent_conversation: 9000
+  world_state: 300
+  robot_state: 200
+  generation_headroom: 1500
 
 logging:
   level: "INFO"
