@@ -83,21 +83,23 @@ tool_permissions:
   perception.inspect_tabletop: true
   perception.inspect_view: true
   perception.get_world_state: true
+  camera.capture_snapshot: true
   character.execute_action: true
   character.stop: true
+  character.switch: true
+  personality.switch: true
   image.generate: true
   image.cancel: true
   music.play: true
   music.control: true
   music.status: true
   music.history: true
+  music.equalizer: true
   weather.forecast: true
   news.headlines: true
   finance.quote: true
   homeassistant.control: true
   homeassistant.state: true
   homeassistant.list_devices: true
-  personality.switch: true
-  character.switch: true
 
 memory_namespace: glados
