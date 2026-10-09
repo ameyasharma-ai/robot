@@ -240,11 +240,7 @@ class ContextEngine:
         messages.append({"role": "system", "content": format_system_prompt(resolved_system, high_intelligence=high_intelligence)})
         grounding_parts = []
 
-        # 2. Real-Time Situation Telemetry Banner (IST Time, Pending Jobs, Track/Vol, Battery, Scene)
-        sit_banner = format_situation_banner(resolved_situation)
-        grounding_parts.append(sit_banner)
-
-        # 3. User Core Identity Profile Sheet (Always Present & Non-Evictable)
+        # 2. User Core Identity Profile Sheet (Static & Non-Evictable — placed first for 100% KV cache invariance)
         profile_sheet = format_user_core_profile(resolved_profile)
         grounding_parts.append(profile_sheet)
 
@@ -328,6 +324,11 @@ class ContextEngine:
                 result_text = str(tr.get("result", tr.get("error", "")))
                 tool_parts.append(f"[{tool_id}]:\n{result_text}")
             grounding_parts.append("[Tool Results & Grounded Intelligence — use these to answer]:\n" + "\n\n".join(tool_parts))
+
+        # 7. Real-Time Situation Telemetry Banner (IST Time, Pending Jobs, Track/Vol, Battery, Scene)
+        # Placed at the end of grounding_parts so all preceding static context is 100% invariant for KV cache reuse
+        sit_banner = format_situation_banner(resolved_situation)
+        grounding_parts.append(sit_banner)
 
         # 7. Current user input cleanly separated from background telemetry
         user_content = resolved_user
