@@ -224,9 +224,12 @@ class ToolRouter:
             "inspect", "look", "see", "camera", "vision", "describe scene", "describe what you see"
         ],
         "os": [
-            "launch", "open", "start app", "open app", "launch app", "open vs code", "open spotify", "open chrome",
-            "open firefox", "open terminal", "open files", "lock screen", "lock session", "lock", "sleep display",
-            "wake display", "turn off screen", "screen off", "display sleep", "turn on screen", "screen on",
+            "launch", "open", "start", "run", "start app", "open app", "launch app", "open vs code", "open spotify",
+            "open chrome", "open firefox", "open terminal", "open files", "open calculator", "files", "file manager",
+            "nautilus", "explorer", "calculator", "calc", "spotify", "chrome", "google chrome", "firefox", "mozilla",
+            "terminal", "console", "vscode", "vs code", "code", "cursor", "browser", "web browser", "slack", "discord",
+            "vlc", "obs", "settings", "text editor", "gedit", "kate", "notepad", "lock screen", "lock session", "lock",
+            "sleep display", "wake display", "turn off screen", "screen off", "display sleep", "turn on screen", "screen on",
             "battery", "battery status", "power status", "clipboard", "copy to clipboard", "read clipboard",
             "paste clipboard", "notify", "desktop notification", "popup", "notify me", "mute audio", "unmute"
         ],
@@ -241,8 +244,22 @@ class ToolRouter:
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
 
-    def select_tools(self, user_text: str, all_tools: bool = False) -> list[str]:
-        """Select relevant tool families or return all tools so the LLM can autonomously route."""
+    def select_tools(
+        self,
+        user_text: str,
+        all_tools: bool = False,
+        recent_context: list[dict] | None = None,
+    ) -> list[str]:
+        """Select relevant tool families or return all tools so the LLM can autonomously route.
+
+        Args:
+            user_text: Current user input text.
+            all_tools: If True, returns all registered tool names.
+            recent_context: Optional list of recent message turns to resolve short conversational follow-ups.
+
+        Returns:
+            List of matching tool names.
+        """
         if all_tools:
             return self._registry.list_tools()
 
@@ -261,6 +278,28 @@ class ToolRouter:
                         selected_families.add(family)
                         break
 
+        # Context-aware follow-up resolution:
+        # If user utterance is short (e.g. "files", "1", "yes", "do it", "sure", "play it"),
+        # check recent assistant context to retain active tool families
+        if recent_context and (not selected_families or len(text_lower.split()) <= 3):
+            recent_texts = []
+            for turn in reversed(recent_context[-3:]):
+                c = turn.get("content", "")
+                if isinstance(c, str):
+                    recent_texts.append(c.lower())
+            combined_recent = " ".join(recent_texts)
+
+            for family, keywords in self.FAMILY_KEYWORDS.items():
+                for kw in keywords:
+                    if " " in kw:
+                        if kw in combined_recent:
+                            selected_families.add(family)
+                            break
+                    else:
+                        if re.search(rf"\b{re.escape(kw)}\b", combined_recent):
+                            selected_families.add(family)
+                            break
+
         # If chaining conjunctions are detected and at least one tool family matched,
         # add any families referenced in the chained sub-clauses without returning ALL tools blindly
         has_chaining = any(conj in text_lower for conj in self.CHAINING_CONJUNCTIONS)
@@ -273,7 +312,7 @@ class ToolRouter:
                 selected_families.add("web")
             if any(w in text_lower for w in ["wave", "gesture", "motion", "walk", "kick", "lean", "lean_in", "hand"]):
                 selected_families.add("motion")
-            if any(w in text_lower for w in ["open", "launch", "lock", "clipboard", "notify", "battery"]):
+            if any(w in text_lower for w in ["open", "launch", "lock", "clipboard", "notify", "battery", "files", "calc", "terminal", "spotify"]):
                 selected_families.add("os")
 
         if not selected_families:

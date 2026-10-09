@@ -1063,7 +1063,7 @@ class RobotEngine:
         # Provide tools to the LLM so it can autonomously decide when and how
         # to invoke tools with structured arguments, and read the outputs.
         tool_results = []
-        selected_tool_names = self.tool_router.select_tools(user_text)
+        selected_tool_names = self.tool_router.select_tools(user_text, recent_context=recent)
         logger.debug("tool_router_selected", tools=selected_tool_names, user_text=user_text[:80])
 
         # ─── Build Messages with Tool Results ───────────────────────────────
@@ -1129,8 +1129,7 @@ class RobotEngine:
 
         # Context-safe tool routing:
         # Cloud Gemini has 1M context so it receives all schemas.
-        # Local Qwen has a 4K context; inject matched tool families (or all schemas only if context permits)
-        # to prevent 400 context overflow and emergency tool stripping.
+        # Local Qwen has a 4K context; inject matched tool families (or all schemas if context permits)
         tools_schema = None
         if getattr(self, "tool_registry", None):
             if is_gemini:
@@ -1138,7 +1137,7 @@ class RobotEngine:
             else:
                 if selected_tool_names:
                     tools_schema = self.tool_registry.get_schemas(selected_tool_names)
-                elif estimated_tokens < 1200:
+                elif estimated_tokens < 3200:
                     tools_schema = self.tool_registry.get_schemas()
                 else:
                     tools_schema = None
@@ -1647,12 +1646,16 @@ class RobotEngine:
             if is_gemini:
                 tools = self.tool_registry.get_schemas()
             else:
-                selected_tool_names = self.tool_router.select_tools(text) if hasattr(self, "tool_router") and self.tool_router else []
+                selected_tool_names = (
+                    self.tool_router.select_tools(text, recent_context=recent_history)
+                    if hasattr(self, "tool_router") and self.tool_router
+                    else []
+                )
                 if selected_tool_names:
                     tools = self.tool_registry.get_schemas(selected_tool_names)
                 else:
                     est_in = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
-                    tools = self.tool_registry.get_schemas() if est_in < 1200 else None
+                    tools = self.tool_registry.get_schemas() if est_in < 3200 else None
 
         yield {
             "event": "start",

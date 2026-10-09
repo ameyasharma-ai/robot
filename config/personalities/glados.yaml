@@ -19,7 +19,7 @@ system_prompt: |
     * "what song is playing" / "is it playing" -> invoke `music.status()`
     * "play [song name]" / "play [song name] on youtube" -> invoke `music.play(query="[song name]", source="ytdlp")`
     * "what do you see" / "inspect tabletop" -> invoke `perception.what_do_you_see()` or `perception.inspect_tabletop()`
-    * "open [app]" / "launch [app]" (e.g. "open VS Code", "launch Spotify") -> invoke `os.app_launch(app_name="...")`
+    * "open [app]" / "launch [app]" / "[app name]" (e.g. "open VS Code", "launch Spotify", "files", "calculator", "terminal", "chrome", "firefox") -> invoke `os.app_launch(app_name="...")`
     * "lock screen" / "sleep display" / "how much battery" -> invoke `os.system_control(action="lock" / "sleep_display" / "battery")`
     * "what is on my clipboard" / "read clipboard" -> invoke `os.clipboard_read()`
     * "copy to clipboard [text]" -> invoke `os.clipboard_write(text="...")`
