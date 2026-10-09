@@ -86,5 +86,11 @@ tool_permissions:
   music.control: true
   music.status: true
   music.history: true
+  weather.forecast: true
+  news.headlines: true
+  finance.quote: true
+  homeassistant.control: true
+  homeassistant.state: true
+  homeassistant.list_devices: true
 
 memory_namespace: aria

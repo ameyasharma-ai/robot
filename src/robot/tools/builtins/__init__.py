@@ -1038,3 +1038,12 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     from robot.tools.builtins.system_os import register_system_os_tools
     register_system_os_tools(engine)
 
+    # --- Real-Time Weather, News & Financial Feeds ---
+    from robot.tools.builtins.weather_news import register_weather_news_tools
+    register_weather_news_tools(engine)
+
+    # --- Home Assistant & IoT Smart Home Tools ---
+    from robot.tools.builtins.smart_home import register_smart_home_tools
+    register_smart_home_tools(engine)
+
+

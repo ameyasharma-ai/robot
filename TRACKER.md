@@ -91,6 +91,16 @@ Legend:
   - `os.clipboard_read` & `os.clipboard_write`: Text clipboard input/output with cascading multi-tier fallbacks (`wl-clipboard` -> `xclip` -> `xsel` -> `pyperclip` -> in-memory buffer).
   - `os.notify_desktop`: Linux desktop notifications via `notify-send` with custom urgency levels, icons, and titles.
   - Registered aliases in `ToolRegistry`, keywords in `ToolRouter`, parameter aliases in `PermissionManager`, and granted permissions across all personality definitions (`luna.yaml`, `neo.yaml`, `aria.yaml`, `glados.yaml`). All 132 unit tests passing 100%.
+- [x] **61. Phase 3: Real-Time Weather, News & Financial Feeds (`src/robot/tools/builtins/weather_news.py`)**:
+  - `weather.forecast`: Live weather conditions (temperature, apparent temp, humidity, wind speed, precipitation) and 3-day forecasts via Open-Meteo geocoding + weather APIs with 15-minute in-memory caching and WMO code translation.
+  - `news.headlines`: Fast multi-category RSS news headlines parser (top, tech, business, world, science) with CDATA sanitization, source attribution, and 10-minute caching.
+  - `finance.quote`: Real-time cryptocurrency quotes (CoinGecko API) and stock market / index quotes (Yahoo Finance open chart API) with 3-minute caching.
+  - Full parameter normalization aliases (`location`, `category`, `symbol`), tool router keywords, and personality YAML permissions configured. 100% test coverage.
+- [x] **62. Phase 4: Home Assistant IoT Integration (`src/robot/tools/builtins/smart_home.py`)**:
+  - `homeassistant.control`: Smart lights (power, brightness, color temperature), switches, fans, and climate thermostats via Home Assistant REST/WebSocket API with instantaneous local emulated state fallback.
+  - `homeassistant.state`: Live entity state and attribute querying with fallback.
+  - `homeassistant.list_devices`: Smart device enumeration filtered by domain (`light`, `switch`, `climate`, `all`).
+  - Registered under `PermissionLevel.HARMLESS_LOCAL` and `READ_ONLY`, tool router keywords and conjunctions, personality YAML permissions, and quick chips in dashboard HUD. 145/145 unit tests pass (100%).
 
 ### 🟡 Medium Priority
 - [ ] **Physical Hardware Integration**:

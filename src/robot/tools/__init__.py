@@ -115,6 +115,22 @@ class ToolRegistry:
         "notify_desktop": "os.notify_desktop",
         "desktop_notify": "os.notify_desktop",
         "notify": "os.notify_desktop",
+        "weather": "weather.forecast",
+        "get_weather": "weather.forecast",
+        "forecast": "weather.forecast",
+        "news": "news.headlines",
+        "headlines": "news.headlines",
+        "top_news": "news.headlines",
+        "finance": "finance.quote",
+        "stock": "finance.quote",
+        "stock_price": "finance.quote",
+        "crypto": "finance.quote",
+        "bitcoin_price": "finance.quote",
+        "homeassistant": "homeassistant.control",
+        "smart_home": "homeassistant.control",
+        "smart_light": "homeassistant.control",
+        "lights": "homeassistant.control",
+        "thermostat": "homeassistant.control",
     }
 
     def __init__(self) -> None:
@@ -233,6 +249,24 @@ class ToolRouter:
             "battery", "battery status", "power status", "clipboard", "copy to clipboard", "read clipboard",
             "paste clipboard", "notify", "desktop notification", "popup", "notify me", "mute audio", "unmute"
         ],
+        "weather": [
+            "weather", "forecast", "temperature", "temp", "temp outside", "is it raining", "rain", "sunny",
+            "humid", "humidity", "snow", "cloudy", "weather forecast", "weather today", "weather in"
+        ],
+        "news": [
+            "news", "headlines", "breaking news", "tech news", "world news", "top stories", "daily news",
+            "latest news", "current events", "science news", "business news"
+        ],
+        "finance": [
+            "stock", "stocks", "crypto", "bitcoin", "btc", "ethereum", "eth", "solana", "sol", "doge",
+            "dogecoin", "nvidia", "nvda", "apple", "aapl", "tesla", "tsla", "market", "sp500", "nasdaq",
+            "share price", "price of bitcoin", "bitcoin price", "crypto price", "quote", "stock quote"
+        ],
+        "smart_home": [
+            "turn on light", "turn off light", "lights", "light", "switch", "lamp", "desk lamp", "living room light",
+            "thermostat", "ac temperature", "set thermostat", "smart home", "home assistant", "dim light",
+            "fan", "turn on fan", "turn off fan", "smart device", "iot"
+        ],
     }
 
     CHAINING_CONJUNCTIONS: list[str] = [
@@ -314,6 +348,14 @@ class ToolRouter:
                 selected_families.add("motion")
             if any(w in text_lower for w in ["open", "launch", "lock", "clipboard", "notify", "battery", "files", "calc", "terminal", "spotify"]):
                 selected_families.add("os")
+            if any(w in text_lower for w in ["weather", "forecast", "rain", "temperature"]):
+                selected_families.add("weather")
+            if any(w in text_lower for w in ["news", "headlines"]):
+                selected_families.add("news")
+            if any(w in text_lower for w in ["crypto", "bitcoin", "stock", "price"]):
+                selected_families.add("finance")
+            if any(w in text_lower for w in ["light", "lights", "lamp", "thermostat", "fan", "switch"]):
+                selected_families.add("smart_home")
 
         if not selected_families:
             return []
@@ -391,6 +433,11 @@ class PermissionManager:
             "app_name": ["app", "name", "application", "program", "command", "target", "app_name_str"],
             "title": ["summary", "header", "topic", "subject", "heading", "name"],
             "text": ["content", "data", "value", "string", "snippet", "body", "code"],
+            "location": ["city", "place", "where", "locale", "area", "address", "town", "query"],
+            "category": ["topic", "section", "type", "genre", "category_name", "feed"],
+            "symbol": ["ticker", "coin", "stock", "crypto", "asset", "company", "token", "query", "target"],
+            "entity_id": ["device", "target", "entity", "light", "switch", "lamp", "thermostat", "name", "id"],
+            "domain": ["type", "filter", "category", "scope"],
         }
 
         # Handle composite artist + title for music tools
