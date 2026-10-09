@@ -83,8 +83,16 @@ def format_situation_banner(situation: dict | None = None) -> str:
     if sched_jobs:
         job_strs = []
         for j in sched_jobs[:5]:
-            job_name = j.get("name", j.get("id", "job"))
-            j_time = j.get("next_run", j.get("time", "pending"))
+            if isinstance(j, dict):
+                job_name = j.get("name", j.get("label", j.get("id", "job")))
+                j_time = j.get("next_run", j.get("time", "pending"))
+            elif hasattr(j, "to_dict"):
+                j_d = j.to_dict()
+                job_name = j_d.get("name", j_d.get("label", j_d.get("id", "job")))
+                j_time = j_d.get("next_run", j_d.get("time", "pending"))
+            else:
+                job_name = getattr(j, "name", getattr(j, "label", getattr(j, "id", str(j))))
+                j_time = getattr(j, "next_run", getattr(j, "time", "pending"))
             job_strs.append(f"{job_name} at {j_time}")
         parts.append(f"• Active Timers & Scheduled Jobs: {', '.join(job_strs)}")
     else:
@@ -92,6 +100,11 @@ def format_situation_banner(situation: dict | None = None) -> str:
 
     # 3. Active Music Track & Volume
     music = sit.get("music_state", {})
+    if isinstance(music, object) and hasattr(music, "to_dict"):
+        music = music.to_dict()
+    elif not isinstance(music, dict):
+        music = {}
+
     if music and (
         music.get("is_playing")
         or music.get("is_paused")
@@ -111,6 +124,11 @@ def format_situation_banner(situation: dict | None = None) -> str:
 
     # 4. Laptop Battery State
     battery = sit.get("battery", {})
+    if isinstance(battery, object) and hasattr(battery, "to_dict"):
+        battery = battery.to_dict()
+    elif not isinstance(battery, dict):
+        battery = {}
+
     if battery:
         percent = battery.get("percent", "Unknown")
         plugged = "Plugged In" if battery.get("power_plugged") else "Discharging"
@@ -118,6 +136,10 @@ def format_situation_banner(situation: dict | None = None) -> str:
 
     # 5. Visual Perception Scene
     world = sit.get("world_state", {})
+    if isinstance(world, object) and hasattr(world, "to_dict"):
+        world = world.to_dict()
+    elif not isinstance(world, dict):
+        world = {}
     if world:
         people = world.get("people_count", len(world.get("people", [])))
         scene = world.get("scene", "indoor")
