@@ -210,11 +210,22 @@ class CuriosityEngine:
             full_thought = ""
             async for token in self.engine.llm.stream_chat(messages):
                 full_thought += token
-                if len(full_thought) > 120:
+                # Complete the sentence naturally upon punctuation boundary
+                if len(full_thought) >= 60 and any(p in token for p in [".", "!", "?", ".\n", "!\n", "?\n"]):
+                    break
+                # Hard safety ceiling (250 chars) only if no punctuation is produced
+                if len(full_thought) >= 250:
                     break
 
-
             cleaned_thought = full_thought.strip().replace('"', "").replace("\n", " ")
+            # Ensure the thought ends with proper sentence punctuation
+            if cleaned_thought and not cleaned_thought.endswith((".", "!", "?")):
+                # If cut off before punctuation, try to trim to last valid punctuation
+                last_punc = max(cleaned_thought.rfind("."), cleaned_thought.rfind("!"), cleaned_thought.rfind("?"))
+                if last_punc > 20:
+                    cleaned_thought = cleaned_thought[: last_punc + 1].strip()
+                else:
+                    cleaned_thought = cleaned_thought + "."
             if not cleaned_thought:
                 return
 
