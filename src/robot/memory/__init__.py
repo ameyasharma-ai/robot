@@ -1041,7 +1041,82 @@ class MemoryManager:
         """
         return await self.history.get_stats()
 
+    async def get_core_user_profile(self, user_id: str = "user") -> str:
+        """Extract and format core user profile sheet from durable memory facts."""
+        facts = await self.get_all_facts(user_id=user_id, limit=50)
+        identity_lines = ["• User Name: Ameya", "• User Role: AI Engineer & Robot Systems Creator"]
+        tech_lines = ["• Tech Stack: Python, PyTorch, C++, AsyncIO, WebSockets, Local LLMs, Web & Robotics"]
+        pref_lines = []
+        rel_lines = []
+
+        for f in facts:
+            txt = f.get("fact", f.get("memory", "")).strip()
+            if not txt:
+                continue
+            txt_lower = txt.lower()
+            if any(k in txt_lower for k in ["name", "ameya", "engineer", "developer", "creator", "built"]):
+                if not any(txt.lower() in line.lower() for line in identity_lines):
+                    identity_lines.append(f"• {txt}")
+            elif any(k in txt_lower for k in ["crush", "partner", "friend", "girlfriend", "anubha", "relationship"]):
+                if not any(txt.lower() in line.lower() for line in rel_lines):
+                    rel_lines.append(f"• {txt}")
+            elif any(k in txt_lower for k in ["like", "love", "favorite", "prefer", "music", "volume"]):
+                if not any(txt.lower() in line.lower() for line in pref_lines):
+                    pref_lines.append(f"• {txt}")
+            else:
+                if not any(txt.lower() in line.lower() for line in pref_lines):
+                    pref_lines.append(f"• {txt}")
+
+        profile_sections = ["=== USER CORE IDENTITY PROFILE ==="]
+        if identity_lines:
+            profile_sections.append("Identity & Role:\n" + "\n".join(identity_lines[:5]))
+        if rel_lines:
+            profile_sections.append("Relationships & Social Context:\n" + "\n".join(rel_lines[:5]))
+        if tech_lines:
+            profile_sections.append("Technical Profile:\n" + "\n".join(tech_lines[:5]))
+        if pref_lines:
+            profile_sections.append("Preferences & Directives:\n" + "\n".join(pref_lines[:10]))
+
+        return "\n\n".join(profile_sections)
+
     async def close(self) -> None:
         """Cleanly close database and vector store handles."""
         await self.history.close()
         await self.mem0.close()
+
+
+def compress_conversation_history(history: list[dict], max_raw_turns: int = 15) -> list[dict]:
+    """Compress older conversation turns into a compact summary block while preserving recent turns.
+
+    Args:
+        history: List of conversation turn dicts with 'role' and 'content'.
+        max_raw_turns: Maximum raw turns to keep uncompressed at the end (default 15).
+
+    Returns:
+        Compressed list of message dicts with summary prefix if total turns > max_raw_turns.
+    """
+    if not history or len(history) <= max_raw_turns:
+        return list(history)
+
+    older_turns = history[:-max_raw_turns]
+    recent_turns = history[-max_raw_turns:]
+
+    topics = []
+    for msg in older_turns:
+        role = msg.get("role", "user")
+        content = msg.get("content", "").strip()
+        if role == "user" and content and not content.startswith("["):
+            topics.append(content[:60])
+
+    summary_text = (
+        f"Prior conversation covered {len(older_turns)} turns including: "
+        + "; ".join(topics[:5])
+        + (f" and {len(topics) - 5} more topics." if len(topics) > 5 else ".")
+    )
+
+    summary_msg = {
+        "role": "system",
+        "content": f"[Executive Conversation History Summary]: {summary_text}",
+    }
+
+    return [summary_msg] + recent_turns

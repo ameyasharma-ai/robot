@@ -84,8 +84,12 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
             side = "left" if "left" in raw_act else "right"
             action_dict = {"action": act, "side": side}
 
+    # Clean out inner reasoning <thought>...</thought> blocks from reasoning models
+    cleaned = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"<thought>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+
     # Clean out ALL stage directions, bracket tags (motions, emotions), and parentheses so TTS never speaks them
-    cleaned = re.sub(r"\[[^\]]*\]", "", text)
+    cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
     # Strip any lingering unclosed or orphaned brackets e.g. [motion: or wave]
     cleaned = re.sub(r"\[\s*(?:motion|action|emotion)?:?[^\]\n]*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(?:wave|point|kick|nod|smile|happy|sad|raise_hand|stop)\s*\]", "", cleaned, flags=re.IGNORECASE)
@@ -1051,10 +1055,36 @@ class RobotEngine:
                         compacted_recent.append(turn)
                 recent = compacted_recent
 
-        # Build context
-        world_state_compact = None
+        # Collect real-time situational telemetry
+        situation = {}
+        try:
+            from robot.tools.builtins.system import get_system_battery_status
+            situation["battery"] = get_system_battery_status()
+        except Exception:
+            pass
+
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+            situation["music_state"] = MusicPlayerService.get_instance().get_status()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "scheduler") and self.scheduler:
+                situation["scheduler_jobs"] = self.scheduler.list_jobs(status="pending")
+        except Exception:
+            pass
+
         if self.perception is not None:
-            world_state_compact = self.perception.world_state.to_compact()
+            situation["world_state"] = self.perception.world_state.to_compact()
+
+        # Retrieve Core User Profile Sheet
+        user_profile = None
+        if self.memory and hasattr(self.memory, "get_core_user_profile"):
+            try:
+                user_profile = await self.memory.get_core_user_profile(user_id=ns)
+            except Exception as e:
+                logger.debug("user_profile_fetch_failed", error=str(e))
 
         # Visual query image snapshot (set only if explicit image data provided)
         image_data_url = None
@@ -1081,6 +1111,8 @@ class RobotEngine:
                 image_data_url=image_data_url,
                 tool_results=tool_results if tool_results else None,
                 high_intelligence=is_gemini,
+                situation=situation,
+                user_profile=user_profile,
             )
             estimated_tokens = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
             self.telemetry.record("CONTEXT_TOKENS", estimated_tokens)

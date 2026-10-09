@@ -50,6 +50,108 @@ def format_system_prompt(personality_prompt: str, high_intelligence: bool = Fals
     return "\n\n".join(system_parts)
 
 
+def format_situation_banner(situation: dict | None = None) -> str:
+    """Format real-time situational telemetry banner for zero-latency awareness.
+
+    Args:
+        situation: Optional dictionary containing battery, music_state,
+            scheduler_jobs, and world_state.
+
+    Returns:
+        Formatted string summarizing current system situation.
+    """
+    sit = situation or {}
+    parts = []
+
+    # 1. Local Time (IST)
+    try:
+        from datetime import datetime
+        import zoneinfo
+
+        tz_ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+        now_ist = datetime.now(tz_ist)
+        time_str = f"{now_ist.strftime('%I:%M %p IST')} ({now_ist.strftime('%A, %B %d, %Y')})"
+    except Exception:
+        from datetime import datetime
+
+        now_ist = datetime.now()
+        time_str = now_ist.strftime("%I:%M %p, %B %d, %Y")
+    parts.append(f"• Current Time (Indian Standard Time / IST): {time_str}")
+
+    # 2. Scheduler Jobs (timers, alarms, reminders)
+    sched_jobs = sit.get("scheduler_jobs", [])
+    if sched_jobs:
+        job_strs = []
+        for j in sched_jobs[:5]:
+            job_name = j.get("name", j.get("id", "job"))
+            j_time = j.get("next_run", j.get("time", "pending"))
+            job_strs.append(f"{job_name} at {j_time}")
+        parts.append(f"• Active Timers & Scheduled Jobs: {', '.join(job_strs)}")
+    else:
+        parts.append("• Active Timers & Scheduled Jobs: None")
+
+    # 3. Active Music Track & Volume
+    music = sit.get("music_state", {})
+    if music and (
+        music.get("is_playing")
+        or music.get("is_paused")
+        or music.get("current_track", "None") != "None"
+    ):
+        status = (
+            "Playing"
+            if music.get("is_playing")
+            else ("Paused" if music.get("is_paused") else "Idle")
+        )
+        vol_pct = int(music.get("volume", 0.8) * 100)
+        parts.append(
+            f"• Music Player: {status} | Track: {music.get('current_track', 'None')} | Vol: {vol_pct}%"
+        )
+    else:
+        parts.append("• Music Player: Idle")
+
+    # 4. Laptop Battery State
+    battery = sit.get("battery", {})
+    if battery:
+        percent = battery.get("percent", "Unknown")
+        plugged = "Plugged In" if battery.get("power_plugged") else "Discharging"
+        parts.append(f"• Laptop Battery: {percent}% ({plugged})")
+
+    # 5. Visual Perception Scene
+    world = sit.get("world_state", {})
+    if world:
+        people = world.get("people_count", len(world.get("people", [])))
+        scene = world.get("scene", "indoor")
+        parts.append(f"• Visual Scene: {people} person(s) present | Scene: {scene}")
+
+    return "[Real-Time Situation Telemetry Banner]:\n" + "\n".join(parts)
+
+
+def format_user_core_profile(user_profile: str | None = None) -> str:
+    """Format non-evictable User Core Profile Sheet for context injection.
+
+    Args:
+        user_profile: Explicit user profile string or default profile template.
+
+    Returns:
+        Formatted user profile sheet string.
+    """
+    if user_profile and user_profile.strip():
+        return user_profile.strip()
+
+    return (
+        "=== USER CORE IDENTITY PROFILE ===\n"
+        "Identity & Role:\n"
+        "• User Name: Ameya\n"
+        "• User Role: AI Engineer & Robot Systems Creator\n\n"
+        "Technical Profile:\n"
+        "• Stack: Python, PyTorch, C++, WebSockets, FastAPI, Local LLMs, Web & Robotics\n\n"
+        "Social Context & Relationships:\n"
+        "• Primary Relationships belong exclusively to User (refer to them as 'your crush', 'your friend')\n\n"
+        "Directives & Preferences:\n"
+        "• Direct, intelligent, highly articulate, supportive companion tone"
+    )
+
+
 class ContextEngine:
     """Dynamic context assembly with budget-aware allocation.
 
@@ -88,6 +190,8 @@ class ContextEngine:
         tool_results: list[dict] | None = None,
         image_data_url: str | None = None,
         high_intelligence: bool = False,
+        situation: dict | None = None,
+        user_profile: str | None = None,
         **kwargs,
     ) -> list[dict]:
         """Assemble the complete message list for LLM inference.
@@ -105,6 +209,8 @@ class ContextEngine:
         resolved_user = user_text or kwargs.get("user_input") or ""
         resolved_recent = recent_conversation if recent_conversation is not None else kwargs.get("history")
         resolved_memories = memories if memories is not None else kwargs.get("retrieved_memories")
+        resolved_situation = situation or kwargs.get("situation")
+        resolved_profile = user_profile or kwargs.get("user_profile")
 
         messages = []
 
@@ -112,21 +218,13 @@ class ContextEngine:
         messages.append({"role": "system", "content": format_system_prompt(resolved_system, high_intelligence=high_intelligence)})
         grounding_parts = []
 
-        # Local System Time & Date Grounding (Always present: Indian Standard Time / IST)
-        try:
-            from datetime import datetime
-            import zoneinfo
-            tz_ist = zoneinfo.ZoneInfo("Asia/Kolkata")
-            now_ist = datetime.now(tz_ist)
-        except Exception:
-            from datetime import datetime
-            now_ist = datetime.now()
+        # 2. Real-Time Situation Telemetry Banner (IST Time, Pending Jobs, Track/Vol, Battery, Scene)
+        sit_banner = format_situation_banner(resolved_situation)
+        grounding_parts.append(sit_banner)
 
-        grounding_parts.append(
-            f"[Current Local System Time (Indian Standard Time / IST)]:\n"
-            f"  Current Time: {now_ist.strftime('%I:%M %p IST')}\n"
-            f"  Current Date: {now_ist.strftime('%A, %B %d, %Y')}"
-        )
+        # 3. User Core Identity Profile Sheet (Always Present & Non-Evictable)
+        profile_sheet = format_user_core_profile(resolved_profile)
+        grounding_parts.append(profile_sheet)
 
         # Gate memories: do NOT inject irrelevant memories if user turn is an action/command
         action_patterns = [
