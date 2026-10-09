@@ -382,8 +382,36 @@ class RobotUI {
             });
         }
 
+        // Category Tab Filter for Chat System Tools
+        const catTabs = document.querySelectorAll(".cat-tab");
+        const chatChips = document.querySelectorAll(".chat-chip");
+        const countBadge = document.getElementById("chatToolsCount");
+
+        catTabs.forEach((tab) => {
+            tab.addEventListener("click", () => {
+                catTabs.forEach((t) => t.classList.remove("active"));
+                tab.classList.add("active");
+                const chosenCat = tab.getAttribute("data-cat") || "all";
+                let visibleCount = 0;
+
+                chatChips.forEach((chip) => {
+                    const chipCat = chip.getAttribute("data-cat");
+                    if (chosenCat === "all" || chipCat === chosenCat) {
+                        chip.classList.remove("hidden-by-cat");
+                        visibleCount++;
+                    } else {
+                        chip.classList.add("hidden-by-cat");
+                    }
+                });
+
+                if (countBadge) {
+                    countBadge.textContent = `${visibleCount} ACTIVE`;
+                }
+            });
+        });
+
         // Quick available tools chips — insert prefix into chat input without auto-submitting
-        document.querySelectorAll(".chat-chip").forEach((chip) => {
+        chatChips.forEach((chip) => {
             chip.addEventListener("click", () => {
                 const prefix = chip.getAttribute("data-prefix") || chip.getAttribute("data-prompt") || "";
                 if (this.chatTextarea) {

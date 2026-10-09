@@ -643,31 +643,78 @@
 
                 <!-- Chat Input Dock -->
                 <div class="chat-input-dock">
-                    <div class="chat-quick-chips">
-                        <span class="chat-chips-label"><span class="pulse-dot"></span> ACTIVE TOOLS:</span>
-                        <button class="chat-chip" id="chipWeather" data-tool="weather.forecast" data-prefix="What is the weather forecast for " title="weather.forecast: Open-Meteo live weather & multi-day forecast">⛅ Weather</button>
-                        <button class="chat-chip" id="chipNews" data-tool="news.headlines" data-prefix="Show me the latest top tech and world news headlines" title="news.headlines: Categorized live RSS news feeds">📰 News Feeds</button>
-                        <button class="chat-chip" id="chipFinance" data-tool="finance.quote" data-prefix="What is the current price and market quote for " title="finance.quote: Real-time crypto & stock market ticker">📈 Finance Quote</button>
-                        <button class="chat-chip" id="chipSmartHome" data-tool="homeassistant.control" data-prefix="Turn on the desk lamp and check living room lights" title="homeassistant.control: Home Assistant IoT lighting & climate">💡 Smart Home</button>
-                        <button class="chat-chip" id="chipSearch" data-tool="web.search" data-prefix="Search the web for: " title="web.search: DuckDuckGo live query">🔍 Web Search</button>
-                        <button class="chat-chip" id="chipWiki" data-tool="knowledge.wikipedia" data-prefix="Look up on Wikipedia: " title="knowledge.wikipedia: Encyclopedia knowledge">📚 Wikipedia</button>
-                        <button class="chat-chip" id="chipCalc" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math">🧮 Math Calc</button>
-                        <button class="chat-chip" id="chipHardware" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals">💻 Hardware</button>
-                        <button class="chat-chip" id="chipAppLaunch" data-tool="os.app_launch" data-prefix="Open application: " title="os.app_launch: Launch VS Code, Spotify, Chrome, Terminal, Files, Calc">🚀 Open App</button>
-                        <button class="chat-chip" id="chipLockScreen" data-tool="os.system_control" data-prefix="Lock workstation screen" title="os.system_control: Lock desktop session">🔒 Lock Screen</button>
-                        <button class="chat-chip" id="chipBattery" data-tool="os.system_control" data-prefix="Check battery level and power status" title="os.system_control: Hardware battery health & level">🔋 Battery</button>
-                        <button class="chat-chip" id="chipClipboard" data-tool="os.clipboard_read" data-prefix="Read what is currently in my clipboard" title="os.clipboard_read: Read system clipboard content">📋 Clipboard</button>
-                        <button class="chat-chip" id="chipNotify" data-tool="os.notify_desktop" data-prefix="Send a desktop notification saying: " title="os.notify_desktop: Native Linux popup notification">🔔 Desktop Popup</button>
-                        <button class="chat-chip" id="chipVision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene">👁️ Camera Vision</button>
-                        <button class="chat-chip" id="chipTabletop" data-tool="perception.inspect_tabletop" data-prefix="Inspect the tabletop workspace and describe the items" title="perception.inspect_tabletop: AMD iGPU VLM deep visual grounding">🔬 Tabletop VLM</button>
-                        <button class="chat-chip" id="chipMusic" data-tool="music.play" data-prefix="Play music: " title="music.play: Audio streaming deck">🎵 Play Music</button>
-                        <button class="chat-chip" id="chipImage" data-tool="image.generate" data-prefix="Generate an image of: " title="image.generate: Cyber-Studio diffusion">🎨 Generate Image</button>
-                        <button class="chat-chip" id="chipMemory" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search">🧠 Vector Memory</button>
-                        <button class="chat-chip" id="chipTimer" data-tool="timer.set" data-prefix="Set a timer for 5 minutes for " title="timer.set: SQLite-backed countdown timer">⏱️ Set Timer</button>
-                        <button class="chat-chip" id="chipAlarm" data-tool="alarm.set" data-prefix="Set an alarm for 7:30 AM for " title="alarm.set: Scheduled clock alarm">⏰ Set Alarm</button>
-                        <button class="chat-chip" id="chipReminder" data-tool="reminder.schedule" data-prefix="Remind me in 15 minutes to " title="reminder.schedule: Natural language reminder">🔔 Reminder</button>
-                        <button class="chat-chip" id="chipBriefing" data-tool="system.daily_briefing" data-prefix="Give me an executive daily briefing with system status and upcoming events." title="system.daily_briefing: Daily executive summary">☀️ Daily Briefing</button>
-                        <button class="chat-chip" id="chipStandby" data-tool="system.stop_listening" data-prefix="Stop listening and enter standby mode." title="system.stop_listening: Hands-free wake word standby">🛑 Standby Voice</button>
+                    <div class="chat-tools-dock" id="chatToolsDock">
+                        <div class="chat-tools-header">
+                            <div class="chat-tools-title">
+                                <span class="pulse-dot"></span>
+                                <span class="tools-title-text">SYSTEM TOOLS</span>
+                                <span class="chat-tools-count" id="chatToolsCount">30 ACTIVE</span>
+                            </div>
+                            <div class="chat-category-tabs" id="chatCategoryTabs">
+                                <button class="cat-tab active" data-cat="all">🌟 All</button>
+                                <button class="cat-tab" data-cat="feeds">⛅ Feeds</button>
+                                <button class="cat-tab" data-cat="smarthome">💡 Smart Home</button>
+                                <button class="cat-tab" data-cat="os">💻 OS & Apps</button>
+                                <button class="cat-tab" data-cat="schedule">⏱️ Schedule</button>
+                                <button class="cat-tab" data-cat="system">🧮 System</button>
+                                <button class="cat-tab" data-cat="vision">👁️ Vision</button>
+                                <button class="cat-tab" data-cat="media">🎵 Media</button>
+                                <button class="cat-tab" data-cat="persona">🎭 Persona</button>
+                            </div>
+                        </div>
+
+                        <div class="chat-quick-chips" id="chatQuickChips">
+                            <!-- Feeds & Online Info -->
+                            <button class="chat-chip" data-cat="feeds" data-tool="weather.forecast" data-prefix="What is the weather forecast for " title="weather.forecast: Open-Meteo live weather & multi-day forecast"><span class="chip-icon">⛅</span> Weather</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="news.headlines" data-prefix="Show me the latest top tech and world news headlines" title="news.headlines: Categorized live RSS news feeds"><span class="chip-icon">📰</span> News Feeds</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="finance.quote" data-prefix="What is the current price and market quote for " title="finance.quote: Real-time crypto & stock market ticker"><span class="chip-icon">📈</span> Finance Quote</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="knowledge.wikipedia" data-prefix="Look up on Wikipedia: " title="knowledge.wikipedia: Encyclopedia knowledge"><span class="chip-icon">📚</span> Wikipedia</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="web.search" data-prefix="Search the web for: " title="web.search: DuckDuckGo live query"><span class="chip-icon">🔍</span> Web Search</button>
+
+                            <!-- Smart Home & IoT -->
+                            <button class="chat-chip" data-cat="smarthome" data-tool="homeassistant.control" data-prefix="Turn on the desk lamp and check living room lights" title="homeassistant.control: Control smart lights and switches"><span class="chip-icon">💡</span> Smart Lights</button>
+                            <button class="chat-chip" data-cat="smarthome" data-tool="homeassistant.control" data-prefix="Set the living room thermostat temperature to 22 degrees" title="homeassistant.control: Set AC thermostat"><span class="chip-icon">🌡️</span> Thermostat</button>
+                            <button class="chat-chip" data-cat="smarthome" data-tool="homeassistant.state" data-prefix="What is the current status of the desk lamp?" title="homeassistant.state: Check live IoT state"><span class="chip-icon">⚡</span> Device State</button>
+                            <button class="chat-chip" data-cat="smarthome" data-tool="homeassistant.list_devices" data-prefix="List all smart home devices you can control" title="homeassistant.list_devices: Discovered IoT entities"><span class="chip-icon">📋</span> List Devices</button>
+
+                            <!-- OS & Workstation -->
+                            <button class="chat-chip" data-cat="os" data-tool="os.app_launch" data-prefix="Open application: " title="os.app_launch: Launch VS Code, Spotify, Chrome, Terminal, Files, Calc"><span class="chip-icon">🚀</span> Launch App</button>
+                            <button class="chat-chip" data-cat="os" data-tool="os.system_control" data-prefix="Lock workstation screen" title="os.system_control: Lock desktop session"><span class="chip-icon">🔒</span> Lock Screen</button>
+                            <button class="chat-chip" data-cat="os" data-tool="os.system_control" data-prefix="Check battery level and power status" title="os.system_control: Hardware battery health & level"><span class="chip-icon">🔋</span> Battery</button>
+                            <button class="chat-chip" data-cat="os" data-tool="os.clipboard_read" data-prefix="Read what is currently in my clipboard" title="os.clipboard_read: Read system clipboard content"><span class="chip-icon">📋</span> Read Clipboard</button>
+                            <button class="chat-chip" data-cat="os" data-tool="os.clipboard_write" data-prefix="Copy to clipboard: " title="os.clipboard_write: Write to clipboard"><span class="chip-icon">📝</span> Write Clipboard</button>
+                            <button class="chat-chip" data-cat="os" data-tool="os.notify_desktop" data-prefix="Send a desktop notification saying: " title="os.notify_desktop: Native Linux popup notification"><span class="chip-icon">🔔</span> Desktop Popup</button>
+
+                            <!-- Schedule & Time -->
+                            <button class="chat-chip" data-cat="schedule" data-tool="timer.set" data-prefix="Set a timer for 5 minutes for " title="timer.set: SQLite-backed countdown timer"><span class="chip-icon">⏱️</span> Set Timer</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="timer.list" data-prefix="What active timers do I have running?" title="timer.list: View countdown timers"><span class="chip-icon">⏳</span> Active Timers</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="alarm.set" data-prefix="Set an alarm for 7:30 AM for " title="alarm.set: Scheduled clock alarm"><span class="chip-icon">⏰</span> Set Alarm</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="reminder.schedule" data-prefix="Remind me in 15 minutes to " title="reminder.schedule: Natural language reminder"><span class="chip-icon">🔔</span> Set Reminder</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="system.daily_briefing" data-prefix="Give me an executive daily briefing with system status and upcoming events." title="system.daily_briefing: Daily executive summary"><span class="chip-icon">☀️</span> Daily Briefing</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="system.time" data-prefix="What's the current time and date?" title="system.time: World clock & date"><span class="chip-icon">🕒</span> Clock Time</button>
+
+                            <!-- System & Hardware -->
+                            <button class="chat-chip" data-cat="system" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math"><span class="chip-icon">🧮</span> Math Calc</button>
+                            <button class="chat-chip" data-cat="system" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals"><span class="chip-icon">💻</span> Hardware</button>
+                            <button class="chat-chip" data-cat="system" data-tool="system.stop_listening" data-prefix="Stop listening and enter standby mode." title="system.stop_listening: Hands-free wake word standby"><span class="chip-icon">🛑</span> Standby Voice</button>
+                            <button class="chat-chip" data-cat="system" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search"><span class="chip-icon">🧠</span> Vector Memory</button>
+
+                            <!-- Vision & Perception -->
+                            <button class="chat-chip" data-cat="vision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene"><span class="chip-icon">👁️</span> Camera Vision</button>
+                            <button class="chat-chip" data-cat="vision" data-tool="perception.inspect_tabletop" data-prefix="Inspect the tabletop workspace and describe the items" title="perception.inspect_tabletop: AMD iGPU VLM deep visual grounding"><span class="chip-icon">🔬</span> Tabletop VLM</button>
+
+                            <!-- Media & Creative -->
+                            <button class="chat-chip" data-cat="media" data-tool="music.play" data-prefix="Play music: " title="music.play: Audio streaming deck"><span class="chip-icon">🎵</span> Play Music</button>
+                            <button class="chat-chip" data-cat="media" data-tool="music.control" data-prefix="Pause the music" title="music.control: Volume & playback control"><span class="chip-icon">⏯️</span> Music Control</button>
+                            <button class="chat-chip" data-cat="media" data-tool="image.generate" data-prefix="Generate an image of: " title="image.generate: Cyber-Studio diffusion"><span class="chip-icon">🎨</span> Generate Image</button>
+
+                            <!-- Personality & Gestures -->
+                            <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Cypher" title="personality.switch: Switch to Cypher (Hacker)"><span class="chip-icon">🕶️</span> Switch Cypher</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Luna" title="personality.switch: Switch to Luna (Girlfriend)"><span class="chip-icon">💖</span> Switch Luna</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Aria" title="personality.switch: Switch to Aria (Companion)"><span class="chip-icon">✨</span> Switch Aria</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to GLaDOS" title="personality.switch: Switch to GLaDOS (Clinical AI)"><span class="chip-icon">🔬</span> Switch GLaDOS</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Wave your hand at me" title="character.execute_action: Kinematic 3D gesture"><span class="chip-icon">👋</span> Avatar Wave</button>
+                        </div>
                     </div>
 
                     <div class="chat-box-wrapper" id="chatBoxWrapper">
