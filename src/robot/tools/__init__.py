@@ -323,6 +323,11 @@ class PermissionManager:
             "expression": ["expr", "calc", "formula", "math", "equation", "calculation", "query"],
             "job_id": ["id", "job", "task_id", "jobId"],
             "preset": ["preset_name", "profile", "eq", "name"],
+            "duration_seconds": ["duration", "seconds", "sec", "secs", "time", "val", "minutes", "min", "mins"],
+            "target_time": ["time", "time_expression", "target", "when", "target_time_expr", "at", "time_str"],
+            "time_expression": ["target_time", "time", "when", "time_expr", "target", "at"],
+            "message": ["note", "text", "content", "reminder", "task", "msg", "label"],
+            "identifier": ["id", "job_id", "timer_id", "alarm_id", "reminder_id", "name", "label", "title"],
         }
 
         # Handle composite artist + title for music tools
