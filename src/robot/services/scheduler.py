@@ -612,20 +612,31 @@ class TemporalScheduler:
                 logger.warning("failed_to_emit_job_event", error=str(e))
 
         # 2. Spoken notification if engine voice pipeline is active
-        if self._engine and hasattr(self._engine, "tts") and self._engine.tts:
+        if self._engine:
             try:
                 spoken_text = ""
                 if job.job_type == "timer":
-                    spoken_text = f"Your timer for {job.label} is done."
+                    spoken_text = f"Your timer for {job.label} is done!"
                 elif job.job_type == "alarm":
-                    spoken_text = f"Alarm: {job.label}. It is now {datetime.now().strftime('%I:%M %p')}."
+                    spoken_text = f"Alarm: {job.label}! It is now {datetime.now().strftime('%I:%M %p')}."
                 elif job.job_type == "reminder":
                     spoken_text = f"Reminder: {job.label}."
                 else:
                     spoken_text = f"Alert: {job.label}."
 
-                # Send directly to TTS / speech queue if available
-                if hasattr(self._engine, "speak_text_sync"):
-                    self._engine.speak_text_sync(spoken_text)
+                print(f"\n⏰ \033[1;33m[{job.job_type.upper()} ALERT]\033[0m {spoken_text}\n")
+
+                if hasattr(self._engine, "_stream_response"):
+                    asyncio.create_task(
+                        self._engine._stream_response(
+                            f"[Scheduler alert]: {spoken_text}",
+                            time.time(),
+                            asyncio.Event(),
+                        )
+                    )
+                elif hasattr(self._engine, "_tts_queue"):
+                    interrupt = asyncio.Event()
+                    await self._engine._tts_queue.put((spoken_text, interrupt, None))
+                    await self._engine._tts_queue.put(None)
             except Exception as e:
                 logger.warning("failed_to_speak_job_alert", error=str(e))

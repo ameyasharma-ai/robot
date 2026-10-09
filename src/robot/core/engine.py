@@ -959,7 +959,13 @@ class RobotEngine:
         if user_text.startswith("[Proactive check-in]: "):
             proactive_line = user_text[len("[Proactive check-in]: ") :].strip()
             await self._tts_queue.put((proactive_line, interrupt, None))
+            await self._tts_queue.put(None)
             return proactive_line
+        if user_text.startswith("[Scheduler alert]: "):
+            alert_line = user_text[len("[Scheduler alert]: ") :].strip()
+            await self._tts_queue.put((alert_line, interrupt, None))
+            await self._tts_queue.put(None)
+            return alert_line
         if (
             hasattr(self, "wakeword")
             and self.wakeword
