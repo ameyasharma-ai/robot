@@ -1033,3 +1033,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Temporal & Scheduling Tools ---
     from robot.tools.builtins.scheduler import register_scheduler_tools
     register_scheduler_tools(engine)
+
+    # --- OS & Workspace Automation Tools ---
+    from robot.tools.builtins.system_os import register_system_os_tools
+    register_system_os_tools(engine)
+

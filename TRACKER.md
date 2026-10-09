@@ -45,6 +45,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Voice Dictation Bar & Audio Transcription** | ChatGPT-Style Speech Dictation Dock (`/api/transcribe`) | ✅ **Active** | Host Audio / Whisper STT | Web Audio MediaRecorder + 16kHz mono WAV export + real-time waveform bars + cancel/done controls. |
 | **Agent Customization & Skills Suite** | 4 Specialized Skills & Rules (`code-documentation`, `zero-import-errors`, `suggest-next-fix`, `subagent-handling`) | ✅ **Active** | Local Agent Environment | Automated docstring audits, AST/import integrity verification (`verify_imports.py`), proactive roadmap scanning (`scan_next_fixes.py`), and subagent orchestration protocol. |
 | **Temporal Scheduling & Alert Engine** | `TemporalScheduler` + SQLite + 10 Tool Suite (`timer.*`, `alarm.*`, `reminder.*`, `system.daily_briefing`) | ✅ **Active** | Core Engine / SQLite | 1Hz async background polling; relative countdowns, recurring alarms, NLP reminders, daily briefing, and audio alert chimes. |
+| **OS & Workspace Automation Tools** | `system_os.py` + 5 Tool Suite (`os.app_launch`, `os.system_control`, `os.clipboard_read`, `os.clipboard_write`, `os.notify_desktop`) | ✅ **Active** | Local OS (Linux Desktop) | Detached process launching, display/audio/battery power management, multi-tier clipboard fallbacks, native desktop notifications. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -84,6 +85,12 @@ Legend:
 - [x] **26. Image Generation Steps & Hardware Mic Disconnect**: Configured default diffusion steps to 15 (clamped to 12-20 range); wired the voice on/off dashboard button to physically pause/resume `AudioCapture.pause()` and stop ALSA/PipeWire mic hardware streaming in text-only mode.
 - [x] **30. Autonomous LLM Tool Calling & Two-Pass Output Synthesis**: Replaced rigid regex/keyword string triggers with native OpenAI-compatible function calling in `LlamaServerLLM.stream_chat`. When tool calls are generated, the engine executes tools dynamically, plays pre-warmed audio acknowledgment for long operations, appends tool outputs to message history, and performs a second-pass generation where the LLM reads and synthesizes tool outputs into fluent speech.
 - [x] **31. First-Class Camera Tool ('perception.what_do_you_see') & Audio-Synced Movement System**: Registered `perception.what_do_you_see` as a dedicated camera inspection tool returning objects, people, distance, and lighting; added tool permissions and system prompt guidance across all personalities. Synced avatar gestures to the exact millisecond of audio playback via `_tts_queue` and removed premature regex parsing on user text.
+- [x] **60. Phase 2: OS & Workspace Automation Tools (`src/robot/tools/builtins/system_os.py`)**: Implemented complete workstation automation tool suite:
+  - `os.app_launch`: Detached asynchronous process spawning (`code`, `spotify`, `chrome`, `firefox`, `terminal`, `files`, `calc`, custom binaries/URLs) without blocking Robot Core.
+  - `os.system_control`: Native workstation controls (`loginctl lock-session`, `xset dpms force off/on`, `pactl` master sink volume up/down/set/mute, `/sys/class/power_supply` battery monitoring).
+  - `os.clipboard_read` & `os.clipboard_write`: Text clipboard input/output with cascading multi-tier fallbacks (`wl-clipboard` -> `xclip` -> `xsel` -> `pyperclip` -> in-memory buffer).
+  - `os.notify_desktop`: Linux desktop notifications via `notify-send` with custom urgency levels, icons, and titles.
+  - Registered aliases in `ToolRegistry`, keywords in `ToolRouter`, parameter aliases in `PermissionManager`, and granted permissions across all personality definitions (`luna.yaml`, `neo.yaml`, `aria.yaml`, `glados.yaml`). All 132 unit tests passing 100%.
 
 ### 🟡 Medium Priority
 - [ ] **Physical Hardware Integration**:

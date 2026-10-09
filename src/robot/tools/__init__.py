@@ -103,6 +103,18 @@ class ToolRegistry:
         "cancel_reminder": "reminder.cancel",
         "daily_briefing": "system.daily_briefing",
         "briefing": "system.daily_briefing",
+        "app_launch": "os.app_launch",
+        "launch_app": "os.app_launch",
+        "open_app": "os.app_launch",
+        "system_control": "os.system_control",
+        "lock_screen": "os.system_control",
+        "clipboard_read": "os.clipboard_read",
+        "read_clipboard": "os.clipboard_read",
+        "clipboard_write": "os.clipboard_write",
+        "write_clipboard": "os.clipboard_write",
+        "notify_desktop": "os.notify_desktop",
+        "desktop_notify": "os.notify_desktop",
+        "notify": "os.notify_desktop",
     }
 
     def __init__(self) -> None:
@@ -211,6 +223,13 @@ class ToolRouter:
             "what am i holding", "what i am holding", "inspect scene", "check", "check this", "check that", "check what",
             "inspect", "look", "see", "camera", "vision", "describe scene", "describe what you see"
         ],
+        "os": [
+            "launch", "open", "start app", "open app", "launch app", "open vs code", "open spotify", "open chrome",
+            "open firefox", "open terminal", "open files", "lock screen", "lock session", "lock", "sleep display",
+            "wake display", "turn off screen", "screen off", "display sleep", "turn on screen", "screen on",
+            "battery", "battery status", "power status", "clipboard", "copy to clipboard", "read clipboard",
+            "paste clipboard", "notify", "desktop notification", "popup", "notify me", "mute audio", "unmute"
+        ],
     }
 
     CHAINING_CONJUNCTIONS: list[str] = [
@@ -254,6 +273,8 @@ class ToolRouter:
                 selected_families.add("web")
             if any(w in text_lower for w in ["wave", "gesture", "motion", "walk", "kick", "lean", "lean_in", "hand"]):
                 selected_families.add("motion")
+            if any(w in text_lower for w in ["open", "launch", "lock", "clipboard", "notify", "battery"]):
+                selected_families.add("os")
 
         if not selected_families:
             return []
@@ -326,8 +347,11 @@ class PermissionManager:
             "duration_seconds": ["duration", "seconds", "sec", "secs", "time", "val", "minutes", "min", "mins"],
             "target_time": ["time", "time_expression", "target", "when", "target_time_expr", "at", "time_str"],
             "time_expression": ["target_time", "time", "when", "time_expr", "target", "at"],
-            "message": ["note", "text", "content", "reminder", "task", "msg", "label"],
+            "message": ["note", "text", "content", "reminder", "task", "msg", "label", "body"],
             "identifier": ["id", "job_id", "timer_id", "alarm_id", "reminder_id", "name", "label", "title"],
+            "app_name": ["app", "name", "application", "program", "command", "target", "app_name_str"],
+            "title": ["summary", "header", "topic", "subject", "heading", "name"],
+            "text": ["content", "data", "value", "string", "snippet", "body", "code"],
         }
 
         # Handle composite artist + title for music tools
