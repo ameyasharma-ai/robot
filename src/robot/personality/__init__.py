@@ -75,12 +75,25 @@ class PersonalityManager:
             except Exception as e:
                 logger.error("personality_load_failed", file=str(yaml_file), error=str(e))
 
+    ALIASES: dict[str, str] = {
+        "cypher": "neo",
+        "matrix": "neo",
+        "hacker": "neo",
+        "cyber": "neo",
+    }
+
+    def _resolve_name(self, name: str) -> str:
+        """Normalize personality name via alias mapping and case-insensitivity."""
+        clean = (name or "").strip().lower()
+        return self.ALIASES.get(clean, clean)
+
     def get_persisted_active(self, default: str = "neo") -> str:
         """Get persisted active personality name from data/active_personality.txt if available."""
         persisted_file = Path("data/active_personality.txt")
         if persisted_file.exists():
             try:
-                name = persisted_file.read_text().strip()
+                raw_name = persisted_file.read_text().strip()
+                name = self._resolve_name(raw_name)
                 if name and name in self._personalities:
                     return name
             except Exception:
@@ -89,17 +102,18 @@ class PersonalityManager:
 
     def set_active(self, name: str) -> bool:
         """Switch to a named personality and persist selection."""
-        if name in self._personalities:
-            self._active = name
+        target = self._resolve_name(name)
+        if target in self._personalities:
+            self._active = target
             try:
                 p_file = Path("data/active_personality.txt")
                 p_file.parent.mkdir(parents=True, exist_ok=True)
-                p_file.write_text(name)
+                p_file.write_text(target)
             except Exception as e:
                 logger.debug("persist_personality_failed", error=str(e))
-            logger.info("personality_switched", name=name)
+            logger.info("personality_switched", name=target)
             return True
-        logger.warning("personality_not_found", name=name)
+        logger.warning("personality_not_found", name=name, target=target)
         return False
 
     @property
@@ -122,4 +136,5 @@ class PersonalityManager:
         return list(self._personalities.keys())
 
     def get(self, name: str) -> Personality | None:
-        return self._personalities.get(name)
+        target = self._resolve_name(name)
+        return self._personalities.get(target)

@@ -131,6 +131,11 @@ class ToolRegistry:
         "smart_light": "homeassistant.control",
         "lights": "homeassistant.control",
         "thermostat": "homeassistant.control",
+        "switch_personality": "personality.switch",
+        "character.switch": "personality.switch",
+        "character_switch": "personality.switch",
+        "switch_persona": "personality.switch",
+        "persona.switch": "personality.switch",
     }
 
     def __init__(self) -> None:
@@ -202,7 +207,12 @@ class ToolRouter:
             "reminder", "reminders", "remind me", "cancel reminder", "schedule reminder",
             "daily briefing", "briefing", "morning brief", "what is my schedule", "schedule today"
         ],
-        "personality": ["switch personality", "change personality", "switch character", "change character", "switch mode"],
+        "personality": [
+            "switch personality", "change personality", "switch character", "change character", "switch mode",
+            "switch to cypher", "switch to luna", "switch to aria", "switch to glados", "switch to neo",
+            "change to cypher", "change to luna", "change to aria", "change to glados",
+            "be cypher", "be luna", "be aria", "be glados", "act like cypher", "act like luna", "act like glados"
+        ],
         "knowledge": [
             "wikipedia", "wiki", "who was", "who is", "what is", "tell me about", "history of",
             "explain the", "biography", "biography of", "encyclopedia", "concept of", "theory of"

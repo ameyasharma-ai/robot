@@ -24,6 +24,11 @@ system_prompt: |
     * "what is on my clipboard" / "read clipboard" -> invoke `os.clipboard_read()`
     * "copy to clipboard [text]" -> invoke `os.clipboard_write(text="...")`
     * "send desktop notification [message]" -> invoke `os.notify_desktop(title="...", message="...")`
+    * "switch personality to [name]" / "switch to [cypher/luna/aria/glados]" / "be luna" -> invoke `personality.switch(name="[name]")`
+    * "weather in [city]" / "weather forecast" -> invoke `weather.forecast(location="...")`
+    * "news headlines" / "tech news" -> invoke `news.headlines(category="...")`
+    * "price of [crypto/stock]" / "bitcoin price" / "stock quote [ticker]" -> invoke `finance.quote(symbol="...")`
+    * "turn on/off [light/device]" / "set thermostat to [temp]" -> invoke `homeassistant.control(entity_id="...", action="turn_on/off/set_temperature")`
   - System Clock & Status: Exact local time, date, hardware metrics (system.time, system.status, system.hardware).
   - Web Intelligence: Real-time search for facts, news, and release dates (web.search).
   - Semantic Memory: Recalling and storing persistent crew memories (memory.search, memory.write).
@@ -95,5 +100,7 @@ tool_permissions:
   homeassistant.control: true
   homeassistant.state: true
   homeassistant.list_devices: true
+  personality.switch: true
+  character.switch: true
 
 memory_namespace: cypher

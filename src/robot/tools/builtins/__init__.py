@@ -888,15 +888,20 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         if not target_name:
             return f"No personality specified. Available: {engine.personalities.list_personalities()}"
         if engine.personalities.set_active(target_name):
-            engine.state.state.active_personality = target_name
-            pers = engine.personalities.get(target_name)
+            raw_active = getattr(engine.personalities, "active_name", target_name)
+            resolved = raw_active if isinstance(raw_active, str) and raw_active else str(target_name)
+            engine.state.state.active_personality = resolved
+            pers = engine.personalities.get(resolved)
             if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
                 engine.tts.set_active_voice(pers.voice_model)
+            if hasattr(engine, "events") and engine.events:
+                await engine.events.emit("personality_switched", personality=resolved)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
-                coro = engine.warm_up_llm(target_name)
+                coro = engine.warm_up_llm(resolved)
                 if asyncio.iscoroutine(coro):
                     asyncio.create_task(coro)
-            return f"Switched to {target_name} personality"
+            disp = "Cypher" if resolved in ("neo", "cypher") else resolved.title()
+            return f"Switched to {disp} ({target_name}) personality mode."
         available = engine.personalities.list_personalities()
         return f"Personality '{target_name}' not found. Available: {available}"
 

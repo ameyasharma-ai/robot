@@ -1902,6 +1902,18 @@ class RobotUI {
             this.updateVoiceUI(this.voiceEnabled);
         }
 
+        if (data.event === "personality_switched" && data.personality) {
+            const chosen = data.personality;
+            if (this.personaSelect && this.personaSelect.value !== chosen) {
+                this.personaSelect.value = chosen;
+            }
+            if (this.personaName) {
+                this.personaName.textContent = (chosen === "neo" ? "CYPHER" : chosen.toUpperCase());
+            }
+            const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+            this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
+        }
+
         if (data.event === "pipeline_updated" || data.pipeline) {
             this.updatePipelineStatus(data.pipeline);
         }
