@@ -576,12 +576,27 @@ class RobotEngine:
             pers = self.personalities.active
 
         sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
-        system_content = format_system_prompt(sys_prompt, high_intelligence=getattr(self, "high_intelligence_mode", False))
+        ns = getattr(pers, "memory_namespace", "default")
+        user_profile = None
+        mem = getattr(self, "memory", None)
+        if mem and hasattr(mem, "get_core_user_profile"):
+            try:
+                user_profile = await mem.get_core_user_profile(user_id=ns)
+            except Exception:
+                pass
 
-        warmup_messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": "hi"},
-        ]
+        ctx = getattr(self, "context", None)
+        if not ctx:
+            from robot.core.context import ContextEngine
+
+            ctx = ContextEngine()
+
+        warmup_messages = ctx.build_messages(
+            system_prompt=sys_prompt,
+            user_text="hi",
+            user_profile=user_profile,
+            high_intelligence=getattr(self, "high_intelligence_mode", False),
+        )
 
         # Pre-warm system prompt prefix together with contextual tools schema so Turn 1 hits 100% KV cache
         t0 = time.perf_counter()
@@ -589,10 +604,12 @@ class RobotEngine:
             reg = getattr(self, "tool_registry", None)
             router = getattr(self, "tool_router", None)
             tools_schema = None
-            if reg is not None and router is not None:
-                selected_warmup = router.select_tools("hi")
+            if reg is not None:
+                selected_warmup = router.select_tools("hi") if router else None
                 if selected_warmup:
                     tools_schema = reg.get_schemas(selected_warmup)
+                else:
+                    tools_schema = reg.get_schemas()
             async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
@@ -1014,9 +1031,13 @@ class RobotEngine:
             recent_turns_limit = 100
             memory_limit = 50
             deep_expansion = True
+        elif is_banter:
+            recent_turns_limit = 6
+            memory_limit = 3
+            deep_expansion = False
         else:
-            recent_turns_limit = 80
-            memory_limit = 50
+            recent_turns_limit = 15
+            memory_limit = 6
             deep_expansion = False
 
         # Retrieve relevant memories isolated by personality workspace
