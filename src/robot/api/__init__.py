@@ -666,6 +666,71 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             return {"cancelled": ok, "job_id": job_id}
         return {"cancelled": False, "error": "Image service not initialized"}
 
+    # --- Temporal Scheduler Endpoints ---
+    @app.get("/api/scheduler/jobs")
+    async def list_scheduled_jobs(job_type: str | None = None, status: str = "pending", limit: int = 50):
+        """List scheduled timers, alarms, and reminders."""
+        if hasattr(engine, "scheduler") and engine.scheduler:
+            jobs = await engine.scheduler.list_jobs(job_type=job_type, status=status, limit=limit)
+            return {"status": "success", "jobs": [j.to_dict() for j in jobs]}
+        return {"status": "error", "message": "Scheduler service not initialized"}
+
+    @app.post("/api/scheduler/timer")
+    async def create_timer(request: Request):
+        """Create a new countdown timer."""
+        data = await request.json()
+        duration = float(data.get("duration_seconds", 60))
+        label = data.get("label", "Timer")
+        if hasattr(engine, "scheduler") and engine.scheduler:
+            job = await engine.scheduler.add_timer(duration, label=label)
+            return {"status": "success", "timer": job.to_dict()}
+        return {"status": "error", "message": "Scheduler service not initialized"}
+
+    @app.post("/api/scheduler/alarm")
+    async def create_alarm(request: Request):
+        """Schedule a new clock alarm."""
+        data = await request.json()
+        target_time = data.get("target_time", "")
+        label = data.get("label", "Alarm")
+        recurring = bool(data.get("recurring", False))
+        if hasattr(engine, "scheduler") and engine.scheduler:
+            try:
+                job = await engine.scheduler.add_alarm(target_time, label=label, recurring=recurring)
+                return {"status": "success", "alarm": job.to_dict()}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "Scheduler service not initialized"}
+
+    @app.post("/api/scheduler/reminder")
+    async def create_reminder(request: Request):
+        """Schedule a new reminder."""
+        data = await request.json()
+        time_expr = data.get("time_expression", "")
+        message = data.get("message", "")
+        if hasattr(engine, "scheduler") and engine.scheduler:
+            try:
+                job = await engine.scheduler.add_reminder(time_expr, message=message)
+                return {"status": "success", "reminder": job.to_dict()}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": "Scheduler service not initialized"}
+
+    @app.delete("/api/scheduler/jobs/{job_id}")
+    async def cancel_scheduled_job(job_id: str):
+        """Cancel a scheduled timer, alarm, or reminder."""
+        if hasattr(engine, "scheduler") and engine.scheduler:
+            cancelled = await engine.scheduler.cancel_job(job_id)
+            return {"status": "success" if cancelled else "not_found", "job_id": job_id, "cancelled": cancelled}
+        return {"status": "error", "message": "Scheduler service not initialized"}
+
+    @app.get("/api/scheduler/briefing")
+    async def get_scheduler_briefing():
+        """Get executive daily briefing with system status and upcoming events."""
+        if hasattr(engine, "scheduler") and engine.scheduler:
+            briefing = await engine.scheduler.get_daily_briefing()
+            return {"status": "success", "briefing": briefing}
+        return {"status": "error", "message": "Scheduler service not initialized"}
+
     # Mount /data/images for generated image previews
     from pathlib import Path
     from fastapi.staticfiles import StaticFiles

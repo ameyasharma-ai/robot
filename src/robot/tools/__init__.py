@@ -89,6 +89,20 @@ class ToolRegistry:
         "create_image": "image.generate",
         "wikipedia": "knowledge.wikipedia",
         "wiki": "knowledge.wikipedia",
+        "set_timer": "timer.set",
+        "timer": "timer.set",
+        "list_timers": "timer.list",
+        "cancel_timer": "timer.cancel",
+        "set_alarm": "alarm.set",
+        "alarm": "alarm.set",
+        "list_alarms": "alarm.list",
+        "cancel_alarm": "alarm.cancel",
+        "set_reminder": "reminder.schedule",
+        "reminder": "reminder.schedule",
+        "list_reminders": "reminder.list",
+        "cancel_reminder": "reminder.cancel",
+        "daily_briefing": "system.daily_briefing",
+        "briefing": "system.daily_briefing",
     }
 
     def __init__(self) -> None:
@@ -153,6 +167,12 @@ class ToolRouter:
             "what time", "what's the time", "current time", "what day", "what date", "clock",
             "calculate", "calculator", "math", "sqrt", "multiply", "divide", "plus", "minus", "sum", "equation", "formula",
             "hardware", "cpu", "gpu", "vram", "ram", "memory usage", "disk", "temperature", "specs"
+        ],
+        "scheduler": [
+            "timer", "timers", "set timer", "start timer", "cancel timer", "stop timer",
+            "alarm", "alarms", "set alarm", "wake me up", "cancel alarm", "turn off alarm",
+            "reminder", "reminders", "remind me", "cancel reminder", "schedule reminder",
+            "daily briefing", "briefing", "morning brief", "what is my schedule", "schedule today"
         ],
         "personality": ["switch personality", "change personality", "switch character", "change character", "switch mode"],
         "knowledge": [

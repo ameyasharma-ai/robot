@@ -35,6 +35,7 @@ from robot.observability.models import SpanStatus
 from robot.personality import PersonalityManager
 from robot.perception import CameraCapture, PerceptionEngine
 from robot.services import HealthMonitor
+from robot.services.scheduler import TemporalScheduler
 from robot.stt import StreamingSTT, WhisperServerSTT
 from robot.telemetry import Telemetry, Timer, get_logger, setup_logging
 from robot.tools import (
@@ -222,6 +223,11 @@ class RobotEngine:
                 check_interval_s=autonomy_cfg.get("check_interval_s", 5.0),
             ),
         )
+        sched_cfg = self.config.get("scheduler", {})
+        self.scheduler = TemporalScheduler(
+            engine=self,
+            db_path=sched_cfg.get("database_path", "data/database/scheduler.db"),
+        )
 
 
     async def setup(self) -> None:
@@ -341,6 +347,9 @@ class RobotEngine:
         else:
             self.perception = None
 
+        # Temporal Scheduler persistence setup
+        await self.scheduler.setup()
+
         register_builtin_tools(self)
 
         # Expression & RGB lighting (ASUS ROG Strix)
@@ -352,6 +361,7 @@ class RobotEngine:
         # Health monitoring
         self.health.register("stt", self.stt)
         self.health.register("llm", self.llm)
+        self.health.register("scheduler", self.scheduler)
         if self.tts:
             self.health.register("tts", self.tts)
         if self.memory and self.memory.mem0:
@@ -615,6 +625,7 @@ class RobotEngine:
         # Start background image processing queue
         self.image_service.start()
         self.curiosity.start()
+        await self.scheduler.start()
 
         tasks = [
             asyncio.create_task(self._mic_loop(audio_queue)),
@@ -636,6 +647,7 @@ class RobotEngine:
         finally:
             self.curiosity.stop()
             self.image_service.stop()
+            await self.scheduler.stop()
 
             if hasattr(self, "_api_server") and self._api_server:
                 self._api_server.should_exit = True

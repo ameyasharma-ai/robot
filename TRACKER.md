@@ -44,6 +44,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Sequential Tool Chaining** | Multi-Action Tool Coordinator + Paced Pipelines | ✅ **Active** | Core Engine | Sequential execution for compound queries ("check this, then play that, then do this") without popping. |
 | **Voice Dictation Bar & Audio Transcription** | ChatGPT-Style Speech Dictation Dock (`/api/transcribe`) | ✅ **Active** | Host Audio / Whisper STT | Web Audio MediaRecorder + 16kHz mono WAV export + real-time waveform bars + cancel/done controls. |
 | **Agent Customization & Skills Suite** | 4 Specialized Skills & Rules (`code-documentation`, `zero-import-errors`, `suggest-next-fix`, `subagent-handling`) | ✅ **Active** | Local Agent Environment | Automated docstring audits, AST/import integrity verification (`verify_imports.py`), proactive roadmap scanning (`scan_next_fixes.py`), and subagent orchestration protocol. |
+| **Temporal Scheduling & Alert Engine** | `TemporalScheduler` + SQLite + 10 Tool Suite (`timer.*`, `alarm.*`, `reminder.*`, `system.daily_briefing`) | ✅ **Active** | Core Engine / SQLite | 1Hz async background polling; relative countdowns, recurring alarms, NLP reminders, daily briefing, and audio alert chimes. |
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -235,6 +236,13 @@ Legend:
   - *Dashboard Quick-Action Tools Dock*: Updated [src/robot/api/static/index.html](file:///home/ameya/robot/src/robot/api/static/index.html) with 24 active tools badge and dock chips (`web.search`, `knowledge.wikipedia`, `system.calculate`, `system.hardware`, `perception.what_do_you_see`, `perception.inspect_tabletop`, `music.play`, `image.generate`, `memory.search`, `system.stop_listening`).
   - *Preserved Audio Pipeline*: Zero interference with STT (`whisper-server` on Vulkan) and TTS (`piper` ONNX).
   - *Unit Tests*: 118 / 118 unit tests passing (100%).
+- [x] **59. Phase 1 JARVIS Blueprint: Temporal Scheduling, Alarms, Reminders & Proactive Alert Engine**:
+  - *Temporal Scheduler Service (`TemporalScheduler`)*: Implemented [src/robot/services/scheduler.py](file:///home/ameya/robot/src/robot/services/scheduler.py) with persistent SQLite storage (`data/database/scheduler.db`), supporting relative countdown timers, recurring daily alarms, NLP reminders, and a 1Hz background job evaluation loop.
+  - *10 Built-In Scheduler Tools Suite*: Created [src/robot/tools/builtins/scheduler.py](file:///home/ameya/robot/src/robot/tools/builtins/scheduler.py) registering `timer.set`, `timer.list`, `timer.cancel`, `alarm.set`, `alarm.list`, `alarm.cancel`, `reminder.schedule`, `reminder.list`, `reminder.cancel`, and `system.daily_briefing`.
+  - *Proactive Audio & WebSocket Dispatcher*: Dispatches real-time event triggers (`scheduler.job_triggered`, `timer.triggered`, `alarm.triggered`, `reminder.triggered`) across `EventBus`, WebSockets, and vocal announcements via `PiperTTS` and `AudioPlayer`.
+  - *FastAPI REST Endpoints*: Added `/api/scheduler/jobs`, `/api/scheduler/timer`, `/api/scheduler/alarm`, `/api/scheduler/reminder`, `/api/scheduler/jobs/{job_id}`, and `/api/scheduler/briefing` in [src/robot/api/__init__.py](file:///home/ameya/robot/src/robot/api/__init__.py).
+  - *Chat Dashboard UI Expansion*: Updated [src/robot/api/static/index.html](file:///home/ameya/robot/src/robot/api/static/index.html) badge to `34 TOOLS ACTIVE` and added quick-action chips for Timer, Alarm, Reminder, and Daily Briefing.
+  - *Unit & Regression Tests*: Added [tests/test_scheduler.py](file:///home/ameya/robot/tests/test_scheduler.py) with 6 comprehensive tests; verified 124 / 124 total test suite pass rate (100%) and zero import errors across 65 files.
 
 
 ### 🟢 Low Priority / Polishing
