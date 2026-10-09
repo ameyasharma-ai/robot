@@ -326,8 +326,9 @@
                     <div class="tool-monitor-strip" id="toolMonitorStrip">
                         <div class="tool-monitor-header">
                             <span class="tool-monitor-title"><span class="tool-pulse-dot"></span> TOOL RESOURCE MONITOR</span>
-                            <span class="tool-count-badge" id="toolCountBadge">16 TOOLS ACTIVE</span>
+                            <span class="tool-count-badge" id="toolCountBadge">24 TOOLS ACTIVE</span>
                         </div>
+
                         <div class="tool-stats-row">
                             <div class="tool-stat-chip">
                                 <span class="ts-lbl">ACTIVE TOOL</span>
@@ -643,13 +644,19 @@
                 <!-- Chat Input Dock -->
                 <div class="chat-input-dock">
                     <div class="chat-quick-chips">
-                        <span class="chat-chips-label"><span class="pulse-dot"></span> CURRENTLY AVAILABLE TOOLS:</span>
-                        <button class="chat-chip" id="chipSearch" data-tool="search" data-prefix="Search the web for: " title="Web Search: queries Google/DuckDuckGo live">🔍 Web Search</button>
-                        <button class="chat-chip" id="chipMusic" data-tool="music" data-prefix="Play song: " title="Music Tool: stream or play music via YouTube">🎵 Play Music</button>
-                        <button class="chat-chip" id="chipVision" data-tool="vision" data-prefix="Look through camera and describe: " title="Camera Vision: inspect video stream">👁️ Camera Vision</button>
-                        <button class="chat-chip" id="chipImage" data-tool="image" data-prefix="Generate an image of: " title="Image Studio: AI image synthesis">🎨 Generate Image</button>
-                        <button class="chat-chip" id="chipMemory" data-tool="memory" data-prefix="Check memory for: " title="Vector Memory: inspect Mem0 storage">🧠 Check Memory</button>
+                        <span class="chat-chips-label"><span class="pulse-dot"></span> ACTIVE TOOLS:</span>
+                        <button class="chat-chip" id="chipSearch" data-tool="web.search" data-prefix="Search the web for: " title="web.search: DuckDuckGo live query">🔍 Web Search</button>
+                        <button class="chat-chip" id="chipWiki" data-tool="knowledge.wikipedia" data-prefix="Look up on Wikipedia: " title="knowledge.wikipedia: Encyclopedia knowledge">📚 Wikipedia</button>
+                        <button class="chat-chip" id="chipCalc" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math">🧮 Math Calc</button>
+                        <button class="chat-chip" id="chipHardware" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals">💻 Hardware</button>
+                        <button class="chat-chip" id="chipVision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene">👁️ Camera Vision</button>
+                        <button class="chat-chip" id="chipTabletop" data-tool="perception.inspect_tabletop" data-prefix="Inspect the tabletop workspace and describe the items" title="perception.inspect_tabletop: AMD iGPU VLM deep visual grounding">🔬 Tabletop VLM</button>
+                        <button class="chat-chip" id="chipMusic" data-tool="music.play" data-prefix="Play music: " title="music.play: Audio streaming deck">🎵 Play Music</button>
+                        <button class="chat-chip" id="chipImage" data-tool="image.generate" data-prefix="Generate an image of: " title="image.generate: Cyber-Studio diffusion">🎨 Generate Image</button>
+                        <button class="chat-chip" id="chipMemory" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search">🧠 Vector Memory</button>
+                        <button class="chat-chip" id="chipStandby" data-tool="system.stop_listening" data-prefix="Stop listening and enter standby mode." title="system.stop_listening: Hands-free wake word standby">🛑 Standby Voice</button>
                     </div>
+
                     <div class="chat-box-wrapper" id="chatBoxWrapper">
                         <textarea 
                             class="chat-textarea" 

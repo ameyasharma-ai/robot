@@ -53,6 +53,11 @@ class PerceptionEngine:
         self._annotated_lock = threading.Lock()
         self._latest_annotated_frame: Optional[np.ndarray] = None
 
+        # AMD Radeon 680M iGPU VLM grounding engine
+        from robot.perception.vlm import LocalVLMGrounding
+        self.vlm = LocalVLMGrounding(enabled=True, device="amd_igpu")
+
+
     def _init_yolo(self) -> bool:
         """Initialize lightweight YOLOv8 object detector."""
         model_p = Path(self.yolo_model_path)

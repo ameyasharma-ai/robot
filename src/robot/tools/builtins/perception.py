@@ -148,3 +148,45 @@ def register_perception_tools(engine: "RobotEngine") -> None:
             family="perception",
         )
     )
+
+    async def inspect_tabletop(query: str = "Describe all items on the table", **kwargs) -> dict[str, Any]:
+        """Perform deep visual inspection of tabletop objects via AMD iGPU VLM."""
+        target_query = (query or kwargs.get("text") or kwargs.get("prompt") or kwargs.get("question") or "Describe all items on the table").strip()
+        
+        # Check perception engine and camera
+        frame = None
+        if hasattr(engine, "perception") and engine.perception and engine.perception.camera:
+            frame = engine.perception.camera.get_latest_frame()
+        
+        from robot.perception.vlm import LocalVLMGrounding
+        vlm = getattr(engine.perception, "vlm", None) if hasattr(engine, "perception") and engine.perception else None
+        if vlm is None:
+            vlm = LocalVLMGrounding(enabled=True, device="amd_igpu")
+
+        if frame is None:
+            # Fallback when physical camera is in standby or offline
+            return {
+                "summary": f"AMD iGPU VLM inspection: Tabletop camera feed is in standby mode. Query: '{target_query}'. Ensure the camera is connected and facing the workspace.",
+                "items_count": 0,
+                "items": [],
+                "device": "amd_igpu",
+            }
+
+        return vlm.inspect_frame(frame, query=target_query)
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="perception.inspect_tabletop",
+            description="Perform deep visual inspection of the tabletop, desk, or workspace using the AMD Radeon 680M iGPU VLM. Identifies fine-grained object shapes, colors, spatial positions, and items on the table. Call this when asked 'what is on the table', 'inspect the desk', 'describe what items are in front of you', or 'check the workspace'.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Specific visual question or tabletop inspection prompt", "default": "Describe all items on the table"},
+                },
+            },
+            handler=inspect_tabletop,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="perception",
+        )
+    )
+

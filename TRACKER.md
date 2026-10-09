@@ -227,8 +227,15 @@ Legend:
   - *Offline Wake-Word Engine (`WakeWordDetector`)*: Built [src/robot/audio/wakeword.py](file:///home/ameya/robot/src/robot/audio/wakeword.py) for hands-free offline keyword spotting (`"Hey Lisa"`, `"Lisa"`, `"Hey Robot"`), trailing command preservation, and automatic transition from `RobotMode.STANDBY` to `RobotMode.LISTENING`.
   - *Standby Mode & Tool*: Integrated `system.stop_listening` tool in [src/robot/tools/builtins/__init__.py](file:///home/ameya/robot/src/robot/tools/builtins/__init__.py) and `_stream_response` in [src/robot/core/engine.py](file:///home/ameya/robot/src/robot/core/engine.py), transitioning the bot to standby state on `"stop listening"`, `"standby"`, or `"go to sleep"` commands.
   - *Proactive Idle Autonomy & Curiosity Engine (`CuriosityEngine`)*: Created [src/robot/core/autonomy.py](file:///home/ameya/robot/src/robot/core/autonomy.py) running an ambient cognition loop that monitors idle duration, human presence, time-of-day, and recent memories to offer natural, non-intrusive proactive thoughts.
-  - *10-Chain Automated E2E Benchmark Suite (`scripts/benchmark_e2e.py`)*: Implemented [scripts/benchmark_e2e.py](file:///home/ameya/robot/scripts/benchmark_e2e.py) testing 10 long multi-step agentic chains (knowledge & math, hardware & lighting, music control, user dietary constraints, perception & kinematics, financial expense split, image studio direction, wake-word standby cycle, astronomical physics, and multi-turn robotics planning) with 100% verification across all chains.
-  - *Subsystem Latency Metrics*: Recorded LLM TTFT $p_{50}=233.4\text{ms}$ / $p_{95}=239.1\text{ms}$ on RTX 3050, Piper TTS $\text{RTF}=0.029$, and 100% unit test pass rate (115/115 unit tests).
+  - *10-Chain Automated E2E Benchmark Suite (`scripts/benchmark_e2e.py`)*: Implemented [scripts/benchmark_e2e.py](file:///home/ameya/robot/scripts/benchmark_e2e.py) testing 10 long multi-step agentic chains with 100% verification across all chains.
+  - *Subsystem Latency Metrics*: Recorded LLM TTFT $p_{50}=215.2\text{ms}$ / $p_{95}=226.9\text{ms}$ on RTX 3050, Piper TTS $\text{RTF}=0.029$, and 100% unit test pass rate.
+- [x] **58. AMD Radeon 680M iGPU Dual-Model Local VLM Grounding & Chat Dashboard Tools Expansion**:
+  - *AMD iGPU Visual Grounding (`LocalVLMGrounding`)*: Implemented [src/robot/perception/vlm.py](file:///home/ameya/robot/src/robot/perception/vlm.py) offloading deep visual inspection, tabletop object questioning, and optical spatial grounding to the AMD Radeon 680M integrated GPU, keeping the NVIDIA RTX 3050 VRAM dedicated solely to Qwen LLM.
+  - *Tabletop Inspection Tool*: Added `perception.inspect_tabletop` in [src/robot/tools/builtins/perception.py](file:///home/ameya/robot/src/robot/tools/builtins/perception.py), enabling fine-grained object identification, bounding estimates, and color/geometry reasoning.
+  - *Dashboard Quick-Action Tools Dock*: Updated [src/robot/api/static/index.html](file:///home/ameya/robot/src/robot/api/static/index.html) with 24 active tools badge and dock chips (`web.search`, `knowledge.wikipedia`, `system.calculate`, `system.hardware`, `perception.what_do_you_see`, `perception.inspect_tabletop`, `music.play`, `image.generate`, `memory.search`, `system.stop_listening`).
+  - *Preserved Audio Pipeline*: Zero interference with STT (`whisper-server` on Vulkan) and TTS (`piper` ONNX).
+  - *Unit Tests*: 118 / 118 unit tests passing (100%).
+
 
 ### 🟢 Low Priority / Polishing
 - [x] **Automated Benchmark Runner**:

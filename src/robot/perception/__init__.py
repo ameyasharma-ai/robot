@@ -8,11 +8,14 @@ Exports:
 
 from robot.perception.camera import CameraCapture
 from robot.perception.engine import PerceptionEngine
+from robot.perception.vlm import LocalVLMGrounding
 from robot.perception.world import DetectedPerson, WorldState
 
 __all__ = [
     "CameraCapture",
     "PerceptionEngine",
+    "LocalVLMGrounding",
     "WorldState",
     "DetectedPerson",
 ]
+
