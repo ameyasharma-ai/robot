@@ -2069,14 +2069,22 @@ class RobotUI {
 
         if (data.event === "tool_executing") {
             const toolBadge = document.getElementById("activeToolBadge");
+            const charBadge = document.getElementById("charToolBadge");
+            const toolNameStr = (data.tool || "RUNNING").toUpperCase();
             if (toolBadge) {
-                toolBadge.textContent = `TOOL: ${(data.tool || "RUNNING").toUpperCase()}`;
+                toolBadge.textContent = `TOOL: ${toolNameStr}`;
                 toolBadge.style.display = "inline-block";
                 toolBadge.style.background = "rgba(0, 242, 254, 0.2)";
                 toolBadge.style.borderColor = "var(--primary-cyan)";
             }
+            if (charBadge) {
+                charBadge.textContent = `🛠️ TOOL: ${toolNameStr}`;
+                charBadge.style.display = "inline-block";
+                charBadge.style.borderColor = "var(--primary-cyan)";
+                charBadge.style.color = "#00f2fe";
+            }
             const elToolName = document.getElementById("activeToolName");
-            if (elToolName) elToolName.textContent = (data.tool || "ACTIVE").toUpperCase();
+            if (elToolName) elToolName.textContent = toolNameStr;
             const elToolStatus = document.getElementById("lastToolStatus");
             if (elToolStatus) {
                 elToolStatus.textContent = "RUNNING";
@@ -2088,14 +2096,16 @@ class RobotUI {
 
         if (data.event === "tool_completed" || data.event === "tool_error") {
             const toolBadge = document.getElementById("activeToolBadge");
+            const charBadge = document.getElementById("charToolBadge");
             const isOk = data.event === "tool_completed";
+            const toolNameStr = (data.tool || "TOOL").toUpperCase();
             if (toolBadge) {
                 if (isOk) {
-                    toolBadge.textContent = `TOOL: DONE`;
+                    toolBadge.textContent = `TOOL: DONE (${toolNameStr})`;
                     toolBadge.style.background = "rgba(0, 245, 160, 0.2)";
                     toolBadge.style.borderColor = "var(--accent-emerald)";
                 } else {
-                    toolBadge.textContent = `TOOL: ERR`;
+                    toolBadge.textContent = `TOOL: ERR (${toolNameStr})`;
                     toolBadge.style.background = "rgba(255, 87, 87, 0.2)";
                     toolBadge.style.borderColor = "#ff5757";
                 }
@@ -2103,7 +2113,23 @@ class RobotUI {
                     if (toolBadge.textContent.includes("DONE") || toolBadge.textContent.includes("ERR")) {
                         toolBadge.style.display = "none";
                     }
-                }, 3000);
+                }, 4000);
+            }
+            if (charBadge) {
+                if (isOk) {
+                    charBadge.textContent = `🛠️ TOOL: ${toolNameStr} (DONE)`;
+                    charBadge.style.borderColor = "var(--accent-emerald)";
+                    charBadge.style.color = "var(--accent-emerald)";
+                } else {
+                    charBadge.textContent = `🛠️ TOOL: ${toolNameStr} (ERR)`;
+                    charBadge.style.borderColor = "#ff5757";
+                    charBadge.style.color = "#ff5757";
+                }
+                setTimeout(() => {
+                    if (charBadge.textContent.includes("DONE") || charBadge.textContent.includes("ERR")) {
+                        charBadge.style.display = "none";
+                    }
+                }, 4000);
             }
             const elToolStatus = document.getElementById("lastToolStatus");
             if (elToolStatus) {

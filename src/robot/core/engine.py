@@ -1071,12 +1071,14 @@ class RobotEngine:
 
         try:
             if hasattr(self, "scheduler") and self.scheduler:
-                situation["scheduler_jobs"] = self.scheduler.list_jobs(status="pending")
+                situation["scheduler_jobs"] = await self.scheduler.list_jobs(status="pending")
         except Exception:
             pass
 
+        world_state_compact = None
         if self.perception is not None:
-            situation["world_state"] = self.perception.world_state.to_compact()
+            world_state_compact = self.perception.world_state.to_compact()
+            situation["world_state"] = world_state_compact
 
         # Retrieve Core User Profile Sheet
         user_profile = None
