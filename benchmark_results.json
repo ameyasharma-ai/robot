@@ -1,0 +1,289 @@
+{
+  "timestamp": "2026-10-09 16:59:35",
+  "metrics": {
+    "llm_ttft_p50_ms": 215.21911300033025,
+    "llm_ttft_p95_ms": 226.92341769975428,
+    "tts_rtf": 0.029109954137751002
+  },
+  "chains": [
+    {
+      "id": 1,
+      "name": "Research, Math & Memory Grounding",
+      "category": "Knowledge & Calculation",
+      "duration_ms": 10633.104611000363,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Calculate mirror area",
+          "duration_ms": 4115.698675000203,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Save telescope area",
+          "duration_ms": 4552.986737000083,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Recall & Reason on stored area",
+          "duration_ms": 1821.2360960001206,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Hardware Diagnostics & Dynamic Lighting",
+      "category": "System Control",
+      "duration_ms": 14670.354410000073,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Check hardware",
+          "duration_ms": 9939.912006999748,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Set cyan lighting",
+          "duration_ms": 2663.624534000064,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Reason on lighting state",
+          "duration_ms": 1928.632946000107,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Audio & Music Player Orchestration",
+      "category": "Media Management",
+      "duration_ms": 8505.496517999745,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Music status",
+          "duration_ms": 5116.532556000038,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Set volume 75%",
+          "duration_ms": 2023.7774410002203,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Verify volume",
+          "duration_ms": 1241.4122449999923,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "User Memory & Constraint Reasoning",
+      "category": "Memory & Reasoning",
+      "duration_ms": 9463.036194999859,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Save preferences",
+          "duration_ms": 3071.995515999788,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Synthesize recipe",
+          "duration_ms": 4128.49306499993,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Verify allergy constraint",
+          "duration_ms": 2122.4262470000212,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Perception & Humanoid Motion Execution",
+      "category": "Physical & Visual",
+      "duration_ms": 9770.363332000215,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Perception scan",
+          "duration_ms": 4169.358108000324,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Wave gesture",
+          "duration_ms": 3932.715970999652,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Confirm action history",
+          "duration_ms": 1533.8504699998339,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Financial Math & Expense Breakdown",
+      "category": "Reasoning & Computation",
+      "duration_ms": 10760.67662200012,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Calculate split",
+          "duration_ms": 6732.528170000023,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Weighted split calculation",
+          "duration_ms": 3853.0814979999377,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "Image Studio Generation & Art Direction",
+      "category": "Creative & Vision",
+      "duration_ms": 10222.642205000284,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Generate image",
+          "duration_ms": 5509.809687000143,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Aesthetic reasoning",
+          "duration_ms": 4618.042749999859,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "Wake-Word Activation & Standby Lifecycle",
+      "category": "Voice & State Control",
+      "duration_ms": 9639.460981999946,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Hey Lisa wake word trigger",
+          "duration_ms": 9494.197631999668,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Stop listening command",
+          "duration_ms": 0.1791280001270934,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Re-wake Lisa",
+          "duration_ms": 0.011191999874426983,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "Astronomical Physics & Counterfactual Reasoning",
+      "category": "Science & Physics",
+      "duration_ms": 15387.128071000006,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Interstellar travel time",
+          "duration_ms": 11036.704573999941,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "100x Fusion speed",
+          "duration_ms": 4248.008273999858,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "Robotics Architecture Planning & Consistency",
+      "category": "Engineering Architecture",
+      "duration_ms": 20907.437052000205,
+      "passed": true,
+      "steps": [
+        {
+          "step": 1,
+          "prompt": "Outline 3 milestones",
+          "duration_ms": 5723.063722999996,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 2,
+          "prompt": "Add RealSense constraint",
+          "duration_ms": 8289.235911000105,
+          "passed": true,
+          "tools": []
+        },
+        {
+          "step": 3,
+          "prompt": "Verify complete architecture",
+          "duration_ms": 6715.999929000191,
+          "passed": true,
+          "tools": []
+        }
+      ]
+    }
+  ]
+}

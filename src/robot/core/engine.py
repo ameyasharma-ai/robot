@@ -20,10 +20,12 @@ from typing import Any, AsyncGenerator
 import numpy as np
 import yaml
 
-from robot.audio import AudioCapture, AudioPlayer, VoiceActivityDetector
+from robot.audio import AudioCapture, AudioPlayer, VoiceActivityDetector, WakeWordDetector
+from robot.core.autonomy import AutonomyConfig, CuriosityEngine
 from robot.core.context import ContextEngine, GROUNDING_POLICY, format_system_prompt
 from robot.core.events import EventBus, Events
 from robot.core.state import RobotMode, StateManager
+
 from robot.expression import AsusAuraLighting
 from robot.image import ImageGenerationService
 from robot.llm import ClauseChunker, LlamaServerLLM, GeminiLLM, LlamaServerManager
@@ -200,6 +202,27 @@ class RobotEngine:
         self._pending_motion: dict | None = None
         self.tool_coordinator: ToolConversationCoordinator | None = None
         self._provider_switch_lock = asyncio.Lock()
+
+        # Wake-Word & Proactive Autonomy
+        audio_cfg = self.config.get("audio", {})
+        self.wakeword = WakeWordDetector(
+            wake_words=audio_cfg.get(
+                "wake_words",
+                ["hey lisa", "lisa", "hey robot", "wake up lisa", "wake up", "hi lisa"],
+            ),
+            sample_rate=audio_cfg.get("sample_rate", 16000),
+        )
+        autonomy_cfg = self.config.get("autonomy", {})
+        self.curiosity = CuriosityEngine(
+            engine=self,
+            config=AutonomyConfig(
+                enabled=autonomy_cfg.get("enabled", True),
+                idle_threshold_s=autonomy_cfg.get("idle_threshold_s", 90.0),
+                cooldown_s=autonomy_cfg.get("cooldown_s", 180.0),
+                check_interval_s=autonomy_cfg.get("check_interval_s", 5.0),
+            ),
+        )
+
 
     async def setup(self) -> None:
         """Initialize all subsystems."""
@@ -591,6 +614,7 @@ class RobotEngine:
 
         # Start background image processing queue
         self.image_service.start()
+        self.curiosity.start()
 
         tasks = [
             asyncio.create_task(self._mic_loop(audio_queue)),
@@ -610,7 +634,9 @@ class RobotEngine:
         except (asyncio.CancelledError, KeyboardInterrupt):
             logger.info("engine_shutting_down")
         finally:
+            self.curiosity.stop()
             self.image_service.stop()
+
             if hasattr(self, "_api_server") and self._api_server:
                 self._api_server.should_exit = True
             for t in tasks:
@@ -811,13 +837,44 @@ class RobotEngine:
                                         metadata={"text": text, "latency_ms": round(stt_ms, 1)},
                                     )
                                     if not self._is_self_echo(text, is_barge_in=is_barge):
-                                        print(f"\n💬 \033[1;36m[USER]\033[0m {text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
-                                        self.telemetry.record(
-                                            "STT_FINAL_LATENCY",
-                                            stt_ms,
-                                        )
-                                        await self.events.emit("user_text", user_text=text, stt_ms=stt_ms)
-                                        await self._speech_queue.put((text, end_time))
+                                        if hasattr(self, "curiosity") and self.curiosity:
+                                            self.curiosity.notify_activity()
+
+                                        current_mode = self.state.state.mode
+                                        is_wake, matched_word, remainder = self.wakeword.is_wake_word(text)
+                                        is_standby = self.wakeword.is_standby_command(text)
+
+                                        if current_mode == RobotMode.STANDBY:
+                                            if is_wake:
+                                                print(f"\n⚡ \033[1;32m[WAKE WORD DETECTED]\033[0m Matched '{matched_word}'!")
+                                                await self.state.set_mode(RobotMode.LISTENING)
+                                                await self.events.emit(Events.WAKE_WORD_DETECTED, wake_word=matched_word, text=text)
+                                                if remainder:
+                                                    print(f"\n💬 \033[1;36m[USER]\033[0m {remainder}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
+                                                    self.telemetry.record("STT_FINAL_LATENCY", stt_ms)
+                                                    await self.events.emit("user_text", user_text=remainder, stt_ms=stt_ms)
+                                                    await self._speech_queue.put((remainder, end_time))
+                                                else:
+                                                    await self._speech_queue.put(("[Wake word acknowledge]", end_time))
+                                            else:
+                                                print(f"💤 \033[90m[STANDBY IGNORED]\033[0m {text}")
+                                                self.observability.finish_trace(status=SpanStatus.CANCELLED)
+                                        elif is_standby:
+                                            print(f"\n🛑 \033[1;33m[STANDBY REQUESTED]\033[0m {text}")
+                                            await self.state.set_mode(RobotMode.STANDBY)
+                                            await self.events.emit(Events.STANDBY, reason="user_command")
+                                            if hasattr(self, "tool_coordinator") and self.tool_coordinator:
+                                                self.tool_coordinator.reset()
+                                            await self._speech_queue.put(("[Enter standby acknowledge]", end_time))
+                                        else:
+                                            clean_text = remainder if is_wake else text
+                                            print(f"\n💬 \033[1;36m[USER]\033[0m {clean_text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
+                                            self.telemetry.record(
+                                                "STT_FINAL_LATENCY",
+                                                stt_ms,
+                                            )
+                                            await self.events.emit("user_text", user_text=clean_text, stt_ms=stt_ms)
+                                            await self._speech_queue.put((clean_text, end_time))
                                     else:
                                         print(f"🔇 \033[90m[ECHO FILTERED]\033[0m {text}")
                                         self.observability.finish_trace(status=SpanStatus.CANCELLED)
@@ -863,7 +920,8 @@ class RobotEngine:
                     metadata={"provider": getattr(self, "llm_provider_type", "local")},
                 )
 
-            await self.state.set_mode(RobotMode.IDLE)
+            if self.state.state.mode != RobotMode.STANDBY:
+                await self.state.set_mode(RobotMode.IDLE)
 
     async def _stream_response(
         self,
@@ -877,6 +935,33 @@ class RobotEngine:
         memory write/recall, etc., executes the tool BEFORE calling the LLM, and
         injects tool results into context so the model speaks grounded answers.
         """
+        # Fast system acknowledgment triggers
+        if user_text == "[Wake word acknowledge]":
+            ack = "I'm listening."
+            await self._tts_queue.put((ack, interrupt, None))
+            return ack
+        if user_text == "[Enter standby acknowledge]":
+            ack = "Entering standby mode. Say 'Hey Lisa' whenever you need me."
+            await self._tts_queue.put((ack, interrupt, None))
+            return ack
+        if user_text.startswith("[Proactive check-in]: "):
+            proactive_line = user_text[len("[Proactive check-in]: ") :].strip()
+            await self._tts_queue.put((proactive_line, interrupt, None))
+            return proactive_line
+        if (
+            hasattr(self, "wakeword")
+            and self.wakeword
+            and self.wakeword.is_standby_command(user_text)
+        ):
+            await self.state.set_mode(RobotMode.STANDBY)
+            await self.events.emit(Events.STANDBY, reason="user_command")
+            if hasattr(self, "tool_coordinator") and self.tool_coordinator:
+                self.tool_coordinator.reset()
+            ack = "Entering standby mode. Say 'Hey Lisa' whenever you need me."
+            await self._tts_queue.put((ack, interrupt, None))
+            return ack
+
+
         # Get personality
         # Restore speech volume in case it was ducked by music on a previous turn
         if self.player:

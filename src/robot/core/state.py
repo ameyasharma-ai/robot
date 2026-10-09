@@ -26,6 +26,8 @@ class RobotMode(str, Enum):
     ERROR = "error"
     SLEEPING = "sleeping"
     DEGRADED = "degraded"
+    STANDBY = "standby"
+
 
 
 @dataclass

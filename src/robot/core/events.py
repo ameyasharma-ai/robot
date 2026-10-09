@@ -87,3 +87,8 @@ class Events:
     # Character / Motion
     CHARACTER_ACTION = "character.action"
     CHARACTER_INTERRUPT = "character.interrupt"
+
+    # Wake Word & Standby
+    WAKE_WORD_DETECTED = "wakeword.detected"
+    STANDBY = "wakeword.standby"
+

@@ -1000,3 +1000,33 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             family="image",
         )
     )
+
+    # --- Standby & Voice Control Tools ---
+    async def stop_listening(**kwargs) -> str:
+        """Put the robot into standby mode waiting for the wake word."""
+        from robot.core.state import RobotMode
+        from robot.core.events import Events
+
+        if hasattr(engine, "state"):
+            await engine.state.set_mode(RobotMode.STANDBY)
+        if hasattr(engine, "events"):
+            await engine.events.emit(Events.STANDBY, reason="user_command")
+        if hasattr(engine, "coordinator") and engine.coordinator:
+            engine.coordinator.reset()
+
+        return "Entering standby mode. I will wait for you to say 'Hey Lisa' before listening again."
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="system.stop_listening",
+            description="Put the robot into standby mode and pause active listening until the wake word ('Hey Lisa') is spoken. Call this when the user says 'stop listening', 'go to sleep', 'standby', 'pause mic', or tells the robot to stop paying attention.",
+            parameters={
+                "type": "object",
+                "properties": {},
+            },
+            handler=stop_listening,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="system",
+        )
+    )
+

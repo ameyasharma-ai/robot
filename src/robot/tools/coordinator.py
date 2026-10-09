@@ -892,8 +892,14 @@ class ToolConversationCoordinator:
 
     # ─── State & Observability Helpers ──────────────────────────────────────
 
+    def reset(self) -> None:
+        """Reset the conversation coordinator state to IDLE."""
+        self._set_state(CoordinatorState.IDLE)
+        self._active_context = None
+
     def _set_state(self, state: CoordinatorState) -> None:
         self.state = state
+
         logger.debug("coordinator_state_transition", state=state.value)
         try:
             loop = asyncio.get_running_loop()
