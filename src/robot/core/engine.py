@@ -608,8 +608,10 @@ class RobotEngine:
                 selected_warmup = router.select_tools("hi") if router else None
                 if selected_warmup:
                     tools_schema = reg.get_schemas(selected_warmup)
-                else:
+                elif getattr(self, "is_gemini", False):
                     tools_schema = reg.get_schemas()
+                else:
+                    tools_schema = None
             async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
@@ -1192,8 +1194,6 @@ class RobotEngine:
             else:
                 if selected_tool_names:
                     tools_schema = self.tool_registry.get_schemas(selected_tool_names)
-                elif estimated_tokens < 3200:
-                    tools_schema = self.tool_registry.get_schemas()
                 else:
                     tools_schema = None
 
@@ -1709,8 +1709,7 @@ class RobotEngine:
                 if selected_tool_names:
                     tools = self.tool_registry.get_schemas(selected_tool_names)
                 else:
-                    est_in = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
-                    tools = self.tool_registry.get_schemas() if est_in < 3200 else None
+                    tools = None
 
         yield {
             "event": "start",

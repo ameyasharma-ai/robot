@@ -322,6 +322,40 @@ class CharacterEngine {
         }
     }
 
+    /**
+     * Dynamically update 3D WebGL lighting, pedestal glow rings, and avatar materials per persona.
+     * @param {string} personaName - Persona key: "luna", "neo", "cypher", "aria", "glados"
+     */
+    setPersonaTheme(personaName) {
+        if (!personaName) return;
+        const persona = personaName.toLowerCase();
+        this.activePersona = persona;
+
+        const themes = {
+            luna: { keyLight: 0xff3399, fillLight: 0xff66b2, ring: 0xff3399 },
+            neo: { keyLight: 0xff1744, fillLight: 0xff5252, ring: 0xff1744 },
+            cypher: { keyLight: 0xff1744, fillLight: 0xff5252, ring: 0xff1744 },
+            aria: { keyLight: 0xa855f7, fillLight: 0xc084fc, ring: 0xa855f7 },
+            glados: { keyLight: 0x00ff66, fillLight: 0x66ff99, ring: 0x00ff66 }
+        };
+        const t = themes[persona] || themes.neo;
+
+        if (!this.scene) return;
+
+        this.scene.traverse((child) => {
+            if (child.isDirectionalLight) {
+                if (child.position.x > 0) {
+                    child.color.setHex(t.keyLight);
+                } else {
+                    child.color.setHex(t.fillLight);
+                }
+            }
+            if (child.isMesh && child.material && child.material.emissive) {
+                child.material.emissive.setHex(t.ring);
+            }
+        });
+    }
+
     // ─── Semantic Action API ────────────────────────────────────────────────
 
     idle() {

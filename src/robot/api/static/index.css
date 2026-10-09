@@ -34,6 +34,98 @@
     --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
+/* ─── PERSONA DYNAMIC COLOR THEMES ───────────────────────────────────── */
+/* ─── PERSONA DYNAMIC COLOR THEMES ───────────────────────────────────── */
+
+/* 1. CYPHER / NEO — Red Hacker Theme */
+body[data-theme="neo"], body[data-theme="cypher"] {
+    --matrix-green: #ff1744;
+    --matrix-bright: #ff5252;
+    --matrix-glow: #ff1744;
+    --matrix-dark: #3a000c;
+    --matrix-emerald: #ff2a4b;
+    --primary-cyan: #ff4081;
+    --primary-blue: #ff1744;
+    --accent-emerald: #ff1744;
+    --border-card: rgba(255, 23, 68, 0.28);
+    --border-accent: rgba(255, 23, 68, 0.65);
+    --text-main: #ffe6ea;
+    --text-muted: #ff8095;
+    --text-dim: #8a1426;
+    --bg-dark: #0a0103;
+    --bg-deep: #050001;
+    --bg-card: rgba(26, 4, 10, 0.88);
+    --glow-matrix: 0 0 20px rgba(255, 23, 68, 0.5);
+    --glow-cyan: 0 0 20px rgba(255, 64, 129, 0.45);
+}
+
+/* 2. GLADOS — Aperture Cyberpunk Phosphor Green Theme */
+body[data-theme="glados"] {
+    --matrix-green: #00ff66;
+    --matrix-bright: #66ff99;
+    --matrix-glow: #00ff66;
+    --matrix-dark: #002910;
+    --matrix-emerald: #00ff66;
+    --primary-cyan: #00ffcc;
+    --primary-blue: #00ff66;
+    --accent-emerald: #00ff66;
+    --border-card: rgba(0, 255, 102, 0.28);
+    --border-accent: rgba(0, 255, 102, 0.65);
+    --text-main: #e6fff0;
+    --text-muted: #80ffb3;
+    --text-dim: #1a804d;
+    --bg-dark: #010e05;
+    --bg-deep: #000702;
+    --bg-card: rgba(4, 28, 12, 0.88);
+    --glow-matrix: 0 0 20px rgba(0, 255, 102, 0.45);
+    --glow-cyan: 0 0 20px rgba(0, 255, 204, 0.45);
+}
+
+/* 3. LUNA — Cute Hot Pink / Pastel Rose Theme */
+body[data-theme="luna"] {
+    --matrix-green: #ff3399;
+    --matrix-bright: #ff66b2;
+    --matrix-glow: #ff3399;
+    --matrix-dark: #3b0024;
+    --matrix-emerald: #ff4da6;
+    --primary-cyan: #ff80bf;
+    --primary-blue: #ff3399;
+    --accent-emerald: #ff3399;
+    --border-card: rgba(255, 51, 153, 0.28);
+    --border-accent: rgba(255, 51, 153, 0.65);
+    --text-main: #ffe6f5;
+    --text-muted: #ff99d6;
+    --text-dim: #801a59;
+    --bg-dark: #0f020b;
+    --bg-deep: #080106;
+    --bg-card: rgba(28, 6, 20, 0.88);
+    --glow-matrix: 0 0 20px rgba(255, 51, 153, 0.45);
+    --glow-cyan: 0 0 20px rgba(255, 128, 191, 0.45);
+}
+
+/* 4. ARIA — Cyberpunk Amethyst Violet Theme */
+body[data-theme="aria"] {
+    --matrix-green: #a855f7;
+    --matrix-bright: #c084fc;
+    --matrix-glow: #a855f7;
+    --matrix-dark: #27004d;
+    --matrix-emerald: #b566ff;
+    --primary-cyan: #e879f9;
+    --primary-blue: #a855f7;
+    --accent-emerald: #a855f7;
+    --border-card: rgba(168, 85, 247, 0.28);
+    --border-accent: rgba(168, 85, 247, 0.65);
+    --text-main: #f5e6ff;
+    --text-muted: #d8b4fe;
+    --text-dim: #5c1d91;
+    --bg-dark: #0b0112;
+    --bg-deep: #050009;
+    --bg-card: rgba(20, 4, 28, 0.88);
+    --glow-matrix: 0 0 20px rgba(168, 85, 247, 0.45);
+    --glow-cyan: 0 0 20px rgba(232, 121, 249, 0.45);
+}
+
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -2777,39 +2869,40 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px 8px;
-    max-height: 84px;
+    gap: 4px 6px;
+    max-height: 72px;
     overflow-y: auto;
     overflow-x: hidden;
     padding: 2px 2px;
     scrollbar-width: thin;
-    scrollbar-color: rgba(0, 255, 102, 0.25) transparent;
+    scrollbar-color: var(--matrix-green) transparent;
 }
 
 .chat-quick-chips::-webkit-scrollbar {
-    width: 4px;
+    width: 3px;
 }
 
 .chat-quick-chips::-webkit-scrollbar-thumb {
-    background: rgba(0, 255, 102, 0.3);
+    background: var(--matrix-green);
     border-radius: 4px;
 }
 
 .chat-chip {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    background: rgba(0, 255, 102, 0.06);
-    border: 1px solid rgba(0, 255, 102, 0.22);
+    gap: 4px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-card);
     color: var(--text-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
-    padding: 3.5px 9px;
-    border-radius: 7px;
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 6px;
     cursor: pointer;
     white-space: nowrap;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     user-select: none;
+    backdrop-filter: blur(4px);
 }
 
 .chat-chip.hidden-by-cat {
@@ -2818,15 +2911,16 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 
 .chip-icon {
     font-size: 11px;
-    filter: drop-shadow(0 0 2px rgba(0, 255, 102, 0.4));
+    filter: drop-shadow(0 0 3px var(--matrix-green));
 }
 
 .chat-chip:hover {
-    background: rgba(0, 255, 102, 0.22);
+    background: var(--matrix-green);
     border-color: var(--matrix-bright);
-    color: #ffffff;
-    box-shadow: 0 0 10px rgba(0, 255, 102, 0.4);
-    transform: none;
+    color: #020503;
+    font-weight: 600;
+    box-shadow: 0 0 12px var(--matrix-green);
+    transform: translateY(-1px);
 }
 
 .chat-box-wrapper {

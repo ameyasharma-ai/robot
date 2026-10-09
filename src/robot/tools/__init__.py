@@ -136,6 +136,34 @@ class ToolRegistry:
         "character_switch": "personality.switch",
         "switch_persona": "personality.switch",
         "persona.switch": "personality.switch",
+        "execute_terminal": "terminal.execute",
+        "terminal": "terminal.execute",
+        "shell": "terminal.execute",
+        "run_command": "terminal.execute",
+        "exec": "terminal.execute",
+        "git": "git.workspace_commit",
+        "git_commit": "git.workspace_commit",
+        "workspace_commit": "git.workspace_commit",
+        "run_script": "code.run_script",
+        "run_code": "code.run_script",
+        "code_runner": "code.run_script",
+        "notes": "notes.vault_search",
+        "notes_vault": "notes.vault_search",
+        "vault_search": "notes.vault_search",
+        "translate": "translation.translate",
+        "translation": "translation.translate",
+        "scrape_page": "web.scrape_page",
+        "scrape": "web.scrape_page",
+        "capture_screen": "os.capture_screen",
+        "screenshot": "os.capture_screen",
+        "screen_capture": "os.capture_screen",
+        "brightness": "os.display_brightness",
+        "display_brightness": "os.display_brightness",
+        "wifi": "network.wifi_scan",
+        "wifi_scan": "network.wifi_scan",
+        "speedtest": "network.speedtest",
+        "network_status": "network.speedtest",
+        "ping": "network.speedtest",
     }
 
     def __init__(self) -> None:
@@ -257,7 +285,10 @@ class ToolRouter:
             "vlc", "obs", "settings", "text editor", "gedit", "kate", "notepad", "lock screen", "lock session", "lock",
             "sleep display", "wake display", "turn off screen", "screen off", "display sleep", "turn on screen", "screen on",
             "battery", "battery status", "power status", "clipboard", "copy to clipboard", "read clipboard",
-            "paste clipboard", "notify", "desktop notification", "popup", "notify me", "mute audio", "unmute"
+            "paste clipboard", "notify", "desktop notification", "popup", "notify me", "mute audio", "unmute",
+            "brightness", "screen brightness", "display brightness", "display_brightness", "os.display_brightness",
+            "set brightness", "adjust brightness", "change brightness", "dim screen", "brighten screen", "brightnessctl",
+            "ddcutil", "xbacklight", "monitor brightness", "screen level"
         ],
         "weather": [
             "weather", "forecast", "temperature", "temp", "temp outside", "is it raining", "rain", "sunny",
@@ -277,6 +308,14 @@ class ToolRouter:
             "thermostat", "ac temperature", "set thermostat", "smart home", "home assistant", "dim light",
             "fan", "turn on fan", "turn off fan", "smart device", "iot"
         ],
+        "terminal": ["terminal", "bash", "shell command", "run command", "exec command", "cli", "shell", "execute terminal", "terminal access"],
+        "git": ["git", "git status", "git diff", "git commit", "stage files", "commit changes", "workspace commit"],
+        "code": ["run python", "execute python", "run script", "run code", "javascript snippet", "bash script", "code runner"],
+        "calculator": ["calculate", "calculator", "eval", "math expression", "unit conversion", "financial formula"],
+        "wikipedia": ["wikipedia", "wiki", "look up on wikipedia", "wiki summary"],
+        "notes": ["note", "notes", "markdown note", "knowledge vault", "tag note", "search notes", "notes vault", "vault search"],
+        "translation": ["translate", "translation", "translate to", "translate text", "translate from"],
+        "network": ["wifi", "wi-fi", "wifi scan", "scan wifi", "access points", "speedtest", "network speed", "bandwidth test", "ping", "internet connection"],
     }
 
     CHAINING_CONJUNCTIONS: list[str] = [
@@ -321,6 +360,13 @@ class ToolRouter:
                     if re.search(rf"\b{re.escape(kw)}\b", text_lower):
                         selected_families.add(family)
                         break
+
+        # Match explicit registered tool names or dotted names (e.g. os.display_brightness)
+        for tool_def in self._registry.get_all():
+            name_lower = tool_def.name.lower()
+            dotted = name_lower.replace("_", ".")
+            if name_lower in text_lower or dotted in text_lower or tool_def.name in text_lower:
+                selected_families.add(tool_def.family)
 
         # Context-aware follow-up resolution:
         # If user utterance is short (e.g. "files", "1", "yes", "do it", "sure", "play it"),

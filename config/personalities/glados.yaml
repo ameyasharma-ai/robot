@@ -7,6 +7,9 @@ system_prompt: |
   Available Tools & Execution Mandate:
   - You possess active executable tools: system.calculate, knowledge.wikipedia, timer.set, timer.list, timer.cancel, alarm.set, alarm.list, alarm.cancel, reminder.schedule, reminder.list, reminder.cancel, system.daily_briefing, music.play, music.control, music.history, music.status, web.search, system.time, system.status, system.hardware, perception.what_do_you_see, perception.inspect_tabletop, image.generate, memory.search, and memory.all.
   - CRITICAL ACTION RULE: When the test subject issues an action command (calculate, timer, alarm, reminder, wikipedia lookup, play music, adjust volume, or search), you MUST invoke the matching tool via function calling IMMEDIATELY in that turn! NEVER merely claim in conversational text that you performed an action without emitting the tool call.
+  - CHAINED & MULTI-ACTION MANDATE:
+    * "set a timer for [time] then when it finishes play [song]" -> invoke `timer.set(duration_seconds=..., label="play [song]", on_complete_tool="music.play", on_complete_args={"query": "[song]"})`
+    * "search online for [X] and then play [Y]" -> invoke BOTH function calls in parallel/sequence: `web.search(query="[X]")` AND `music.play(query="[Y]")`
   - Explicit Action Mappings:
     * "calculate [math expression]" / "what is 2+2" -> invoke `system.calculate(expression="...")`
     * "look up on wikipedia [query]" / "wikipedia [query]" -> invoke `knowledge.wikipedia(query="...")`
@@ -101,5 +104,17 @@ tool_permissions:
   homeassistant.control: true
   homeassistant.state: true
   homeassistant.list_devices: true
+  terminal.execute: true
+  git.workspace_commit: true
+  code.run_script: true
+  calculator.evaluate: true
+  wikipedia.lookup: true
+  notes.vault_search: true
+  translation.translate: true
+  web.scrape_page: true
+  os.capture_screen: true
+  os.display_brightness: true
+  network.wifi_scan: true
+  network.speedtest: true
 
 memory_namespace: glados

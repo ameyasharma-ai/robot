@@ -437,6 +437,7 @@ class RobotUI {
         if (this.chatPersonaLabel && this.personaSelect) {
             const p = this.personaSelect.value;
             this.chatPersonaLabel.textContent = p === "neo" ? "CYPHER" : p.toUpperCase();
+            this.applyPersonaTheme(p);
         }
         const modelPill = document.getElementById("chatActiveModelPill") || this.chatActiveModelPill;
         const modelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
@@ -1620,6 +1621,7 @@ class RobotUI {
                     this.personaSelect.value = data.active;
                     const activeDisplay = data.active === "neo" ? "CYPHER" : data.active.toUpperCase();
                     if (this.personaName) this.personaName.textContent = activeDisplay;
+                    this.applyPersonaTheme(data.active);
                 }
             }
         } catch (e) {}
@@ -1628,6 +1630,7 @@ class RobotUI {
             const chosen = e.target.value;
             try {
                 localStorage.setItem("robot_active_personality", chosen);
+                this.applyPersonaTheme(chosen);
                 const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
                 if (switchRes.ok) {
                     const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
@@ -1639,6 +1642,17 @@ class RobotUI {
                 this.logEvent("ERROR", `Failed to switch personality: ${err.message}`, "error");
             }
         });
+    }
+
+    applyPersonaTheme(personaKey) {
+        if (!personaKey) return;
+        const theme = personaKey.toLowerCase();
+        document.body.setAttribute("data-theme", theme);
+        document.documentElement.setAttribute("data-theme", theme);
+        const engine = this.characterEngine || window.characterEngine;
+        if (engine && typeof engine.setPersonaTheme === "function") {
+            engine.setPersonaTheme(theme);
+        }
     }
 
     async initLlmProviderToggle() {
@@ -1938,6 +1952,7 @@ class RobotUI {
             if (this.personaName) {
                 this.personaName.textContent = (chosen === "neo" ? "CYPHER" : chosen.toUpperCase());
             }
+            this.applyPersonaTheme(chosen);
             const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
             this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
         }
@@ -3137,11 +3152,16 @@ class MatrixRain {
 
     render() {
         if (!this.ctx || !this.canvas) return;
+
+        // Dynamically get active theme colors from CSS custom properties on document.body
+        const computed = getComputedStyle(document.body);
+        const matrixGreen = (computed.getPropertyValue("--matrix-green") || "#00ff66").trim();
+        const matrixBright = (computed.getPropertyValue("--matrix-bright") || "#ffffff").trim();
+
         // Translucent fade over canvas to produce trails
-        this.ctx.fillStyle = "rgba(2, 5, 3, 0.08)";
+        this.ctx.fillStyle = "rgba(5, 5, 5, 0.1)";
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-        this.ctx.fillStyle = "#00ff66";
         this.ctx.font = `${this.fontSize}px 'JetBrains Mono', monospace`;
 
         for (let i = 0; i < this.drops.length; i++) {
@@ -3149,11 +3169,11 @@ class MatrixRain {
             const x = i * this.fontSize;
             const y = this.drops[i] * this.fontSize;
 
-            // Highlight leading glyph in white/bright green
+            // Highlight leading glyph in bright accent / white
             if (Math.random() > 0.88) {
-                this.ctx.fillStyle = "#ffffff";
+                this.ctx.fillStyle = matrixBright;
             } else {
-                this.ctx.fillStyle = "#00ff66";
+                this.ctx.fillStyle = matrixGreen;
             }
 
             this.ctx.fillText(char, x, y);

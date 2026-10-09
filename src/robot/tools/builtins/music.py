@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -275,7 +276,6 @@ class MusicPlayerService:
             except Exception as e:
                 logger.error("local_music_playback_failed", error=str(e), file=str(matched))
 
-        import threading
         threading.Thread(target=_execute_local_playback, daemon=True).start()
 
         self._current_track = matched.stem
@@ -620,7 +620,6 @@ class MusicPlayerService:
                         except Exception as e:
                             logger.debug("cache_finalize_failed", error=str(e))
 
-            import threading
             threading.Thread(target=_stream_pump, daemon=True).start()
             return True
         except Exception as e:
@@ -733,7 +732,6 @@ class MusicPlayerService:
                 except Exception as e:
                     logger.warning("browser_music_open_failed", error=str(e))
 
-        import threading
         threading.Thread(target=_worker, daemon=True).start()
 
     def _wait_for_speech_to_finish(self, wait_speech_engine: Any, timeout: float = 14.0) -> None:
@@ -833,7 +831,6 @@ class MusicPlayerService:
                 cache_name=resolved_name,
             )
 
-        import threading
         threading.Thread(target=_execute_playback, daemon=True).start()
 
         self._current_track = resolved_name
@@ -913,7 +910,6 @@ class MusicPlayerService:
                                 cache_name=resolved_name,
                             )
 
-                    import threading
                     threading.Thread(target=_execute_spotify_premium, daemon=True).start()
 
                     self._current_track = resolved_name
@@ -945,7 +941,6 @@ class MusicPlayerService:
                 cache_name=resolved_name,
             )
 
-        import threading
         threading.Thread(target=_execute_playback, daemon=True).start()
 
         self._current_track = resolved_name
@@ -992,7 +987,6 @@ class MusicPlayerService:
                 wait_speech_engine=wait_speech_engine,
             )
 
-        import threading
         threading.Thread(target=_execute_playback, daemon=True).start()
 
         self._current_track = resolved_name

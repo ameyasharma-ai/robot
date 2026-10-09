@@ -19,19 +19,47 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
     """
 
     # 1. timer.set
-    async def timer_set(duration_seconds: int = 60, label: str = "Timer", **kwargs: Any) -> dict[str, Any]:
+    async def timer_set(
+        duration_seconds: int = 60,
+        label: str = "Timer",
+        on_complete_tool: str | None = None,
+        on_complete_args: dict[str, Any] | None = None,
+        on_complete_prompt: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """Schedule a countdown timer for a specified number of seconds."""
         eff_duration = duration_seconds or kwargs.get("duration") or kwargs.get("seconds") or kwargs.get("time") or 60
-        # If user passed a string like "5m" or "10 minutes"
         if isinstance(eff_duration, str):
             try:
                 _, _, eff_duration = parse_time_expression(eff_duration)
             except Exception:
                 eff_duration = 60
         eff_label = (label or kwargs.get("name") or kwargs.get("title") or "Timer").strip()
+
+        # Extract on_complete target tool or action
+        tool_target = on_complete_tool or kwargs.get("tool") or kwargs.get("callback_tool") or kwargs.get("action")
+        args_target = on_complete_args or kwargs.get("args") or kwargs.get("callback_args") or kwargs.get("params") or {}
+        prompt_target = on_complete_prompt or kwargs.get("prompt") or kwargs.get("command")
+
+        # Dynamic parameter inference for chained queries (e.g. 'query', 'song', 'app')
+        if not tool_target:
+            if "query" in kwargs or "song" in kwargs or "track" in kwargs or "artist" in kwargs:
+                tool_target = "music.play"
+                q = kwargs.get("query") or kwargs.get("song") or kwargs.get("track") or kwargs.get("artist")
+                args_target = {"query": str(q)}
+            elif "app_name" in kwargs or "app" in kwargs:
+                tool_target = "os.app_launch"
+                args_target = {"app_name": str(kwargs.get("app_name") or kwargs.get("app"))}
+
+        metadata: dict[str, Any] = {}
+        if tool_target:
+            metadata["on_complete_action"] = {"tool": str(tool_target), "args": args_target}
+        if prompt_target:
+            metadata["on_complete_prompt"] = str(prompt_target)
+
         if not engine.scheduler:
             return {"status": "error", "message": "Scheduler service is not initialized."}
-        job = await engine.scheduler.add_timer(float(eff_duration), label=eff_label)
+        job = await engine.scheduler.add_timer(float(eff_duration), label=eff_label, metadata=metadata)
         return {
             "status": "success",
             "message": f"Timer '{job.label}' set for {job.duration_seconds} seconds ({job.to_dict()['remaining_human']}).",
@@ -41,18 +69,26 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
     engine.tool_registry.register(
         ToolDefinition(
             name="timer.set",
-            description="Set a countdown timer for a duration in seconds with a label. Spoken triggers: 'Set a timer for 5 minutes', 'Timer 30 seconds for tea'.",
+            description="Set a countdown timer in seconds. To execute an action when timer finishes, pass on_complete_tool and on_complete_args (e.g. on_complete_tool='music.play', on_complete_args={'query': 'Juice WRLD acapella'}).",
             parameters={
                 "type": "object",
                 "properties": {
                     "duration_seconds": {
                         "type": "integer",
-                        "description": "Duration in seconds (e.g. 60 for 1 min, 300 for 5 mins, 900 for 15 mins)",
+                        "description": "Duration in seconds (e.g. 10, 60 for 1 min, 300 for 5 mins)",
                     },
                     "label": {
                         "type": "string",
-                        "description": "Short label or name describing what this timer is for (e.g. 'Tea', 'Oven', 'Focus session')",
+                        "description": "Short label describing what this timer is for (e.g. 'play Juice WRLD acapella', 'Tea', 'Oven')",
                         "default": "Timer",
+                    },
+                    "on_complete_tool": {
+                        "type": "string",
+                        "description": "Optional tool name to execute automatically when timer expires (e.g. 'music.play', 'os.app_launch')",
+                    },
+                    "on_complete_args": {
+                        "type": "object",
+                        "description": "Optional arguments dictionary for the on_complete_tool (e.g. {'query': 'Juice WRLD acapella'})",
                     },
                 },
                 "required": ["duration_seconds"],

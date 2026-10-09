@@ -640,3 +640,43 @@ class TemporalScheduler:
                     await self._engine._tts_queue.put(None)
             except Exception as e:
                 logger.warning("failed_to_speak_job_alert", error=str(e))
+
+        # 3. Autonomous On-Complete Tool Execution upon timer/job expiration
+        try:
+            on_complete = job.metadata.get("on_complete_action") or job.metadata.get("on_complete")
+            on_complete_tool = None
+            on_complete_args: dict[str, Any] = {}
+
+            if isinstance(on_complete, dict):
+                on_complete_tool = on_complete.get("tool") or on_complete.get("name")
+                on_complete_args = on_complete.get("args") or on_complete.get("parameters") or {}
+            elif isinstance(on_complete, str):
+                on_complete_tool = on_complete
+
+            # Heuristic parsing fallback if no explicit on_complete_tool was provided
+            if not on_complete_tool and job.label:
+                lbl_lower = job.label.lower().strip()
+                if "play " in lbl_lower or lbl_lower.startswith("play"):
+                    on_complete_tool = "music.play"
+                    song_q = re.sub(r"^(?:then\s+|when\s+timer\s+finishes\s+)?play\s+", "", job.label, flags=re.IGNORECASE).strip()
+                    on_complete_args = {"query": song_q}
+                elif "open " in lbl_lower or "launch " in lbl_lower:
+                    on_complete_tool = "os.app_launch"
+                    app_name = re.sub(r"^(?:open|launch)\s+", "", job.label, flags=re.IGNORECASE).strip()
+                    on_complete_args = {"app_name": app_name}
+                elif "search " in lbl_lower:
+                    on_complete_tool = "web.search"
+                    search_q = re.sub(r"^(?:search\s+for\s+|search\s+online\s+for\s+|search\s+)", "", job.label, flags=re.IGNORECASE).strip()
+                    on_complete_args = {"query": search_q}
+
+            if on_complete_tool and self._engine and hasattr(self._engine, "tool_registry"):
+                tool_def = self._engine.tool_registry.get(on_complete_tool)
+                if tool_def and tool_def.handler:
+                    logger.info("executing_scheduler_on_complete_tool", tool=on_complete_tool, args=on_complete_args)
+                    print(f"\n⚡ \033[1;32m[SCHEDULER AUTONOMOUS EXECUTION]\033[0m {on_complete_tool}({on_complete_args})\n")
+                    res = await tool_def.handler(**on_complete_args)
+                    if self._engine and hasattr(self._engine, "events"):
+                        await self._engine.events.emit("tool_completed", name=on_complete_tool, result=res)
+        except Exception as e:
+            logger.warning("failed_scheduler_on_complete_execution", error=str(e))
+

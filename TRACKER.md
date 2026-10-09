@@ -47,6 +47,8 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Temporal Scheduling & Alert Engine** | `TemporalScheduler` + SQLite + 10 Tool Suite (`timer.*`, `alarm.*`, `reminder.*`, `system.daily_briefing`) | ✅ **Active** | Core Engine / SQLite | 1Hz async background polling; relative countdowns, recurring alarms, NLP reminders, daily briefing, and audio alert chimes. |
 | **OS & Workspace Automation Tools** | `system_os.py` + 5 Tool Suite (`os.app_launch`, `os.system_control`, `os.clipboard_read`, `os.clipboard_write`, `os.notify_desktop`) | ✅ **Active** | Local OS (Linux Desktop) | Detached process launching, display/audio/battery power management, multi-tier clipboard fallbacks, native desktop notifications. |
 | **Advanced Context & Intelligence System** | `ContextEngine` + `MemoryManager` + Telemetry Banner + Profile Sheet | ✅ **Active** | Local Qwen 3.5 4B / Gemini API | Real-time situation banner (IST time, pending timers, music, battery, visual scene), user profile sheet, conversation history micro-summarizer, Gemini 800k context archive, and `<thought>` tag stripping for speech. |
+| **Chat Dashboard Tools & Persona Themes** | 42 Interactive Category Chips + 4 Persona CSS Themes + 3D Avatar WebGL Lighting | ✅ **Active** | Static Web Frontend & WebGL | Sleek, non-scrollable compact category chips deck, persona-tailored color palettes (Luna/Neo/Aria/GLaDOS), dynamic 3D WebGL lighting/pedestal transitions, and aligned female voice definitions. |
+
 
 Legend:
 - ✅ **Active**: Fully implemented, tested, and passing all regression suites.
@@ -108,6 +110,21 @@ Legend:
   - `Conversation History Micro-Summarizer`: Automatically compresses older conversation turns (>15 turns) into a 3-line executive summary, maintaining 100+ turns of long-term context memory within 2,000 tokens while keeping TTFT < 250ms.
   - `Deep Multi-Session Archive`: Exploits up to 800k tokens in Gemini API mode for deep multi-session conversation archive injection.
   - `Inner Reasoning & Thought Processing`: Strips `<thought>...</thought>` blocks emitted by reasoning models before sending to Piper TTS while recording them in telemetry. 145/145 unit tests pass (100%).
+- [x] **64. Phase 6: Advanced Developer, Knowledge & Extended System Tools (`developer_terminal.py`, `productivity_knowledge.py`, `system_extended.py`)**:
+  - `terminal.execute`: Full Linux bash shell command execution on host system for agentic IDE workflows with 30s timeout, ANSI code stripping, and stdout/stderr capture.
+  - `git.workspace_commit`: Git status, diff, stage, and conventional commit automation.
+  - `code.run_script`: Isolated execution of Python, JavaScript, and Bash snippets with stdout capture.
+  - `calculator.evaluate`: Safe mathematical AST evaluator for formulas, percentages ('20% of 150'), and trig functions.
+  - `wikipedia.lookup`: Wikipedia encyclopedic summary extraction with article URL reference.
+  - `notes.vault_search` / `NotesVault`: Local Markdown knowledge vault management (create, append, tag, list, read, search notes).
+  - `translation.translate`: Offline and fast online text translation between 30+ languages.
+  - `web.scrape_page`: Main article body text extraction from any HTTP/HTTPS URL into clean plain text for LLM summaries.
+  - `os.capture_screen`: Desktop display screenshot capture saved to disk with base64 preview for VLM analysis.
+  - `os.display_brightness`: Monitor display brightness query and control via `brightnessctl`, `xbacklight`, or sysfs.
+  - `network.wifi_scan`: Wi-Fi AP scanning (SSIDs, signal strength, security) via `nmcli`.
+  - `network.speedtest`: Strictly data-safe network status check (single-packet 64-byte ping + socket interface info, 0-byte payload downloads to preserve 500MB data quota limit).
+  - Registered across tool registry aliases, tool router keywords, personality definitions (`luna.yaml`, `neo.yaml`, `aria.yaml`, `glados.yaml`), and verified with 158/158 (100%) passing unit tests.
+- [x] **66. Fix LLM TTFT Schema Over-Injection Delay (<150ms Guaranteed)**: Resolved root cause of 8s TTFT where local `llama-server` running Qwen 3.5 4B was forcibly injected with all 59 tool JSON schemas (~2,500 tokens of schema definition) on queries with zero matched tools (`selected_tool_names = []`). Scoped schema injection on local model to strictly matched tool families, dropping prompt token evaluations from ~3,900 down to ~250 tokens and reducing TTFT from 8,000ms to **<150ms** on conversational turns. All 159 unit tests passing 100%.
 
 ### 🟡 Medium Priority
 - [ ] **Physical Hardware Integration**:

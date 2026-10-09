@@ -327,7 +327,7 @@
                     <div class="tool-monitor-strip" id="toolMonitorStrip">
                         <div class="tool-monitor-header">
                             <span class="tool-monitor-title"><span class="tool-pulse-dot"></span> TOOL RESOURCE MONITOR</span>
-                            <span class="tool-count-badge" id="toolCountBadge">39 TOOLS ACTIVE</span>
+                            <span class="tool-count-badge" id="toolCountBadge">42 TOOLS ACTIVE</span>
                         </div>
 
                         <div class="tool-stats-row">
@@ -649,7 +649,7 @@
                             <div class="chat-tools-title">
                                 <span class="pulse-dot"></span>
                                 <span class="tools-title-text">SYSTEM TOOLS</span>
-                                <span class="chat-tools-count" id="chatToolsCount">30 ACTIVE</span>
+                                <span class="chat-tools-count" id="chatToolsCount">42 ACTIVE</span>
                             </div>
                             <div class="chat-category-tabs" id="chatCategoryTabs">
                                 <button class="cat-tab active" data-cat="all">🌟 All</button>
@@ -670,6 +670,9 @@
                             <button class="chat-chip" data-cat="feeds" data-tool="news.headlines" data-prefix="Show me the latest top tech and world news headlines" title="news.headlines: Categorized live RSS news feeds"><span class="chip-icon">📰</span> News Feeds</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="finance.quote" data-prefix="What is the current price and market quote for " title="finance.quote: Real-time crypto & stock market ticker"><span class="chip-icon">📈</span> Finance Quote</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="knowledge.wikipedia" data-prefix="Look up on Wikipedia: " title="knowledge.wikipedia: Encyclopedia knowledge"><span class="chip-icon">📚</span> Wikipedia</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="wikipedia.lookup" data-prefix="Search Wikipedia summary for: " title="wikipedia.lookup: Fast factual article lookup"><span class="chip-icon">📖</span> Wiki Summary</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="notes.vault_search" data-prefix="Search knowledge vault notes for: " title="notes.vault_search: Local Markdown vault search"><span class="chip-icon">📓</span> Vault Search</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="web.scrape_page" data-prefix="Scrape and summarize webpage URL: " title="web.scrape_page: Webpage main content extractor"><span class="chip-icon">📄</span> Scrape Web</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="web.search" data-prefix="Search the web for: " title="web.search: DuckDuckGo live query"><span class="chip-icon">🔍</span> Web Search</button>
 
                             <!-- Smart Home & IoT -->
@@ -679,9 +682,14 @@
                             <button class="chat-chip" data-cat="smarthome" data-tool="homeassistant.list_devices" data-prefix="List all smart home devices you can control" title="homeassistant.list_devices: Discovered IoT entities"><span class="chip-icon">📋</span> List Devices</button>
 
                             <!-- OS & Workstation -->
+                            <button class="chat-chip" data-cat="os" data-tool="terminal.execute" data-prefix="Execute terminal command: " title="terminal.execute: Run shell commands"><span class="chip-icon">🖥️</span> Terminal</button>
+                            <button class="chat-chip" data-cat="os" data-tool="git.workspace_commit" data-prefix="Check git status and commit workspace changes with message: " title="git.workspace_commit: Git status & auto-commit"><span class="chip-icon">🔀</span> Git Commit</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.app_launch" data-prefix="Open application: " title="os.app_launch: Launch VS Code, Spotify, Chrome, Terminal, Files, Calc"><span class="chip-icon">🚀</span> Launch App</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.system_control" data-prefix="Lock workstation screen" title="os.system_control: Lock desktop session"><span class="chip-icon">🔒</span> Lock Screen</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.system_control" data-prefix="Check battery level and power status" title="os.system_control: Hardware battery health & level"><span class="chip-icon">🔋</span> Battery</button>
+                            <button class="chat-chip" data-cat="os" data-tool="os.display_brightness" data-prefix="Set display brightness to 80%" title="os.display_brightness: Display brightness control"><span class="chip-icon">🔆</span> Brightness</button>
+                            <button class="chat-chip" data-cat="os" data-tool="network.wifi_scan" data-prefix="Scan available Wi-Fi networks" title="network.wifi_scan: Wi-Fi access point scanner"><span class="chip-icon">📶</span> Wi-Fi Scan</button>
+                            <button class="chat-chip" data-cat="os" data-tool="network.speedtest" data-prefix="Run internet speed test" title="network.speedtest: Bandwidth & latency check"><span class="chip-icon">⚡</span> Speedtest</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.clipboard_read" data-prefix="Read what is currently in my clipboard" title="os.clipboard_read: Read system clipboard content"><span class="chip-icon">📋</span> Read Clipboard</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.clipboard_write" data-prefix="Copy to clipboard: " title="os.clipboard_write: Write to clipboard"><span class="chip-icon">📝</span> Write Clipboard</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.notify_desktop" data-prefix="Send a desktop notification saying: " title="os.notify_desktop: Native Linux popup notification"><span class="chip-icon">🔔</span> Desktop Popup</button>
@@ -695,12 +703,16 @@
                             <button class="chat-chip" data-cat="schedule" data-tool="system.time" data-prefix="What's the current time and date?" title="system.time: World clock & date"><span class="chip-icon">🕒</span> Clock Time</button>
 
                             <!-- System & Hardware -->
+                            <button class="chat-chip" data-cat="system" data-tool="code.run_script" data-prefix="Run Python script snippet: " title="code.run_script: Sandboxed script execution"><span class="chip-icon">💻</span> Run Script</button>
+                            <button class="chat-chip" data-cat="system" data-tool="calculator.evaluate" data-prefix="Evaluate formula: " title="calculator.evaluate: Complex math & unit conversions"><span class="chip-icon">🧮</span> Evaluator</button>
+                            <button class="chat-chip" data-cat="system" data-tool="translation.translate" data-prefix="Translate text to Spanish: " title="translation.translate: Offline multi-lingual translation"><span class="chip-icon">🌐</span> Translate</button>
                             <button class="chat-chip" data-cat="system" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math"><span class="chip-icon">🧮</span> Math Calc</button>
                             <button class="chat-chip" data-cat="system" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals"><span class="chip-icon">💻</span> Hardware</button>
                             <button class="chat-chip" data-cat="system" data-tool="system.stop_listening" data-prefix="Stop listening and enter standby mode." title="system.stop_listening: Hands-free wake word standby"><span class="chip-icon">🛑</span> Standby Voice</button>
                             <button class="chat-chip" data-cat="system" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search"><span class="chip-icon">🧠</span> Vector Memory</button>
 
                             <!-- Vision & Perception -->
+                            <button class="chat-chip" data-cat="vision" data-tool="os.capture_screen" data-prefix="Capture screen and describe active windows" title="os.capture_screen: Instant screen VLM analysis"><span class="chip-icon">📸</span> Screen Cap</button>
                             <button class="chat-chip" data-cat="vision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene"><span class="chip-icon">👁️</span> Camera Vision</button>
                             <button class="chat-chip" data-cat="vision" data-tool="perception.inspect_tabletop" data-prefix="Inspect the tabletop workspace and describe the items" title="perception.inspect_tabletop: AMD iGPU VLM deep visual grounding"><span class="chip-icon">🔬</span> Tabletop VLM</button>
 

@@ -646,7 +646,9 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     async def music_play(query: str | None = None, source: str = "ytdlp", **kwargs) -> dict:
         raw_q = (query or kwargs.get("song") or kwargs.get("track") or kwargs.get("title") or
                  kwargs.get("song_name") or kwargs.get("track_name") or kwargs.get("name") or
-                 kwargs.get("youtube") or kwargs.get("url") or kwargs.get("q") or kwargs.get("search") or "").strip()
+                 kwargs.get("youtube") or kwargs.get("url") or kwargs.get("q") or kwargs.get("search") or
+                 kwargs.get("search_query") or kwargs.get("topic") or kwargs.get("text") or kwargs.get("value") or
+                 kwargs.get("input") or kwargs.get("prompt") or "").strip()
 
         # Handle composite artist + song
         artist = kwargs.get("artist")
@@ -655,7 +657,14 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         elif artist and str(artist).lower() not in raw_q.lower():
             raw_q = f"{artist} {raw_q}".strip()
 
-        # Fallback if no query provided
+        # Fallback scan across all kwargs for any string query parameter
+        if not raw_q:
+            for k, v in kwargs.items():
+                if isinstance(v, str) and v.strip() and k.lower() not in {"source", "src", "platform", "provider", "ytdlp", "spotify"}:
+                    raw_q = v.strip()
+                    break
+
+        # Fallback if no query provided: check if paused or replay available
         if not raw_q:
             st = music_service.get_status()
             if st.get("is_paused"):
@@ -1050,5 +1059,18 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Home Assistant & IoT Smart Home Tools ---
     from robot.tools.builtins.smart_home import register_smart_home_tools
     register_smart_home_tools(engine)
+
+    # --- Developer & Terminal Tools ---
+    from robot.tools.builtins.developer_terminal import register_developer_terminal_tools
+    register_developer_terminal_tools(engine)
+
+    # --- Productivity & Knowledge Vault Tools ---
+    from robot.tools.builtins.productivity_knowledge import register_productivity_knowledge_tools
+    register_productivity_knowledge_tools(engine)
+
+    # --- Extended System & Network Tools ---
+    from robot.tools.builtins.system_extended import register_system_extended_tools
+    register_system_extended_tools(engine)
+
 
 

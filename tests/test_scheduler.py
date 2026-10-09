@@ -207,3 +207,46 @@ async def test_scheduler_builtin_tools() -> None:
         briefing_res = await run_tool("system.daily_briefing", {})
         assert briefing_res["status"] == "success"
         assert "current_time" in briefing_res
+
+
+@pytest.mark.asyncio
+async def test_scheduler_on_complete_autonomous_tool_execution() -> None:
+    """Test that expired timers automatically trigger their on_complete callback tools."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_on_complete.db"
+        registry = ToolRegistry()
+        mock_engine = MagicMock()
+        mock_engine.tool_registry = registry
+        mock_engine.events = EventBus()
+
+        mock_music_handler = AsyncMock(return_value={"status": "playing", "song": "Juice WRLD acapella"})
+        from robot.tools import ToolDefinition, PermissionLevel
+        registry.register(
+            ToolDefinition(
+                name="music.play",
+                description="Play music track",
+                parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+                handler=mock_music_handler,
+                permission_level=PermissionLevel.HARMLESS_LOCAL,
+                family="music",
+            )
+        )
+
+        scheduler = TemporalScheduler(engine=mock_engine, db_path=str(db_path))
+        await scheduler.setup()
+        mock_engine.scheduler = scheduler
+        register_scheduler_tools(mock_engine)
+
+        # Add 0.1s timer with on_complete_tool
+        job = await scheduler.add_timer(
+            0.1,
+            label="play Juice WRLD acapella",
+            metadata={"on_complete_action": {"tool": "music.play", "args": {"query": "Juice WRLD acapella"}}},
+        )
+
+        # Execute trigger_job directly simulating loop
+        await scheduler._trigger_job(job)
+
+        # Verify music.play handler was executed automatically
+        mock_music_handler.assert_called_once_with(query="Juice WRLD acapella")
+
