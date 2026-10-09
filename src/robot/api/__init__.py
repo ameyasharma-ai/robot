@@ -160,6 +160,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         prov = getattr(engine, "llm_provider_type", "local")
         if prov in ("llama-server", "local"):
             prov = "local"
+        is_gemini = prov == "gemini"
         from robot.llm import LlamaServerManager
         llama_running = LlamaServerManager.is_running()
         local_ctx = int(getattr(engine, "config", {}).get("llm", {}).get("context_window", 16384)) if hasattr(engine, "config") else 16384

@@ -438,7 +438,7 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
                 "required": ["app_name"],
             },
             handler=app_launch,
-            permission_level=PermissionLevel.ENVIRONMENT,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="os",
         )
     )
@@ -472,7 +472,7 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
                 "required": ["action"],
             },
             handler=system_control,
-            permission_level=PermissionLevel.ENVIRONMENT,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="os",
         )
     )
