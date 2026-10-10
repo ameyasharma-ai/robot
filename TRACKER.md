@@ -59,7 +59,49 @@ Legend:
 
 ## 3. Active ToDos (Work In Progress & Prioritized Backlog)
 
-### 🔴 High Priority (Immediate Execution Plan)
+### 🚀 Version 2 (V2) 12-Day Master Sprint: Stability, Reliability & Intelligence
+*Full detailed day-by-day roadmap documented in [v2_12_day_master_plan.md](file:///home/ameya/.gemini/antigravity-ide/brain/bcef317a-8a0c-471b-abf8-bd8899afc3ea/v2_12_day_master_plan.md)*
+
+- [x] **Day 1: System Baseline, Hardware Resilience & Process Watchdog**:
+  - Implemented self-healing `CameraCapture` auto-reconnect loop with exponential backoff (1s -> 2s -> 4s -> 8s) and stream dropout detection.
+  - Implemented physical microcontroller `SerialBridge` (`serial_bridge.py`) with 20Hz heartbeat, joint limits, torque stall protection, and automatic software emulation fallback.
+  - Implemented centralized `ProcessSupervisor` (`supervisor.py`) with memory leak monitoring (RSS < 2.5GB CPU, < 3.8GB VRAM) and graceful signal trap shutdown. All 164 unit tests passing 100%.
+- [ ] **Day 2: Tool Suite Hardening & Zero-Failure Parameter Normalization**:
+  - Implement `@harden_tool_inputs` decorator across all 59 tools to automatically resolve parameter aliases and types.
+  - Implement multi-driver fallbacks for brightness (brightnessctl -> sysfs -> xrandr -> ddcutil), audio volume, and network diagnostics.
+- [ ] **Day 3: Ultra-Low Latency Pipeline (<450ms E2E Audio Guarantee)**:
+  - Tune Silero VAD pause threshold to adaptive dynamic silence (120ms-180ms).
+  - Enforce minute-level timestamp discretization (`YYYY-MM-DD HH:MM`) for 100% byte-invariant KV cache hit rates (<80ms prompt eval).
+  - Implement eager Piper TTS clause streaming with pre-buffered opening filler phrases (<50ms audio delivery).
+- [ ] **Day 4: Deep Autonomous Tool Chaining & Parallel Multi-Tool Coordinator**:
+  - Multi-tool DAG scheduler executing independent tools in parallel (`asyncio.gather`) and dependent tools sequentially.
+  - Intelligent holding speech suppression for local sub-50ms tools, reserving holding voice exclusively for network-bound tasks (>300ms).
+- [ ] **Day 5: Cognitive Architecture & Proactive Intelligence Engine**:
+  - Proactive environmental triggers in `autonomy.py`: morning briefing, low battery alerts (<15%), and camera face entry greetings without user prompt.
+  - Anti-repetition frequency filter preventing duplicate proactive remarks within 2 hours.
+- [ ] **Day 6: Long-Term Memory Precision & Dynamic User Modeling**:
+  - Calibrate Mem0 cosine similarity threshold to 0.82 to eliminate false fact hallucinations.
+  - Background conversational profile summarizer updating SQLite `User Profile Sheet` in real time.
+- [ ] **Day 7: Vision & Spatial Perception Intelligence**:
+  - Decouple YuNet and YOLOv8n into a dedicated 10 FPS background thread sharing atomic `WorldState` snapshots.
+  - Connect tabletop analysis to camera snapshots; smooth 3D avatar gaze tracking with exponential damping.
+- [ ] **Day 8: Persona Depth, Emotional Voice Prosody & 3D Kinematics**:
+  - Dynamic sentiment analysis modulating Piper TTS pitch (±15%), speed (±10%), and noise scale in real time.
+  - VRM facial blendshapes (`Joy`, `Sorrow`, `Surprised`) and procedural arm/head gestures synchronized to `_tts_queue` audio events.
+- [ ] **Day 9: Physical Motion, Servo Hardware & Kinematic Safety**:
+  - Real hardware microcontroller serial bridge (`serial_bridge.py`) over `/dev/ttyUSB0` at 115200 baud with 20Hz heartbeat.
+  - Software joint limits, acceleration curves, and stall-current torque disconnect safety interlocks.
+- [ ] **Day 10: Cyberdeck Dashboard Polish & Telemetry HUD**:
+  - Verify complete persona theme shifting (Cypher Red, GLaDOS Green, Luna Pink, Aria Violet) across Matrix rain canvas, 3D lights, and CSS variables.
+  - 60 FPS acoustic waveform oscilloscope and EasyEffects 32-band spectrum visualizer.
+- [ ] **Day 11: 1,000-Turn Soak, Fuzzing & Chaos Monkey Testing**:
+  - Automated 1,000-turn stress harness monitoring RSS/VRAM leakage.
+  - Fault injection: sudden Wi-Fi disconnects, killed background servers, and fuzzing tool arguments with corrupt inputs.
+- [ ] **Day 12: V2 Benchmark Sign-off, Documentation & Production Release**:
+  - End-to-end benchmark verification: TTFT < 150ms, STT < 90ms, TTS < 50ms, Total E2E < 450ms.
+  - Complete docstring audit (`code-documentation`), synchronize `TRACKER.md`, run `graphify update .`, and tag `v2.0-stable`.
+
+### 🏁 Version 1 (V1) Completed Milestones
 - [x] **1. Guarantee LLM TTFT < 500ms** (Strict target < 300ms maintained; continuous single-slot lock, invariant static prompt prefix, and compacted 3-turn history yielding 167–183ms TTFT).
 - [x] **2. Guarantee TTS Latency < 150ms** (Eager clause chunking with `min_first_words=2` and Piper AVX2 ONNX synthesis producing opening audio chunks in 69–95ms).
 - [x] **3. Guarantee STT Latency < 150ms** (`whisper.cpp` Vulkan dev 0 with `ggml-tiny.en.bin` producing 65–95ms transcription latency on 16kHz speech streams).

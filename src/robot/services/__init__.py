@@ -59,3 +59,8 @@ class HealthMonitor:
         while True:
             await self.check_all()
             await asyncio.sleep(self._interval)
+
+
+from robot.services.supervisor import ProcessSupervisor
+
+__all__ = ["HealthMonitor", "ProcessSupervisor"]
