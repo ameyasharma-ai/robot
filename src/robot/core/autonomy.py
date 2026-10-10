@@ -198,20 +198,42 @@ class CuriosityEngine:
 
             selected_prompt = random.choice(curiosity_prompts)
 
-            # Generate proactive line via local LLM
-            messages = [
-                {
-                    "role": "system",
-                    "content": f"You are {pers_name}, an intelligent helpful companion. Respond with exactly ONE concise, spoken sentence.",
-                },
-                {"role": "user", "content": selected_prompt},
-            ]
+            # Generate proactive line via local LLM while preserving slot 0 KV cache invariance
+            ctx = getattr(self.engine, "context", None)
+            if not ctx:
+                from robot.core.context import ContextEngine
+                ctx = ContextEngine()
+
+            sys_prompt = active_pers.system_prompt if active_pers else f"You are {pers_name}."
+            ns = getattr(active_pers, "memory_namespace", "default")
+            user_profile = None
+            if self.engine.memory and hasattr(self.engine.memory, "get_core_user_profile"):
+                try:
+                    user_profile = await self.engine.memory.get_core_user_profile(user_id=ns)
+                except Exception:
+                    pass
+
+            situation = {}
+            if hasattr(self.engine, "get_situation_context") and callable(getattr(self.engine, "get_situation_context")):
+                sit_res = self.engine.get_situation_context()
+                if asyncio.iscoroutine(sit_res):
+                    situation = await sit_res
+                elif isinstance(sit_res, dict):
+                    situation = sit_res
+
+            messages = ctx.build_messages(
+                system_prompt=sys_prompt,
+                user_text=f"[Proactive check-in]: {selected_prompt}",
+                user_profile=user_profile,
+                situation=situation,
+                high_intelligence=getattr(self.engine, "high_intelligence_mode", False),
+            )
 
             full_thought = ""
-            async for token in self.engine.llm.stream_chat(messages):
+            async for token in self.engine.llm.stream_chat(messages, max_tokens=60):
                 full_thought += token
                 # Complete the sentence naturally upon punctuation boundary
-                if len(full_thought) >= 60 and any(p in token for p in [".", "!", "?", ".\n", "!\n", "?\n"]):
+                if len(full_thought) >= 40 and any(p in token for p in [".", "!", "?", ".\n", "!\n", "?\n"]):
                     break
                 # Hard safety ceiling (250 chars) only if no punctuation is produced
                 if len(full_thought) >= 250:

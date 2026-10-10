@@ -46,6 +46,7 @@ from robot.tools import (
     ToolRegistry,
     ToolRouter,
 )
+from robot.tools.fast_path import FastPathRouter
 from robot.tools.builtins import register_builtin_tools
 from robot.tools.skills import ToolSkillManager
 from robot.tts import PiperTTS
@@ -330,6 +331,7 @@ class RobotEngine:
 
         # Tools
         self.tool_router = ToolRouter(self.tool_registry)
+        self.fast_path_router = FastPathRouter(self.tool_registry, self.permissions)
         self.tool_coordinator = ToolConversationCoordinator(self, self.config)
 
         # Vision & Physical Perception
@@ -1054,6 +1056,23 @@ class RobotEngine:
             await self._tts_queue.put((ack, interrupt, None))
             return ack
 
+        # Check deterministic Fast-Path Router for sub-millisecond local utility commands (<50ms)
+        if hasattr(self, "fast_path_router") and self.fast_path_router:
+            intent = self.fast_path_router.classify(user_text)
+            if intent:
+                self.observability.set_trace_category("fast_path")
+                fp_span = self.observability.start_span("ROUTING", "FAST_PATH", metadata={"tool": intent.tool_name})
+                outcome, phrase = await self.fast_path_router.execute_intent(intent)
+                self.observability.finish_span(
+                    fp_span,
+                    metadata={"tool": intent.tool_name, "status": outcome.get("status", "success")},
+                )
+                if phrase and not interrupt.is_set():
+                    timing_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
+                    await self._tts_queue.put((phrase, interrupt, timing_ref, None))
+                    await self._tts_queue.put(None)
+                return phrase
+
 
         # Get personality
         # Restore speech volume in case it was ducked by music on a previous turn
@@ -1145,6 +1164,18 @@ class RobotEngine:
         tool_results = []
         selected_tool_names = self.tool_router.select_tools(user_text, recent_context=recent)
         logger.debug("tool_router_selected", tools=selected_tool_names, user_text=user_text[:80])
+
+        # Classify request category for granular observability distributions
+        network_tools = {
+            "weather.forecast", "web.search", "news.headlines", "finance.quote",
+            "knowledge.wikipedia", "translation.translate", "web.scrape_page", "network.speedtest",
+        }
+        if selected_tool_names and any(t in network_tools for t in selected_tool_names):
+            self.observability.set_trace_category("network_dependent")
+        elif selected_tool_names:
+            self.observability.set_trace_category("tool_assisted")
+        else:
+            self.observability.set_trace_category("conversational")
 
         # ─── Build Messages with Tool Results ───────────────────────────────
         context_span = self.observability.start_span("CONTEXT", "BUILD")
@@ -1606,13 +1637,23 @@ class RobotEngine:
 
         target_sid = session_id or self._session_id or str(uuid.uuid4())[:8]
 
+        # Start monotonic trace for API turn
+        trace = self.observability.start_trace(
+            name="text_turn",
+            category="conversational",
+            metadata={"session_id": target_sid},
+        )
+
         print(f"\n💬 \033[1;36m[USER (TEXT)]\033[0m {text}")
         await self.events.emit("user_text", user_text=text, stt_ms=0.0)
 
         turn = await self.state.increment_turn()
         interrupt = asyncio.Event()  # No interrupt for text
 
-        response = await self._stream_response(text, time.time(), interrupt)
+        try:
+            response = await self._stream_response(text, time.time(), interrupt)
+        finally:
+            self.observability.finish_trace()
 
         if self.memory:
             active_pers = self.personalities.active

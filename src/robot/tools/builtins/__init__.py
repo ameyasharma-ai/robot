@@ -61,6 +61,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=memory_write,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="memory",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -354,7 +356,9 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=web_search,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="web",
-            timeout_s=30.0,
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 
@@ -720,6 +724,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=music_play,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="music",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -828,6 +834,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=music_control,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="music",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -852,6 +860,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=music_equalizer,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="music",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -929,6 +939,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=switch_personality,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="personality",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -987,6 +999,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=generate_image,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="image",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -1013,6 +1027,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=cancel_image,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="image",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -1042,6 +1058,8 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=stop_listening,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="system",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 

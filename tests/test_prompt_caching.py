@@ -203,3 +203,69 @@ async def test_get_slot_metrics_retrieval():
         assert metrics["n_ctx"] == 16384
         assert metrics["n_prompt_tokens"] == 512
         assert metrics["is_processing"] is False
+
+
+@pytest.mark.asyncio
+async def test_personality_switch_endpoint_triggers_warmup():
+    """Verify switch_personality in API schedules warm_up_llm without NameError."""
+    from robot.api import create_app
+    from fastapi.testclient import TestClient
+
+    mock_engine = MagicMock()
+    mock_engine.personalities.list_personalities.return_value = ["neo", "glados"]
+    mock_engine.personalities.set_active.return_value = True
+    mock_engine.personalities.get.return_value = MagicMock(voice_model="test.onnx")
+    mock_engine.tts.set_active_voice = MagicMock()
+    mock_engine.events.emit = AsyncMock()
+    mock_engine.warm_up_llm = AsyncMock(return_value=120.0)
+
+    app = create_app(mock_engine)
+    client = TestClient(app)
+
+    resp = client.post("/personality/glados")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "switched"
+    assert resp.json()["personality"] == "glados"
+
+    # Give event loop a micro-tick for background task to resolve
+    await asyncio.sleep(0.01)
+    mock_engine.warm_up_llm.assert_called_once_with("glados")
+
+
+@pytest.mark.asyncio
+async def test_curiosity_engine_proactive_thought_prefix_invariance():
+    """Verify CuriosityEngine constructs messages with the invariant system prompt."""
+    from robot.core.autonomy import CuriosityEngine, AutonomyConfig
+
+    mock_engine = MagicMock()
+    mock_pers = MagicMock()
+    mock_pers.name = "glados"
+    mock_pers.system_prompt = "You are GLaDOS. Be sarcastic."
+    mock_pers.memory_namespace = "glados"
+    mock_engine.personalities.active = mock_pers
+    mock_engine.context = ContextEngine()
+    mock_engine.memory = None
+    mock_engine.get_situation_context = MagicMock(return_value={})
+    mock_engine.events.emit = AsyncMock()
+    mock_engine.high_intelligence_mode = False
+    mock_engine._stream_response = AsyncMock(return_value="Take a break.")
+
+    captured_messages = []
+
+    async def fake_stream_chat(messages, max_tokens=60, **kwargs):
+        captured_messages.append(messages)
+        yield "Take a break."
+
+    mock_engine.llm.stream_chat = fake_stream_chat
+
+    engine_autonomy = CuriosityEngine(mock_engine, AutonomyConfig(enabled=True))
+    await engine_autonomy._trigger_proactive_thought(idle_duration=120.0)
+
+    assert len(captured_messages) == 1
+    msgs = captured_messages[0]
+    assert msgs[0]["role"] == "system"
+    # System prompt MUST match format_system_prompt verbatim for KV cache slot invariance
+    assert msgs[0]["content"] == format_system_prompt("You are GLaDOS. Be sarcastic.", high_intelligence=False)
+    assert msgs[-1]["role"] == "user"
+    assert "[Proactive check-in]:" in msgs[-1]["content"]
+

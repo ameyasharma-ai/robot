@@ -159,7 +159,7 @@ async def fetch_weather(location: str = "Pune") -> dict[str, Any]:
     headers = {"User-Agent": "RobotCore/2.0 (Open-Source AI Assistant)"}
 
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=5.0) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=2.0) as client:
             # 1. Geocode location to lat/lon
             geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(clean_loc)}&count=1&language=en&format=json"
             geo_resp = await client.get(geo_url)
@@ -267,7 +267,7 @@ async def fetch_news_headlines(category: str = "top", limit: int = 5) -> list[di
     headlines: list[dict[str, Any]] = []
 
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=5.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=2.0, follow_redirects=True) as client:
             for url in urls:
                 try:
                     resp = await client.get(url)
@@ -338,7 +338,7 @@ async def fetch_finance_quote(symbol: str = "bitcoin") -> dict[str, Any]:
     if crypto_id or clean_sym in {"crypto", "bitcoin", "ethereum", "solana"}:
         target_id = crypto_id or "bitcoin"
         try:
-            async with httpx.AsyncClient(headers=headers, timeout=4.5) as client:
+            async with httpx.AsyncClient(headers=headers, timeout=2.0) as client:
                 url = f"https://api.coingecko.com/api/v3/simple/price?ids={target_id}&vs_currencies=usd,inr&include_24hr_change=true"
                 resp = await client.get(url)
                 if resp.status_code == 200:
@@ -369,7 +369,7 @@ async def fetch_finance_quote(symbol: str = "bitcoin") -> dict[str, Any]:
     # 2. Check Stocks / Indices via Yahoo Finance Open API
     target_ticker = STOCK_ALIASES.get(clean_sym, clean_sym.upper())
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=4.5) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=2.0) as client:
             y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(target_ticker)}?interval=1d&range=1d"
             resp = await client.get(y_url)
             if resp.status_code == 200:
@@ -436,6 +436,9 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=weather_forecast,
             permission_level=PermissionLevel.READ_ONLY,
             family="weather",
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 
@@ -474,6 +477,9 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=news_headlines,
             permission_level=PermissionLevel.READ_ONLY,
             family="news",
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 
@@ -500,5 +506,8 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=finance_quote,
             permission_level=PermissionLevel.READ_ONLY,
             family="finance",
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )

@@ -323,7 +323,9 @@ def register_productivity_knowledge_tools(engine: RobotEngine) -> None:
             handler=_wiki_lookup,
             permission_level=PermissionLevel.READ_ONLY,
             family="wikipedia",
-            timeout_s=8.0,
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 
@@ -385,6 +387,8 @@ def register_productivity_knowledge_tools(engine: RobotEngine) -> None:
             handler=_notes_vault_handler,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="notes",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -420,7 +424,9 @@ def register_productivity_knowledge_tools(engine: RobotEngine) -> None:
             handler=_translate,
             permission_level=PermissionLevel.READ_ONLY,
             family="translation",
-            timeout_s=8.0,
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 
@@ -454,7 +460,9 @@ def register_productivity_knowledge_tools(engine: RobotEngine) -> None:
             handler=_scrape,
             permission_level=PermissionLevel.READ_ONLY,
             family="web",
-            timeout_s=12.0,
+            timeout_s=4.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 

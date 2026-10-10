@@ -250,6 +250,8 @@ def register_smart_home_tools(engine: "RobotEngine") -> None:
             handler=ha_control,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="smart_home",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 

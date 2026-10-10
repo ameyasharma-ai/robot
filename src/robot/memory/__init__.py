@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -905,6 +906,21 @@ class MemoryManager:
     ) -> None:
         """Store a complete conversation turn in both systems, isolated by personality namespace."""
         active_ns = namespace or personality or "default"
+
+        # Duplicate turn guard: prevent recording duplicate identical turns within cooldown window
+        last_turn_key = f"{session_id}:{user_text.strip()}:{bot_text.strip()}"
+        now_ts = time.time()
+        if hasattr(self, "_last_stored_turns"):
+            if last_turn_key in self._last_stored_turns:
+                last_time = self._last_stored_turns[last_turn_key]
+                if now_ts - last_time < 3.0:
+                    logger.debug("duplicate_turn_storage_suppressed", session_id=session_id)
+                    return
+        else:
+            self._last_stored_turns = {}
+        self._last_stored_turns[last_turn_key] = now_ts
+        if len(self._last_stored_turns) > 50:
+            self._last_stored_turns = {k: v for k, v in self._last_stored_turns.items() if now_ts - v < 30.0}
 
         # Auto-create or update session record
         is_system = user_text.strip().startswith("[")

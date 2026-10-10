@@ -440,6 +440,8 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
             handler=app_launch,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="os",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -474,6 +476,8 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
             handler=system_control,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="os",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -544,6 +548,8 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
             handler=clipboard_write,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="os",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -633,5 +639,7 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
             handler=notify_desktop,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="os",
+            is_idempotent=False,
+            max_retries=0,
         )
     )

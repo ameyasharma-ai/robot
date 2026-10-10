@@ -8,6 +8,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -634,6 +635,13 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         """Get live status of all pipeline components."""
         if hasattr(engine, "observability") and engine.observability:
             return engine.observability.pipeline_state
+        return {}
+
+    @app.get("/observability/benchmarks")
+    async def get_benchmarks():
+        """Get latency distributions (P50, P95, P99) categorized by request type."""
+        if hasattr(engine, "observability") and engine.observability:
+            return engine.observability.get_category_distributions()
         return {}
 
     # ─── Image Generation API ────────────────────────────────────────────────

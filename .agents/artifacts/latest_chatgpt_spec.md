@@ -1,20 +1,20 @@
-# Lead Architect Directive — Post Phase 1-4 Sign-Off
+# Lead Architect Directive — Phase 5 Implementation Sequence
 
-Implement Phase 5: Orchestration Intelligence and Reliability.
+**Decision**: Proceed with Phase 5.
 
-Preserve the existing architecture and inspect the current code before introducing new abstractions.
-
-PHASE 5A — OBSERVABILITY
-
-Add trace IDs and monotonic timestamps for pipeline stages.
-
-Measure routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion separately.
-
-Report P50, P95, and P99 latency by request category.
-
-Verify the benchmark classification and averaging logic.
-
-Preserve slow samples and failures in the report.
+### Implementation Order:
+1. **Step 0 — Regression verification** *(COMPLETED)*:
+   - Fixed personality switching background pre-warming (`import asyncio` in `src/robot/api/__init__.py`).
+   - Aligned `CuriosityEngine` in `src/robot/core/autonomy.py` to route through `ContextEngine.build_messages()` with invariant system prompt and canonical tools schemas.
+   - Tested runtime KV-cache reuse and verified 185 regression tests passing.
+2. **Step 1 — Observability**:
+   - Implement trace IDs and monotonic timestamps across routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion. Correct benchmark classification and reporting. Establish representative baseline distributions.
+3. **Step 2 — Tool contracts and network reliability**:
+   - Audit all 59 tools, consolidate canonical execution metadata, standardize structured outcomes, and test permissions, validation, timeouts (3.0s cap for weather/search), retries only on idempotent operations, cancellation, and duplicate-side-effect prevention.
+4. **Step 3 — Sequential planner–executor**:
+   - Implement bounded, authorized, sequential plan execution with structured results, dependencies, revision/termination logic, cancellation, deadlines, and step limits.
+5. **Step 4 — Memory and context integrity**:
+   - Test bounded context growth, duplicate-turn prevention, persistent-memory writes and retrieval, tool-call identity, and side-effect integrity across multi-step sessions.
 
 PHASE 5B — TOOL EXECUTION CONTRACTS
 

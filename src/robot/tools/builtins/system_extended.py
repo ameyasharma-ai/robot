@@ -372,7 +372,9 @@ def register_system_extended_tools(engine: RobotEngine) -> None:
             handler=_wifi_scan,
             permission_level=PermissionLevel.READ_ONLY,
             family="network",
-            timeout_s=10.0,
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 
@@ -395,7 +397,9 @@ def register_system_extended_tools(engine: RobotEngine) -> None:
             handler=_speedtest,
             permission_level=PermissionLevel.READ_ONLY,
             family="network",
-            timeout_s=5.0,
+            timeout_s=3.0,
+            is_idempotent=True,
+            max_retries=1,
         )
     )
 

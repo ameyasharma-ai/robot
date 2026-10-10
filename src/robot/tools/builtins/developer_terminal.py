@@ -289,6 +289,8 @@ def register_developer_terminal_tools(engine: RobotEngine) -> None:
             permission_level=PermissionLevel.SYSTEM,
             family="terminal",
             timeout_s=35.0,
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -323,6 +325,8 @@ def register_developer_terminal_tools(engine: RobotEngine) -> None:
             handler=_git_commit,
             permission_level=PermissionLevel.DEVELOPMENT,
             family="git",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -358,6 +362,8 @@ def register_developer_terminal_tools(engine: RobotEngine) -> None:
             permission_level=PermissionLevel.DEVELOPMENT,
             family="code",
             timeout_s=20.0,
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 

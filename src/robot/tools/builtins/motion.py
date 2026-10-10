@@ -143,6 +143,8 @@ def register_motion_tools(engine: "RobotEngine") -> None:
             handler=execute_action,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="motion",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -159,5 +161,7 @@ def register_motion_tools(engine: "RobotEngine") -> None:
             handler=stop_motion,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="motion",
+            is_idempotent=False,
+            max_retries=0,
         )
     )

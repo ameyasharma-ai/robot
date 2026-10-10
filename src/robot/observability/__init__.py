@@ -86,9 +86,26 @@ class ObservabilityHub:
             except RuntimeError:
                 pass
 
-    def start_trace(self, name: str = "voice_turn", trace_id: str | None = None, metadata: dict[str, Any] | None = None) -> Trace:
+    def start_trace(
+        self,
+        name: str = "voice_turn",
+        trace_id: str | None = None,
+        category: str = "conversational",
+        metadata: dict[str, Any] | None = None,
+    ) -> Trace:
+        """Start a new trace with monotonic timing, category classification, and trace ID correlation.
+
+        Args:
+            name: Human-readable trace identifier.
+            trace_id: Optional existing trace ID.
+            category: Classification category ('conversational', 'fast_path', 'tool_assisted', 'network_dependent', 'multi_step').
+            metadata: Contextual metadata dictionary.
+
+        Returns:
+            The newly created Trace instance.
+        """
         tid = trace_id or str(uuid.uuid4())[:8]
-        trace = Trace(trace_id=tid, name=name, start_time=time.time(), metadata=metadata or {})
+        trace = Trace(trace_id=tid, name=name, category=category, start_time=time.time(), metadata=metadata or {})
         self._active_traces[tid] = trace
         self._traces.append(trace)
         self._current_trace_id = tid
@@ -239,3 +256,99 @@ class ObservabilityHub:
 
     def get_hardware_metrics(self) -> dict[str, Any]:
         return self._resources.get_metrics()
+
+    def set_trace_category(self, category: str, trace_id: str | None = None) -> None:
+        """Update request classification category for an active or current trace.
+
+        Args:
+            category: Classification category string.
+            trace_id: Optional trace ID. If None, uses active current trace.
+        """
+        tid = trace_id or self._current_trace_id
+        if tid and tid in self._active_traces:
+            self._active_traces[tid].category = category
+
+    def get_category_distributions(self) -> dict[str, dict[str, Any]]:
+        """Compute P50, P95, and P99 latency percentiles broken down by request category.
+
+        Returns:
+            Dictionary mapping category names to distribution statistics.
+        """
+        categories: dict[str, list[Trace]] = {
+            "conversational": [],
+            "fast_path": [],
+            "tool_assisted": [],
+            "network_dependent": [],
+            "multi_step": [],
+        }
+        for trace in self._traces:
+            cat = trace.category if trace.category in categories else "conversational"
+            categories[cat].append(trace)
+
+        def _calc_p(vals: list[float], p: float) -> float:
+            if not vals:
+                return 0.0
+            s = sorted(vals)
+            k = (len(s) - 1) * (p / 100.0)
+            f = int(k)
+            c = min(f + 1, len(s) - 1)
+            d0 = s[f] * (c - k)
+            d1 = s[c] * (k - f)
+            return round(d0 + d1, 1)
+
+        result: dict[str, dict[str, Any]] = {}
+        for cat_name, trace_list in categories.items():
+            completed = [t for t in trace_list if t.duration_ms > 0]
+            count = len(completed)
+            if count == 0:
+                result[cat_name] = {
+                    "count": 0,
+                    "ttft_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0, "avg": 0.0},
+                    "tool_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0, "avg": 0.0},
+                    "tts_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0, "avg": 0.0},
+                    "e2e_ms": {"p50": 0.0, "p95": 0.0, "p99": 0.0, "avg": 0.0},
+                }
+                continue
+
+            ttft_vals = []
+            tool_vals = []
+            tts_vals = []
+            e2e_vals = [t.duration_ms for t in completed]
+
+            for t in completed:
+                st = t.get_stage_durations()
+                if st.get("llm_ttft_ms", 0.0) > 0:
+                    ttft_vals.append(st["llm_ttft_ms"])
+                if st.get("tool_execution_ms", 0.0) > 0:
+                    tool_vals.append(st["tool_execution_ms"])
+                if st.get("tts_synthesis_ms", 0.0) > 0:
+                    tts_vals.append(st["tts_synthesis_ms"])
+
+            result[cat_name] = {
+                "count": count,
+                "ttft_ms": {
+                    "p50": _calc_p(ttft_vals, 50.0),
+                    "p95": _calc_p(ttft_vals, 95.0),
+                    "p99": _calc_p(ttft_vals, 99.0),
+                    "avg": round(sum(ttft_vals) / len(ttft_vals), 1) if ttft_vals else 0.0,
+                },
+                "tool_ms": {
+                    "p50": _calc_p(tool_vals, 50.0),
+                    "p95": _calc_p(tool_vals, 95.0),
+                    "p99": _calc_p(tool_vals, 99.0),
+                    "avg": round(sum(tool_vals) / len(tool_vals), 1) if tool_vals else 0.0,
+                },
+                "tts_ms": {
+                    "p50": _calc_p(tts_vals, 50.0),
+                    "p95": _calc_p(tts_vals, 95.0),
+                    "p99": _calc_p(tts_vals, 99.0),
+                    "avg": round(sum(tts_vals) / len(tts_vals), 1) if tts_vals else 0.0,
+                },
+                "e2e_ms": {
+                    "p50": _calc_p(e2e_vals, 50.0),
+                    "p95": _calc_p(e2e_vals, 95.0),
+                    "p99": _calc_p(e2e_vals, 99.0),
+                    "avg": round(sum(e2e_vals) / len(e2e_vals), 1) if e2e_vals else 0.0,
+                },
+            }
+        return result

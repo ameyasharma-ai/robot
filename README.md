@@ -182,9 +182,11 @@ robot/
 │   ├── api/                 # FastAPI server
 │   ├── telemetry/           # Logging + metrics
 │   └── services/            # Health monitoring
+├── docs/                    # Architecture whitepaper, tracker, and reports
+│   ├── whitepaper.md        # Architecture specification
+│   └── TRACKER.md           # Roadmap and issue tracker
 ├── scripts/                 # Operational scripts
 ├── tests/                   # Test suite
-├── whitepaper.md            # Architecture specification
 └── pyproject.toml           # Python packaging
 ```
 

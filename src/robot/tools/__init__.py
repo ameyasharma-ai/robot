@@ -7,6 +7,8 @@ A model-generated tool call is a REQUEST, not authorization.
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Callable, Coroutine
@@ -19,6 +21,13 @@ from robot.tools.coordinator import (
     ToolContextState,
     ToolConversationCoordinator,
     ToolExecutionStatus,
+)
+from robot.tools.planner import (
+    ExecutionPlan,
+    PlanStatus,
+    PlanStep,
+    PlanStepStatus,
+    SequentialPlannerExecutor,
 )
 from robot.tools.hardening import (
     ParameterConstraint,
@@ -59,6 +68,8 @@ class ToolDefinition:
     risk_level: str = "low"
     provider: str = ""
     family: str = ""                   # e.g., "memory", "music", "system"
+    is_idempotent: bool = True
+    max_retries: int = 0
 
 
 class ToolRegistry:
@@ -446,6 +457,7 @@ class PermissionManager:
     ) -> None:
         self._max_auto = max_auto_level
         self._events = event_bus
+        self._execution_history: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def check(self, tool: ToolDefinition) -> bool:
         """Check if a tool can be auto-executed without user confirmation."""
@@ -464,9 +476,41 @@ class PermissionManager:
         tool: ToolDefinition,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute a tool with permission checking, robust argument normalization, and timeout."""
+        """Execute a tool with permission checking, robust argument normalization, retries, and timeout.
+
+        Returns structured outcomes:
+            status: "success" | "failure" | "denial" | "timeout" | "cancelled"
+            tool: tool.name
+            result: tool handler output on success, or None
+            error: descriptive error string if not successful
+            duration_ms: execution time in milliseconds
+            retries: number of retry attempts made
+        """
         if not self.check(tool):
-            return {"error": f"Permission denied: {tool.name} requires level {tool.permission_level.name}"}
+            return {
+                "status": "denial",
+                "tool": tool.name,
+                "result": None,
+                "error": f"Permission denied: {tool.name} requires level {tool.permission_level.name}",
+                "duration_ms": 0.0,
+                "retries": 0,
+            }
+
+        # Guard non-idempotent tools against duplicate side-effects
+        exec_key = f"{tool.name}:{json.dumps(arguments or {}, sort_keys=True, default=str)}"
+        now_mono = time.perf_counter()
+        if not tool.is_idempotent and exec_key in self._execution_history:
+            last_ts, last_outcome = self._execution_history[exec_key]
+            if now_mono - last_ts < 5.0 and last_outcome.get("status") == "success":
+                logger.warning("duplicate_side_effect_prevented", tool=tool.name)
+                return {
+                    "status": "denial",
+                    "tool": tool.name,
+                    "result": last_outcome.get("result"),
+                    "error": f"Duplicate side-effect prevented: {tool.name} was already executed within 5.0s window.",
+                    "duration_ms": 0.0,
+                    "retries": 0,
+                }
 
         if self._events:
             await self._events.emit("tool_executing", tool=tool.name, arguments=arguments)
@@ -478,7 +522,15 @@ class PermissionManager:
             logger.warning("tool_validation_failed", tool=tool.name, error=str(err))
             if self._events:
                 await self._events.emit("tool_error", tool=tool.name, error=str(err))
-            return err.to_dict()
+            res = err.to_dict()
+            res.update({
+                "status": "failure",
+                "tool": tool.name,
+                "result": None,
+                "duration_ms": 0.0,
+                "retries": 0,
+            })
+            return res
 
         param_aliases = {
             "fact": ["text", "memory", "content", "note", "information", "info", "data", "message", "value"],
@@ -519,55 +571,105 @@ class PermissionManager:
             else:
                 normalized_args["query"] = str(normalized_args["artist"])
 
-        try:
-            import inspect
-            sig = inspect.signature(tool.handler)
-            handler_params = sig.parameters
+        import inspect
+        sig = inspect.signature(tool.handler)
+        handler_params = sig.parameters
 
-            # Check if handler accepts **kwargs
-            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in handler_params.values())
+        # Check if handler accepts **kwargs
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in handler_params.values())
 
-            # Map aliases if target parameter is missing in provided arguments
-            for target_param, aliases in param_aliases.items():
-                if target_param in handler_params and target_param not in normalized_args:
-                    for alias in aliases:
-                        if alias in normalized_args:
-                            normalized_args[target_param] = normalized_args[alias]
-                            break
+        # Map aliases if target parameter is missing in provided arguments
+        for target_param, aliases in param_aliases.items():
+            if target_param in handler_params and target_param not in normalized_args:
+                for alias in aliases:
+                    if alias in normalized_args:
+                        normalized_args[target_param] = normalized_args[alias]
+                        break
 
-            # Universal single-string fallback:
-            # If the handler expects a required parameter without default that is still missing,
-            # and normalized_args contains string values, bind the first available string value.
-            for p_name, p_param in handler_params.items():
-                if p_param.default == inspect.Parameter.empty and p_name not in normalized_args:
-                    # Look for any string value in normalized_args that was not mapped
-                    for k, v in list(normalized_args.items()):
-                        if isinstance(v, str) and v.strip() and k not in handler_params:
-                            normalized_args[p_name] = v
-                            break
+        # Universal single-string fallback:
+        # If the handler expects a required parameter without default that is still missing,
+        # and normalized_args contains string values, bind the first available string value.
+        for p_name, p_param in handler_params.items():
+            if p_param.default == inspect.Parameter.empty and p_name not in normalized_args:
+                for k, v in list(normalized_args.items()):
+                    if isinstance(v, str) and v.strip() and k not in handler_params:
+                        normalized_args[p_name] = v
+                        break
 
-            # If handler does not accept **kwargs, prune unknown keys so invocation does not raise TypeError
-            if not accepts_kwargs:
-                filtered_args = {k: v for k, v in normalized_args.items() if k in handler_params}
-            else:
-                filtered_args = normalized_args
+        # If handler does not accept **kwargs, prune unknown keys so invocation does not raise TypeError
+        if not accepts_kwargs:
+            filtered_args = {k: v for k, v in normalized_args.items() if k in handler_params}
+        else:
+            filtered_args = normalized_args
 
-            result = await asyncio.wait_for(
-                tool.handler(**filtered_args),
-                timeout=tool.timeout_s,
-            )
-            logger.info("tool_executed", tool=tool.name)
-            if self._events:
-                await self._events.emit("tool_completed", tool=tool.name, result=str(result)[:100])
-            return {"result": result}
-        except asyncio.TimeoutError:
-            logger.error("tool_timeout", tool=tool.name, timeout=tool.timeout_s)
-            if self._events:
-                await self._events.emit("tool_error", tool=tool.name, error=f"Timeout after {tool.timeout_s}s")
-            return {"error": f"Tool timed out after {tool.timeout_s}s"}
-        except Exception as e:
-            logger.error("tool_error", tool=tool.name, error=str(e))
-            if self._events:
-                await self._events.emit("tool_error", tool=tool.name, error=str(e))
-            return {"error": str(e)}
+        t_start = time.perf_counter()
+        max_attempts = 1 + (tool.max_retries if tool.is_idempotent else 0)
+        retries_done = 0
+        status = "failure"
+        err_msg: str | None = None
+
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                retries_done += 1
+                logger.info("tool_retry_attempt", tool=tool.name, attempt=attempt)
+                await asyncio.sleep(0.1)
+
+            try:
+                result = await asyncio.wait_for(
+                    tool.handler(**filtered_args),
+                    timeout=tool.timeout_s,
+                )
+                dur_ms = (time.perf_counter() - t_start) * 1000
+                logger.info("tool_executed", tool=tool.name, duration_ms=round(dur_ms, 2))
+                if self._events:
+                    await self._events.emit("tool_completed", tool=tool.name, result=str(result)[:100])
+
+                outcome = {
+                    "status": "success",
+                    "tool": tool.name,
+                    "result": result,
+                    "duration_ms": round(dur_ms, 2),
+                    "retries": retries_done,
+                }
+                if not tool.is_idempotent:
+                    self._execution_history[exec_key] = (time.perf_counter(), outcome)
+                    if len(self._execution_history) > 100:
+                        cur_m = time.perf_counter()
+                        self._execution_history = {k: v for k, v in self._execution_history.items() if cur_m - v[0] < 60.0}
+                return outcome
+
+            except asyncio.CancelledError:
+                dur_ms = (time.perf_counter() - t_start) * 1000
+                logger.warning("tool_cancelled", tool=tool.name)
+                if self._events:
+                    await self._events.emit("tool_error", tool=tool.name, error="Cancelled")
+                return {
+                    "status": "cancelled",
+                    "tool": tool.name,
+                    "result": None,
+                    "error": "Tool execution cancelled",
+                    "duration_ms": round(dur_ms, 2),
+                    "retries": retries_done,
+                }
+            except asyncio.TimeoutError:
+                status = "timeout"
+                err_msg = f"Tool timed out after {tool.timeout_s}s"
+                logger.warning("tool_timeout", tool=tool.name, timeout=tool.timeout_s, attempt=attempt)
+            except Exception as e:
+                status = "failure"
+                err_msg = str(e)
+                logger.error("tool_error", tool=tool.name, error=err_msg, attempt=attempt)
+
+        dur_ms = (time.perf_counter() - t_start) * 1000
+        if self._events:
+            await self._events.emit("tool_error", tool=tool.name, error=err_msg)
+
+        return {
+            "status": status,
+            "tool": tool.name,
+            "result": None,
+            "error": err_msg or "Unknown execution failure",
+            "duration_ms": round(dur_ms, 2),
+            "retries": retries_done,
+        }
 

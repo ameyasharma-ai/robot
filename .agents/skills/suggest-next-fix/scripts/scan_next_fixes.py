@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
-TRACKER_PATH = ROOT_DIR / "TRACKER.md"
+TRACKER_PATH = ROOT_DIR / "docs" / "TRACKER.md" if (ROOT_DIR / "docs" / "TRACKER.md").exists() else ROOT_DIR / "TRACKER.md"
 
 
 def scan_tracker() -> dict[str, list[str]]:

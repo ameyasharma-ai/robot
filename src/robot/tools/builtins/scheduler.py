@@ -96,6 +96,8 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
             handler=timer_set,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="scheduler",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -161,6 +163,8 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
             handler=timer_cancel,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="scheduler",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -215,6 +219,8 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
             handler=alarm_set,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="scheduler",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -280,6 +286,8 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
             handler=alarm_cancel,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="scheduler",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -327,6 +335,8 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
             handler=reminder_schedule,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="scheduler",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
@@ -392,6 +402,8 @@ def register_scheduler_tools(engine: "RobotEngine") -> None:
             handler=reminder_cancel,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="scheduler",
+            is_idempotent=False,
+            max_retries=0,
         )
     )
 
