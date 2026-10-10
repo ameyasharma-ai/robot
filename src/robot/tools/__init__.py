@@ -20,6 +20,14 @@ from robot.tools.coordinator import (
     ToolConversationCoordinator,
     ToolExecutionStatus,
 )
+from robot.tools.hardening import (
+    ParameterConstraint,
+    ToolOutcomeStatus,
+    ToolValidationError,
+    coerce_value,
+    harden_tool_arguments,
+    harden_tool_inputs,
+)
 
 logger = get_logger("tools")
 
@@ -463,8 +471,15 @@ class PermissionManager:
         if self._events:
             await self._events.emit("tool_executing", tool=tool.name, arguments=arguments)
 
-        # Normalize common LLM parameter name discrepancies and aliases
-        normalized_args = dict(arguments or {})
+        # Apply strict schema hardening, alias resolution, and conflict detection
+        try:
+            normalized_args = harden_tool_arguments(arguments or {}, schema=tool.parameters)
+        except ToolValidationError as err:
+            logger.warning("tool_validation_failed", tool=tool.name, error=str(err))
+            if self._events:
+                await self._events.emit("tool_error", tool=tool.name, error=str(err))
+            return err.to_dict()
+
         param_aliases = {
             "fact": ["text", "memory", "content", "note", "information", "info", "data", "message", "value"],
             "query": [

@@ -1,0 +1,1561 @@
+{
+  "total_tools": 59,
+  "families": {
+    "scheduler": 10,
+    "calculator": 1,
+    "perception": 5,
+    "motion": 2,
+    "code": 1,
+    "finance": 1,
+    "git": 1,
+    "history": 1,
+    "smart_home": 3,
+    "image": 2,
+    "knowledge": 1,
+    "memory": 3,
+    "music": 5,
+    "network": 2,
+    "news": 1,
+    "notes": 1,
+    "os": 5,
+    "system": 7,
+    "personality": 1,
+    "terminal": 1,
+    "translation": 1,
+    "weather": 1,
+    "web": 2,
+    "wikipedia": 1
+  },
+  "permission_counts": {
+    "HARMLESS_LOCAL": 26,
+    "READ_ONLY": 30,
+    "DEVELOPMENT": 2,
+    "SYSTEM": 1
+  },
+  "tools": [
+    {
+      "name": "alarm.cancel",
+      "family": "scheduler",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "identifier": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "identifier"
+      ],
+      "schema_required": [
+        "identifier"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "alarm.list",
+      "family": "scheduler",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "status": {
+          "default": "pending",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "status"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "alarm.set",
+      "family": "scheduler",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "target_time": {
+          "default": "",
+          "annotation": "str"
+        },
+        "label": {
+          "default": "Alarm",
+          "annotation": "str"
+        },
+        "recurring": {
+          "default": "False",
+          "annotation": "bool"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "target_time",
+        "label",
+        "recurring"
+      ],
+      "schema_required": [
+        "target_time"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "calculator.evaluate",
+      "family": "calculator",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "expression": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "expression"
+      ],
+      "schema_required": [
+        "expression"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "camera.capture_snapshot",
+      "family": "perception",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "format": {
+          "default": "base64",
+          "annotation": "str"
+        },
+        "quality": {
+          "default": "80",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "format",
+        "quality"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "character.execute_action",
+      "family": "motion",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "action": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "side": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "duration": {
+          "default": "1.0",
+          "annotation": "float"
+        },
+        "intensity": {
+          "default": "1.0",
+          "annotation": "float"
+        },
+        "repetitions": {
+          "default": "1",
+          "annotation": "int"
+        },
+        "direction": {
+          "default": "forward",
+          "annotation": "str"
+        },
+        "angle": {
+          "default": "0.0",
+          "annotation": "float"
+        },
+        "distance": {
+          "default": "1.0",
+          "annotation": "float"
+        },
+        "emotion": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "action",
+        "side",
+        "duration",
+        "intensity",
+        "repetitions",
+        "direction",
+        "angle",
+        "distance",
+        "emotion"
+      ],
+      "schema_required": [
+        "action"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "character.stop",
+      "family": "motion",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "code.run_script",
+      "family": "code",
+      "permission_level": "DEVELOPMENT",
+      "timeout_s": 20.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "code": {
+          "default": "",
+          "annotation": "str"
+        },
+        "language": {
+          "default": "python",
+          "annotation": "str"
+        },
+        "timeout_seconds": {
+          "default": "15",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "code",
+        "language",
+        "timeout_seconds"
+      ],
+      "schema_required": [
+        "code"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "finance.quote",
+      "family": "finance",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "symbol": {
+          "default": "bitcoin",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "symbol"
+      ],
+      "schema_required": [
+        "symbol"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "git.workspace_commit",
+      "family": "git",
+      "permission_level": "DEVELOPMENT",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "action": {
+          "default": "status",
+          "annotation": "str"
+        },
+        "commit_message": {
+          "default": "",
+          "annotation": "str"
+        },
+        "files": {
+          "default": "None",
+          "annotation": "list[str] | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "action",
+        "commit_message",
+        "files"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "history.search",
+      "family": "history",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "",
+          "annotation": "str"
+        },
+        "limit": {
+          "default": "10",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "query",
+        "limit"
+      ],
+      "schema_required": [
+        "query"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "homeassistant.control",
+      "family": "smart_home",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "entity_id": {
+          "default": "light.living_room",
+          "annotation": "str"
+        },
+        "action": {
+          "default": "turn_on",
+          "annotation": "str"
+        },
+        "value": {
+          "default": "None",
+          "annotation": "int | float | str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "entity_id",
+        "action",
+        "value"
+      ],
+      "schema_required": [
+        "entity_id"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "homeassistant.list_devices",
+      "family": "smart_home",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "domain": {
+          "default": "all",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "domain"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "homeassistant.state",
+      "family": "smart_home",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "entity_id": {
+          "default": "light.living_room",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "entity_id"
+      ],
+      "schema_required": [
+        "entity_id"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "image.cancel",
+      "family": "image",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "job_id": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "job_id"
+      ],
+      "schema_required": [
+        "job_id"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "image.generate",
+      "family": "image",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "prompt": {
+          "default": "",
+          "annotation": "str"
+        },
+        "width": {
+          "default": "512",
+          "annotation": "int"
+        },
+        "height": {
+          "default": "512",
+          "annotation": "int"
+        },
+        "steps": {
+          "default": "15",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "prompt",
+        "width",
+        "height",
+        "steps"
+      ],
+      "schema_required": [
+        "prompt"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "knowledge.wikipedia",
+      "family": "knowledge",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 6.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "query"
+      ],
+      "schema_required": [
+        "query"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "memory.all",
+      "family": "memory",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "limit": {
+          "default": "20",
+          "annotation": "int"
+        }
+      },
+      "schema_properties": [
+        "limit"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "memory.search",
+      "family": "memory",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "all",
+          "annotation": "str"
+        },
+        "limit": {
+          "default": "5",
+          "annotation": "int"
+        }
+      },
+      "schema_properties": [
+        "query",
+        "limit"
+      ],
+      "schema_required": [
+        "query"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "memory.write",
+      "family": "memory",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "fact": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "fact"
+      ],
+      "schema_required": [
+        "fact"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "music.control",
+      "family": "music",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "action": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "volume": {
+          "default": "None",
+          "annotation": "float | str | None"
+        },
+        "query": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "preset": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "action",
+        "volume",
+        "preset",
+        "query"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "music.equalizer",
+      "family": "music",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "preset": {
+          "default": "robot",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "preset"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "music.history",
+      "family": "music",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "limit": {
+          "default": "10",
+          "annotation": "int"
+        }
+      },
+      "schema_properties": [
+        "limit"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "music.play",
+      "family": "music",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "source": {
+          "default": "ytdlp",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "query",
+        "source"
+      ],
+      "schema_required": [
+        "query"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "music.status",
+      "family": "music",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {},
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "network.speedtest",
+      "family": "network",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 5.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "network.wifi_scan",
+      "family": "network",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "news.headlines",
+      "family": "news",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "category": {
+          "default": "top",
+          "annotation": "str"
+        },
+        "limit": {
+          "default": "5",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "category",
+        "limit"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "notes.vault_search",
+      "family": "notes",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "action": {
+          "default": "search",
+          "annotation": "str"
+        },
+        "title": {
+          "default": "",
+          "annotation": "str"
+        },
+        "content": {
+          "default": "",
+          "annotation": "str"
+        },
+        "tags": {
+          "default": "None",
+          "annotation": "list[str] | None"
+        },
+        "query": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "action",
+        "title",
+        "content",
+        "tags",
+        "query"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "os.app_launch",
+      "family": "os",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "app_name": {
+          "default": "",
+          "annotation": "str"
+        },
+        "args": {
+          "default": "None",
+          "annotation": "list[str] | str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "app_name",
+        "args"
+      ],
+      "schema_required": [
+        "app_name"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "os.capture_screen",
+      "family": "system",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "filename": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "filename"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "os.clipboard_read",
+      "family": "os",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "os.clipboard_write",
+      "family": "os",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "text": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "text"
+      ],
+      "schema_required": [
+        "text"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "os.display_brightness",
+      "family": "system",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "action": {
+          "default": "query",
+          "annotation": "str"
+        },
+        "level_percent": {
+          "default": "None",
+          "annotation": "int | None"
+        },
+        "percent": {
+          "default": "None",
+          "annotation": "int | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "action",
+        "level_percent"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "os.notify_desktop",
+      "family": "os",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "title": {
+          "default": "Robot Core Notification",
+          "annotation": "str"
+        },
+        "message": {
+          "default": "",
+          "annotation": "str"
+        },
+        "urgency": {
+          "default": "normal",
+          "annotation": "str"
+        },
+        "icon": {
+          "default": "dialog-information",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "title",
+        "message",
+        "urgency",
+        "icon"
+      ],
+      "schema_required": [
+        "message"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "os.system_control",
+      "family": "os",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "action": {
+          "default": "",
+          "annotation": "str"
+        },
+        "value": {
+          "default": "None",
+          "annotation": "str | int | float | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "action",
+        "value"
+      ],
+      "schema_required": [
+        "action"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "perception.get_world_state",
+      "family": "perception",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "perception.inspect_tabletop",
+      "family": "perception",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "Describe all items on the table",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "query"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "perception.inspect_view",
+      "family": "perception",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "perception.what_do_you_see",
+      "family": "perception",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "personality.switch",
+      "family": "personality",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "name": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "name"
+      ],
+      "schema_required": [
+        "name"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "reminder.cancel",
+      "family": "scheduler",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "identifier": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "identifier"
+      ],
+      "schema_required": [
+        "identifier"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "reminder.list",
+      "family": "scheduler",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "status": {
+          "default": "pending",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "status"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "reminder.schedule",
+      "family": "scheduler",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "time_expression": {
+          "default": "",
+          "annotation": "str"
+        },
+        "message": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "time_expression",
+        "message"
+      ],
+      "schema_required": [
+        "time_expression",
+        "message"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "system.calculate",
+      "family": "system",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "expression": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "expression"
+      ],
+      "schema_required": [
+        "expression"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "system.daily_briefing",
+      "family": "scheduler",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "include_news": {
+          "default": "False",
+          "annotation": "bool"
+        },
+        "include_weather": {
+          "default": "False",
+          "annotation": "bool"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "include_news",
+        "include_weather"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "system.hardware",
+      "family": "system",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {},
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "system.status",
+      "family": "system",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {},
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "system.stop_listening",
+      "family": "system",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "system.time",
+      "family": "system",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "timezone_str": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "timezone_str"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "terminal.execute",
+      "family": "terminal",
+      "permission_level": "SYSTEM",
+      "timeout_s": 35.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "command": {
+          "default": "",
+          "annotation": "str"
+        },
+        "cwd": {
+          "default": ".",
+          "annotation": "str"
+        },
+        "timeout_seconds": {
+          "default": "30",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "command",
+        "cwd",
+        "timeout_seconds"
+      ],
+      "schema_required": [
+        "command"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "timer.cancel",
+      "family": "scheduler",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "identifier": {
+          "default": "",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "identifier"
+      ],
+      "schema_required": [
+        "identifier"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "timer.list",
+      "family": "scheduler",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "status": {
+          "default": "pending",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "status"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "timer.set",
+      "family": "scheduler",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "duration_seconds": {
+          "default": "60",
+          "annotation": "int"
+        },
+        "label": {
+          "default": "Timer",
+          "annotation": "str"
+        },
+        "on_complete_tool": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "on_complete_args": {
+          "default": "None",
+          "annotation": "dict[str, Any] | None"
+        },
+        "on_complete_prompt": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "duration_seconds",
+        "label",
+        "on_complete_tool",
+        "on_complete_args"
+      ],
+      "schema_required": [
+        "duration_seconds"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "translation.translate",
+      "family": "translation",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 8.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "text": {
+          "default": "",
+          "annotation": "str"
+        },
+        "target_lang": {
+          "default": "en",
+          "annotation": "str"
+        },
+        "source_lang": {
+          "default": "auto",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "text",
+        "target_lang",
+        "source_lang"
+      ],
+      "schema_required": [
+        "text"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "weather.forecast",
+      "family": "weather",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "location": {
+          "default": "Pune",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "location"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "web.scrape_page",
+      "family": "web",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 12.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "url": {
+          "default": "",
+          "annotation": "str"
+        },
+        "max_chars": {
+          "default": "4000",
+          "annotation": "int"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "url",
+        "max_chars"
+      ],
+      "schema_required": [
+        "url"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "web.search",
+      "family": "web",
+      "permission_level": "HARMLESS_LOCAL",
+      "timeout_s": 30.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "",
+          "annotation": "str"
+        },
+        "max_results": {
+          "default": "3",
+          "annotation": "int"
+        },
+        "deep": {
+          "default": "False",
+          "annotation": "bool"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "<ANY>"
+        }
+      },
+      "schema_properties": [
+        "query",
+        "max_results",
+        "deep"
+      ],
+      "schema_required": [
+        "query"
+      ],
+      "has_description": true
+    },
+    {
+      "name": "wikipedia.lookup",
+      "family": "wikipedia",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 8.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "query": {
+          "default": "",
+          "annotation": "str"
+        },
+        "lang": {
+          "default": "en",
+          "annotation": "str"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "query",
+        "lang"
+      ],
+      "schema_required": [
+        "query"
+      ],
+      "has_description": true
+    }
+  ]
+}

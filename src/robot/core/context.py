@@ -141,7 +141,8 @@ def format_situation_banner(situation: dict | None = None) -> str:
     elif not isinstance(world, dict):
         world = {}
     if world:
-        people = world.get("people_count", len(world.get("people", [])))
+        p_val = world.get("people_count", world.get("people", 0))
+        people = len(p_val) if isinstance(p_val, (list, tuple, dict)) else p_val
         scene = world.get("scene", "indoor")
         parts.append(f"• Visual Scene: {people} person(s) present | Scene: {scene}")
 

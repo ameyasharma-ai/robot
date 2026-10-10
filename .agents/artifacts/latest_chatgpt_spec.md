@@ -1,93 +1,87 @@
-# ARCHITECTURAL DIRECTIVE — ROBOT V2, DAY 2
-**Lead Architect (ChatGPT in Chrome) $\leftrightarrow$ Engineer (Antigravity IDE)**
-*Timestamp: 2026-10-10*
+# Lead Architect Directive — Post Phase 1-4 Sign-Off
 
-## Decision
-**Execute Tool Suite Hardening before further audio optimization, DAG orchestration, or proactive autonomy.**
+Implement Phase 5: Orchestration Intelligence and Reliability.
 
-Repository: `/home/ameya/robot`
+Preserve the existing architecture and inspect the current code before introducing new abstractions.
 
-## Objective
-Harden all 59 tools without changing their intended behavior or destabilizing the existing V2 architecture.
+PHASE 5A — OBSERVABILITY
 
----
+Add trace IDs and monotonic timestamps for pipeline stages.
 
-## Phase 1 — Audit
-- Inventory all 59 tools and their signatures.
-- Document required/optional arguments, aliases, defaults, ranges, side effects, timeouts, and dependencies.
-- Classify tools by risk and execution type.
-- Identify existing validation and result conventions.
-- Record the baseline test results.
-- **Do not modify the main project until the audit identifies a concrete implementation plan.**
+Measure routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion separately.
 
----
+Report P50, P95, and P99 latency by request category.
 
-## Phase 2 — Input Normalization
-Implement a reusable `@harden_tool_inputs` mechanism that:
-- Resolves explicitly approved aliases.
-- Detects conflicting canonical and alias arguments.
-- Performs strict, schema-driven type coercion.
-- Validates ranges and required fields.
-- Applies only documented, tool-specific defaults.
-- Preserves synchronous and asynchronous behavior.
-- Preserves function metadata and signatures.
-- Propagates cancellation.
-- Produces structured validation errors.
-- **Rule**: Do not invent arguments, silently discard conflicting values, or coerce ambiguous inputs into potentially dangerous actions.
+Verify the benchmark classification and averaging logic.
 
----
+Preserve slow samples and failures in the report.
 
-## Phase 3 — Driver Fallbacks
-Implement capability-aware fallback for brightness, system audio, and network status.
-For each driver:
-- Check capability and availability.
-- Distinguish unsupported operations from recoverable failures.
-- Avoid implicit privilege escalation.
-- Verify resulting state when possible.
-- Do not blindly retry potentially non-idempotent operations.
-- Do not report success solely because a command returned exit code zero.
-- Do not assume brightness drivers are interchangeable: internal panel backlights and external monitor controls are distinct capabilities.
+PHASE 5B — TOOL EXECUTION CONTRACTS
 
----
+Audit all 59 registered tools.
 
-## Phase 4 — Standardized Outcomes
-- Ensure tool results unambiguously distinguish success, validation errors, unsupported capabilities, timeouts, execution errors, partial success, and failed verification.
-- Preserve compatibility with existing callers. Document any required migration.
+Define or consolidate canonical metadata for schemas, permissions, capabilities, timeouts, and retry behavior.
 
----
+Normalize execution outcomes into structured success, failure, denial, timeout, and cancellation states.
 
-## Phase 5 — Verification
-Add tests for:
-- All approved aliases.
-- Conflicting arguments.
-- Strict coercion and range validation.
-- Async and sync tools.
-- Driver fallback selection.
-- Permission failures.
-- Timeouts and cancellation.
-- Failed post-operation verification.
-- Duplicate or repeated side effects.
-- Existing behavior and regression cases.
-- **Run the complete existing test suite, including the 173-test regression baseline.**
+Prevent unsafe duplicate execution when a request is retried.
 
----
+Propagate cancellation wherever supported.
 
-## Constraints
-- Do not introduce unrelated refactors.
-- Do not change prompt caching or conversation serialization.
-- Do not modify the LLM, STT, TTS, memory, or frontend architecture unless a verified dependency requires it.
-- Do not apply a blanket decorator to all tools without auditing their signatures.
-- Keep changes incremental and reviewable.
-- Preserve a clear Git diff and rollback path.
+Preserve authorization and validation checks across every execution path.
 
----
+PHASE 5C — NETWORK RELIABILITY
 
-## Deliverables
-1. Tool inventory and risk classification.
-2. Input-normalization implementation.
-3. Driver capability/fallback report.
-4. Test results and regression comparison.
-5. Remaining known limitations.
-6. Evidence that no unrelated behavior changed.
-7. **Stop after Day 2 hardening. Do not begin DAG orchestration automatically.**
-8. Return the report to ChatGPT for architectural review before advancing to the next workstream.
+Investigate the 7.49-second weather request and 4.50-second search turn using stage-level traces.
+
+Add bounded timeouts and explicit error reporting where missing.
+
+Implement retries only for operations that are safe to repeat.
+
+Record external-service latency separately from LLM latency.
+
+Ensure slow external operations cannot block unrelated assistant functionality indefinitely.
+
+PHASE 5D — SEQUENTIAL PLANNER–EXECUTOR
+
+Implement a structured task plan with explicit steps and dependencies.
+
+Execute one authorized step at a time initially.
+
+Return structured tool results to the planner.
+
+Allow the planner to continue, revise, or terminate the plan based on actual results.
+
+Add maximum-step, timeout, cancellation, and permission boundaries.
+
+Require appropriate confirmation for consequential actions.
+
+Never treat a tool invocation as proof that the requested real-world action succeeded.
+
+PHASE 5E — MEMORY AND CONTEXT INTEGRITY
+
+Verify bounded context growth during long sessions.
+
+Prevent duplicated historical turns and repeated side effects.
+
+Test persistent-memory writes and retrieval.
+
+Preserve tool-call identity and argument integrity across multi-turn execution.
+
+TESTING AND RELEASE GATES
+
+All existing tests continue to pass.
+
+Add targeted tests for failure, cancellation, timeout, and retry behavior.
+
+Benchmark at least 100 representative turns per category where practical.
+
+Report P50/P95/P99 latency, tool selection accuracy, tool success rate, timeout rate, cancellation behavior, and memory/context growth.
+
+Distinguish measured results from estimates.
+
+Do not claim that a target is met unless the evidence supports it.
+
+Deliver a concise engineering report containing changed files, architecture changes, test results, benchmark data, regressions, and remaining risks.
+
+Do not add more tools or parallel agents merely to increase feature count. Prioritize reliability and measurable end-to-end behavior.
