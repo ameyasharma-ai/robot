@@ -145,11 +145,11 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
                 engine.tts.set_active_voice(pers.voice_model)
             await engine.events.emit("personality_switched", personality=name)
+            await engine.events.emit("personality_warming", personality=name)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
-                try:
-                    await engine.warm_up_llm(name)
-                except Exception as e:
-                    logger.debug("personality_warmup_error", error=str(e))
+                coro = engine.warm_up_llm(name)
+                if asyncio.iscoroutine(coro):
+                    asyncio.create_task(coro)
             return {"status": "switched", "personality": name}
         return {"error": f"Personality '{name}' not found"}
 

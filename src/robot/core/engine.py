@@ -355,6 +355,8 @@ class RobotEngine:
         await self.scheduler.setup()
 
         register_builtin_tools(self)
+        if hasattr(self.llm, "set_canonical_tools") and hasattr(self, "tool_registry"):
+            self.llm.set_canonical_tools(self.tool_registry.get_schemas())
 
         # Expression & RGB lighting (ASUS ROG Strix)
         expr_cfg = self.config.get("expression", {})
@@ -557,12 +559,57 @@ class RobotEngine:
                     "llama_running": True,
                 }
 
-    async def warm_up_llm(self, personality_name: str | None = None) -> float:
-        """Warm up llama-server slot KV cache with the exact invariant system prompt.
+    async def get_situation_context(self) -> dict[str, Any]:
+        """Collect real-time situational telemetry for context grounding.
+
+        Returns:
+            Dictionary containing system battery, music player state, pending
+            scheduler jobs, and compact physical world perception state.
+        """
+        situation: dict[str, Any] = {}
+        try:
+            from robot.tools.builtins.system import get_system_battery_status
+
+            situation["battery"] = get_system_battery_status()
+        except Exception:
+            pass
+
+        try:
+            from robot.tools.builtins.music import MusicPlayerService
+
+            situation["music_state"] = MusicPlayerService.get_instance().get_status()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "scheduler") and self.scheduler:
+                situation["scheduler_jobs"] = await self.scheduler.list_jobs(status="pending")
+        except Exception:
+            pass
+
+        if getattr(self, "perception", None) is not None:
+            situation["world_state"] = self.perception.world_state.to_compact()
+
+        return situation
+
+    async def warm_up_llm(
+        self,
+        personality_name: str | None = None,
+        silent_prompt: str | None = None,
+    ) -> float:
+        """Warm up llama-server slot KV cache with a silent contextually aware prompt.
 
         Ensures the very first user chat has a 100% prefix cache hit (f_keep > 0.95),
         reducing first-turn prompt evaluation from ~600ms down to ~120ms so TTFT
-        matches subsequent chats.
+        matches subsequent chats. Emits a 'personality_ready' event upon completion.
+
+        Args:
+            personality_name: Name of the personality to warm up. If None, uses active.
+            silent_prompt: Optional custom silent arrival/sync prompt. If None, uses
+                a standard sensory synchronization banner.
+
+        Returns:
+            Duration in milliseconds taken to prime the KV cache slot.
         """
         if not self.llm:
             return 0.0
@@ -575,6 +622,7 @@ class RobotEngine:
         if not pers:
             pers = self.personalities.active
 
+        pers_name = pers.name if pers else "default"
         sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
         ns = getattr(pers, "memory_namespace", "default")
         user_profile = None
@@ -591,32 +639,36 @@ class RobotEngine:
 
             ctx = ContextEngine()
 
+        situation = {}
+        if hasattr(self, "get_situation_context") and callable(getattr(self, "get_situation_context")):
+            sit_res = self.get_situation_context()
+            if asyncio.iscoroutine(sit_res):
+                situation = await sit_res
+            elif isinstance(sit_res, dict):
+                situation = sit_res
+        silent_text = (
+            silent_prompt
+            or f"[System Context: Sensorial perception active and hardware pipeline initialized. Active persona: {pers_name}. Telemetry synchronized. Silent background warm-up verification.]"
+        )
+
         warmup_messages = ctx.build_messages(
             system_prompt=sys_prompt,
-            user_text="hi",
+            user_text=silent_text,
             user_profile=user_profile,
+            situation=situation,
             high_intelligence=getattr(self, "high_intelligence_mode", False),
         )
 
-        # Pre-warm system prompt prefix together with contextual tools schema so Turn 1 hits 100% KV cache
+        # Pre-warm system prompt prefix together with canonical tools schema
         t0 = time.perf_counter()
         try:
             reg = getattr(self, "tool_registry", None)
-            router = getattr(self, "tool_router", None)
-            tools_schema = None
-            if reg is not None:
-                selected_warmup = router.select_tools("hi") if router else None
-                if selected_warmup:
-                    tools_schema = reg.get_schemas(selected_warmup)
-                elif getattr(self, "is_gemini", False):
-                    tools_schema = reg.get_schemas()
-                else:
-                    tools_schema = None
+            tools_schema = reg.get_schemas() if reg is not None else None
             async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
-            pers_name = pers.name if pers else "default"
             logger.info("llm_kv_cache_warmed", personality=pers_name, duration_ms=round(w_ms, 1))
+            await self.events.emit("personality_ready", personality=pers_name, duration_ms=round(w_ms, 1))
             return w_ms
         except Exception as e:
             logger.debug("llm_warmup_failed", error=str(e))
@@ -1065,43 +1117,16 @@ class RobotEngine:
         recent = []
         if self.memory:
             recent = await self.memory.get_recent_conversation(self._session_id, recent_turns_limit)
-            # In Local mode, prevent prior large turns from blowing past the budget while preserving conversation flow
-            if not is_gemini and recent:
-                compacted_recent = []
-                for turn in recent:
-                    c = turn.get("content", "")
-                    if turn.get("role") == "assistant" and len(c) > 1800:
-                        compacted_recent.append({"role": "assistant", "content": c[:1800] + "..."})
-                    elif turn.get("role") == "user" and len(c) > 1800:
-                        compacted_recent.append({"role": "user", "content": c[:1800] + "..."})
-                    else:
-                        compacted_recent.append(turn)
-                recent = compacted_recent
 
         # Collect real-time situational telemetry
         situation = {}
-        try:
-            from robot.tools.builtins.system import get_system_battery_status
-            situation["battery"] = get_system_battery_status()
-        except Exception:
-            pass
-
-        try:
-            from robot.tools.builtins.music import MusicPlayerService
-            situation["music_state"] = MusicPlayerService.get_instance().get_status()
-        except Exception:
-            pass
-
-        try:
-            if hasattr(self, "scheduler") and self.scheduler:
-                situation["scheduler_jobs"] = await self.scheduler.list_jobs(status="pending")
-        except Exception:
-            pass
-
-        world_state_compact = None
-        if self.perception is not None:
-            world_state_compact = self.perception.world_state.to_compact()
-            situation["world_state"] = world_state_compact
+        if hasattr(self, "get_situation_context") and callable(getattr(self, "get_situation_context")):
+            sit_res = self.get_situation_context()
+            if asyncio.iscoroutine(sit_res):
+                situation = await sit_res
+            elif isinstance(sit_res, dict):
+                situation = sit_res
+        world_state_compact = situation.get("world_state")
 
         # Retrieve Core User Profile Sheet
         user_profile = None
@@ -1646,17 +1671,8 @@ class RobotEngine:
         # 1. Fetch recent conversation history strictly isolated to target_session
         recent_history = []
         if self.memory:
-            recent_limit = 20 if is_gemini else 6
+            recent_limit = 20 if is_gemini else 10
             recent_history = await self.memory.get_recent_conversation(target_session, limit=recent_limit)
-            if not is_gemini and recent_history:
-                compacted_recent = []
-                for turn in recent_history[-3:]:
-                    c = turn.get("content", "")
-                    if turn.get("role") == "assistant" and len(c) > 200:
-                        compacted_recent.append({"role": "assistant", "content": c[:200] + "..."})
-                    else:
-                        compacted_recent.append(turn)
-                recent_history = compacted_recent
 
         # 2. Shared persistent memory across all instances and voice
         retrieved_memories = []
@@ -1675,10 +1691,15 @@ class RobotEngine:
                 except Exception:
                     conversation_archive = None
 
-        # 3. World state grounding
-        world_compact = None
-        if hasattr(self, "perception") and self.perception:
-            world_compact = self.perception.world_state.to_compact()
+        # 3. World and situation telemetry grounding
+        situation = {}
+        if hasattr(self, "get_situation_context") and callable(getattr(self, "get_situation_context")):
+            sit_res = self.get_situation_context()
+            if asyncio.iscoroutine(sit_res):
+                situation = await sit_res
+            elif isinstance(sit_res, dict):
+                situation = sit_res
+        world_compact = situation.get("world_state")
 
         pers_prompt = (
             active_pers.system_prompt
@@ -1693,6 +1714,7 @@ class RobotEngine:
             memories=retrieved_memories,
             all_facts=all_facts,
             world_state=world_compact,
+            situation=situation,
             high_intelligence=is_gemini,
         )
 

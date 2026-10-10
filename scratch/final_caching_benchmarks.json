@@ -1,0 +1,16 @@
+{
+  "scenario_1_cold_ttft": 3435.2,
+  "scenario_1_warm_median_ttft": 106.0,
+  "scenario_2_consecutive_ttfts": [
+    3594.7,
+    341.3,
+    540.3,
+    529.6,
+    344.3
+  ],
+  "scenario_3_pass1_ttft": 503.4,
+  "scenario_3_pass2_ttft": 190.9,
+  "scenario_6_persona_switch_ttft": 3616.6,
+  "scenario_6_persona_cached_ttft": 309.1,
+  "scenario_7_truncated_ttft": 4270.1
+}

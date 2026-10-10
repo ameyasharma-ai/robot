@@ -1631,10 +1631,17 @@ class RobotUI {
             try {
                 localStorage.setItem("robot_active_personality", chosen);
                 this.applyPersonaTheme(chosen);
+                const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+                if (this.bubbleTag) {
+                    this.bubbleTag.textContent = `${disp}: WARMING UP...`;
+                    this.bubbleTag.style.color = "var(--accent-amber, #f59e0b)";
+                }
+                if (this.bubbleContent) {
+                    this.bubbleContent.textContent = "Priming neural cache & sensory context in background...";
+                }
                 const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
                 if (switchRes.ok) {
-                    const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
-                    this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
+                    this.logEvent("PERSONA", `Personality switched to ${disp} (priming in background)`, "system");
                     if (this.personaName) this.personaName.textContent = disp;
                     this.syncChatTopBar();
                 }
@@ -1955,6 +1962,42 @@ class RobotUI {
             this.applyPersonaTheme(chosen);
             const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
             this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
+        }
+
+        if (data.event === "personality_warming" && data.personality) {
+            const chosen = data.personality;
+            const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+            if (this.bubbleTag) {
+                this.bubbleTag.textContent = `${disp}: WARMING UP...`;
+                this.bubbleTag.style.color = "var(--accent-amber, #f59e0b)";
+            }
+            if (this.bubbleContent) {
+                this.bubbleContent.textContent = "Priming neural cache & sensory context in background...";
+            }
+            const cyberBadge = document.getElementById("cyberDeckBadge");
+            if (cyberBadge) {
+                cyberBadge.textContent = `${disp}: WARMING...`;
+                cyberBadge.className = "badge badge-warning";
+            }
+        }
+
+        if (data.event === "personality_ready" && data.personality) {
+            const chosen = data.personality;
+            const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+            const dur = data.duration_ms ? ` (${Math.round(data.duration_ms)}ms)` : "";
+            if (this.bubbleTag) {
+                this.bubbleTag.textContent = `${disp}: READY`;
+                this.bubbleTag.style.color = "var(--accent-emerald, #10b981)";
+            }
+            if (this.bubbleContent) {
+                this.bubbleContent.textContent = "Ready for voice or text input.";
+            }
+            const cyberBadge = document.getElementById("cyberDeckBadge");
+            if (cyberBadge) {
+                cyberBadge.textContent = "STUDIO: READY";
+                cyberBadge.className = "badge badge-accent";
+            }
+            this.logEvent("READY", `${disp} ready for input${dur}`, "system");
         }
 
         if (data.event === "pipeline_updated" || data.pipeline) {

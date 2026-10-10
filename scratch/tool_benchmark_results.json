@@ -1,0 +1,179 @@
+{
+  "approach_a": [
+    {
+      "turn": 1,
+      "query": "Set a timer for 10 seconds",
+      "expected": "timer.set",
+      "ttft_ms": 363.7,
+      "total_ms": 1145.5,
+      "gen_tokens": 0,
+      "called": "Tools: ['timer.set', '', '', '', '', '', '', '', '', '', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 7738
+      }
+    },
+    {
+      "turn": 2,
+      "query": "What time is it right now?",
+      "expected": "system.time",
+      "ttft_ms": 372.3,
+      "total_ms": 510.5,
+      "gen_tokens": 0,
+      "called": "Tools: ['system.time', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 7730
+      }
+    },
+    {
+      "turn": 3,
+      "query": "Check the git status of the repository",
+      "expected": "git.workspace_commit",
+      "ttft_ms": 398.5,
+      "total_ms": 811.6,
+      "gen_tokens": 0,
+      "called": "Tools: ['git.workspace_commit', '', '', '', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 7763
+      }
+    },
+    {
+      "turn": 4,
+      "query": "Scan nearby wifi access points",
+      "expected": "network.wifi_scan",
+      "ttft_ms": 425.7,
+      "total_ms": 563.9,
+      "gen_tokens": 0,
+      "called": "Tools: ['network.wifi_scan', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 7770
+      }
+    },
+    {
+      "turn": 5,
+      "query": "Set screen brightness to 30 percent",
+      "expected": "os.display_brightness",
+      "ttft_ms": 375.3,
+      "total_ms": 1117.7,
+      "gen_tokens": 0,
+      "called": "Tools: ['os.display_brightness', '', '', '', '', '', '', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 7815
+      }
+    },
+    {
+      "turn": 6,
+      "query": "Tell me a quick joke about robots",
+      "expected": null,
+      "ttft_ms": 189.2,
+      "total_ms": 857.5,
+      "gen_tokens": 28,
+      "called": "No tools",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 7824
+      }
+    }
+  ],
+  "approach_b": [
+    {
+      "turn": 1,
+      "query": "Set a timer for 10 seconds",
+      "expected": "timer.set",
+      "added_specialized": [],
+      "tool_count": 37,
+      "ttft_ms": 4375.6,
+      "total_ms": 5133.8,
+      "gen_tokens": 0,
+      "called": "Tools: ['timer.set', '', '', '', '', '', '', '', '', '', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 4861
+      }
+    },
+    {
+      "turn": 2,
+      "query": "What time is it right now?",
+      "expected": "system.time",
+      "added_specialized": [],
+      "tool_count": 37,
+      "ttft_ms": 348.5,
+      "total_ms": 481.6,
+      "gen_tokens": 0,
+      "called": "Tools: ['system.time', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 4853
+      }
+    },
+    {
+      "turn": 3,
+      "query": "Check the git status of the repository",
+      "expected": "git.workspace_commit",
+      "added_specialized": [
+        "git.workspace_commit"
+      ],
+      "tool_count": 38,
+      "ttft_ms": 3570.9,
+      "total_ms": 3971.8,
+      "gen_tokens": 0,
+      "called": "Tools: ['git.workspace_commit', '', '', '', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 5026
+      }
+    },
+    {
+      "turn": 4,
+      "query": "Scan nearby wifi access points",
+      "expected": "network.wifi_scan",
+      "added_specialized": [
+        "network.wifi_scan",
+        "network.speedtest"
+      ],
+      "tool_count": 39,
+      "ttft_ms": 3476.0,
+      "total_ms": 3610.9,
+      "gen_tokens": 0,
+      "called": "Tools: ['network.wifi_scan', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 5005
+      }
+    },
+    {
+      "turn": 5,
+      "query": "Set screen brightness to 30 percent",
+      "expected": "os.display_brightness",
+      "added_specialized": [],
+      "tool_count": 37,
+      "ttft_ms": 3402.7,
+      "total_ms": 4120.7,
+      "gen_tokens": 0,
+      "called": "Tools: ['os.display_brightness', '', '', '', '', '', '', '']",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 4938
+      }
+    },
+    {
+      "turn": 6,
+      "query": "Tell me a quick joke about robots",
+      "expected": null,
+      "added_specialized": [],
+      "tool_count": 37,
+      "ttft_ms": 173.6,
+      "total_ms": 710.4,
+      "gen_tokens": 22,
+      "called": "No tools",
+      "slot_info": {
+        "n_past": 0,
+        "n_prompt_tokens": 4942
+      }
+    }
+  ]
+}

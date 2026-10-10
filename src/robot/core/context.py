@@ -342,16 +342,28 @@ class ContextEngine:
 
         messages.append({"role": "user", "content": user_content})
 
-        # Safeguard: ensure total context never exceeds 800,000 tokens (80% of 1M limit)
+        # Safeguard for High-Intelligence Mode: ensure total context never exceeds 800,000 tokens (80% of 1M limit)
         token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
         if high_intelligence and token_estimate > 800000:
             logger.info("enforcing_80pct_context_cap", estimated_tokens=token_estimate, target_cap=800000)
-            # Cap excess from user_content if needed
             excess = token_estimate - 800000
             chars_to_trim = excess * 4
             if len(user_content) > chars_to_trim:
                 messages[-1]["content"] = user_content[chars_to_trim:]
             token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
+
+        # Safeguard for Local Mode (RTX 3050 16K context limit):
+        # Cap total prompt at 14,000 tokens, reserving >2,380 tokens headroom for generation.
+        # Prunes oldest turns while strictly preserving invariant system prompt (messages[0]) and user turn (messages[-1]).
+        max_local_cap = 14000
+        if not high_intelligence and token_estimate > max_local_cap:
+            logger.warning("enforcing_local_context_cap", estimated_tokens=token_estimate, target_cap=max_local_cap)
+            while len(messages) > 2 and token_estimate > max_local_cap:
+                popped = messages.pop(1)
+                token_estimate -= _estimate_tokens(str(popped.get("content") or ""))
+            while len(messages) > 2 and messages[1].get("role") in ("tool", "assistant"):
+                popped = messages.pop(1)
+                token_estimate -= _estimate_tokens(str(popped.get("content") or ""))
 
         logger.info(
             "context_built",
@@ -429,16 +441,58 @@ def _format_world_state(world_state: dict) -> str:
     return "\n".join(lines)
 
 
-def _trim_conversation(messages: list[dict], budget_tokens: int) -> list[dict]:
-    """Keep as many recent messages as fit within the token budget."""
-    result = []
+def _trim_conversation(messages: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
+    """Prune conversation turns to fit budget while preserving turn-pair integrity.
+
+    Architectural Rationale:
+    1. Turn-Pair & Tool Call Atomicity: In Qwen chat template, an assistant tool call
+       (`<tool_call>`) must be immediately followed by its `<tool_response>` (`role: tool`).
+       If history truncation chops off an assistant tool call or its corresponding tool result,
+       the template encounters an invalid conversational state.
+    2. Historical Purity: Any legacy grounding wrappers in historical user turns are sanitized
+       to extract the canonical user instruction, ensuring historical turn token invariance.
+    3. Oldest-First Sliding Window: Retains the most recent exchanges while dropping the oldest
+       complete turns from the beginning of history when budget is exceeded.
+
+    Args:
+        messages: List of historical conversation messages.
+        budget_tokens: Maximum token budget allocated for conversation history.
+
+    Returns:
+        List of trimmed, structurally valid conversation messages.
+    """
+    if not messages:
+        return []
+
+    # 1. Sanitize messages: ensure clean structure and strip any accidental historical grounding wrappers
+    clean_msgs: list[dict[str, Any]] = []
+    for msg in messages:
+        m = dict(msg)
+        content = m.get("content")
+        if isinstance(content, str) and m.get("role") == "user":
+            if "[User Instruction]:\n" in content:
+                m["content"] = content.split("[User Instruction]:\n", 1)[1].strip()
+            elif "[User Instruction]:" in content:
+                m["content"] = content.split("[User Instruction]:", 1)[1].strip()
+        clean_msgs.append(m)
+
+    # 2. Walk backwards to collect turns within budget
+    result: list[dict[str, Any]] = []
     total = 0
-    for msg in reversed(messages):
-        tokens = _estimate_tokens(msg.get("content", ""))
+    for msg in reversed(clean_msgs):
+        content_str = str(msg.get("content") or "")
+        tokens = _estimate_tokens(content_str)
         if total + tokens > budget_tokens:
             break
-        result.insert(0, {"role": msg["role"], "content": msg["content"]})
+        result.insert(0, msg)
         total += tokens
+
+    # 3. Ensure valid turn boundary:
+    # If the first retained message is an orphan 'tool' or 'assistant' message, drop it and any immediate siblings
+    # until the history starts cleanly with a 'user' turn.
+    while result and result[0].get("role") in ("tool", "assistant"):
+        result.pop(0)
+
     return result
 
 

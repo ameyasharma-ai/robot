@@ -905,6 +905,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                 engine.tts.set_active_voice(pers.voice_model)
             if hasattr(engine, "events") and engine.events:
                 await engine.events.emit("personality_switched", personality=resolved)
+                await engine.events.emit("personality_warming", personality=resolved)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
                 coro = engine.warm_up_llm(resolved)
                 if asyncio.iscoroutine(coro):

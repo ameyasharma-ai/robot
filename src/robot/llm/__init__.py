@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 import httpx
 import requests
@@ -97,10 +97,17 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
 
 
 class LlamaServerLLM(LLMProvider):
-    """llama-server OpenAI-compatible streaming client.
+    """llama-server OpenAI-compatible streaming client with KV-cache prefix stability.
 
-    Connects to the local llama-server running Qwen3.5-4B on the RTX 3050.
-    Streams tokens for low-latency first-audio delivery.
+    Architectural Rationale:
+    1. Hardware & Latency Budget: Connects to local llama-server running Qwen3.5-4B offloaded
+       100% to NVIDIA RTX 3050 (4GB VRAM) via FlashAttention. Targets <450ms TTFT by reusing
+       the KV-cache prefix across conversational turns.
+    2. Invariant Tool Prefix: Qwen's chat template places the `# Tools` block at token 0.
+       To maintain 100% Longest Common Prefix (LCP) cache hits, `canonical_tools` maintains
+       an invariant tool schema prefix across multi-turn chats and second-pass continuations.
+    3. Session Safety: Uses native LCP slot matching. Conversation branching or new sessions
+       automatically invalidate KV slots past the common prefix without cross-user leakage.
     """
 
     def __init__(
@@ -108,27 +115,100 @@ class LlamaServerLLM(LLMProvider):
         base_url: str = "http://127.0.0.1:8080/v1",
         model: str = "Qwen3.5-4B-Q4_K_M",
         enable_thinking: bool = False,
+        canonical_tools: list[dict[str, Any]] | None = None,
+        use_invariant_tools: bool = True,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.enable_thinking = enable_thinking
+        """Initialize the llama-server streaming client.
+
+        Args:
+            base_url: Base HTTP endpoint of llama-server OpenAI API.
+            model: Model name string.
+            enable_thinking: Whether to enable thinking token output.
+            canonical_tools: Optional invariant list of all tool schemas.
+            use_invariant_tools: Whether to prioritize invariant tool prefix for KV cache reuse.
+        """
+        self.base_url: str = base_url.rstrip("/")
+        self.model: str = model
+        self.enable_thinking: bool = enable_thinking
+        self.canonical_tools: list[dict[str, Any]] | None = canonical_tools
+        self.use_invariant_tools: bool = use_invariant_tools
+        self._last_prompt_tokens: int = 0
+        self._last_ttft_ms: float = 0.0
+
+    def set_canonical_tools(self, tools: list[dict[str, Any]]) -> None:
+        """Set or update the canonical invariant tool schema set.
+
+        Args:
+            tools: Full list of tool schemas for invariant prompt caching.
+        """
+        self.canonical_tools = tools
+        logger.info("llama_canonical_tools_updated", tool_count=len(tools))
+
+    async def get_slot_metrics(self) -> dict[str, Any]:
+        """Fetch live slot memory and KV cache metrics from llama-server.
+
+        Returns:
+            Dictionary containing slot processing status and prompt token count.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{self.base_url.rsplit('/v1', 1)[0]}/slots")
+                if resp.status_code == 200:
+                    slots = resp.json()
+                    if slots and isinstance(slots, list):
+                        s0 = slots[0]
+                        return {
+                            "slot_id": s0.get("id", 0),
+                            "n_ctx": s0.get("n_ctx", 16384),
+                            "n_prompt_tokens": s0.get("n_prompt_tokens", 0),
+                            "is_processing": s0.get("is_processing", False),
+                        }
+        except Exception:
+            pass
+        return {}
 
     async def stream_chat(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         max_tokens: int = 300,
-        tools: list[dict] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
+        """Stream chat completion tokens from local llama-server with KV cache preservation.
+
+        Args:
+            messages: Formatted message turns.
+            max_tokens: Maximum tokens to generate.
+            tools: Optional tool schemas. When `use_invariant_tools` is True and `canonical_tools`
+                is registered, the invariant canonical schemas are retained to preserve token 0.
+
+        Yields:
+            Generated text tokens or tool call JSON indicators.
+        """
         import time as _time
-        payload = {
+
+        # Resolve effective tools:
+        # Invariant tool set guarantees token 0 (# Tools) stays 100% byte-invariant across turns.
+        # Explicit empty list [] allows opt-out.
+        if tools == []:
+            effective_tools = None
+        elif self.use_invariant_tools and self.canonical_tools:
+            effective_tools = self.canonical_tools
+        elif tools is not None:
+            effective_tools = tools
+            if self.canonical_tools is None and len(tools) > 0:
+                self.canonical_tools = tools
+        else:
+            effective_tools = self.canonical_tools if self.use_invariant_tools else None
+
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
             "max_tokens": max_tokens,
             "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
         }
-        if tools:
-            payload["tools"] = tools
+        if effective_tools:
+            payload["tools"] = effective_tools
 
         max_retries = 2
         for attempt in range(max_retries + 1):
@@ -143,23 +223,25 @@ class LlamaServerLLM(LLMProvider):
                             err_body = await response.aread()
                             err_str = err_body.decode("utf-8", errors="replace")
                             logger.error("llm_stream_error", status=response.status_code, body=err_str)
-                            # Auto-recovery for context overflow: strip tools and prune older messages while preserving user turn
+                            # Auto-recovery for context overflow: prune older messages from middle while preserving system and latest user turn
                             if response.status_code == 400 and ("exceeds" in err_str or "context" in err_str):
                                 logger.warning("llm_context_overflow_recovery", attempt=attempt)
                                 msgs = payload.get("messages", [])
                                 system_msg = next((m for m in msgs if m.get("role") == "system"), None)
                                 user_msg = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
                                 last_msg = msgs[-1] if msgs else None
-                                pruned = []
+                                pruned: list[dict[str, Any]] = []
                                 if system_msg:
                                     pruned.append(system_msg)
-                                if user_msg and user_msg != last_msg:
-                                    pruned.append(user_msg)
-                                if last_msg and last_msg != system_msg:
-                                    pruned.append(last_msg)
+                                non_system = [m for m in msgs if m.get("role") != "system"]
+                                if len(non_system) > 4:
+                                    pruned.extend(non_system[-3:])
+                                else:
+                                    if user_msg and user_msg != last_msg:
+                                        pruned.append(user_msg)
+                                    if last_msg and last_msg != system_msg:
+                                        pruned.append(last_msg)
                                 payload["messages"] = pruned or msgs
-                                if "tools" in payload:
-                                    del payload["tools"]
                                 if attempt < max_retries:
                                     continue
                             yield "I encountered an error connecting to my local inference model."

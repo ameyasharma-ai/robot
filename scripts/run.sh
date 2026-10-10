@@ -126,24 +126,24 @@ try:
 
     mock = MockEngine()
     register_builtin_tools(mock)
+    tools_schema = mock.tool_registry.get_schemas()
     silent_arrival_prompt = (
-        '[System Event: Robot Core online and sensors active. The user has arrived / entered the room. '
-        'In your next response, warmly acknowledge and greet the user.]'
+        f'[System Context: Robot Core online and sensorial perception active. '
+        f'Active persona: {def_p}. Telemetry synchronized. Silent background warm-up verification.]'
     )
-    router = ToolRouter(mock.tool_registry)
-    selected_tools = router.select_tools(silent_arrival_prompt)
-    tools_schema = mock.tool_registry.get_schemas(selected_tools) if selected_tools else None
-    msgs = [
-        {'role': 'system', 'content': system_content},
-        {'role': 'user', 'content': silent_arrival_prompt},
-    ]
+    ctx = ContextEngine()
+    msgs = ctx.build_messages(
+        system_prompt=sys_prompt,
+        user_text=silent_arrival_prompt,
+        high_intelligence=False,
+    )
 
     payload = json.dumps({
         'model': 'Qwen3.5-4B-Q4_K_M',
         'messages': msgs,
         'tools': tools_schema,
         'stream': True,
-        'max_tokens': 15,
+        'max_tokens': 1,
         'chat_template_kwargs': {'enable_thinking': False},
         'temperature': 0.7
     }).encode('utf-8')

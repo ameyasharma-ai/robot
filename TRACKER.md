@@ -67,9 +67,12 @@ Legend:
   - Implemented self-healing `CameraCapture` auto-reconnect loop with exponential backoff (1s -> 2s -> 4s -> 8s) and stream dropout detection.
   - Implemented physical microcontroller `SerialBridge` (`serial_bridge.py`) with 20Hz heartbeat, joint limits, torque stall protection, and automatic software emulation fallback.
   - Implemented centralized `ProcessSupervisor` (`supervisor.py`) with memory leak monitoring (RSS < 2.5GB CPU, < 3.8GB VRAM) and graceful signal trap shutdown. All 164 unit tests passing 100%.
-- [ ] **Day 2: Tool Suite Hardening & Zero-Failure Parameter Normalization**:
-  - Implement `@harden_tool_inputs` decorator across all 59 tools to automatically resolve parameter aliases and types.
-  - Implement multi-driver fallbacks for brightness (brightnessctl -> sysfs -> xrandr -> ddcutil), audio volume, and network diagnostics.
+- [ ] **Day 2: Tool Suite Hardening & Zero-Failure Parameter Normalization** *(Architectural Directive from ChatGPT in Chrome active — see [.agents/artifacts/latest_chatgpt_spec.md](file:///home/ameya/robot/.agents/artifacts/latest_chatgpt_spec.md))*:
+  - **Phase 1 Audit**: Inventory all 59 tools, signatures, risk tiers, and parameter conventions without modifying main project.
+  - **Phase 2 Input Normalization**: Implement `@harden_tool_inputs` decorator resolving approved aliases, detecting conflicts, strict type coercion, and structured validation errors.
+  - **Phase 3 Driver Fallbacks**: Implement capability-aware fallbacks for display brightness, system audio volume, and network diagnostics with post-execution verification.
+  - **Phase 4 Standardized Outcomes**: Standardize structured status outcomes (success, validation error, unsupported, timeout, partial).
+  - **Phase 5 Verification & Baseline**: Add comprehensive test matrix across aliases, coercion, driver selection, and maintain 173-test regression baseline.
 - [x] **Day 3: Ultra-Low Latency Pipeline (<450ms E2E Audio Guarantee)**:
   - [x] **Prompt Caching & KV Cache Invariance Optimization**: Implemented canonical 59-tool invariant schema prefix in `LlamaServerLLM`, historical conversation turn sanitization and turn-pair atomicity in `ContextEngine`, tail-grounding for ephemeral telemetry, and 14,000-token local context cap. Warm TTFT reduced by 97% (3,435ms -> 105ms), multi-turn warm TTFT ~340ms, second-pass tool synthesis 190ms.
   - [x] **Background Silent Contextually-Aware Pre-Warming & Ready Transition**: Implemented background silent sensory pre-warming on engine startup and persona switch. Injected rich situation telemetry and canonical schemas into slot 0 without blocking HTTP endpoints or voice streaming. Dispatched WebSocket `personality_warming` and `personality_ready` events to display `"WARMING UP..."` in the speech bubble / HUD while priming, and instantly flip to `"READY FOR INPUT"` when hot.
