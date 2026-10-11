@@ -714,8 +714,7 @@ class ToolConversationCoordinator:
         collected_continuation_tool_calls = []
 
         try:
-            is_gemini = getattr(self.engine, "is_gemini", False)
-            tools_schema = self.engine.tool_registry.get_schemas() if is_gemini else None
+            tools_schema = self.engine.tool_registry.get_schemas() if getattr(self.engine, "tool_registry", None) else None
             async for token in self.engine.llm.stream_chat(
                 continuation_messages,
                 tools=tools_schema,

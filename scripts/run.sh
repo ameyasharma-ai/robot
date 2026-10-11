@@ -7,12 +7,24 @@ export PYTHONWARNINGS="ignore::DeprecationWarning"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
 
+# Source root .env configuration if present
+if [ -f "$DIR/.env" ]; then
+    set -a
+    source "$DIR/.env"
+    set +a
+fi
+
 echo "🤖 Robot Core — Starting up..."
+
+# Clean up any stale background instances
+pkill -9 -f "python.*-m robot" 2>/dev/null || true
+fuser -k 8888/tcp 2>/dev/null || true
 
 cleanup() {
     echo ""
     echo "🛑 Shutting down Robot Core and child servers..."
     kill $(jobs -p) 2>/dev/null || true
+    pkill -9 -f "python.*-m robot" 2>/dev/null || true
     pkill -f "llama-server" 2>/dev/null || true
     pkill -f "whisper-server" 2>/dev/null || true
     echo "✅ All GPU VRAM and process memory released."
@@ -39,13 +51,13 @@ if command -v easyeffects >/dev/null 2>&1; then
 fi
 
 # ─── 2. llama-server (RTX 3050, port 8080) ──────────────────────────
-ACTIVE_PROVIDER="local"
+ACTIVE_PROVIDER="${LLM_PROVIDER:-local}"
 if [ -f "$DIR/data/active_llm_provider.txt" ]; then
     ACTIVE_PROVIDER=$(cat "$DIR/data/active_llm_provider.txt" 2>/dev/null | tr -d '[:space:]')
 fi
 
-if [ "$ACTIVE_PROVIDER" = "gemini" ]; then
-    echo "[LLM] Active provider is Gemini Cloud API — local llama-server deferred until swapped."
+if [ "$ACTIVE_PROVIDER" = "gemini" ] || [ "$ACTIVE_PROVIDER" = "openai_compatible" ]; then
+    echo "[LLM] Active provider is $ACTIVE_PROVIDER — local llama-server deferred until swapped."
 else
     if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
         if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
@@ -102,22 +114,31 @@ else
     # Always pre-warm llama-server KV cache slot with active personality and tools schema
     echo "[LLM] Pre-warming llama-server KV cache slot with active personality & tools..."
     "$DIR/.venv/bin/python" -c "
-import urllib.request, json
+import urllib.request, json, asyncio
 try:
     from robot.personality import PersonalityManager
     from robot.core.context import ContextEngine, format_system_prompt
-    from robot.tools import ToolRegistry, ToolRouter
+    from robot.tools import ToolRegistry
     from robot.tools.builtins import register_builtin_tools
-    import yaml
+    from robot.memory import MemoryManager
 
     pm = PersonalityManager('config/personalities')
     pm.load_all()
     def_p = pm.get_persisted_active('neo')
-    pm.set_active(def_p)
-    pers = pm.active
+    pers = pm.get(def_p) or pm.active
 
     sys_prompt = pers.system_prompt if pers else 'You are a helpful robot.'
-    system_content = format_system_prompt(sys_prompt, high_intelligence=False)
+    ns = getattr(pers, 'memory_namespace', 'default') if pers else 'default'
+
+    user_profile = None
+    all_facts = None
+    try:
+        mem = MemoryManager({}, 'data/database/conversations.db')
+        user_profile = asyncio.run(mem.get_core_user_profile(user_id=ns))
+        all_facts = asyncio.run(mem.get_all_facts(user_id=ns, limit=50))
+        asyncio.run(mem.close())
+    except Exception:
+        pass
 
     class MockEngine:
         def __init__(self):
@@ -128,13 +149,15 @@ try:
     register_builtin_tools(mock)
     tools_schema = mock.tool_registry.get_schemas()
     silent_arrival_prompt = (
-        f'[System Context: Robot Core online and sensorial perception active. '
+        f'[System Context: Sensorial perception active and hardware pipeline initialized. '
         f'Active persona: {def_p}. Telemetry synchronized. Silent background warm-up verification.]'
     )
     ctx = ContextEngine()
     msgs = ctx.build_messages(
         system_prompt=sys_prompt,
         user_text=silent_arrival_prompt,
+        user_profile=user_profile,
+        all_facts=all_facts,
         high_intelligence=False,
     )
 
@@ -156,7 +179,7 @@ try:
     with urllib.request.urlopen(req, timeout=15) as resp:
         for line in resp:
             pass
-    print(f'[LLM] KV cache pre-warmed for personality \"{def_p}\" (silent arrival prompt primed)')
+    print(f'[LLM] KV cache pre-warmed for personality \"{def_p}\" (canonical tools & facts primed)')
 except Exception as e:
     print('[LLM] Warmup notice:', e)
 " 2>/dev/null || true

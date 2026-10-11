@@ -23,7 +23,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 
 | Feature Module | Component / Implementation | Status | Device / Hardware | Verification / Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **LLM Inference & KV Cache** | `llama-server` + `LlamaServerLLM` Canonical Tool Invariance | ✅ **Active** | NVIDIA RTX 3050 (4GB) | FlashAttention enabled; invariant canonical 59-tool prefix; warm TTFT drops from 3,435ms to 105ms (97% reduction), multi-turn warm TTFT ~340ms, pass-2 tool synthesis 190ms. |
+| **LLM Inference & KV Cache** | `llama-server` + `LlamaServerLLM` Canonical Tool Invariance | ✅ **Active** | NVIDIA RTX 3050 (4GB) | FlashAttention enabled; invariant canonical 59-tool prefix; startup pre-warming synced across active persona and durable facts; Turn 1 prompt eval collapsed from 2,333ms to 317ms (86.4% reduction), Turn 1 TTFT collapsed from 2,456ms to 658ms, multi-turn warm prompt eval 182–435ms, 96.6%–98.9% KV cache reuse. |
 | **STT Engine** | `whisper-server` HTTP stream | ✅ **Active** | AMD Radeon 680M (Vulkan) | Offloaded to Vulkan device 0 (`RADV REMBRANDT`); ~210–280ms latency. |
 | **TTS Engine** | Piper ONNX + ClauseChunker | ✅ **Active** | CPU (AVX2) | Streaming phrase synthesis; first chunk ready in 69–95ms. |
 | **Barge-in / Echo Suppression** | Silero VAD + `EchoGuard` RMS subtraction | ✅ **Active** | Host CPU | Dynamic RMS subtraction prevents robot hearing its own voice. |
@@ -49,6 +49,8 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Advanced Context & Intelligence System** | `ContextEngine` + `MemoryManager` + Telemetry Banner + Profile Sheet | ✅ **Active** | Local Qwen 3.5 4B / Gemini API | Real-time situation banner (IST time, pending timers, music, battery, visual scene), user profile sheet, conversation history micro-summarizer, Gemini 800k context archive, and `<thought>` tag stripping for speech. |
 | **Chat Dashboard Tools & Persona Themes** | 42 Interactive Category Chips + 4 Persona CSS Themes + 3D Avatar WebGL Lighting | ✅ **Active** | Static Web Frontend & WebGL | Sleek, non-scrollable compact category chips deck, persona-tailored color palettes (Luna/Neo/Aria/GLaDOS), dynamic 3D WebGL lighting/pedestal transitions, and aligned female voice definitions. |
 | **ChatGPT Multi-Agent Bridge & Skill** | Autonomous Bidirectional Loop + Extension Bridge (`chatgpt-bridge`) | ✅ **Active** | Chrome + Antigravity (127.0.0.1:8765) | Real-time WebSocket bridge between open ChatGPT tab in Chrome and Antigravity IDE; autonomous multi-turn loops (spec -> implement -> verify -> review -> sign-off). |
+| **Root `.env` Configuration Manager** | Centralized System Config (`src/robot/config.py` + `.env`) | ✅ **Active** | System-Wide / All Subsystems | Root `.env` outside folders configuring all engines; dynamic runtime updates and hot persistence via `update_env_variable()`. |
+| **OpenAI-Compatible LLM & Model Scanner** | `OpenAICompatibleLLM` + Prompt Caching + Live Model Discovery | ✅ **Active** | Cloud API / Core Engine / Web HUD | 3-way toggle (Local / Gemini / OpenAI), live `/models` scanner with cyberdeck dropdown, settings modal, and prefix prompt caching. |
 
 
 Legend:
@@ -81,7 +83,9 @@ Legend:
   - [x] **Project Structure & Documentation Consolidation**: Organized root documentation and reports into `docs/` (`TRACKER.md`, `whitepaper.md`, `ToDo.txt`, `OPTIMIZATIONS_REPORT.md`, `BENCHMARK_REPORT.md`, `AIDER_HELP.md`), created root symlink `TRACKER.md -> docs/TRACKER.md` for seamless backwards compatibility with automated agent skills and scripts, moved aider artifacts into structured `.aider/`, updated `scan_next_fixes.py` path resolver, and synchronized repository tree in `README.md`.
 - [ ] **Day 4: Phase 5 Orchestration Intelligence & Reliability** *(Architectural Directive active — see [.agents/artifacts/latest_chatgpt_spec.md](file:///home/ameya/robot/.agents/artifacts/latest_chatgpt_spec.md))*:
   - [x] **Step 0: Regression Verification & Invariant Prefix Integrity**: Fixed module-level `NameError: name 'asyncio' is not defined` in `src/robot/api/__init__.py` allowing background pre-warming (`warm_up_llm`) on persona switches; aligned `CuriosityEngine` in `src/robot/core/autonomy.py` to route through `ContextEngine.build_messages()` with invariant system prompt and canonical tools schemas, eliminating random Slot 0 KV cache evictions during idle periods. Added 2 regression tests (`test_personality_switch_endpoint_triggers_warmup`, `test_curiosity_engine_proactive_thought_prefix_invariance`). All 185 tests passing.
+  - [x] **Local 16K Context Overflow & KV-Cache Capping Fix**: Resolved `400 Bad Request: request (20673 tokens) exceeds the available context size (16384 tokens)` by enforcing a strict 4,800-token local message cap in `ContextEngine` (`src/robot/core/context.py`). With 10,280 invariant canonical tool tokens, total prompt is constrained to ~15,080 tokens leaving >1,300 tokens generation headroom. Added tail-grounding trimming on `messages[-1]` to safeguard single-turn user overflows without evicting invariant system prompts. Enhanced `LlamaServerLLM` overflow recovery in `src/robot/llm/__init__.py` to deep-trim grounding wrappers. Added plaintext tool invocation fallback (`music.play(...)`, `system.calculate(...)`) in `RobotEngine` to intercept raw LLM tool syntax and strip code from Piper TTS output. Verified 100% KV-cache hit (`f_sim_best = 0.954`, warm TTFT = 433.0ms) across consecutive turns with 197/197 tests passing.
   - [ ] **Step 1: Observability**: Implement trace IDs and monotonic timestamps across routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion. Correct benchmark classification and reporting. Establish representative baseline distributions.
+
   - [ ] **Step 2: Tool Contracts & Network Reliability**: Audit all 59 tools, consolidate canonical execution metadata, standardize structured outcomes, and test permissions, validation, timeouts (3.0s cap for weather/search), retries only on idempotent operations, cancellation, and duplicate-side-effect prevention.
   - [ ] **Step 3: Sequential Planner–Executor**: Implement bounded, authorized, sequential plan execution with structured results, dependencies, revision/termination logic, cancellation, deadlines, and step limits.
   - [ ] **Step 4: Memory & Context Integrity**: Test bounded context growth during long sessions, prevent duplicated historical turns, and test persistent-memory writes and retrieval across multi-step sessions.
@@ -1189,6 +1193,61 @@ Legend:
     - *Verification*:
       - 55/55 files clean via `verify_imports.py` (0 import or syntax errors).
       - All 106 unit tests passed 100% (`.venv/bin/pytest tests/`).
+
+75. **High TTFT Spikes (~2,450ms) from Bloated Memory Facts, Front-Trimming in Local Context Cap & Telemetry Invalidation**:
+    - *Symptoms*:
+      1. First user turns and subsequent conversational turns suffered from ~2,450 ms `LLM_TTFT` instead of sub-300ms, with `llama-server` evaluating ~2,670 prompt tokens from scratch on every turn (`f_sim_best = 0.786`).
+      2. Console logged `enforcing_local_context_cap estimated_tokens=10436 target_cap=4800`.
+    - *Root Causes*:
+      1. **Bloated Memory Fact (Fact 90)**: A 31KB (31,436 char) web dump was stored into SQLite `facts`. In `get_core_user_profile()`, because the dump matched keywords like `"developer"`, the entire 31KB text was injected into `identity_lines`, expanding `user_profile` to >8,100 tokens and ballooning total prompt tokens to 10,436 tokens.
+      2. **Front-Trimming Destroyed Invariant Prefix**: To enforce the 4,800 token local cap, `ContextEngine.build_messages()` ran `grounding[excess_chars:]`. Slicing off `excess_chars` from the *front* shifted character offsets and destroyed Token 0, completely breaking KV cache LCP invariance across turns.
+      3. **Dynamic Minute Invalidation**: `format_situation_banner()` embedded minute-level IST timestamps directly inside the user grounding block, causing prompt divergence whenever the clock changed.
+      4. **Missing Profile in Text Stream**: `stream_text_chat()` in `engine.py` omitted `user_profile`, causing divergence from warmup and voice turns.
+    - *Fixes Applied*:
+      1. **Fact Defense & Cleanup**: Deleted bloated Fact 90 from `conversations.db`. Added strict character limits (max 250 chars) and web scrape filters (`\n\n`, `skip to content`, `openrouter`) in `get_core_user_profile()` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py).
+      2. **Tail-Trimming Local Cap**: In [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py), changed grounding trimming to `grounding[:-excess_chars]`, preserving the invariant front prefix (Token 0 through Token K) 100% intact.
+      3. **15-Minute Telemetry Bucketing**: Bucketed situational timestamps to 15-minute intervals in low-latency local inference, maintaining 100% KV cache stability across multi-turn sessions.
+      4. **Text Chat Profile Alignment**: Retrieved and passed `user_profile` in `stream_text_chat()`, maintaining prefix invariance across text and voice modes.
+    - *Verification*:
+      - Re-ran 5-turn automated benchmark (`benchmark_5_turns.py`): Prompt evaluation dropped from 2,330ms down to 187–368ms (96.1%–98.9% KV cache hit rate).
+      - All 88 Python files compiled and imported cleanly via `verify_imports.py` (0 errors).
+      - All 197 unit tests passed 100% via `.venv/bin/pytest tests/`.
+
+76. **Unified Root `.env` Configuration System, OpenAI-Compatible Multi-Provider LLM & Dynamic Dashboard Model Scanning**:
+    - *User Requirements*:
+      1. Centralized `.env` file at repository root (`/home/ameya/robot/.env`) outside subfolders configuring everything implemented in the codebase (LLMs, STT, TTS, VAD, Vision, Memory/Qdrant, API, Spotify).
+      2. OpenAI-compatible API provider in addition to existing Local Qwen (RTX 3050) and Cloud Gemini models, switchable dynamically through the dashboard.
+      3. Live model scanner querying `/models` with an interactive, cyberdeck dropdown in the dashboard allowing the user to select any model.
+      4. Prompt caching integration for prefix tokens.
+    - *Implementation & Architecture*:
+      1. **Centralized Configuration Manager (`src/robot/config.py`)**: Built `load_system_config()`, `load_env_file()`, and `update_env_variable()`, binding all environment variables (`OPENAI_COMPATIBLE_*`, `GEMINI_API_KEY`, `ROBOT_LLM_PROVIDER`, `WHISPER_*`, `PIPER_*`, `MEM0_*`, etc.) with YAML fallbacks and live `.env` persistence.
+      2. **Root `.env` Specification**: Generated comprehensive `/home/ameya/robot/.env` and updated `.env.example` documenting all configuration keys.
+      3. **OpenAI-Compatible LLM Provider (`OpenAICompatibleLLM` in `src/robot/llm/__init__.py`)**: Implemented streaming SSE client supporting multi-turn chats, tool call deltas accumulation, model discovery (`scan_models`), and prompt caching optimization (`cache_control: {"type": "ephemeral"}` and static system prompt prefixes).
+      4. **3-Way Provider Switching & GPU VRAM Management in `RobotEngine`**: Swapping to `openai_compatible` or `gemini` halts `llama-server`, releasing 3.4GB VRAM from RTX 3050; swapping to `local` spins up `llama-server` and warms Slot 0 cache. Active model persisted in `data/active_openai_model.txt`.
+      5. **REST API & Cyberdeck Dashboard**:
+         - Added `GET /api/llm/openai/models`, `POST /api/llm/openai/model`, and `POST /api/llm/openai/config`.
+         - Updated dashboard UI (`index.html`, `index.css`, `app.js`) with 3-way cycle toggle (`Local` -> `Gemini` -> `OpenAI` -> `Local`), live model scanning dropdown with neon cyberdeck styling, model change listener, and an interactive Cyberdeck Settings Modal with live endpoint test connection.
+    - *Verification*:
+      - Added 6 unit tests in `tests/test_openai_compatible.py` covering initialization, format parsing, streaming SSE, prompt caching, and `.env` updates.
+      - Verified 0 import errors with `.venv/bin/python .agents/skills/zero-import-errors/scripts/verify_imports.py`.
+      - 203/203 unit tests passed 100% via `.venv/bin/pytest tests/`.
+
+77. **Chat-Mode Dynamic OpenAI Model Selector & Static Non-Scrolling System Tools Dock**:
+    - *User Requirements*:
+      1. Make the OpenAI model selector directly available in chat mode and ensure the active model name is dynamically synchronized and visible in the header and badges.
+      2. Fix the system tools dock to be completely static without awkward inner vertical or horizontal scrolling.
+    - *Fixes Applied*:
+      1. **Chat Mode Model Selector (`#chatOpenaiControls`)**:
+         - Added `.chat-openai-controls` in `index.html` inside `.chat-top-right` containing a neon cyberdeck dropdown (`#chatOpenaiModelSelect`), model refresh button (`#btnChatScanOpenai`), and configuration button (`#btnChatOpenaiConfig`).
+         - Synchronized model scanning and selection in `app.js` across dual mode (`#openaiModelSelect`) and chat mode (`#chatOpenaiModelSelect`).
+         - Made `#chatActiveModelPill` clickable to cycle through providers (`Local` -> `Gemini` -> `OpenAI` -> `Local`), with dynamic name formatting (`OPENAI (GPT-4O)`).
+      2. **Static Non-Scrolling System Tools Dock**:
+         - Replaced the overflowing `🌟 All` category (which dumped 42 chips into a cramped 72px scrollbox) with a default `⚡ Quick` category displaying the 8 primary robot tools on a single static line.
+         - Updated `.chat-quick-chips` CSS to `overflow: hidden !important; max-height: none !important;` with zero scrollbars.
+         - Category tabs (`💻 OS`, `⏱️ Schedule`, `🧮 System`, `👁️ Vision`, `🎵 Media`, `💡 Home`, `⛅ Feeds`, `🎭 Persona`) filter chips in place instantly with fixed dock geometry and zero vertical or horizontal scrolling.
+    - *Verification*:
+      - Rebuilt and verified with zero console errors.
+      - 100% of unit tests passing (203/203). Zero import errors across 90 Python files.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

@@ -1069,19 +1069,23 @@ class MemoryManager:
             txt = f.get("fact", f.get("memory", "")).strip()
             if not txt:
                 continue
-            txt_lower = txt.lower()
+            # Defend against bloated text dumps, scrapes, or web contents
+            if len(txt) > 250 or "\n\n" in txt or any(b in txt.lower() for b in ["skip to content", "openrouter", "http://", "https://"]):
+                continue
+            txt_clean = " ".join(txt.split())[:180]
+            txt_lower = txt_clean.lower()
             if any(k in txt_lower for k in ["name", "ameya", "engineer", "developer", "creator", "built"]):
-                if not any(txt.lower() in line.lower() for line in identity_lines):
-                    identity_lines.append(f"• {txt}")
+                if not any(txt_clean.lower() in line.lower() for line in identity_lines):
+                    identity_lines.append(f"• {txt_clean}")
             elif any(k in txt_lower for k in ["crush", "partner", "friend", "girlfriend", "anubha", "relationship"]):
-                if not any(txt.lower() in line.lower() for line in rel_lines):
-                    rel_lines.append(f"• {txt}")
+                if not any(txt_clean.lower() in line.lower() for line in rel_lines):
+                    rel_lines.append(f"• {txt_clean}")
             elif any(k in txt_lower for k in ["like", "love", "favorite", "prefer", "music", "volume"]):
-                if not any(txt.lower() in line.lower() for line in pref_lines):
-                    pref_lines.append(f"• {txt}")
+                if not any(txt_clean.lower() in line.lower() for line in pref_lines):
+                    pref_lines.append(f"• {txt_clean}")
             else:
-                if not any(txt.lower() in line.lower() for line in pref_lines):
-                    pref_lines.append(f"• {txt}")
+                if not any(txt_clean.lower() in line.lower() for line in pref_lines):
+                    pref_lines.append(f"• {txt_clean}")
 
         profile_sections = ["=== USER CORE IDENTITY PROFILE ==="]
         if identity_lines:

@@ -391,12 +391,13 @@ class RobotUI {
             tab.addEventListener("click", () => {
                 catTabs.forEach((t) => t.classList.remove("active"));
                 tab.classList.add("active");
-                const chosenCat = tab.getAttribute("data-cat") || "all";
+                const chosenCat = tab.getAttribute("data-cat") || "quick";
                 let visibleCount = 0;
 
                 chatChips.forEach((chip) => {
-                    const chipCat = chip.getAttribute("data-cat");
-                    if (chosenCat === "all" || chipCat === chosenCat) {
+                    const rawCats = chip.getAttribute("data-cat") || "";
+                    const catList = rawCats.split(/\s+/);
+                    if (catList.includes(chosenCat)) {
                         chip.classList.remove("hidden-by-cat");
                         visibleCount++;
                     } else {
@@ -409,6 +410,12 @@ class RobotUI {
                 }
             });
         });
+
+        // Trigger initial static filtering (defaults to Quick tools with zero scroll)
+        const initialActiveTab = document.querySelector(".cat-tab.active") || catTabs[0];
+        if (initialActiveTab) {
+            initialActiveTab.click();
+        }
 
         // Quick available tools chips — insert prefix into chat input without auto-submitting
         chatChips.forEach((chip) => {
@@ -433,6 +440,10 @@ class RobotUI {
         this.syncChatTopBar();
     }
 
+    /**
+     * Synchronize the chat interface top bar indicators (persona label, theme, active model pill).
+     * @returns {void}
+     */
     syncChatTopBar() {
         if (this.chatPersonaLabel && this.personaSelect) {
             const p = this.personaSelect.value;
@@ -442,35 +453,53 @@ class RobotUI {
         const modelPill = document.getElementById("chatActiveModelPill") || this.chatActiveModelPill;
         const modelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
         const modelIcon = modelPill ? modelPill.querySelector(".model-icon") : null;
+        const chatOpenaiControls = document.getElementById("chatOpenaiControls");
+        const chatOpenaiSelect = document.getElementById("chatOpenaiModelSelect");
 
-        const isGemini = this.currentLlmProvider === "gemini" || 
-                         (this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode")) ||
-                         document.getElementById("btnLlmToggle")?.classList.contains("gemini-mode") ||
-                         document.getElementById("activeModelStrip")?.classList.contains("gemini-active");
+        const prov = this.currentLlmProvider || "local";
+        const isGemini = prov === "gemini";
+        const isOpenAi = prov === "openai_compatible";
 
         if (modelLabel) {
-            modelLabel.textContent = this.formatModelBadgeText(isGemini);
+            modelLabel.textContent = this.formatModelBadgeText(prov);
         }
         if (modelIcon) {
-            modelIcon.textContent = isGemini ? "✨" : "⚡";
+            modelIcon.textContent = isOpenAi ? "🌐" : (isGemini ? "✨" : "⚡");
         }
+        if (chatOpenaiControls) {
+            chatOpenaiControls.style.display = isOpenAi ? "inline-flex" : "none";
+        }
+        if (chatOpenaiSelect && this.activeOpenaiModel) {
+            chatOpenaiSelect.value = this.activeOpenaiModel;
+        }
+
         if (modelPill) {
             modelPill.classList.toggle("pill-gemini", isGemini);
-            modelPill.classList.toggle("pill-local", !isGemini);
+            modelPill.classList.toggle("pill-openai", isOpenAi);
+            modelPill.classList.toggle("pill-local", !isGemini && !isOpenAi);
             const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
-            modelPill.title = isGemini 
-                ? "Active AI Model: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence)" 
-                : `Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context)`;
+            if (isOpenAi) {
+                const activeM = this.activeOpenaiModel || "gpt-4o";
+                modelPill.title = `Active AI Model: Custom OpenAI-Compatible (${activeM}, Prompt Caching Active). Click to cycle provider.`;
+            } else if (isGemini) {
+                modelPill.title = "Active AI Model: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence). Click to cycle provider.";
+            } else {
+                modelPill.title = `Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to cycle provider.`;
+            }
         }
     }
 
     /**
      * Return formatted model badge text depending on provider and local context size.
-     * @param {boolean} isGemini 
-     * @returns {string}
+     * @param {string} provider - Active LLM provider ('local', 'gemini', or 'openai_compatible').
+     * @returns {string} Human-readable badge text.
      */
-    formatModelBadgeText(isGemini) {
-        if (isGemini) return "GEMINI (1M)";
+    formatModelBadgeText(provider) {
+        if (provider === "openai_compatible") {
+            const m = this.activeOpenaiModel || "gpt-4o";
+            return `OPENAI (${m.toUpperCase()})`;
+        }
+        if (provider === "gemini") return "GEMINI (1M)";
         const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
         return `LOCAL QWEN (${ctxK}K)`;
     }
@@ -1662,6 +1691,11 @@ class RobotUI {
         }
     }
 
+    /**
+     * Initialize the 3-way LLM provider toggle (Local Qwen, Cloud Gemini, OpenAI-Compatible API),
+     * model scanning dropdown, and cyberdeck settings modal.
+     * @returns {Promise<void>}
+     */
     async initLlmProviderToggle() {
         const btn = document.getElementById("btnLlmToggle");
         const icon = document.getElementById("llmToggleIcon");
@@ -1671,6 +1705,7 @@ class RobotUI {
 
         this.btnLlmToggle = btn;
         this.currentLlmProvider = "local";
+        this.activeOpenaiModel = "gpt-4o";
 
         const panelStrip = document.getElementById("activeModelStrip");
         const panelBadge = document.getElementById("activeModelBadge");
@@ -1679,17 +1714,58 @@ class RobotUI {
         const panelBtnText = document.getElementById("swapModelBtnText");
         const panelBtnIcon = document.getElementById("swapBtnIcon");
 
-        this.updateLlmToggleUi = (prov, mode, isTransitioning = false) => {
-            const isGemini = prov === "gemini";
-            this.currentLlmProvider = prov || (isGemini ? "gemini" : "local");
+        // OpenAI Model scanning controls & modal (Dual mode and Chat mode)
+        const openaiControls = document.getElementById("openaiModelControls");
+        const openaiSelect = document.getElementById("openaiModelSelect");
+        const btnScan = document.getElementById("btnScanOpenaiModels");
+        const btnConfig = document.getElementById("btnOpenaiConfig");
 
+        const chatOpenaiControls = document.getElementById("chatOpenaiControls");
+        const chatOpenaiSelect = document.getElementById("chatOpenaiModelSelect");
+        const btnChatScan = document.getElementById("btnChatScanOpenai");
+        const btnChatConfig = document.getElementById("btnChatOpenaiConfig");
+        const chatActiveModelPill = document.getElementById("chatActiveModelPill");
+
+        const configModal = document.getElementById("openaiConfigModal");
+        const btnCloseModal = document.getElementById("btnCloseOpenaiModal");
+        const btnCancelModal = document.getElementById("btnCancelOpenaiModal");
+        const btnSaveConfig = document.getElementById("btnSaveOpenaiConfig");
+        const btnTestScanModal = document.getElementById("btnTestAndScanModal");
+        const inputBaseUrl = document.getElementById("inputOpenaiBaseUrl");
+        const inputApiKey = document.getElementById("inputOpenaiApiKey");
+        const inputModel = document.getElementById("inputOpenaiModel");
+        const inputContext = document.getElementById("inputOpenaiContext");
+        const checkCaching = document.getElementById("checkOpenaiPromptCaching");
+        const modalFeedback = document.getElementById("openaiConfigFeedback");
+
+        /**
+         * Update UI indicators across telemetry panel and top header for active LLM provider.
+         * @param {string} prov - 'local', 'gemini', or 'openai_compatible'.
+         * @param {string|null} [mode] - Optional mode string from status endpoint.
+         * @param {boolean} [isTransitioning=false] - Whether a switch is currently executing.
+         * @param {string|null} [targetProv=null] - Desired target provider during transition.
+         * @returns {void}
+         */
+        this.updateLlmToggleUi = (prov, mode, isTransitioning = false, targetProv = null) => {
             if (isTransitioning) {
                 if (btn) btn.classList.add("switching");
                 if (panelBtn) panelBtn.disabled = true;
-                if (label) label.textContent = isGemini ? "STARTING LOCAL..." : "CONNECTING GEMINI...";
-                if (sub) sub.textContent = isGemini ? "ALLOCATING VRAM" : "FREEING 3.4GB VRAM";
+
+                if (targetProv === "gemini") {
+                    if (label) label.textContent = "CONNECTING GEMINI...";
+                    if (sub) sub.textContent = "FREEING 3.4GB VRAM";
+                    if (panelName) panelName.textContent = "Connecting Cloud Gemini (Freeing VRAM)...";
+                } else if (targetProv === "openai_compatible") {
+                    if (label) label.textContent = "CONNECTING OPENAI...";
+                    if (sub) sub.textContent = "FREEING 3.4GB VRAM";
+                    if (panelName) panelName.textContent = "Connecting OpenAI-Compatible API (Prompt Caching)...";
+                } else {
+                    if (label) label.textContent = "STARTING LOCAL...";
+                    if (sub) sub.textContent = "ALLOCATING VRAM";
+                    if (panelName) panelName.textContent = "Starting Local Qwen (Allocating VRAM)...";
+                }
+
                 if (badge) badge.textContent = "WAIT";
-                if (panelName) panelName.textContent = isGemini ? "Starting Local Qwen (Allocating VRAM)..." : "Connecting Gemini (Freeing VRAM)...";
                 if (panelBtnText) panelBtnText.textContent = "SWAPPING...";
                 const chatModelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
                 if (chatModelLabel) chatModelLabel.textContent = "SWAPPING...";
@@ -1699,28 +1775,67 @@ class RobotUI {
             if (btn) btn.classList.remove("switching");
             if (panelBtn) panelBtn.disabled = false;
 
-            if (isGemini) {
+            const safeProv = prov || "local";
+            this.currentLlmProvider = safeProv;
+
+            if (safeProv === "openai_compatible") {
                 if (btn) {
-                    btn.classList.remove("local-mode");
+                    btn.classList.remove("gemini-mode", "local-mode");
+                    btn.classList.add("openai-mode");
+                }
+                if (panelStrip) {
+                    panelStrip.classList.remove("gemini-active");
+                    panelStrip.classList.add("openai-active");
+                }
+                if (openaiControls) openaiControls.style.display = "flex";
+                if (chatOpenaiControls) chatOpenaiControls.style.display = "inline-flex";
+
+                const activeM = this.activeOpenaiModel || "gpt-4o";
+                if (icon) icon.textContent = "🌐";
+                if (label) label.textContent = "OPENAI COMPAT";
+                if (sub) sub.textContent = `${activeM} • CACHED`;
+                if (badge) badge.textContent = "OPENAI";
+                if (panelBadge) panelBadge.textContent = "CUSTOM API";
+                if (panelName) panelName.textContent = `${activeM} • Prompt Caching Active`;
+                if (panelBtnText) panelBtnText.textContent = "SWAP TO LOCAL";
+                if (panelBtnIcon) panelBtnIcon.textContent = "⚡";
+                if (btn) btn.title = `Active: OpenAI-Compatible API (${activeM}, Prompt Caching). Click to cycle to Local Qwen (RTX 3050).`;
+
+                if (chatOpenaiSelect) chatOpenaiSelect.value = activeM;
+                if (openaiSelect) openaiSelect.value = activeM;
+            } else if (safeProv === "gemini") {
+                if (btn) {
+                    btn.classList.remove("local-mode", "openai-mode");
                     btn.classList.add("gemini-mode");
                 }
-                if (panelStrip) panelStrip.classList.add("gemini-active");
+                if (panelStrip) {
+                    panelStrip.classList.remove("openai-active");
+                    panelStrip.classList.add("gemini-active");
+                }
+                if (openaiControls) openaiControls.style.display = "none";
+                if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
+
                 if (icon) icon.textContent = "✨";
                 if (label) label.textContent = "GEMINI (CLOUD)";
                 if (sub) sub.textContent = "1M CONTEXT • HIGH INTEL";
                 if (badge) badge.textContent = "GEMINI";
                 if (panelBadge) panelBadge.textContent = "CLOUD API";
                 if (panelName) panelName.textContent = "Gemini 3.5 Flash Lite • 1M Context";
-                if (panelBtnText) panelBtnText.textContent = "SWAP TO LOCAL";
-                if (panelBtnIcon) panelBtnIcon.textContent = "⚡";
-                if (btn) btn.title = "Active: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence). Click to swap to Local Qwen (RTX 3050).";
+                if (panelBtnText) panelBtnText.textContent = "SWAP TO OPENAI";
+                if (panelBtnIcon) panelBtnIcon.textContent = "🌐";
+                if (btn) btn.title = "Active: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence). Click to swap to OpenAI API.";
             } else {
                 if (btn) {
-                    btn.classList.remove("gemini-mode");
+                    btn.classList.remove("gemini-mode", "openai-mode");
                     btn.classList.add("local-mode");
                 }
+                if (panelStrip) {
+                    panelStrip.classList.remove("gemini-active", "openai-active");
+                }
+                if (openaiControls) openaiControls.style.display = "none";
+                if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
+
                 const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
-                if (panelStrip) panelStrip.classList.remove("gemini-active");
                 if (icon) icon.textContent = "⚡";
                 if (label) label.textContent = "LOCAL (RTX 3050)";
                 if (sub) sub.textContent = `LOW LATENCY • ${ctxK}K`;
@@ -1729,28 +1844,243 @@ class RobotUI {
                 if (panelName) panelName.textContent = `Qwen 3.5 4B • RTX 3050 • ${ctxK}K`;
                 if (panelBtnText) panelBtnText.textContent = "SWAP TO GEMINI";
                 if (panelBtnIcon) panelBtnIcon.textContent = "✨";
-                if (btn) btn.title = `Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to swap to Cloud Gemini (1M Context).`;
+                if (btn) btn.title = `Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to swap to Cloud Gemini.`;
             }
+
             if (typeof this.syncChatTopBar === "function") this.syncChatTopBar();
         };
 
-        // Fetch current status on load
+        /**
+         * Scan available models from the configured OpenAI-compatible endpoint.
+         * Populates both dual-mode and chat-mode dropdowns and synchronizes active selection.
+         * @param {boolean} [autoSelectCurrent=true] - Whether to highlight currently configured model.
+         * @returns {Promise<Array<Object>>} List of model objects.
+         */
+        this.scanOpenaiModels = async (autoSelectCurrent = true) => {
+            const scanIcons = [
+                btnScan ? btnScan.querySelector(".scan-icon") : null,
+                btnChatScan ? btnChatScan.querySelector(".scan-icon") : null
+            ].filter(Boolean);
+            scanIcons.forEach((ic) => ic.classList.add("spinning"));
+            if (btnScan) btnScan.disabled = true;
+            if (btnChatScan) btnChatScan.disabled = true;
+
+            try {
+                const res = await fetch("/api/llm/openai/models");
+                const data = await res.json();
+                if (data.status === "ok" && Array.isArray(data.models)) {
+                    const targetModel = data.active_model || this.activeOpenaiModel;
+                    if (data.active_model) {
+                        this.activeOpenaiModel = data.active_model;
+                    }
+
+                    const selects = [openaiSelect, chatOpenaiSelect].filter(Boolean);
+                    selects.forEach((sel) => {
+                        sel.innerHTML = "";
+                        data.models.forEach((m) => {
+                            const opt = document.createElement("option");
+                            opt.value = m.id;
+                            opt.textContent = m.name || m.id;
+                            sel.appendChild(opt);
+                        });
+                        if (targetModel) {
+                            sel.value = targetModel;
+                        }
+                    });
+
+                    if (this.currentLlmProvider === "openai_compatible") {
+                        this.updateLlmToggleUi("openai_compatible");
+                    }
+                    this.logEvent("LLM", `Discovered ${data.count} models at OpenAI endpoint (Active: ${this.activeOpenaiModel}).`, "success");
+                    return data.models;
+                } else {
+                    this.logEvent("WARNING", `Model scan warning: ${data.message || data.error || "No models returned"}`, "warning");
+                }
+            } catch (err) {
+                this.logEvent("ERROR", `Failed scanning OpenAI models: ${err.message}`, "error");
+            } finally {
+                scanIcons.forEach((ic) => ic.classList.remove("spinning"));
+                if (btnScan) btnScan.disabled = false;
+                if (btnChatScan) btnChatScan.disabled = false;
+            }
+            return [];
+        };
+
+        /**
+         * Handle user selection of a different OpenAI model.
+         * @param {string} selectedModel - Selected model ID.
+         * @returns {Promise<void>}
+         */
+        const handleModelSelectChange = async (selectedModel) => {
+            if (!selectedModel) return;
+            this.logEvent("LLM", `Selecting OpenAI model "${selectedModel}"...`, "system");
+            try {
+                const res = await fetch("/api/llm/openai/model", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: selectedModel })
+                });
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.activeOpenaiModel = data.active_model;
+                    if (openaiSelect) openaiSelect.value = data.active_model;
+                    if (chatOpenaiSelect) chatOpenaiSelect.value = data.active_model;
+                    this.updateLlmToggleUi("openai_compatible");
+                    this.logEvent("LLM", `Active OpenAI model set to "${data.active_model}" with prompt caching.`, "success");
+                } else {
+                    this.logEvent("ERROR", `Failed selecting model: ${data.message || data.error}`, "error");
+                }
+            } catch (err) {
+                this.logEvent("ERROR", `Network error updating model: ${err.message}`, "error");
+            }
+        };
+
+        // Wire model dropdown changes across dual and chat mode
+        if (openaiSelect) openaiSelect.addEventListener("change", (e) => handleModelSelectChange(e.target.value));
+        if (chatOpenaiSelect) chatOpenaiSelect.addEventListener("change", (e) => handleModelSelectChange(e.target.value));
+
+        if (btnScan) btnScan.addEventListener("click", () => this.scanOpenaiModels());
+        if (btnChatScan) btnChatScan.addEventListener("click", () => this.scanOpenaiModels());
+
+        /**
+         * Open the cyberdeck OpenAI configuration modal and prefill current values.
+         * @returns {Promise<void>}
+         */
+        const openConfigModal = async () => {
+            try {
+                const res = await fetch("/api/llm/status");
+                if (res.ok) {
+                    const data = await res.json();
+                    const cfg = data.openai_compatible || {};
+                    if (inputBaseUrl) inputBaseUrl.value = cfg.base_url || "";
+                    if (inputApiKey) inputApiKey.value = cfg.api_key || "";
+                    if (inputModel) inputModel.value = cfg.model || this.activeOpenaiModel || "gpt-4o";
+                    if (inputContext) inputContext.value = cfg.context_window || 128000;
+                    if (checkCaching) checkCaching.checked = cfg.enable_prompt_caching !== false;
+                }
+            } catch (e) {}
+
+            if (modalFeedback) {
+                modalFeedback.textContent = "";
+                modalFeedback.className = "cyberdeck-modal-feedback";
+            }
+            if (configModal) configModal.classList.add("open");
+        };
+
+        if (btnConfig && configModal) btnConfig.addEventListener("click", openConfigModal);
+        if (btnChatConfig && configModal) btnChatConfig.addEventListener("click", openConfigModal);
+
+        const closeModal = () => {
+            if (configModal) configModal.classList.remove("open");
+        };
+
+        if (btnCloseModal) btnCloseModal.addEventListener("click", closeModal);
+        if (btnCancelModal) btnCancelModal.addEventListener("click", closeModal);
+
+        if (btnSaveConfig) {
+            btnSaveConfig.addEventListener("click", async () => {
+                const payload = {
+                    base_url: inputBaseUrl ? inputBaseUrl.value.trim() : "",
+                    api_key: inputApiKey ? inputApiKey.value.trim() : "",
+                    model: inputModel ? inputModel.value.trim() : "",
+                    context_window: parseInt(inputContext ? inputContext.value : "128000", 10) || 128000,
+                    enable_prompt_caching: checkCaching ? checkCaching.checked : true
+                };
+
+                if (modalFeedback) {
+                    modalFeedback.textContent = "Writing config to .env and updating runtime...";
+                    modalFeedback.className = "cyberdeck-modal-feedback";
+                }
+
+                try {
+                    const res = await fetch("/api/llm/openai/config", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await res.json();
+                    if (data.status === "ok") {
+                        if (modalFeedback) {
+                            modalFeedback.textContent = "✓ Configuration saved to .env! Rescanning models...";
+                            modalFeedback.className = "cyberdeck-modal-feedback success";
+                        }
+                        if (payload.model) this.activeOpenaiModel = payload.model;
+                        setTimeout(() => {
+                            closeModal();
+                            this.scanOpenaiModels();
+                        }, 750);
+                    } else {
+                        if (modalFeedback) {
+                            modalFeedback.textContent = `Error: ${data.message || data.error}`;
+                            modalFeedback.className = "cyberdeck-modal-feedback error";
+                        }
+                    }
+                } catch (err) {
+                    if (modalFeedback) {
+                        modalFeedback.textContent = `Network error: ${err.message}`;
+                        modalFeedback.className = "cyberdeck-modal-feedback error";
+                    }
+                }
+            });
+        }
+
+        if (btnTestScanModal) {
+            btnTestScanModal.addEventListener("click", async () => {
+                if (modalFeedback) {
+                    modalFeedback.textContent = "Querying endpoint /models...";
+                    modalFeedback.className = "cyberdeck-modal-feedback";
+                }
+                const models = await this.scanOpenaiModels();
+                if (modalFeedback) {
+                    if (models && models.length > 0) {
+                        modalFeedback.textContent = `✓ Found ${models.length} models! Config verified.`;
+                        modalFeedback.className = "cyberdeck-modal-feedback success";
+                    } else {
+                        modalFeedback.textContent = "Notice: Could not list models. Check endpoint URL or API key.";
+                        modalFeedback.className = "cyberdeck-modal-feedback error";
+                    }
+                }
+            });
+        }
+
+        // Fetch initial status on load
         try {
             const res = await fetch("/api/llm/status");
             if (res.ok) {
                 const data = await res.json();
-                if (data.context_window && data.provider !== "gemini") {
+                if (data.context_window && data.provider === "local") {
                     this.localContextWindow = data.context_window;
                 }
+                if (data.active_model) {
+                    this.activeOpenaiModel = data.active_model;
+                } else if (data.openai_compatible && data.openai_compatible.model) {
+                    this.activeOpenaiModel = data.openai_compatible.model;
+                }
                 this.updateLlmToggleUi(data.provider, data.mode);
+                if (data.provider === "openai_compatible") {
+                    this.scanOpenaiModels();
+                }
             }
         } catch (e) {}
 
+        /**
+         * Handle user swap action, cycling through Local -> Gemini -> OpenAI -> Local.
+         * @returns {Promise<void>}
+         */
         const handleSwapAction = async () => {
-            const isCurrentlyGemini = (panelStrip && panelStrip.classList.contains("gemini-active")) || (btn && btn.classList.contains("gemini-mode"));
-            const target = isCurrentlyGemini ? "local" : "gemini";
-            this.updateLlmToggleUi(isCurrentlyGemini ? "gemini" : "local", null, true);
+            const curr = this.currentLlmProvider || "local";
+            let target = "local";
+            if (curr === "local") {
+                target = "gemini";
+            } else if (curr === "gemini") {
+                target = "openai_compatible";
+            } else {
+                target = "local";
+            }
+
+            this.updateLlmToggleUi(curr, null, true, target);
             this.logEvent("LLM", `Swapping LLM provider to ${target.toUpperCase()}...`, "system");
+
             try {
                 const res = await fetch("/api/llm/provider", {
                     method: "POST",
@@ -1760,22 +2090,34 @@ class RobotUI {
                 const data = await res.json();
                 if (data.status === "ok") {
                     this.updateLlmToggleUi(data.provider, data.mode);
-                    const msg = data.provider === "gemini" 
-                        ? "Swapped to Cloud Gemini 3.6 Flash (1M Context)! Local llama-server killed & 3.4GB VRAM released."
-                        : "Swapped to Local Qwen 3.5 4B on RTX 3050! llama-server spun up & slot cache primed.";
+                    let msg = "";
+                    if (data.provider === "gemini") {
+                        msg = "Swapped to Cloud Gemini 3.6 Flash (1M Context)! Local llama-server stopped & 3.4GB VRAM released.";
+                    } else if (data.provider === "openai_compatible") {
+                        msg = `Swapped to OpenAI-Compatible API (${this.activeOpenaiModel})! Prompt caching active & 3.4GB VRAM released.`;
+                        this.scanOpenaiModels();
+                    } else {
+                        msg = "Swapped to Local Qwen 3.5 4B on RTX 3050! llama-server spun up & slot cache primed.";
+                    }
                     this.logEvent("LLM", msg, "success");
                 } else {
-                    this.updateLlmToggleUi(isCurrentlyGemini ? "gemini" : "local");
+                    this.updateLlmToggleUi(curr);
                     this.logEvent("ERROR", `Failed to switch LLM provider: ${data.message || data.error}`, "error");
                 }
             } catch (err) {
-                this.updateLlmToggleUi(isCurrentlyGemini ? "gemini" : "local");
+                this.updateLlmToggleUi(curr);
                 this.logEvent("ERROR", `Network error switching LLM provider: ${err.message}`, "error");
             }
         };
 
         if (btn) btn.addEventListener("click", handleSwapAction);
         if (panelBtn) panelBtn.addEventListener("click", handleSwapAction);
+        if (chatActiveModelPill) {
+            chatActiveModelPill.addEventListener("click", (e) => {
+                if (e.target.closest("#chatOpenaiControls")) return;
+                handleSwapAction();
+            });
+        }
     }
 
     setView(mode) {

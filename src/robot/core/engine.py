@@ -26,9 +26,10 @@ from robot.core.context import ContextEngine, GROUNDING_POLICY, format_system_pr
 from robot.core.events import EventBus, Events
 from robot.core.state import RobotMode, StateManager
 
+from robot.config import load_system_config
 from robot.expression import AsusAuraLighting
 from robot.image import ImageGenerationService
-from robot.llm import ClauseChunker, LlamaServerLLM, GeminiLLM, LlamaServerManager
+from robot.llm import ClauseChunker, LlamaServerLLM, GeminiLLM, OpenAICompatibleLLM, LlamaServerManager
 from robot.memory import MemoryManager
 from robot.observability import ObservabilityHub
 from robot.observability.models import SpanStatus
@@ -107,8 +108,11 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     cleaned = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
     cleaned = re.sub(r"(?<!\w)_{1,3}([^_]+)_{1,3}(?!\w)", r"\1", cleaned)
     cleaned = cleaned.replace("*", "").replace("~", "").replace("`", "")
+    # Strip raw tool invocation code e.g. music.play(query="...") or system.calculate(...)
+    cleaned = re.sub(r"\b[a-zA-Z_]+\.[a-zA-Z_]+\([^)]*\)", "", cleaned)
     cleaned = re.sub(r"\([^)]*\)", "", cleaned).strip()
     return cleaned, action_dict
+
 
 
 class RobotEngine:
@@ -123,9 +127,8 @@ class RobotEngine:
     """
 
     def __init__(self, config_path: str = "config/default.yaml") -> None:
-        # Load configuration
-        with open(config_path) as f:
-            self.config = yaml.safe_load(f)
+        # Load configuration with .env overrides
+        self.config = load_system_config(config_path)
 
         # Core subsystems
         self.state = StateManager()
@@ -271,10 +274,21 @@ class RobotEngine:
             self.llm = GeminiLLM(
                 api_key=gemini_cfg.get("api_key"),
                 base_url=gemini_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"),
-                model=gemini_cfg.get("model", "gemini-flash-latest"),
-                fallback_models=gemini_cfg.get("fallback_models", ["gemini-flash-lite-latest", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"]),
+                model=gemini_cfg.get("model", "gemini-2.0-flash"),
+                fallback_models=gemini_cfg.get("fallback_models", ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"]),
             )
             logger.info("gemini_llm_initialized_on_boot")
+        elif self.llm_provider_type in ("openai_compatible", "openai"):
+            openai_cfg = llm_cfg.get("openai_compatible", {})
+            persisted_model = self._get_persisted_openai_model(openai_cfg.get("model", "gpt-4o"))
+            self.llm = OpenAICompatibleLLM(
+                api_key=openai_cfg.get("api_key"),
+                base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
+                model=persisted_model,
+                context_window=openai_cfg.get("context_window", 128000),
+                enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
+            )
+            logger.info("openai_compatible_llm_initialized_on_boot", model=persisted_model)
         else:
             self.llm = LlamaServerLLM(
                 base_url=llm_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
@@ -448,7 +462,7 @@ class RobotEngine:
             # This MUST be the final warmup step so the llama-server slot is freshly
             # loaded with the system prompt when the first user utterance arrives.
             # 4. LLM Warmup (only necessary for local llama-server KV cache slot 0)
-            if self.llm_provider_type == "gemini":
+            if self.llm_provider_type in ("gemini", "openai_compatible", "openai"):
                 # Ensure local llama-server is stopped so 3.4GB VRAM is free
                 if LlamaServerManager.is_running():
                     await LlamaServerManager.stop()
@@ -464,8 +478,8 @@ class RobotEngine:
         if prov_file.exists():
             try:
                 p = prov_file.read_text().strip().lower()
-                if p in ("local", "gemini"):
-                    return p
+                if p in ("local", "gemini", "openai_compatible", "openai"):
+                    return "openai_compatible" if p == "openai" else p
             except Exception:
                 pass
         return default
@@ -478,28 +492,49 @@ class RobotEngine:
         except Exception as e:
             logger.warning("failed_to_persist_llm_provider", error=str(e))
 
+    def _get_persisted_openai_model(self, default: str = "gpt-4o") -> str:
+        model_file = Path("data/active_openai_model.txt")
+        if model_file.exists():
+            try:
+                m = model_file.read_text().strip()
+                if m:
+                    return m
+            except Exception:
+                pass
+        return default
+
+    def _persist_openai_model(self, model: str) -> None:
+        try:
+            model_file = Path("data/active_openai_model.txt")
+            model_file.parent.mkdir(parents=True, exist_ok=True)
+            model_file.write_text(model.strip())
+        except Exception as e:
+            logger.warning("failed_to_persist_openai_model", error=str(e))
+
     async def switch_llm_provider(self, target: str) -> dict:
-        """Dynamically toggle between Local (RTX 3050) and Cloud Gemini (High-Intelligence 1M Context).
+        """Dynamically toggle between Local (RTX 3050), Cloud Gemini, and OpenAI-Compatible API.
         
-        When switching to Gemini:
-        - Kills llama-server process and releases 100% of GPU VRAM (3.4GB).
-        - Switches to Gemini OpenAI-compatible client with 1M context.
-        
-        When switching to Local:
-        - Starts llama-server offloaded to RTX 3050 with FlashAttention.
-        - Pre-warms KV cache slot with active personality & tools schema.
-        - Switches to low-latency local client.
+        Args:
+            target: Provider name ('local', 'gemini', or 'openai_compatible').
+
+        Returns:
+            dict: Status summary containing the active provider and metadata.
         """
         target = target.strip().lower()
-        if target not in ("local", "gemini"):
-            return {"status": "error", "message": f"Invalid provider '{target}'. Must be 'local' or 'gemini'."}
+        if target == "openai":
+            target = "openai_compatible"
+        if target not in ("local", "gemini", "openai_compatible"):
+            return {
+                "status": "error",
+                "message": f"Invalid provider '{target}'. Must be 'local', 'gemini', or 'openai_compatible'.",
+            }
 
         async with self._provider_switch_lock:
             if target == self.llm_provider_type:
                 return {
                     "status": "ok",
                     "provider": self.llm_provider_type,
-                    "mode": "high_intelligence" if target == "gemini" else "low_latency",
+                    "mode": "low_latency" if target == "local" else "high_intelligence",
                     "already_active": True,
                 }
 
@@ -507,6 +542,7 @@ class RobotEngine:
 
             llm_cfg = self.config.get("llm", {})
             gemini_cfg = llm_cfg.get("gemini", {})
+            openai_cfg = llm_cfg.get("openai_compatible", {})
 
             if target == "gemini":
                 # 1. Kill local llama-server to free 3.4GB VRAM
@@ -515,8 +551,8 @@ class RobotEngine:
                 self.llm = GeminiLLM(
                     api_key=gemini_cfg.get("api_key"),
                     base_url=gemini_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"),
-                    model=gemini_cfg.get("model", "gemini-3.5-flash-lite"),
-                    fallback_models=gemini_cfg.get("fallback_models", ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]),
+                    model=gemini_cfg.get("model", "gemini-2.0-flash"),
+                    fallback_models=gemini_cfg.get("fallback_models", ["gemini-1.5-flash", "gemini-2.5-flash"]),
                 )
                 self.llm_provider_type = "gemini"
                 self._persist_llm_provider("gemini")
@@ -525,10 +561,36 @@ class RobotEngine:
                     "status": "ok",
                     "provider": "gemini",
                     "mode": "high_intelligence",
-                    "model": getattr(self.llm, "model", "gemini-3.5-flash-lite"),
+                    "model": getattr(self.llm, "model", "gemini-2.0-flash"),
                     "context_window": 1000000,
                     "vram_freed": True,
                 }
+
+            elif target == "openai_compatible":
+                # 1. Kill local llama-server to free 3.4GB VRAM
+                await LlamaServerManager.stop()
+                # 2. Switch to OpenAI-Compatible provider
+                active_model = self._get_persisted_openai_model(openai_cfg.get("model", "gpt-4o"))
+                self.llm = OpenAICompatibleLLM(
+                    api_key=openai_cfg.get("api_key"),
+                    base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
+                    model=active_model,
+                    context_window=openai_cfg.get("context_window", 128000),
+                    enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
+                )
+                self.llm_provider_type = "openai_compatible"
+                self._persist_llm_provider("openai_compatible")
+                await self.events.emit("llm.provider_changed", provider="openai_compatible", mode="high_intelligence")
+                return {
+                    "status": "ok",
+                    "provider": "openai_compatible",
+                    "mode": "high_intelligence",
+                    "model": active_model,
+                    "context_window": openai_cfg.get("context_window", 128000),
+                    "vram_freed": True,
+                    "prompt_caching": openai_cfg.get("enable_prompt_caching", True),
+                }
+
             else:
                 # 1. Start local llama-server on RTX 3050
                 started = await LlamaServerManager.start()
@@ -543,6 +605,8 @@ class RobotEngine:
                     model=llm_cfg.get("model", "Qwen3.5-4B-Q4_K_M"),
                     enable_thinking=llm_cfg.get("enable_thinking", False),
                 )
+                if hasattr(self, "tool_registry") and self.tool_registry and hasattr(self.llm, "set_canonical_tools"):
+                    self.llm.set_canonical_tools(self.tool_registry.get_schemas())
                 self.llm_provider_type = "local"
                 self._persist_llm_provider("local")
                 # 3. Warm up KV cache slot
@@ -557,7 +621,7 @@ class RobotEngine:
                     "provider": "local",
                     "mode": "low_latency",
                     "model": getattr(self.llm, "model", "Qwen3.5-4B-Q4_K_M"),
-                    "context_window": 4096,
+                    "context_window": 16384,
                     "llama_running": True,
                 }
 
@@ -628,10 +692,16 @@ class RobotEngine:
         sys_prompt = pers.system_prompt if pers else "You are a helpful robot."
         ns = getattr(pers, "memory_namespace", "default")
         user_profile = None
+        all_facts = None
         mem = getattr(self, "memory", None)
         if mem and hasattr(mem, "get_core_user_profile"):
             try:
                 user_profile = await mem.get_core_user_profile(user_id=ns)
+            except Exception:
+                pass
+        if mem and hasattr(mem, "get_all_facts"):
+            try:
+                all_facts = await mem.get_all_facts(user_id=ns, limit=50)
             except Exception:
                 pass
 
@@ -657,6 +727,7 @@ class RobotEngine:
             system_prompt=sys_prompt,
             user_text=silent_text,
             user_profile=user_profile,
+            all_facts=all_facts,
             situation=situation,
             high_intelligence=getattr(self, "high_intelligence_mode", False),
         )
@@ -666,6 +737,8 @@ class RobotEngine:
         try:
             reg = getattr(self, "tool_registry", None)
             tools_schema = reg.get_schemas() if reg is not None else None
+            if hasattr(self.llm, "set_canonical_tools") and reg is not None:
+                self.llm.set_canonical_tools(reg.get_schemas())
             async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
@@ -1082,9 +1155,9 @@ class RobotEngine:
         system_prompt = personality.system_prompt if personality else ""
         ns = getattr(personality, "memory_namespace", "default")
 
-        # In Gemini High-Intelligence mode (1M context), provide rich context (up to 80% / 800k tokens)
+        # In Cloud High-Intelligence mode (Gemini 1M / OpenAI-Compatible 128k), provide rich context (up to 80% tokens)
         # In Local mode, keep low-latency budget (3 turns, 5 memories)
-        is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
+        is_gemini = getattr(self, "llm_provider_type", "local") in ("gemini", "openai_compatible", "openai")
 
         # Adaptive Context Sizing:
         # Prevent TPM rate-limit throttling and high TTFT on simple conversational banter (e.g. "hi", "how are you").
@@ -1240,18 +1313,10 @@ class RobotEngine:
             metadata={"model": self.config.get("llm", {}).get("model", "Qwen3.5-4B-Q4_K_M")},
         )
 
-        # Context-safe tool routing:
-        # Cloud Gemini has 1M context so it receives all schemas.
-        # Local Qwen has a 4K context; inject matched tool families (or all schemas if context permits)
-        tools_schema = None
-        if getattr(self, "tool_registry", None):
-            if is_gemini:
-                tools_schema = self.tool_registry.get_schemas()
-            else:
-                if selected_tool_names:
-                    tools_schema = self.tool_registry.get_schemas(selected_tool_names)
-                else:
-                    tools_schema = None
+        # Invariant tool schema preservation:
+        # Retain canonical tools schema (~10,280 tokens at Token 0) on every turn in local mode
+        # to guarantee 100% KV-cache prefix match (<250ms TTFT) while granting full autonomous agency.
+        tools_schema = self.tool_registry.get_schemas() if getattr(self, "tool_registry", None) else None
 
         try:
             stream_max_tokens = 1024 if is_gemini else self.config["llm"].get("max_tokens", 300)
@@ -1307,20 +1372,47 @@ class RobotEngine:
                             await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
                             timing_ref = None
 
-            # Check if model output inline <tool_call> tags
-            if not collected_tool_calls and "<tool_call>" in full_response:
+            # Check if model output inline <tool_call> tags or plain syntax e.g. music.play(query="...")
+            if not collected_tool_calls:
                 import re
                 import json as _json
-                for match in re.findall(r"<tool_call>\s*({.*?})\s*</tool_call>", full_response, re.DOTALL):
-                    try:
-                        parsed = _json.loads(match)
-                        collected_tool_calls.append({
-                            "id": f"call_{len(collected_tool_calls)}_{int(time.time()*1000)}",
-                            "type": "function",
-                            "function": parsed if "name" in parsed else {"name": parsed.get("function", ""), "arguments": parsed.get("parameters", {})},
-                        })
-                    except Exception:
-                        pass
+                if "<tool_call>" in full_response:
+                    for match in re.findall(r"<tool_call>\s*({.*?})\s*</tool_call>", full_response, re.DOTALL):
+                        try:
+                            parsed = _json.loads(match)
+                            collected_tool_calls.append({
+                                "id": f"call_{len(collected_tool_calls)}_{int(time.time()*1000)}",
+                                "type": "function",
+                                "function": parsed if "name" in parsed else {"name": parsed.get("function", ""), "arguments": parsed.get("parameters", {})},
+                            })
+                        except Exception:
+                            pass
+                else:
+                    # Fallback for plain syntax: tool.name(arg="val", ...)
+                    known_tools = set(self.tool_registry.list_tools()) if getattr(self, "tool_registry", None) else set()
+                    for t_name in known_tools:
+                        pat = rf"(?:\[)?\b{re.escape(t_name)}\s*\((.*?)\)(?:\])?"
+                        m = re.search(pat, full_response)
+                        if m:
+                            args_str = m.group(1).strip()
+                            args_dict: dict[str, Any] = {}
+                            if args_str:
+                                for k, v in re.findall(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,\s\)]+))', args_str):
+                                    val: Any = v[0] or v[1] or v[2]
+                                    if isinstance(val, str) and val.lower() == "true":
+                                        val = True
+                                    elif isinstance(val, str) and val.lower() == "false":
+                                        val = False
+                                    elif isinstance(val, str) and val.isdigit():
+                                        val = int(val)
+                                    args_dict[k] = val
+                            collected_tool_calls.append({
+                                "id": f"call_inline_{int(time.time()*1000)}",
+                                "type": "function",
+                                "function": {"name": t_name, "arguments": args_dict},
+                            })
+                            logger.info("plaintext_tool_call_intercepted", tool=t_name, arguments=args_dict)
+                            break
 
             if not interrupt.is_set():
                 gen_ms = (time.perf_counter() - t_llm_start) * 1000
@@ -1707,7 +1799,7 @@ class RobotEngine:
         active_pers = self.personalities.active
         ns = getattr(active_pers, "memory_namespace", active_pers_name)
 
-        is_gemini = getattr(self, "llm_provider_type", "local") == "gemini"
+        is_gemini = getattr(self, "llm_provider_type", "local") in ("gemini", "openai_compatible", "openai")
 
         # 1. Fetch recent conversation history strictly isolated to target_session
         recent_history = []
@@ -1742,6 +1834,14 @@ class RobotEngine:
                 situation = sit_res
         world_compact = situation.get("world_state")
 
+        # Retrieve Core User Profile Sheet
+        user_profile = None
+        if self.memory and hasattr(self.memory, "get_core_user_profile"):
+            try:
+                user_profile = await self.memory.get_core_user_profile(user_id=ns)
+            except Exception:
+                user_profile = None
+
         pers_prompt = (
             active_pers.system_prompt
             if active_pers and getattr(active_pers, "system_prompt", None)
@@ -1757,22 +1857,10 @@ class RobotEngine:
             world_state=world_compact,
             situation=situation,
             high_intelligence=is_gemini,
+            user_profile=user_profile,
         )
 
-        tools = None
-        if hasattr(self, "tool_registry") and self.tool_registry:
-            if is_gemini:
-                tools = self.tool_registry.get_schemas()
-            else:
-                selected_tool_names = (
-                    self.tool_router.select_tools(text, recent_context=recent_history)
-                    if hasattr(self, "tool_router") and self.tool_router
-                    else []
-                )
-                if selected_tool_names:
-                    tools = self.tool_registry.get_schemas(selected_tool_names)
-                else:
-                    tools = None
+        tools = self.tool_registry.get_schemas() if hasattr(self, "tool_registry") and self.tool_registry else None
 
         yield {
             "event": "start",

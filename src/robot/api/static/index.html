@@ -250,7 +250,19 @@
                             <span class="model-type-tag" id="activeModelBadge">LOCAL GPU</span>
                             <span class="model-title" id="activeModelName">Qwen 3.5 4B • RTX 3050 • 16K</span>
                         </div>
-                        <button class="model-swap-btn" id="btnSwapModelPanel" title="Click to swap between Local Qwen (RTX 3050) and Gemini Cloud (1M Context)">
+                        <div class="openai-model-controls" id="openaiModelControls" style="display: none;">
+                            <select id="openaiModelSelect" class="openai-model-dropdown" title="Select Scanned Model">
+                                <option value="gpt-4o">gpt-4o</option>
+                            </select>
+                            <button class="model-sub-btn" id="btnScanOpenaiModels" title="Scan available models from OpenAI-compatible API">
+                                <span class="scan-icon" id="scanBtnIcon">🔄</span>
+                                <span>Scan</span>
+                            </button>
+                            <button class="model-sub-btn" id="btnOpenaiConfig" title="Configure API Base URL, Key & Prompt Caching">
+                                <span>⚙️</span>
+                            </button>
+                        </div>
+                        <button class="model-swap-btn" id="btnSwapModelPanel" title="Click to cycle AI Provider: Local (RTX 3050) ⮀ Gemini (1M) ⮀ OpenAI-Compatible">
                             <span class="swap-icon" id="swapBtnIcon">✨</span>
                             <span id="swapModelBtnText">SWAP TO GEMINI</span>
                         </button>
@@ -626,9 +638,27 @@
                             <span class="pill-dot"></span>
                             <span id="chatPersonaLabel">CYPHER</span>
                         </div>
-                        <div class="chat-stat-pill pill-local" id="chatActiveModelPill" title="Current Active AI Model">
+                        <div class="chat-stat-pill pill-local" id="chatActiveModelPill" title="Current Active AI Model. Click to switch LLM provider.">
                             <span class="model-icon">⚡</span>
                             <span id="chatModelLabel">LOCAL QWEN (16K)</span>
+                        </div>
+                        <!-- OpenAI-Compatible Model Selector in Chat Mode -->
+                        <div class="chat-openai-controls" id="chatOpenaiControls" style="display: none;">
+                            <div class="chat-openai-dropdown-wrapper">
+                                <select class="chat-openai-select" id="chatOpenaiModelSelect" title="Select active OpenAI-compatible model">
+                                    <option value="gpt-4o">gpt-4o</option>
+                                </select>
+                                <span class="chat-select-arrow">▾</span>
+                            </div>
+                            <button class="chat-openai-btn" id="btnChatScanOpenai" type="button" title="Scan available models from OpenAI endpoint">
+                                <span class="scan-icon">↻</span>
+                            </button>
+                            <button class="chat-openai-btn" id="btnChatOpenaiConfig" type="button" title="Configure OpenAI API URL and key">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                                </svg>
+                            </button>
                         </div>
                         <div class="chat-stat-pill chat-mic-pill" id="chatMicPill" title="Microphone is automatically unloaded/paused in text chat mode">
                             <span class="mic-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px;"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></span>
@@ -652,21 +682,21 @@
                                 <span class="chat-tools-count" id="chatToolsCount">42 ACTIVE</span>
                             </div>
                             <div class="chat-category-tabs" id="chatCategoryTabs">
-                                <button class="cat-tab active" data-cat="all">🌟 All</button>
-                                <button class="cat-tab" data-cat="feeds">⛅ Feeds</button>
-                                <button class="cat-tab" data-cat="smarthome">💡 Smart Home</button>
+                                <button class="cat-tab active" data-cat="quick">⚡ Quick</button>
                                 <button class="cat-tab" data-cat="os">💻 OS & Apps</button>
                                 <button class="cat-tab" data-cat="schedule">⏱️ Schedule</button>
                                 <button class="cat-tab" data-cat="system">🧮 System</button>
                                 <button class="cat-tab" data-cat="vision">👁️ Vision</button>
                                 <button class="cat-tab" data-cat="media">🎵 Media</button>
+                                <button class="cat-tab" data-cat="smarthome">💡 Home</button>
+                                <button class="cat-tab" data-cat="feeds">⛅ Feeds</button>
                                 <button class="cat-tab" data-cat="persona">🎭 Persona</button>
                             </div>
                         </div>
 
                         <div class="chat-quick-chips" id="chatQuickChips">
                             <!-- Feeds & Online Info -->
-                            <button class="chat-chip" data-cat="feeds" data-tool="weather.forecast" data-prefix="What is the weather forecast for " title="weather.forecast: Open-Meteo live weather & multi-day forecast"><span class="chip-icon">⛅</span> Weather</button>
+                            <button class="chat-chip" data-cat="quick feeds" data-tool="weather.forecast" data-prefix="What is the weather forecast for " title="weather.forecast: Open-Meteo live weather & multi-day forecast"><span class="chip-icon">⛅</span> Weather</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="news.headlines" data-prefix="Show me the latest top tech and world news headlines" title="news.headlines: Categorized live RSS news feeds"><span class="chip-icon">📰</span> News Feeds</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="finance.quote" data-prefix="What is the current price and market quote for " title="finance.quote: Real-time crypto & stock market ticker"><span class="chip-icon">📈</span> Finance Quote</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="knowledge.wikipedia" data-prefix="Look up on Wikipedia: " title="knowledge.wikipedia: Encyclopedia knowledge"><span class="chip-icon">📚</span> Wikipedia</button>
@@ -686,7 +716,7 @@
                             <button class="chat-chip" data-cat="os" data-tool="git.workspace_commit" data-prefix="Check git status and commit workspace changes with message: " title="git.workspace_commit: Git status & auto-commit"><span class="chip-icon">🔀</span> Git Commit</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.app_launch" data-prefix="Open application: " title="os.app_launch: Launch VS Code, Spotify, Chrome, Terminal, Files, Calc"><span class="chip-icon">🚀</span> Launch App</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.system_control" data-prefix="Lock workstation screen" title="os.system_control: Lock desktop session"><span class="chip-icon">🔒</span> Lock Screen</button>
-                            <button class="chat-chip" data-cat="os" data-tool="os.system_control" data-prefix="Check battery level and power status" title="os.system_control: Hardware battery health & level"><span class="chip-icon">🔋</span> Battery</button>
+                            <button class="chat-chip" data-cat="quick os" data-tool="os.system_control" data-prefix="Check battery level and power status" title="os.system_control: Hardware battery health & level"><span class="chip-icon">🔋</span> Battery</button>
                             <button class="chat-chip" data-cat="os" data-tool="os.display_brightness" data-prefix="Set display brightness to 80%" title="os.display_brightness: Display brightness control"><span class="chip-icon">🔆</span> Brightness</button>
                             <button class="chat-chip" data-cat="os" data-tool="network.wifi_scan" data-prefix="Scan available Wi-Fi networks" title="network.wifi_scan: Wi-Fi access point scanner"><span class="chip-icon">📶</span> Wi-Fi Scan</button>
                             <button class="chat-chip" data-cat="os" data-tool="network.speedtest" data-prefix="Run internet speed test" title="network.speedtest: Bandwidth & latency check"><span class="chip-icon">⚡</span> Speedtest</button>
@@ -695,31 +725,31 @@
                             <button class="chat-chip" data-cat="os" data-tool="os.notify_desktop" data-prefix="Send a desktop notification saying: " title="os.notify_desktop: Native Linux popup notification"><span class="chip-icon">🔔</span> Desktop Popup</button>
 
                             <!-- Schedule & Time -->
-                            <button class="chat-chip" data-cat="schedule" data-tool="timer.set" data-prefix="Set a timer for 5 minutes for " title="timer.set: SQLite-backed countdown timer"><span class="chip-icon">⏱️</span> Set Timer</button>
+                            <button class="chat-chip" data-cat="quick schedule" data-tool="timer.set" data-prefix="Set a timer for 5 minutes for " title="timer.set: SQLite-backed countdown timer"><span class="chip-icon">⏱️</span> Set Timer</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="timer.list" data-prefix="What active timers do I have running?" title="timer.list: View countdown timers"><span class="chip-icon">⏳</span> Active Timers</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="alarm.set" data-prefix="Set an alarm for 7:30 AM for " title="alarm.set: Scheduled clock alarm"><span class="chip-icon">⏰</span> Set Alarm</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="reminder.schedule" data-prefix="Remind me in 15 minutes to " title="reminder.schedule: Natural language reminder"><span class="chip-icon">🔔</span> Set Reminder</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="system.daily_briefing" data-prefix="Give me an executive daily briefing with system status and upcoming events." title="system.daily_briefing: Daily executive summary"><span class="chip-icon">☀️</span> Daily Briefing</button>
-                            <button class="chat-chip" data-cat="schedule" data-tool="system.time" data-prefix="What's the current time and date?" title="system.time: World clock & date"><span class="chip-icon">🕒</span> Clock Time</button>
+                            <button class="chat-chip" data-cat="quick schedule" data-tool="system.time" data-prefix="What's the current time and date?" title="system.time: World clock & date"><span class="chip-icon">🕒</span> Clock Time</button>
 
                             <!-- System & Hardware -->
                             <button class="chat-chip" data-cat="system" data-tool="code.run_script" data-prefix="Run Python script snippet: " title="code.run_script: Sandboxed script execution"><span class="chip-icon">💻</span> Run Script</button>
                             <button class="chat-chip" data-cat="system" data-tool="calculator.evaluate" data-prefix="Evaluate formula: " title="calculator.evaluate: Complex math & unit conversions"><span class="chip-icon">🧮</span> Evaluator</button>
                             <button class="chat-chip" data-cat="system" data-tool="translation.translate" data-prefix="Translate text to Spanish: " title="translation.translate: Offline multi-lingual translation"><span class="chip-icon">🌐</span> Translate</button>
                             <button class="chat-chip" data-cat="system" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math"><span class="chip-icon">🧮</span> Math Calc</button>
-                            <button class="chat-chip" data-cat="system" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals"><span class="chip-icon">💻</span> Hardware</button>
+                            <button class="chat-chip" data-cat="quick system" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals"><span class="chip-icon">💻</span> Hardware</button>
                             <button class="chat-chip" data-cat="system" data-tool="system.stop_listening" data-prefix="Stop listening and enter standby mode." title="system.stop_listening: Hands-free wake word standby"><span class="chip-icon">🛑</span> Standby Voice</button>
-                            <button class="chat-chip" data-cat="system" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search"><span class="chip-icon">🧠</span> Vector Memory</button>
+                            <button class="chat-chip" data-cat="quick system" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search"><span class="chip-icon">🧠</span> Vector Memory</button>
 
                             <!-- Vision & Perception -->
                             <button class="chat-chip" data-cat="vision" data-tool="os.capture_screen" data-prefix="Capture screen and describe active windows" title="os.capture_screen: Instant screen VLM analysis"><span class="chip-icon">📸</span> Screen Cap</button>
-                            <button class="chat-chip" data-cat="vision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene"><span class="chip-icon">👁️</span> Camera Vision</button>
+                            <button class="chat-chip" data-cat="quick vision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene"><span class="chip-icon">👁️</span> Camera Vision</button>
                             <button class="chat-chip" data-cat="vision" data-tool="perception.inspect_tabletop" data-prefix="Inspect the tabletop workspace and describe the items" title="perception.inspect_tabletop: AMD iGPU VLM deep visual grounding"><span class="chip-icon">🔬</span> Tabletop VLM</button>
 
                             <!-- Media & Creative -->
-                            <button class="chat-chip" data-cat="media" data-tool="music.play" data-prefix="Play music: " title="music.play: Audio streaming deck"><span class="chip-icon">🎵</span> Play Music</button>
+                            <button class="chat-chip" data-cat="quick media" data-tool="music.play" data-prefix="Play music: " title="music.play: Audio streaming deck"><span class="chip-icon">🎵</span> Play Music</button>
                             <button class="chat-chip" data-cat="media" data-tool="music.control" data-prefix="Pause the music" title="music.control: Volume & playback control"><span class="chip-icon">⏯️</span> Music Control</button>
-                            <button class="chat-chip" data-cat="media" data-tool="image.generate" data-prefix="Generate an image of: " title="image.generate: Cyber-Studio diffusion"><span class="chip-icon">🎨</span> Generate Image</button>
+                            <button class="chat-chip" data-cat="quick media" data-tool="image.generate" data-prefix="Generate an image of: " title="image.generate: Cyber-Studio diffusion"><span class="chip-icon">🎨</span> Generate Image</button>
 
                             <!-- Personality & Gestures -->
                             <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Cypher" title="personality.switch: Switch to Cypher (Hacker)"><span class="chip-icon">🕶️</span> Switch Cypher</button>
@@ -793,6 +823,57 @@
             </div>
         </section>
     </main>
+
+    <!-- OpenAI-Compatible API Configuration Cyberdeck Modal -->
+    <div class="cyber-modal-backdrop" id="openaiConfigModal" style="display: none;">
+        <div class="cyber-modal">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🌐</span>
+                    <span>OPENAI-COMPATIBLE API CONFIGURATION</span>
+                </div>
+                <button class="modal-close-btn" id="btnCloseOpenaiModal" title="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="cfgOpenaiBaseUrl">API Base URL</label>
+                    <input type="text" id="cfgOpenaiBaseUrl" class="cyber-input" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
+                    <span class="form-hint">Compatible with OpenAI, OpenRouter (https://openrouter.ai/api/v1), DeepSeek (https://api.deepseek.com/v1), Ollama (http://127.0.0.1:11434/v1), Groq, vLLM, LM Studio</span>
+                </div>
+                <div class="form-group">
+                    <label for="cfgOpenaiApiKey">API Key / Bearer Token</label>
+                    <div class="input-with-action">
+                        <input type="password" id="cfgOpenaiApiKey" class="cyber-input" placeholder="sk-... (leave blank for local Ollama / LM Studio)">
+                        <button type="button" id="btnToggleApiKeyVisibility" class="btn-input-action" title="Toggle visibility">👁️</button>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label for="cfgOpenaiModel">Default / Active Model</label>
+                        <input type="text" id="cfgOpenaiModel" class="cyber-input" placeholder="gpt-4o" value="gpt-4o">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label for="cfgOpenaiContext">Context Window (Tokens)</label>
+                        <input type="number" id="cfgOpenaiContext" class="cyber-input" placeholder="128000" value="128000">
+                    </div>
+                </div>
+                <div class="form-group checkbox-group">
+                    <label class="cyber-checkbox-label">
+                        <input type="checkbox" id="cfgOpenaiPromptCaching" checked>
+                        <span class="checkbox-custom"></span>
+                        <span>Enable Prefix Prompt Caching (DeepSeek / Anthropic / OpenAI automatic 1024+ token cache discount)</span>
+                    </label>
+                </div>
+                <div class="modal-feedback" id="openaiConfigFeedback"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="cyber-btn btn-secondary" id="btnTestAndScanModal">🔄 Test & Scan Models</button>
+                <button class="cyber-btn btn-primary" id="btnSaveOpenaiConfig">💾 Save & Connect</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
     <script src="/static/three.min.js?v=3.5"></script>

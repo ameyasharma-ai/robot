@@ -7,14 +7,18 @@ import signal
 import sys
 import warnings
 
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*Setting the shape on a NumPy array.*")
-warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*path is deprecated.*")
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="sounddevice")
-warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.jit\.load is deprecated.*")
-warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+import os
+import traceback
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 
 from robot.core.engine import RobotEngine
+from robot.telemetry import get_logger
 
+logger = get_logger("core.main")
 
 import argparse
 
@@ -38,7 +42,11 @@ def main() -> None:
                 asyncio.create_task(engine.stop())
                 engine_task.cancel()
 
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        sigs = [signal.SIGINT, signal.SIGTERM]
+        if hasattr(signal, "SIGQUIT"):
+            sigs.append(signal.SIGQUIT)
+
+        for sig in sigs:
             try:
                 loop.add_signal_handler(sig, _handle_signal)
             except (NotImplementedError, RuntimeError):
@@ -48,9 +56,10 @@ def main() -> None:
             await engine_task
         except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logger.error("engine_task_crashed", error=str(e), traceback=traceback.format_exc())
         finally:
             # Terminate any external background server processes (llama-server, whisper-server)
-            import os
             import subprocess
             try:
                 subprocess.run(["pkill", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -62,6 +71,8 @@ def main() -> None:
         asyncio.run(_runner())
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        logger.error("robot_runner_exception", error=str(e), traceback=traceback.format_exc())
     finally:
         print("\n🤖 Robot Core and all background server processes terminated cleanly.")
         print("🧠 GPU VRAM and system memory released.")

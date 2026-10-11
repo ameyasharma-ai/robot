@@ -234,13 +234,18 @@ class LlamaServerLLM(LLMProvider):
                                 if system_msg:
                                     pruned.append(system_msg)
                                 non_system = [m for m in msgs if m.get("role") != "system"]
-                                if len(non_system) > 4:
-                                    pruned.extend(non_system[-3:])
+                                if len(non_system) > 2 and attempt == 0:
+                                    pruned.extend(non_system[-2:])
                                 else:
-                                    if user_msg and user_msg != last_msg:
-                                        pruned.append(user_msg)
-                                    if last_msg and last_msg != system_msg:
-                                        pruned.append(last_msg)
+                                    # Strip bloated environment telemetry/grounding and retain bare user instruction
+                                    if user_msg:
+                                        u_copy = dict(user_msg)
+                                        u_text = str(u_copy.get("content", ""))
+                                        if "[User Instruction]:\n" in u_text:
+                                            u_copy["content"] = u_text.split("[User Instruction]:\n", 1)[1].strip()
+                                        elif "[User Instruction]:" in u_text:
+                                            u_copy["content"] = u_text.split("[User Instruction]:", 1)[1].strip()
+                                        pruned.append(u_copy)
                                 payload["messages"] = pruned or msgs
                                 if attempt < max_retries:
                                     continue
@@ -370,7 +375,7 @@ class GeminiLLM(LLMProvider):
         self,
         api_key: str | None = None,
         base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
-        model: str = "gemini-3.5-flash-lite",
+        model: str = "gemini-2.0-flash",
         fallback_models: list[str] | None = None,
     ) -> None:
         import os
@@ -378,10 +383,10 @@ class GeminiLLM(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.fallback_models = fallback_models if fallback_models is not None else [
-            "gemini-flash-lite-latest",
-            "gemini-3.1-flash-lite",
-            "gemini-flash-latest",
+            "gemini-1.5-flash",
+            "gemini-2.5-flash",
         ]
+
         self._client: httpx.AsyncClient | None = None
         self._model_cooldown: dict[str, float] = {}
 
@@ -555,6 +560,261 @@ class GeminiLLM(LLMProvider):
                 return resp.status_code == 200
         except Exception:
             return False
+
+
+class OpenAICompatibleLLM(LLMProvider):
+    """OpenAI-compatible streaming LLM client with prompt caching and model discovery.
+
+    Supports OpenAI, OpenRouter, DeepSeek, Groq, Mistral, Ollama, vLLM, and LM Studio.
+    Implements prefix-preserving prompt caching and dynamic /models querying.
+    """
+
+    def __init__(
+        self,
+        base_url: str = "https://api.openai.com/v1",
+        api_key: str | None = None,
+        model: str = "gpt-4o",
+        context_window: int = 128000,
+        max_tokens: int = 1024,
+        enable_prompt_caching: bool = True,
+        timeout: float = 45.0,
+    ) -> None:
+        """Initialize the OpenAI-compatible streaming client.
+
+        Args:
+            base_url: Base endpoint URL (e.g. 'https://api.openai.com/v1').
+            api_key: Optional API key or bearer token.
+            model: Target model name (e.g. 'gpt-4o', 'deepseek-chat').
+            context_window: Maximum context window in tokens.
+            max_tokens: Maximum tokens to generate per turn.
+            enable_prompt_caching: Whether to enable prefix prompt caching optimization.
+            timeout: HTTP request timeout in seconds.
+        """
+        import os as _os
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key if api_key is not None else _os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
+        self.model = model
+        self.context_window = context_window
+        self.max_tokens = max_tokens
+        self.enable_prompt_caching = enable_prompt_caching
+        self.timeout = timeout
+        self.last_cached_tokens: int = 0
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int = 1024,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        """Stream chat completion tokens from the OpenAI-compatible endpoint.
+
+        Args:
+            messages: List of conversation messages adhering to chat format.
+            max_tokens: Maximum tokens to generate for this turn.
+            tools: Optional canonical tool schemas to pass to the model.
+
+        Yields:
+            str: Generated token fragments or '__TOOL_CALL__{...}' markers.
+        """
+        import copy
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        # OpenRouter attribution headers for optimized prompt routing
+        if "openrouter.ai" in self.base_url:
+            headers["HTTP-Referer"] = "https://github.com/ameya/robot"
+            headers["X-Title"] = "Robot Core Humanoid Brain"
+
+        # Format tools schemas into OpenAI-standard function definitions
+        formatted_tools: list[dict[str, Any]] | None = None
+        if tools:
+            formatted_tools = []
+            for t in tools:
+                if "function" in t:
+                    formatted_tools.append({
+                        "type": "function",
+                        "function": t["function"],
+                    })
+                elif "name" in t:
+                    formatted_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": t.get("name"),
+                            "description": t.get("description", ""),
+                            "parameters": t.get("parameters", {}),
+                        },
+                    })
+
+        msgs_payload = copy.deepcopy(messages)
+
+        # Prompt Caching optimization for Anthropic / OpenRouter endpoints
+        if self.enable_prompt_caching and ("openrouter" in self.base_url or "anthropic" in self.base_url):
+            if msgs_payload and msgs_payload[0].get("role") == "system":
+                sys_content = msgs_payload[0].get("content")
+                if isinstance(sys_content, str):
+                    msgs_payload[0]["content"] = [
+                        {
+                            "type": "text",
+                            "text": sys_content,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": msgs_payload,
+            "stream": True,
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+        }
+        if formatted_tools:
+            payload["tools"] = formatted_tools
+            payload["tool_choice"] = "auto"
+
+        url = f"{self.base_url}/chat/completions"
+        tool_calls_acc: dict[int, dict[str, Any]] = {}
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        err_body = await response.aread()
+                        err_str = err_body.decode(errors="replace")
+                        logger.error(
+                            "openai_compatible_http_error",
+                            status=response.status_code,
+                            body=err_str[:200],
+                            model=self.model,
+                        )
+                        yield f"Error from OpenAI-compatible provider ({response.status_code}): {err_str[:150]}"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            # Record prompt caching telemetry if returned
+                            if "usage" in chunk and chunk["usage"]:
+                                details = chunk["usage"].get("prompt_tokens_details") or {}
+                                cached = details.get("cached_tokens", 0)
+                                if cached:
+                                    self.last_cached_tokens = cached
+                                    logger.debug("openai_compatible_cache_hit", cached_tokens=cached)
+
+                            choices = chunk.get("choices", [])
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta", {})
+
+                            # Accumulate streaming tool call deltas
+                            if delta.get("tool_calls"):
+                                for tc in delta["tool_calls"]:
+                                    idx = tc.get("index", 0)
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            "id": tc.get("id", f"call_{idx}"),
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    fn = tc.get("function", {})
+                                    if fn.get("name"):
+                                        tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                    if fn.get("arguments"):
+                                        tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+                                continue
+
+                            token = delta.get("content", "")
+                            if token:
+                                yield token
+                        except (json.JSONDecodeError, KeyError, IndexError):
+                            continue
+
+            if tool_calls_acc:
+                yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
+
+        except Exception as exc:
+            logger.error("openai_compatible_stream_exception", model=self.model, error=str(exc))
+            yield f"Error streaming from OpenAI-compatible provider: {exc}"
+
+    async def scan_models(self) -> list[dict[str, Any]]:
+        """Query the /models endpoint to discover all available models.
+
+        Returns:
+            list[dict[str, Any]]: List of discovered models with 'id', 'name',
+                and metadata, sorted alphabetically.
+
+        Raises:
+            RuntimeError: If endpoint connection or authentication fails.
+        """
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        url = f"{self.base_url}/models"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    raw_list = data.get("data") or data.get("models") or []
+                    models: list[dict[str, Any]] = []
+                    for item in raw_list:
+                        if isinstance(item, str):
+                            m_id = item
+                        elif isinstance(item, dict):
+                            m_id = item.get("id") or item.get("name") or ""
+                        else:
+                            continue
+                        if m_id:
+                            models.append({
+                                "id": m_id,
+                                "name": m_id,
+                            })
+                    models.sort(key=lambda x: str(x["id"]).lower())
+                    logger.info("openai_models_scanned", count=len(models), base_url=self.base_url)
+                    return models
+                else:
+                    err_txt = resp.text[:200]
+                    raise RuntimeError(f"HTTP {resp.status_code}: {err_txt}")
+        except Exception as e:
+            logger.warning("openai_models_scan_failed", error=str(e), url=url)
+            raise RuntimeError(f"Failed to scan models from {url}: {e}")
+
+    async def health_check(self) -> bool:
+        """Check availability and connectivity of the OpenAI-compatible endpoint.
+
+        Returns:
+            bool: True if endpoint responds with HTTP 200, False otherwise.
+        """
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{self.base_url}/models", headers=headers)
+                if resp.status_code == 200:
+                    return True
+                post_resp = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
+                    },
+                    headers=headers,
+                )
+                return post_resp.status_code == 200
+        except Exception:
+            return False
+
+    chat = stream_chat
 
 
 class LlamaServerManager:

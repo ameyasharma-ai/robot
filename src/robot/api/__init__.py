@@ -165,29 +165,184 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         from robot.llm import LlamaServerManager
         llama_running = LlamaServerManager.is_running()
         local_ctx = int(getattr(engine, "config", {}).get("llm", {}).get("context_window", 16384)) if hasattr(engine, "config") else 16384
+        openai_cfg = getattr(engine, "config", {}).get("llm", {}).get("openai_compatible", {}) if hasattr(engine, "config") else {}
+        is_openai = prov in ("openai_compatible", "openai")
+        
+        ctx_win = local_ctx
+        if is_gemini:
+            ctx_win = 1000000
+        elif is_openai:
+            ctx_win = int(openai_cfg.get("context_window", 128000))
+
+        active_model = getattr(engine.llm, "model", "Qwen3.5-4B-Q4_K_M")
         return {
             "provider": prov,
-            "mode": "high_intelligence" if is_gemini else "low_latency",
-            "model": getattr(engine.llm, "model", "gemini-flash-latest" if is_gemini else "Qwen3.5-4B-Q4_K_M"),
-            "context_window": 1000000 if is_gemini else local_ctx,
+            "mode": "high_intelligence" if (is_gemini or is_openai) else "low_latency",
+            "model": active_model,
+            "context_window": ctx_win,
             "llama_running": llama_running,
             "vram_freed": not llama_running,
+            "openai_compatible": {
+                "base_url": openai_cfg.get("base_url", "https://api.openai.com/v1"),
+                "model": getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o")),
+                "context_window": int(openai_cfg.get("context_window", 128000)),
+                "has_api_key": bool(openai_cfg.get("api_key")),
+                "enable_prompt_caching": bool(openai_cfg.get("enable_prompt_caching", True)),
+            },
         }
 
     @app.post("/api/llm/toggle")
     async def toggle_llm_provider():
-        """Toggle between Local (RTX 3050) and Cloud Gemini (1M context)."""
+        """Toggle between Local, Cloud Gemini, and OpenAI-Compatible."""
         current = getattr(engine, "llm_provider_type", "local")
-        target = "gemini" if current in ("local", "llama-server") else "local"
+        if current in ("local", "llama-server"):
+            target = "gemini"
+        elif current == "gemini":
+            target = "openai_compatible"
+        else:
+            target = "local"
         res = await engine.switch_llm_provider(target)
         return res
 
     @app.post("/api/llm/provider")
     async def set_llm_provider(req: dict[str, Any]):
-        """Set specific LLM provider ('local' or 'gemini')."""
+        """Set specific LLM provider ('local', 'gemini', or 'openai_compatible')."""
         target = req.get("provider", "local")
         res = await engine.switch_llm_provider(target)
         return res
+
+    @app.get("/api/llm/openai/models")
+    async def scan_openai_models(base_url: str | None = None, api_key: str | None = None):
+        """Scan available models from the OpenAI-compatible endpoint.
+
+        Args:
+            base_url: Optional override endpoint URL to scan.
+            api_key: Optional override API key.
+
+        Returns:
+            dict[str, Any]: Status and list of discovered model identifiers.
+        """
+        from robot.llm import OpenAICompatibleLLM
+        openai_cfg = getattr(engine, "config", {}).get("llm", {}).get("openai_compatible", {}) if hasattr(engine, "config") else {}
+        target_url = base_url or openai_cfg.get("base_url", "https://api.openai.com/v1")
+        target_key = api_key if api_key is not None else openai_cfg.get("api_key", "")
+        current_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o"))
+
+        scanner = OpenAICompatibleLLM(
+            base_url=target_url,
+            api_key=target_key,
+            model=current_model,
+        )
+        try:
+            models = await scanner.scan_models()
+            return {
+                "status": "ok",
+                "models": models,
+                "count": len(models),
+                "current_model": current_model,
+                "base_url": target_url,
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": str(e),
+                "models": [],
+                "count": 0,
+                "current_model": current_model,
+                "base_url": target_url,
+            }
+
+    @app.post("/api/llm/openai/model")
+    async def set_openai_model(req: dict[str, Any]):
+        """Set active model for the OpenAI-compatible provider.
+
+        Args:
+            req: Payload containing 'model' identifier string.
+
+        Returns:
+            dict[str, Any]: Status confirmation and selected model.
+        """
+        from robot.config import update_env_variable
+        new_model = req.get("model", "").strip()
+        if not new_model:
+            return {"status": "error", "message": "Model name cannot be empty."}
+
+        if hasattr(engine, "_persist_openai_model"):
+            engine._persist_openai_model(new_model)
+        update_env_variable("OPENAI_COMPATIBLE_MODEL", new_model)
+
+        if hasattr(engine, "config"):
+            engine.config.setdefault("llm", {}).setdefault("openai_compatible", {})["model"] = new_model
+
+        if getattr(engine, "llm_provider_type", "") in ("openai_compatible", "openai") and engine.llm:
+            engine.llm.model = new_model
+
+        await engine.events.emit("llm.model_changed", provider="openai_compatible", model=new_model)
+        return {"status": "ok", "model": new_model}
+
+    @app.post("/api/llm/openai/config")
+    async def configure_openai_compatible(req: dict[str, Any]):
+        """Update and persist OpenAI-compatible provider settings to .env.
+
+        Args:
+            req: Configuration payload containing base_url, api_key, model,
+                context_window, and enable_prompt_caching.
+
+        Returns:
+            dict[str, Any]: Status summary and confirmation.
+        """
+        from robot.config import update_env_variable
+        base_url = req.get("base_url", "").strip()
+        api_key = req.get("api_key", "").strip()
+        model = req.get("model", "").strip()
+        ctx_win = req.get("context_window")
+        prompt_caching = req.get("enable_prompt_caching", True)
+
+        openai_cfg = getattr(engine, "config", {}).setdefault("llm", {}).setdefault("openai_compatible", {})
+
+        if base_url:
+            openai_cfg["base_url"] = base_url
+            update_env_variable("OPENAI_COMPATIBLE_BASE_URL", base_url)
+        if api_key is not None and api_key != "":
+            openai_cfg["api_key"] = api_key
+            update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
+        if model:
+            openai_cfg["model"] = model
+            if hasattr(engine, "_persist_openai_model"):
+                engine._persist_openai_model(model)
+            update_env_variable("OPENAI_COMPATIBLE_MODEL", model)
+        if ctx_win:
+            try:
+                int_ctx = int(ctx_win)
+                openai_cfg["context_window"] = int_ctx
+                update_env_variable("OPENAI_COMPATIBLE_CONTEXT_WINDOW", str(int_ctx))
+            except ValueError:
+                pass
+        openai_cfg["enable_prompt_caching"] = bool(prompt_caching)
+        update_env_variable("OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING", "true" if prompt_caching else "false")
+
+        # If currently active, refresh live LLM instance
+        if getattr(engine, "llm_provider_type", "") in ("openai_compatible", "openai") and engine.llm:
+            from robot.llm import OpenAICompatibleLLM
+            engine.llm = OpenAICompatibleLLM(
+                base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
+                api_key=openai_cfg.get("api_key", ""),
+                model=openai_cfg.get("model", "gpt-4o"),
+                context_window=openai_cfg.get("context_window", 128000),
+                enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
+            )
+
+        return {
+            "status": "ok",
+            "message": "OpenAI-compatible configuration updated and saved to .env",
+            "config": {
+                "base_url": openai_cfg.get("base_url"),
+                "model": openai_cfg.get("model"),
+                "context_window": openai_cfg.get("context_window"),
+                "enable_prompt_caching": openai_cfg.get("enable_prompt_caching"),
+                "has_api_key": bool(openai_cfg.get("api_key")),
+            },
+        }
 
     # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
     @app.get("/spotify/status")

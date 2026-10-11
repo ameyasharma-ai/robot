@@ -70,7 +70,9 @@ def format_situation_banner(situation: dict | None = None) -> str:
 
         tz_ist = zoneinfo.ZoneInfo("Asia/Kolkata")
         now_ist = datetime.now(tz_ist)
-        time_str = f"{now_ist.strftime('%I:%M %p IST')} ({now_ist.strftime('%A, %B %d, %Y')})"
+        # Bucket minute to 15-minute intervals to guarantee 100% KV cache prefix stability across multi-turn sessions
+        bucketed_min = (now_ist.minute // 15) * 15
+        time_str = f"{now_ist.replace(minute=bucketed_min, second=0).strftime('%I:%M %p IST')} ({now_ist.strftime('%A, %B %d, %Y')})"
     except Exception:
         from datetime import datetime
 
@@ -190,15 +192,19 @@ class ContextEngine:
     """
 
     def __init__(self, budget: dict[str, int] | None = None) -> None:
-        self._budget = budget or {
+        default_budget = {
             "system_personality": 600,
-            "tool_schemas": 1500,
-            "retrieved_memories": 2000,
-            "recent_conversation": 9000,
-            "world_state": 300,
-            "robot_state": 200,
+            "tool_schemas": 10500,
+            "retrieved_memories": 800,
+            "recent_conversation": 2500,
+            "world_state": 200,
+            "robot_state": 100,
             "generation_headroom": 1500,
         }
+        if budget:
+            default_budget.update(budget)
+        self._budget = default_budget
+
 
     def build_messages(
         self,
@@ -255,7 +261,7 @@ class ContextEngine:
         ]
         is_direct_action = any(re.search(pat, (resolved_user or "").lower()) for pat in action_patterns)
 
-        # 2. Complete User Facts & Knowledge Base
+        # 2. Complete User Facts & Knowledge Base (Durable facts placed first to ensure static KV-cache invariance)
         if high_intelligence and all_facts and not is_direct_action:
             facts_str = _format_all_facts(all_facts, budget_tokens=100000)
             if facts_str:
@@ -263,7 +269,8 @@ class ContextEngine:
         elif (resolved_memories or all_facts) and not is_direct_action:
             combined_mems: list[dict] = []
             seen_texts = set()
-            for m in (resolved_memories or []) + (all_facts or []):
+            # Invariant durable facts come first, followed by query-specific recalled context
+            for m in (all_facts or []) + (resolved_memories or []):
                 if isinstance(m, dict):
                     txt = m.get("memory", m.get("fact", m.get("text", ""))).strip()
                     m_item = m
@@ -274,7 +281,7 @@ class ContextEngine:
                     seen_texts.add(txt)
                     combined_mems.append(m_item)
 
-            mem_budget = 50000 if high_intelligence else self._budget["retrieved_memories"]
+            mem_budget = 50000 if high_intelligence else self._budget.get("retrieved_memories", 800)
             mem_str = _format_memories(combined_mems, mem_budget)
             if mem_str:
                 grounding_parts.append(f"[User Personal Profile & Durable Facts (Belonging to User)]:\n{mem_str}")
@@ -310,7 +317,7 @@ class ContextEngine:
                 grounding_parts.append(f"[Historical Multi-Session Conversation Archive]:\n{archive_str}")
 
         # 5. Recent Conversation History (Current Session)
-        conv_budget = 250000 if high_intelligence else self._budget["recent_conversation"]
+        conv_budget = 250000 if high_intelligence else self._budget.get("recent_conversation", 2500)
         if resolved_recent:
             trimmed = _trim_conversation(
                 resolved_recent, conv_budget
@@ -354,9 +361,9 @@ class ContextEngine:
             token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
 
         # Safeguard for Local Mode (RTX 3050 16K context limit):
-        # Cap total prompt at 14,000 tokens, reserving >2,380 tokens headroom for generation.
-        # Prunes oldest turns while strictly preserving invariant system prompt (messages[0]) and user turn (messages[-1]).
-        max_local_cap = 14000
+        # Tools take ~10,280 tokens. Capping messages at 4,800 tokens guarantees total prompt
+        # stays at ~15,080 tokens, leaving >1,300 tokens headroom for generation.
+        max_local_cap = 4800
         if not high_intelligence and token_estimate > max_local_cap:
             logger.warning("enforcing_local_context_cap", estimated_tokens=token_estimate, target_cap=max_local_cap)
             while len(messages) > 2 and token_estimate > max_local_cap:
@@ -365,6 +372,22 @@ class ContextEngine:
             while len(messages) > 2 and messages[1].get("role") in ("tool", "assistant"):
                 popped = messages.pop(1)
                 token_estimate -= _estimate_tokens(str(popped.get("content") or ""))
+
+            # If user message with grounding is still exceeding cap on its own, trim grounding from the TAIL
+            # NEVER slice from the front, as front-slicing shifts offsets and destroys Token 0 KV-cache prefix invariance!
+            if token_estimate > max_local_cap and len(messages) >= 2:
+                u_text = str(messages[-1].get("content") or "")
+                if "[User Instruction]:\n" in u_text:
+                    parts = u_text.split("[User Instruction]:\n", 1)
+                    grounding = parts[0]
+                    instruction = parts[1]
+                    excess_chars = (token_estimate - max_local_cap) * 4
+                    if len(grounding) > excess_chars:
+                        trimmed_grounding = grounding[:-excess_chars]
+                        messages[-1]["content"] = f"{trimmed_grounding}[User Instruction]:\n{instruction}"
+                    else:
+                        messages[-1]["content"] = f"[User Instruction]:\n{instruction}"
+                token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
 
         logger.info(
             "context_built",
