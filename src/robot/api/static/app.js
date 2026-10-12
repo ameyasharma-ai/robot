@@ -491,17 +491,59 @@ class RobotUI {
 
     /**
      * Return formatted model badge text depending on provider and local context size.
-     * @param {string} provider - Active LLM provider ('local', 'gemini', or 'openai_compatible').
+     * @param {string} [provider] - Active LLM provider ('local', 'gemini', or 'openai_compatible').
+     * @param {string} [modelName] - Optional model identifier override.
      * @returns {string} Human-readable badge text.
      */
-    formatModelBadgeText(provider) {
-        if (provider === "openai_compatible") {
-            const m = this.activeOpenaiModel || "gpt-4o";
+    formatModelBadgeText(provider, modelName) {
+        let prov = provider;
+        if (typeof prov !== "string") {
+            prov = prov ? "gemini" : (this.currentLlmProvider || "local");
+        }
+        if (prov === "openai_compatible" || prov === "openai") {
+            const m = modelName || this.activeOpenaiModel || "gpt-4o";
             return `OPENAI (${m.toUpperCase()})`;
         }
-        if (provider === "gemini") return "GEMINI (1M)";
+        if (prov === "gemini") {
+            const m = modelName || "1M";
+            return `GEMINI (${m.toUpperCase()})`;
+        }
         const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
         return `LOCAL QWEN (${ctxK}K)`;
+    }
+
+    /**
+     * Get badge configuration (text, CSS class, icon) for a chat message.
+     * @param {string} [provider] - Active provider identifier.
+     * @param {string} [modelName] - Active model identifier.
+     * @returns {{ text: string, className: string, icon: string }}
+     */
+    getChatMsgBadgeInfo(provider, modelName) {
+        let prov = provider;
+        if (typeof prov !== "string") {
+            prov = prov ? "gemini" : (this.currentLlmProvider || "local");
+        }
+        if (prov === "openai_compatible" || prov === "openai") {
+            const m = modelName || this.activeOpenaiModel || "gpt-4o";
+            return {
+                text: `OPENAI (${m.toUpperCase()})`,
+                className: "badge-openai",
+                icon: "🌐 "
+            };
+        }
+        if (prov === "gemini") {
+            return {
+                text: "GEMINI (1M)",
+                className: "badge-gemini",
+                icon: "✨ "
+            };
+        }
+        const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
+        return {
+            text: `LOCAL QWEN (${ctxK}K)`,
+            className: "badge-local",
+            icon: "⚡ "
+        };
     }
 
     async onEnterChatMode() {
@@ -534,6 +576,7 @@ class RobotUI {
     }
 
     async onExitChatMode() {
+        this.stopSpeakingMessage();
         try {
             const res = await fetch("/voice-mode", {
                 method: "POST",
@@ -651,6 +694,7 @@ class RobotUI {
     }
 
     async selectChatSession(sessionId) {
+        this.stopSpeakingMessage();
         this.activeChatSessionId = sessionId;
         this.renderSessionsList();
 
@@ -780,16 +824,10 @@ class RobotUI {
         let telemHtml = "";
 
         if (!isUser) {
-            let isGeminiMsg = false;
-            if (msg.metadata && msg.metadata.provider) {
-                isGeminiMsg = msg.metadata.provider === "gemini";
-            } else {
-                isGeminiMsg = this.currentLlmProvider === "gemini";
-            }
-            const badgeClass = isGeminiMsg ? "badge-gemini" : "badge-local";
-            const badgeIcon = isGeminiMsg ? "✨ " : "⚡ ";
-            const badgeText = this.formatModelBadgeText(isGeminiMsg);
-            badgeHtml = `<span class="chat-msg-badge ${badgeClass}">${badgeIcon}${badgeText}</span>`;
+            const msgProv = (msg.metadata && msg.metadata.provider) ? msg.metadata.provider : this.currentLlmProvider;
+            const msgModel = (msg.metadata && msg.metadata.model) ? msg.metadata.model : (msgProv === "openai_compatible" ? this.activeOpenaiModel : null);
+            const badgeInfo = this.getChatMsgBadgeInfo(msgProv, msgModel);
+            badgeHtml = `<span class="chat-msg-badge ${badgeInfo.className}">${badgeInfo.icon}${badgeInfo.text}</span>`;
 
             if (msg.metadata && (msg.metadata.tokens || msg.metadata.tok_per_sec)) {
                 const durSec = msg.metadata.duration_ms ? (msg.metadata.duration_ms / 1000) : 0;
@@ -804,6 +842,22 @@ class RobotUI {
             }
         }
 
+        let actionsHtml = "";
+        if (!isUser && msg.content) {
+            actionsHtml = `
+                <div class="chat-msg-actions">
+                    <button class="chat-action-btn btn-msg-speak" type="button" title="Read aloud (Speak response)">
+                        <span class="action-icon">🔊</span>
+                        <span class="action-label">Speak</span>
+                    </button>
+                    <button class="chat-action-btn btn-msg-copy" type="button" title="Copy response text">
+                        <span class="action-icon">📋</span>
+                        <span class="action-label">Copy</span>
+                    </button>
+                </div>
+            `;
+        }
+
         row.innerHTML = `
             <div class="chat-msg-avatar">${avatarIcon}</div>
             <div class="chat-msg-content">
@@ -814,10 +868,26 @@ class RobotUI {
                 </div>
                 ${toolHtml}
                 <div class="chat-msg-body">${contentHtml}</div>
+                ${actionsHtml}
                 ${telemHtml}
             </div>
         `;
         this.chatMessagesContainer.appendChild(row);
+
+        if (!isUser && msg.content) {
+            const speakBtn = row.querySelector(".btn-msg-speak");
+            if (speakBtn) {
+                speakBtn.addEventListener("click", () => {
+                    this.toggleSpeakMessage(speakBtn, msg.content, msg.personality);
+                });
+            }
+            const copyBtn = row.querySelector(".btn-msg-copy");
+            if (copyBtn) {
+                copyBtn.addEventListener("click", () => {
+                    this.copyMessageText(copyBtn, msg.content);
+                });
+            }
+        }
     }
 
     async sendChatMessage(promptText) {
@@ -858,13 +928,7 @@ class RobotUI {
         // Create Assistant Streaming row
         const streamId = `stream_${Date.now()}`;
         const currentPersona = (this.personaSelect ? this.personaSelect.value : "neo").toUpperCase();
-        const isGemini = this.currentLlmProvider === "gemini" || 
-                         (this.btnLlmToggle && this.btnLlmToggle.classList.contains("gemini-mode")) ||
-                         document.getElementById("btnLlmToggle")?.classList.contains("gemini-mode") ||
-                         document.getElementById("activeModelStrip")?.classList.contains("gemini-active");
-        const currentModel = this.formatModelBadgeText(isGemini);
-        const badgeClass = isGemini ? "badge-gemini" : "badge-local";
-        const badgeIcon = isGemini ? "✨ " : "⚡ ";
+        const badgeInfo = this.getChatMsgBadgeInfo(this.currentLlmProvider, this.activeOpenaiModel);
 
         const assistantRow = document.createElement("div");
         assistantRow.className = "chat-msg-row msg-assistant";
@@ -874,7 +938,7 @@ class RobotUI {
             <div class="chat-msg-content">
                 <div class="chat-msg-header">
                     <span class="chat-msg-sender">${currentPersona}</span>
-                    <span class="chat-msg-badge ${badgeClass}">${badgeIcon}${currentModel}</span>
+                    <span class="chat-msg-badge ${badgeInfo.className}">${badgeInfo.icon}${badgeInfo.text}</span>
                     <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
                 <div class="chat-tool-container" id="toolBox_${streamId}"></div>
@@ -947,11 +1011,14 @@ class RobotUI {
                         }
                         if (payload.provider) {
                             this.currentLlmProvider = payload.provider;
-                            const isGem = payload.provider === "gemini";
+                            if (payload.model && (payload.provider === "openai_compatible" || payload.provider === "openai")) {
+                                this.activeOpenaiModel = payload.model;
+                            }
                             const badgeEl = assistantRow.querySelector(".chat-msg-badge");
                             if (badgeEl) {
-                                badgeEl.className = `chat-msg-badge ${isGem ? "badge-gemini" : "badge-local"}`;
-                                badgeEl.textContent = `${isGem ? "✨ " : "⚡ "}${this.formatModelBadgeText(isGem)}`;
+                                const updatedBadge = this.getChatMsgBadgeInfo(payload.provider, payload.model || this.activeOpenaiModel);
+                                badgeEl.className = `chat-msg-badge ${updatedBadge.className}`;
+                                badgeEl.textContent = `${updatedBadge.icon}${updatedBadge.text}`;
                             }
                             this.syncChatTopBar();
                         }
@@ -1063,6 +1130,46 @@ class RobotUI {
             if (this.btnChatSubmit) this.btnChatSubmit.disabled = false;
             if (this.btnChatStopStream) this.btnChatStopStream.style.display = "none";
             if (this.chatLiveSpeed) this.chatLiveSpeed.textContent = "0.0 tok/s";
+
+            // Attach ChatGPT-like Speak and Copy action bar under the generated assistant response
+            if (streamedRawText && streamedRawText.trim()) {
+                const finalContent = streamedRawText.trim();
+                const contentEl = assistantRow.querySelector(".chat-msg-content");
+                if (contentEl && !contentEl.querySelector(".chat-msg-actions")) {
+                    const actionsDiv = document.createElement("div");
+                    actionsDiv.className = "chat-msg-actions";
+                    actionsDiv.innerHTML = `
+                        <button class="chat-action-btn btn-msg-speak" type="button" title="Read aloud (Speak response)">
+                            <span class="action-icon">🔊</span>
+                            <span class="action-label">Speak</span>
+                        </button>
+                        <button class="chat-action-btn btn-msg-copy" type="button" title="Copy response text">
+                            <span class="action-icon">📋</span>
+                            <span class="action-label">Copy</span>
+                        </button>
+                    `;
+                    const telemEl = contentEl.querySelector(".chat-msg-telemetry");
+                    if (telemEl) {
+                        contentEl.insertBefore(actionsDiv, telemEl);
+                    } else {
+                        contentEl.appendChild(actionsDiv);
+                    }
+
+                    const speakBtn = actionsDiv.querySelector(".btn-msg-speak");
+                    if (speakBtn) {
+                        speakBtn.addEventListener("click", () => {
+                            this.toggleSpeakMessage(speakBtn, finalContent, currentPersona.toLowerCase());
+                        });
+                    }
+                    const copyBtn = actionsDiv.querySelector(".btn-msg-copy");
+                    if (copyBtn) {
+                        copyBtn.addEventListener("click", () => {
+                            this.copyMessageText(copyBtn, finalContent);
+                        });
+                    }
+                }
+            }
+
             this.scrollChatToBottom();
             if (this.chatTextarea) this.chatTextarea.focus();
         }
@@ -1071,6 +1178,178 @@ class RobotUI {
     stopChatStream() {
         if (this.chatAbortController) {
             this.chatAbortController.abort();
+        }
+        this.stopSpeakingMessage();
+    }
+
+    /**
+     * Synthesize and play speech audio for a specific assistant message response.
+     * Manages play/stop state, animated button indicator, and Web Audio/Audio element.
+     * Falls back to browser Web Speech API if server-side TTS is offline.
+     *
+     * @param {HTMLElement} btn - The speak action button element clicked.
+     * @param {string} rawText - The unescaped text content to synthesize and read aloud.
+     * @param {string} [personality] - Optional AI persona name for voice modeling.
+     * @returns {Promise<void>}
+     */
+    async toggleSpeakMessage(btn, rawText, personality) {
+        if (!btn || !rawText) return;
+
+        // If this exact button is currently speaking, clicking it stops playback
+        if (btn.classList.contains("is-speaking") && this.currentAudio) {
+            this.stopSpeakingMessage();
+            return;
+        }
+
+        // Stop any previously playing speech
+        this.stopSpeakingMessage();
+
+        const labelSpan = btn.querySelector(".action-label");
+        const iconSpan = btn.querySelector(".action-icon");
+        const origLabel = labelSpan ? labelSpan.textContent : "Speak";
+        const origIcon = iconSpan ? iconSpan.textContent : "🔊";
+
+        btn.classList.add("is-loading");
+        if (labelSpan) labelSpan.textContent = "Synthesizing...";
+        if (iconSpan) iconSpan.textContent = "⏳";
+
+        const currentPersona = (personality || (this.personaSelect ? this.personaSelect.value : "neo")).toLowerCase();
+
+        try {
+            const resp = await fetch("/api/chat/speak", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    text: rawText,
+                    personality: currentPersona
+                })
+            });
+
+            if (!resp.ok) {
+                throw new Error(`TTS synthesis returned status ${resp.status}`);
+            }
+
+            const blob = await resp.blob();
+            const audioUrl = URL.createObjectURL(blob);
+            const audio = new Audio(audioUrl);
+
+            this.currentAudio = audio;
+            this.currentSpeakingBtn = btn;
+            this.currentAudioUrl = audioUrl;
+
+            btn.classList.remove("is-loading");
+            btn.classList.add("is-speaking");
+            if (labelSpan) labelSpan.textContent = "Stop";
+            if (iconSpan) iconSpan.textContent = "⏹️";
+
+            const cleanup = () => {
+                btn.classList.remove("is-speaking", "is-loading");
+                if (labelSpan) labelSpan.textContent = origLabel;
+                if (iconSpan) iconSpan.textContent = origIcon;
+                if (this.currentAudio === audio) {
+                    this.currentAudio = null;
+                    this.currentSpeakingBtn = null;
+                }
+                if (this.currentAudioUrl) {
+                    try { URL.revokeObjectURL(this.currentAudioUrl); } catch (_) {}
+                    this.currentAudioUrl = null;
+                }
+            };
+
+            audio.onended = cleanup;
+            audio.onerror = cleanup;
+
+            await audio.play();
+        } catch (err) {
+            console.warn("[Speak] Server TTS synthesis failed, attempting Web Speech fallback:", err);
+            // Graceful fallback to browser Web Speech API
+            if (window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+                // Strip markdown backticks/urls for speech
+                const cleanSpeechText = rawText.replace(/```[\s\S]*?```/g, "").replace(/`.*?`/g, "").trim() || rawText;
+                const utter = new SpeechSynthesisUtterance(cleanSpeechText);
+                utter.rate = 1.0;
+
+                btn.classList.remove("is-loading");
+                btn.classList.add("is-speaking");
+                if (labelSpan) labelSpan.textContent = "Stop";
+                if (iconSpan) iconSpan.textContent = "⏹️";
+
+                const onDone = () => {
+                    btn.classList.remove("is-speaking", "is-loading");
+                    if (labelSpan) labelSpan.textContent = origLabel;
+                    if (iconSpan) iconSpan.textContent = origIcon;
+                    this.currentSpeakingBtn = null;
+                };
+
+                utter.onend = onDone;
+                utter.onerror = onDone;
+                this.currentSpeakingBtn = btn;
+                window.speechSynthesis.speak(utter);
+            } else {
+                btn.classList.remove("is-loading", "is-speaking");
+                if (labelSpan) labelSpan.textContent = origLabel;
+                if (iconSpan) iconSpan.textContent = origIcon;
+            }
+        }
+    }
+
+    /**
+     * Stop currently active message speech playback and reset button state.
+     */
+    stopSpeakingMessage() {
+        if (this.currentAudio) {
+            try {
+                this.currentAudio.pause();
+                this.currentAudio.currentTime = 0;
+            } catch (_) {}
+            this.currentAudio = null;
+        }
+        if (this.currentAudioUrl) {
+            try {
+                URL.revokeObjectURL(this.currentAudioUrl);
+            } catch (_) {}
+            this.currentAudioUrl = null;
+        }
+        if (window.speechSynthesis) {
+            try {
+                window.speechSynthesis.cancel();
+            } catch (_) {}
+        }
+        if (this.currentSpeakingBtn) {
+            this.currentSpeakingBtn.classList.remove("is-speaking", "is-loading");
+            const lbl = this.currentSpeakingBtn.querySelector(".action-label");
+            const ico = this.currentSpeakingBtn.querySelector(".action-icon");
+            if (lbl) lbl.textContent = "Speak";
+            if (ico) ico.textContent = "🔊";
+            this.currentSpeakingBtn = null;
+        }
+    }
+
+    /**
+     * Copy text to user clipboard with visual feedback.
+     *
+     * @param {HTMLElement} btn - The copy button element.
+     * @param {string} text - The raw text to copy.
+     */
+    async copyMessageText(btn, text) {
+        if (!btn || !text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            btn.classList.add("is-copied");
+            const lbl = btn.querySelector(".action-label");
+            const ico = btn.querySelector(".action-icon");
+            const origLabel = lbl ? lbl.textContent : "Copy";
+            const origIcon = ico ? ico.textContent : "📋";
+            if (lbl) lbl.textContent = "Copied!";
+            if (ico) ico.textContent = "✓";
+            setTimeout(() => {
+                btn.classList.remove("is-copied");
+                if (lbl) lbl.textContent = origLabel;
+                if (ico) ico.textContent = origIcon;
+            }, 1800);
+        } catch (err) {
+            console.warn("Failed to copy message:", err);
         }
     }
 
@@ -1714,29 +1993,81 @@ class RobotUI {
         const panelBtnText = document.getElementById("swapModelBtnText");
         const panelBtnIcon = document.getElementById("swapBtnIcon");
 
-        // OpenAI Model scanning controls & modal (Dual mode and Chat mode)
+        // OpenAI Model scanning controls & modal (Top Nav, HUD, and Chat mode)
+        const topNavOpenai = document.getElementById("topNavOpenaiControls");
+        const btnTopNavModelPicker = document.getElementById("btnTopNavModelPicker");
+        const btnTopNavScanOpenai = document.getElementById("btnTopNavScanOpenai");
+        const btnTopNavOpenaiConfig = document.getElementById("btnTopNavOpenaiConfig");
+
         const openaiControls = document.getElementById("openaiModelControls");
-        const openaiSelect = document.getElementById("openaiModelSelect");
-        const btnScan = document.getElementById("btnScanOpenaiModels");
+        const btnHudModelPicker = document.getElementById("btnHudModelPicker");
         const btnConfig = document.getElementById("btnOpenaiConfig");
 
         const chatOpenaiControls = document.getElementById("chatOpenaiControls");
-        const chatOpenaiSelect = document.getElementById("chatOpenaiModelSelect");
-        const btnChatScan = document.getElementById("btnChatScanOpenai");
+        const btnChatModelPicker = document.getElementById("btnChatModelPicker");
         const btnChatConfig = document.getElementById("btnChatOpenaiConfig");
         const chatActiveModelPill = document.getElementById("chatActiveModelPill");
 
+        // Searchable Model Picker Modal Elements
+        const modelSearchModal = document.getElementById("openaiModelSearchModal");
+        const modelSearchInput = document.getElementById("modelSearchInput");
+        const btnClearModelSearch = document.getElementById("btnClearModelSearch");
+        const modelSearchResultsList = document.getElementById("modelSearchResultsList");
+        const modelSearchCountLabel = document.getElementById("modelSearchCountLabel");
+        const countAllModelsEl = document.getElementById("countAllModels");
+        const vendorTabs = document.querySelectorAll(".model-vendor-tabs .vendor-tab");
+        const btnModalRescanModels = document.getElementById("btnModalRescanModels");
+        const btnModalOpenConfig = document.getElementById("btnModalOpenConfig");
+        const btnCloseModelSearchModal = document.getElementById("btnCloseModelSearchModal");
+        const btnCancelModelSearch = document.getElementById("btnCancelModelSearch");
+
+        // OpenAI Endpoint Configuration Modal Elements
         const configModal = document.getElementById("openaiConfigModal");
         const btnCloseModal = document.getElementById("btnCloseOpenaiModal");
         const btnCancelModal = document.getElementById("btnCancelOpenaiModal");
         const btnSaveConfig = document.getElementById("btnSaveOpenaiConfig");
         const btnTestScanModal = document.getElementById("btnTestAndScanModal");
-        const inputBaseUrl = document.getElementById("inputOpenaiBaseUrl");
-        const inputApiKey = document.getElementById("inputOpenaiApiKey");
-        const inputModel = document.getElementById("inputOpenaiModel");
-        const inputContext = document.getElementById("inputOpenaiContext");
-        const checkCaching = document.getElementById("checkOpenaiPromptCaching");
+        const btnToggleApiKeyVisibility = document.getElementById("btnToggleApiKeyVisibility");
+        const inputBaseUrl = document.getElementById("cfgOpenaiBaseUrl") || document.getElementById("inputOpenaiBaseUrl");
+        const inputApiKey = document.getElementById("cfgOpenaiApiKey") || document.getElementById("inputOpenaiApiKey");
+        const inputModel = document.getElementById("cfgOpenaiModel") || document.getElementById("inputOpenaiModel");
+        const inputContext = document.getElementById("cfgOpenaiContext") || document.getElementById("inputOpenaiContext");
+        const checkCaching = document.getElementById("cfgOpenaiPromptCaching") || document.getElementById("checkOpenaiPromptCaching");
         const modalFeedback = document.getElementById("openaiConfigFeedback");
+
+        this.scannedOpenaiModels = [];
+        this.currentModelVendorFilter = "all";
+        this.isModelSearchModalOpen = false;
+
+        /**
+         * Update all model display labels across Top Nav, HUD, and Chat mode.
+         * @param {string} [modelName] - Model identifier to display.
+         * @returns {void}
+         */
+        this.updateOpenaiModelDisplays = (modelName) => {
+            const m = modelName || this.activeOpenaiModel || "gpt-4o";
+            const topNavLabel = document.getElementById("topNavModelPickerLabel");
+            if (topNavLabel) topNavLabel.textContent = m;
+            const hudLabel = document.getElementById("hudModelPickerLabel");
+            if (hudLabel) hudLabel.textContent = m;
+            const chatLabel = document.getElementById("chatModelPickerLabel");
+            if (chatLabel) chatLabel.textContent = m;
+
+            const chatModelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
+            if (chatModelLabel && this.currentLlmProvider === "openai_compatible") {
+                chatModelLabel.textContent = "CUSTOM API";
+                if (chatActiveModelPill) {
+                    chatActiveModelPill.title = `Current Provider: Custom OpenAI-Compatible API (${m}). Click to cycle provider.`;
+                }
+            }
+            if (sub && this.currentLlmProvider === "openai_compatible") {
+                sub.textContent = `${m} • CACHED`;
+            }
+            if (panelName && this.currentLlmProvider === "openai_compatible") {
+                panelName.textContent = "Prompt Caching Active";
+                panelName.title = `Active Model: ${m} (Prompt Caching Active)`;
+            }
+        };
 
         /**
          * Update UI indicators across telemetry panel and top header for active LLM provider.
@@ -1778,6 +2109,8 @@ class RobotUI {
             const safeProv = prov || "local";
             this.currentLlmProvider = safeProv;
 
+            const activeM = this.activeOpenaiModel || "gpt-4o";
+
             if (safeProv === "openai_compatible") {
                 if (btn) {
                     btn.classList.remove("gemini-mode", "local-mode");
@@ -1787,22 +2120,24 @@ class RobotUI {
                     panelStrip.classList.remove("gemini-active");
                     panelStrip.classList.add("openai-active");
                 }
+                if (topNavOpenai) topNavOpenai.style.display = "inline-flex";
                 if (openaiControls) openaiControls.style.display = "flex";
                 if (chatOpenaiControls) chatOpenaiControls.style.display = "inline-flex";
 
-                const activeM = this.activeOpenaiModel || "gpt-4o";
                 if (icon) icon.textContent = "🌐";
                 if (label) label.textContent = "OPENAI COMPAT";
                 if (sub) sub.textContent = `${activeM} • CACHED`;
                 if (badge) badge.textContent = "OPENAI";
                 if (panelBadge) panelBadge.textContent = "CUSTOM API";
-                if (panelName) panelName.textContent = `${activeM} • Prompt Caching Active`;
+                if (panelName) {
+                    panelName.textContent = "Prompt Caching Active";
+                    panelName.title = `Active Model: ${activeM} (Prompt Caching Active)`;
+                }
                 if (panelBtnText) panelBtnText.textContent = "SWAP TO LOCAL";
                 if (panelBtnIcon) panelBtnIcon.textContent = "⚡";
                 if (btn) btn.title = `Active: OpenAI-Compatible API (${activeM}, Prompt Caching). Click to cycle to Local Qwen (RTX 3050).`;
 
-                if (chatOpenaiSelect) chatOpenaiSelect.value = activeM;
-                if (openaiSelect) openaiSelect.value = activeM;
+                this.updateOpenaiModelDisplays(activeM);
             } else if (safeProv === "gemini") {
                 if (btn) {
                     btn.classList.remove("local-mode", "openai-mode");
@@ -1812,6 +2147,7 @@ class RobotUI {
                     panelStrip.classList.remove("openai-active");
                     panelStrip.classList.add("gemini-active");
                 }
+                if (topNavOpenai) topNavOpenai.style.display = "none";
                 if (openaiControls) openaiControls.style.display = "none";
                 if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
 
@@ -1832,6 +2168,7 @@ class RobotUI {
                 if (panelStrip) {
                     panelStrip.classList.remove("gemini-active", "openai-active");
                 }
+                if (topNavOpenai) topNavOpenai.style.display = "none";
                 if (openaiControls) openaiControls.style.display = "none";
                 if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
 
@@ -1852,44 +2189,45 @@ class RobotUI {
 
         /**
          * Scan available models from the configured OpenAI-compatible endpoint.
-         * Populates both dual-mode and chat-mode dropdowns and synchronizes active selection.
+         * Populates memory cache, synchronizes active selection, and refreshes search picker.
          * @param {boolean} [autoSelectCurrent=true] - Whether to highlight currently configured model.
          * @returns {Promise<Array<Object>>} List of model objects.
          */
         this.scanOpenaiModels = async (autoSelectCurrent = true) => {
             const scanIcons = [
-                btnScan ? btnScan.querySelector(".scan-icon") : null,
-                btnChatScan ? btnChatScan.querySelector(".scan-icon") : null
+                document.querySelector("#btnScanOpenaiModels .scan-icon"),
+                document.querySelector("#btnChatScanOpenai .scan-icon"),
+                document.querySelector("#btnTopNavScanOpenai .scan-icon"),
+                document.querySelector("#modalRescanIcon")
             ].filter(Boolean);
             scanIcons.forEach((ic) => ic.classList.add("spinning"));
-            if (btnScan) btnScan.disabled = true;
-            if (btnChatScan) btnChatScan.disabled = true;
+
+            const scanButtons = [
+                document.getElementById("btnScanOpenaiModels"),
+                document.getElementById("btnChatScanOpenai"),
+                document.getElementById("btnTopNavScanOpenai"),
+                document.getElementById("btnModalRescanModels")
+            ].filter(Boolean);
+            scanButtons.forEach((b) => b.disabled = true);
 
             try {
                 const res = await fetch("/api/llm/openai/models");
                 const data = await res.json();
                 if (data.status === "ok" && Array.isArray(data.models)) {
-                    const targetModel = data.active_model || this.activeOpenaiModel;
-                    if (data.active_model) {
-                        this.activeOpenaiModel = data.active_model;
+                    this.scannedOpenaiModels = data.models;
+                    const targetModel = data.active_model || data.current_model || data.model || this.activeOpenaiModel;
+                    if (targetModel) {
+                        this.activeOpenaiModel = targetModel;
                     }
 
-                    const selects = [openaiSelect, chatOpenaiSelect].filter(Boolean);
-                    selects.forEach((sel) => {
-                        sel.innerHTML = "";
-                        data.models.forEach((m) => {
-                            const opt = document.createElement("option");
-                            opt.value = m.id;
-                            opt.textContent = m.name || m.id;
-                            sel.appendChild(opt);
-                        });
-                        if (targetModel) {
-                            sel.value = targetModel;
-                        }
-                    });
+                    const endpointHint = document.getElementById("modelEndpointHint");
+                    if (endpointHint && data.base_url) {
+                        endpointHint.textContent = `Endpoint: ${data.base_url}`;
+                    }
 
-                    if (this.currentLlmProvider === "openai_compatible") {
-                        this.updateLlmToggleUi("openai_compatible");
+                    this.updateOpenaiModelDisplays(this.activeOpenaiModel);
+                    if (this.isModelSearchModalOpen) {
+                        this.renderModelSearchResults();
                     }
                     this.logEvent("LLM", `Discovered ${data.count} models at OpenAI endpoint (Active: ${this.activeOpenaiModel}).`, "success");
                     return data.models;
@@ -1900,8 +2238,7 @@ class RobotUI {
                 this.logEvent("ERROR", `Failed scanning OpenAI models: ${err.message}`, "error");
             } finally {
                 scanIcons.forEach((ic) => ic.classList.remove("spinning"));
-                if (btnScan) btnScan.disabled = false;
-                if (btnChatScan) btnChatScan.disabled = false;
+                scanButtons.forEach((b) => b.disabled = false);
             }
             return [];
         };
@@ -1922,11 +2259,11 @@ class RobotUI {
                 });
                 const data = await res.json();
                 if (data.status === "ok") {
-                    this.activeOpenaiModel = data.active_model;
-                    if (openaiSelect) openaiSelect.value = data.active_model;
-                    if (chatOpenaiSelect) chatOpenaiSelect.value = data.active_model;
+                    const newModel = data.active_model || data.model || selectedModel;
+                    this.activeOpenaiModel = newModel;
+                    this.updateOpenaiModelDisplays(newModel);
                     this.updateLlmToggleUi("openai_compatible");
-                    this.logEvent("LLM", `Active OpenAI model set to "${data.active_model}" with prompt caching.`, "success");
+                    this.logEvent("LLM", `Active OpenAI model set to "${newModel}" with prompt caching.`, "success");
                 } else {
                     this.logEvent("ERROR", `Failed selecting model: ${data.message || data.error}`, "error");
                 }
@@ -1935,12 +2272,191 @@ class RobotUI {
             }
         };
 
-        // Wire model dropdown changes across dual and chat mode
-        if (openaiSelect) openaiSelect.addEventListener("change", (e) => handleModelSelectChange(e.target.value));
-        if (chatOpenaiSelect) chatOpenaiSelect.addEventListener("change", (e) => handleModelSelectChange(e.target.value));
+        /**
+         * Determine vendor classification tag for a given model ID.
+         * @param {string} id - Model identifier.
+         * @returns {string} Vendor name.
+         */
+        const getModelVendorTag = (id) => {
+            const low = (id || "").toLowerCase();
+            if (low.startsWith("openai/") || low.includes("gpt") || low.includes("o1-") || low.includes("o3-")) return "OPENAI";
+            if (low.startsWith("anthropic/") || low.includes("claude")) return "CLAUDE";
+            if (low.startsWith("google/") || low.includes("gemini") || low.includes("gemma")) return "GOOGLE";
+            if (low.startsWith("meta-llama/") || low.includes("llama")) return "LLAMA";
+            if (low.startsWith("qwen/") || low.includes("qwen")) return "QWEN";
+            if (low.startsWith("deepseek/") || low.includes("deepseek")) return "DEEPSEEK";
+            if (low.startsWith("mistralai/") || low.includes("mistral") || low.includes("codestral")) return "MISTRAL";
+            if (low.includes("/")) return low.split("/")[0].toUpperCase();
+            return "API";
+        };
 
-        if (btnScan) btnScan.addEventListener("click", () => this.scanOpenaiModels());
-        if (btnChatScan) btnChatScan.addEventListener("click", () => this.scanOpenaiModels());
+        /**
+         * Render filtered models in the searchable picker modal list.
+         * @returns {void}
+         */
+        this.renderModelSearchResults = () => {
+            if (!modelSearchResultsList) return;
+            modelSearchResultsList.innerHTML = "";
+
+            const query = (modelSearchInput ? modelSearchInput.value : "").trim().toLowerCase();
+            const vendor = this.currentModelVendorFilter || "all";
+
+            const filtered = this.scannedOpenaiModels.filter((m) => {
+                const id = (m.id || "").toLowerCase();
+                const name = (m.name || "").toLowerCase();
+
+                // Vendor tab filter
+                if (vendor !== "all") {
+                    if (vendor === "openai" && !(id.includes("openai") || id.includes("gpt") || id.includes("o1") || id.includes("o3"))) return false;
+                    if (vendor === "anthropic" && !(id.includes("anthropic") || id.includes("claude"))) return false;
+                    if (vendor === "google" && !(id.includes("google") || id.includes("gemini") || id.includes("gemma"))) return false;
+                    if (vendor === "meta" && !(id.includes("meta") || id.includes("llama"))) return false;
+                    if (vendor === "qwen" && !id.includes("qwen")) return false;
+                    if (vendor === "deepseek" && !id.includes("deepseek")) return false;
+                    if (vendor === "mistral" && !(id.includes("mistral") || id.includes("codestral") || id.includes("mixtral"))) return false;
+                }
+
+                // Text search filter
+                if (query) {
+                    return id.includes(query) || name.includes(query);
+                }
+                return true;
+            });
+
+            if (countAllModelsEl) countAllModelsEl.textContent = this.scannedOpenaiModels.length;
+            if (modelSearchCountLabel) {
+                modelSearchCountLabel.textContent = `Showing ${filtered.length} of ${this.scannedOpenaiModels.length} models`;
+            }
+
+            if (filtered.length === 0) {
+                const emptyRow = document.createElement("div");
+                emptyRow.className = "model-list-empty";
+                emptyRow.style.cssText = "padding: 24px; text-align: center; color: var(--text-dim); font-family: var(--font-mono); font-size: 11px;";
+                emptyRow.textContent = query
+                    ? `No models matching "${query}". Try clearing the search or switching vendor tabs.`
+                    : "No models found. Click 'Rescan API' to fetch models from your endpoint.";
+                modelSearchResultsList.appendChild(emptyRow);
+                return;
+            }
+
+            filtered.forEach((m) => {
+                const row = document.createElement("div");
+                const isActive = m.id === this.activeOpenaiModel;
+                row.className = `model-list-row ${isActive ? "active-model-row" : ""}`;
+                row.setAttribute("role", "option");
+                row.setAttribute("aria-selected", isActive ? "true" : "false");
+                row.dataset.modelId = m.id;
+
+                const vTag = getModelVendorTag(m.id);
+                row.innerHTML = `
+                    <div class="model-row-info">
+                        <span class="model-row-vendor-tag">${vTag}</span>
+                        <span class="model-row-name" title="${m.id}">${m.id}</span>
+                    </div>
+                    ${isActive ? '<span class="model-row-badge">✓ ACTIVE</span>' : ""}
+                `;
+
+                row.addEventListener("click", () => {
+                    handleModelSelectChange(m.id);
+                    this.closeModelSearchModal();
+                });
+
+                modelSearchResultsList.appendChild(row);
+            });
+        };
+
+        /**
+         * Open the cyberdeck searchable model picker modal.
+         * @returns {void}
+         */
+        this.openModelSearchModal = () => {
+            if (!modelSearchModal) return;
+            this.isModelSearchModalOpen = true;
+            modelSearchModal.style.display = "flex";
+
+            if (modelSearchInput) {
+                modelSearchInput.value = "";
+                setTimeout(() => modelSearchInput.focus(), 50);
+            }
+            if (btnClearModelSearch) btnClearModelSearch.style.display = "none";
+            this.currentModelVendorFilter = "all";
+            vendorTabs.forEach((tab) => {
+                tab.classList.toggle("active", tab.dataset.vendor === "all");
+            });
+
+            if (this.scannedOpenaiModels.length === 0) {
+                this.scanOpenaiModels();
+            } else {
+                this.renderModelSearchResults();
+            }
+        };
+
+        /**
+         * Close the searchable model picker modal.
+         * @returns {void}
+         */
+        this.closeModelSearchModal = () => {
+            if (!modelSearchModal) return;
+            this.isModelSearchModalOpen = false;
+            modelSearchModal.style.display = "none";
+        };
+
+        // Wire model picker trigger buttons across Top Nav, HUD, and Chat mode
+        if (btnTopNavModelPicker) btnTopNavModelPicker.addEventListener("click", () => this.openModelSearchModal());
+        if (btnHudModelPicker) btnHudModelPicker.addEventListener("click", () => this.openModelSearchModal());
+        if (btnChatModelPicker) btnChatModelPicker.addEventListener("click", () => this.openModelSearchModal());
+        if (btnModalRescanModels) btnModalRescanModels.addEventListener("click", () => this.scanOpenaiModels());
+
+        // Wire search input typing & clear
+        if (modelSearchInput) {
+            modelSearchInput.addEventListener("input", (e) => {
+                if (btnClearModelSearch) {
+                    btnClearModelSearch.style.display = e.target.value ? "inline-block" : "none";
+                }
+                this.renderModelSearchResults();
+            });
+            modelSearchInput.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") {
+                    this.closeModelSearchModal();
+                } else if (e.key === "Enter") {
+                    const firstRow = modelSearchResultsList ? modelSearchResultsList.querySelector(".model-list-row") : null;
+                    if (firstRow && firstRow.dataset.modelId) {
+                        handleModelSelectChange(firstRow.dataset.modelId);
+                        this.closeModelSearchModal();
+                    }
+                }
+            });
+        }
+
+        if (btnClearModelSearch) {
+            btnClearModelSearch.addEventListener("click", () => {
+                if (modelSearchInput) {
+                    modelSearchInput.value = "";
+                    modelSearchInput.focus();
+                }
+                btnClearModelSearch.style.display = "none";
+                this.renderModelSearchResults();
+            });
+        }
+
+        // Wire vendor filter tabs
+        vendorTabs.forEach((tab) => {
+            tab.addEventListener("click", () => {
+                vendorTabs.forEach((t) => t.classList.remove("active"));
+                tab.classList.add("active");
+                this.currentModelVendorFilter = tab.dataset.vendor || "all";
+                this.renderModelSearchResults();
+            });
+        });
+
+        // Wire modal close actions
+        if (btnCloseModelSearchModal) btnCloseModelSearchModal.addEventListener("click", () => this.closeModelSearchModal());
+        if (btnCancelModelSearch) btnCancelModelSearch.addEventListener("click", () => this.closeModelSearchModal());
+        if (modelSearchModal) {
+            modelSearchModal.addEventListener("click", (e) => {
+                if (e.target === modelSearchModal) this.closeModelSearchModal();
+            });
+        }
 
         /**
          * Open the cyberdeck OpenAI configuration modal and prefill current values.
@@ -1964,18 +2480,42 @@ class RobotUI {
                 modalFeedback.textContent = "";
                 modalFeedback.className = "cyberdeck-modal-feedback";
             }
-            if (configModal) configModal.classList.add("open");
+            if (configModal) {
+                configModal.style.display = "flex";
+                configModal.classList.add("open");
+            }
         };
 
+        if (btnTopNavOpenaiConfig) btnTopNavOpenaiConfig.addEventListener("click", openConfigModal);
         if (btnConfig && configModal) btnConfig.addEventListener("click", openConfigModal);
         if (btnChatConfig && configModal) btnChatConfig.addEventListener("click", openConfigModal);
+        if (btnModalOpenConfig) {
+            btnModalOpenConfig.addEventListener("click", () => {
+                this.closeModelSearchModal();
+                openConfigModal();
+            });
+        }
 
         const closeModal = () => {
-            if (configModal) configModal.classList.remove("open");
+            if (configModal) {
+                configModal.style.display = "none";
+                configModal.classList.remove("open");
+            }
         };
 
         if (btnCloseModal) btnCloseModal.addEventListener("click", closeModal);
         if (btnCancelModal) btnCancelModal.addEventListener("click", closeModal);
+        if (configModal) {
+            configModal.addEventListener("click", (e) => {
+                if (e.target === configModal) closeModal();
+            });
+        }
+
+        if (btnToggleApiKeyVisibility && inputApiKey) {
+            btnToggleApiKeyVisibility.addEventListener("click", () => {
+                inputApiKey.type = inputApiKey.type === "password" ? "text" : "password";
+            });
+        }
 
         if (btnSaveConfig) {
             btnSaveConfig.addEventListener("click", async () => {
@@ -2055,11 +2595,12 @@ class RobotUI {
                     this.activeOpenaiModel = data.active_model;
                 } else if (data.openai_compatible && data.openai_compatible.model) {
                     this.activeOpenaiModel = data.openai_compatible.model;
+                } else if (data.provider === "openai_compatible" && data.model) {
+                    this.activeOpenaiModel = data.model;
                 }
                 this.updateLlmToggleUi(data.provider, data.mode);
-                if (data.provider === "openai_compatible") {
-                    this.scanOpenaiModels();
-                }
+                // Background scan of available models for immediate search readiness
+                this.scanOpenaiModels(false);
             }
         } catch (e) {}
 
@@ -2133,7 +2674,9 @@ class RobotUI {
         }
         // Recalibrate 3D avatar viewport and matrix canvas immediately
         setTimeout(() => {
-            this.resize();
+            if (this.matrixRain && typeof this.matrixRain.resize === "function") {
+                this.matrixRain.resize();
+            }
             this._forEachEngine((eng) => {
                 if (eng.onResize) eng.onResize();
             });
@@ -2424,7 +2967,7 @@ class RobotUI {
             const badge = document.getElementById("coordinatorBadge");
             if (badge) {
                 badge.style.display = "inline-block";
-                badge.textContent = `COORDINATOR: ${st}`;
+                badge.textContent = `COORD: ${st}`;
                 if (st === "HOLDING_CONVERSATION" || st === "TOOL_RUNNING") {
                     badge.className = "badge badge-pulsing";
                 } else if (st === "COMPLETED") {

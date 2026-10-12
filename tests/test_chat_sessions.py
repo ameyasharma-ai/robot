@@ -183,6 +183,21 @@ def test_api_chat_endpoints(tmp_db):
     resp = client.get(f"/chat/sessions/{sess_id}")
     assert resp.status_code == 404
 
+    # 6. Test /api/chat/speak synthesis endpoint
+    import numpy as np
+    mock_tts = MagicMock()
+    mock_tts.synthesize = AsyncMock(return_value=(np.zeros(1600, dtype=np.float32), 16000))
+    mock_engine.tts = mock_tts
+
+    resp = client.post("/api/chat/speak", json={"text": "Hello world from chat mode"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/wav"
+    assert len(resp.content) > 44
+
+    # Empty text validation error
+    resp_empty = client.post("/api/chat/speak", json={"text": "   "})
+    assert resp_empty.status_code == 400
+
 
 @pytest.mark.asyncio
 async def test_coordinator_music_play_enqueues_sentinel():

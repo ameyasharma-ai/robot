@@ -89,10 +89,13 @@ class AudioCapture:
                 f"Try: systemctl --user restart pipewire wireplumber pipewire-pulse"
             )
 
-        # Enforce clean hardware capture gain (boost 0)
+        # Enforce clean hardware capture gain and guarantee microphone is unmuted
         try:
             import subprocess
+            subprocess.run(["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "0"], capture_output=True)
+            subprocess.run(["pactl", "set-source-volume", "@DEFAULT_SOURCE@", "100%"], capture_output=True)
             subprocess.run(["amixer", "-c", "1", "sset", "Internal Mic Boost", "0"], capture_output=True)
+            subprocess.run(["amixer", "-c", "1", "sset", "Capture", "35", "cap"], capture_output=True)
         except Exception:
             pass
 

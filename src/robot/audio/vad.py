@@ -21,23 +21,35 @@ class VoiceActivityDetector:
         self,
         sample_rate: int = 16000,
         normal_threshold: float = 0.50,
-        barge_in_threshold: float = 0.92,
+        barge_in_threshold: float = 0.55,
         echo_guard_threshold: float = 0.85,
         energy_threshold: float = 0.005,
-        barge_in_energy: float = 0.035,
+        barge_in_energy: float = 0.008,
         echo_guard_energy: float = 0.02,
-        echo_coupling_ratio: float = 0.45,
+        echo_coupling_ratio: float = 0.40,
     ) -> None:
-        self.sample_rate = sample_rate
-        self.normal_threshold = normal_threshold
-        self.barge_in_threshold = barge_in_threshold
-        self.echo_guard_threshold = echo_guard_threshold
-        self.energy_threshold = energy_threshold
-        self.barge_in_energy = barge_in_energy
-        self.echo_guard_energy = echo_guard_energy
-        self.echo_coupling_ratio = echo_coupling_ratio
-        self._learned_coupling = echo_coupling_ratio
-        self._max_ref_rms = 0.0
+        """Initialize VoiceActivityDetector with adaptive echo suppression thresholds.
+
+        Args:
+            sample_rate: Audio sampling frequency in Hz (default: 16000).
+            normal_threshold: Silero probability threshold during normal listening (default: 0.50).
+            barge_in_threshold: Probability threshold required to barge in over playback (default: 0.55).
+            echo_guard_threshold: Probability threshold during post-speech echo tail (default: 0.85).
+            energy_threshold: Minimal RMS floor for ambient voice detection (default: 0.005).
+            barge_in_energy: Excess RMS margin required above speaker bleed (default: 0.008).
+            echo_guard_energy: RMS floor required during post-speech guard window (default: 0.02).
+            echo_coupling_ratio: Baseline acoustic leakage ratio from laptop speakers to mic (default: 0.40).
+        """
+        self.sample_rate: int = sample_rate
+        self.normal_threshold: float = normal_threshold
+        self.barge_in_threshold: float = barge_in_threshold
+        self.echo_guard_threshold: float = echo_guard_threshold
+        self.energy_threshold: float = energy_threshold
+        self.barge_in_energy: float = barge_in_energy
+        self.echo_guard_energy: float = echo_guard_energy
+        self.echo_coupling_ratio: float = echo_coupling_ratio
+        self._learned_coupling: float = echo_coupling_ratio
+        self._max_ref_rms: float = 0.0
 
         logger.info("loading_silero_vad")
         self._model = load_silero_vad()
@@ -45,7 +57,7 @@ class VoiceActivityDetector:
 
     def detect(
         self,
-        chunk: "torch.Tensor | __import__('numpy').ndarray",
+        chunk: torch.Tensor | __import__('numpy').ndarray,
         rms: float,
         is_bot_speaking: bool = False,
         in_echo_guard: bool = False,
@@ -53,18 +65,22 @@ class VoiceActivityDetector:
     ) -> tuple[bool, float]:
         """Run VAD on a single audio frame with dynamic reference echo subtraction.
 
+        Tracks the acoustic playback envelope with a decay constant that spans
+        the ~200ms audio output ring buffer and hardware DAC latency, dynamically
+        adapting to physical speaker bleed on laptop chassis.
+
         Args:
-            chunk: Audio frame (float32, mono)
-            rms: Pre-computed RMS energy of the frame
-            is_bot_speaking: Whether the robot is currently playing TTS audio
-            in_echo_guard: Whether we're in the post-speech echo guard window
-            ref_rms: Real-time RMS of the TTS audio currently being played through speakers
+            chunk: Audio frame as float32 mono array or torch.Tensor.
+            rms: Pre-computed RMS energy of the zero-centered audio frame.
+            is_bot_speaking: Whether the robot is currently playing TTS audio.
+            in_echo_guard: Whether the pipeline is in the post-speech echo guard window.
+            ref_rms: Real-time RMS of the TTS audio currently being written to speakers.
 
         Returns:
-            (is_voice, speech_probability)
+            Tuple of (is_voice, speech_probability).
         """
-        # Decay max reference envelope over time (~90ms decay)
-        self._max_ref_rms = max(ref_rms, self._max_ref_rms * 0.70)
+        # Slow decay (0.94 per 32ms frame) spans the 200ms PipeWire/ALSA latency
+        self._max_ref_rms = max(ref_rms, self._max_ref_rms * 0.94)
 
         # Dynamic threshold selection based on duplex state
         if is_bot_speaking:
@@ -73,8 +89,8 @@ class VoiceActivityDetector:
             # During playback, microphone captures (speaker_bleed + user_voice).
             # To allow barge-in, mic RMS must exceed the acoustic speaker bleed
             # plus a minimal excess energy threshold corresponding to speech.
-            expected_bleed = self._max_ref_rms * self.echo_coupling_ratio
-            min_rms = max(0.005, expected_bleed) + self.barge_in_energy
+            expected_bleed = self._max_ref_rms * self._learned_coupling
+            min_rms = max(0.006, expected_bleed) + self.barge_in_energy
         elif in_echo_guard:
             threshold = self.echo_guard_threshold
             min_rms = self.echo_guard_energy
@@ -89,6 +105,6 @@ class VoiceActivityDetector:
         if not isinstance(chunk, torch.Tensor):
             chunk = torch.from_numpy(chunk)
 
-        prob = self._model(chunk, self.sample_rate).item()
+        prob = float(self._model(chunk, self.sample_rate).item())
         is_voice = prob > threshold
         return is_voice, prob

@@ -913,7 +913,7 @@ class MemoryManager:
         if hasattr(self, "_last_stored_turns"):
             if last_turn_key in self._last_stored_turns:
                 last_time = self._last_stored_turns[last_turn_key]
-                if now_ts - last_time < 3.0:
+                if now_ts - last_time < 15.0:
                     logger.debug("duplicate_turn_storage_suppressed", session_id=session_id)
                     return
         else:

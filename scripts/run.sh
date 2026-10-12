@@ -32,11 +32,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── 1. Clean Hardware Mic Calibration & EasyEffects Daemon ───────────
-echo "[AUDIO] Calibrating clean hardware microphone capture (35% volume)..."
+echo "[AUDIO] Calibrating clean hardware microphone capture (100% unity gain)..."
 pactl unload-module module-echo-cancel 2>/dev/null || true
-pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 35% 2>/dev/null || true
+pactl set-source-mute alsa_input.pci-0000_05_00.6.analog-stereo 0 2>/dev/null || true
+pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 100% 2>/dev/null || true
 pactl set-default-source alsa_input.pci-0000_05_00.6.analog-stereo 2>/dev/null || true
 amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
+amixer -c 1 sset 'Capture' 35 cap 2>/dev/null || true
 
 if command -v easyeffects >/dev/null 2>&1; then
     if ! pgrep -f "easyeffects" >/dev/null 2>&1; then

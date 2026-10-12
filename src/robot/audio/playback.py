@@ -36,8 +36,8 @@ class AudioPlayer:
         self._duck_target: float = 1.0
         self._duck_rate: float = 0.15
         self._lock = threading.Lock()
-        # Rolling buffer of recent block RMS values (covers ~180ms acoustic travel)
-        self._recent_rms: deque[float] = deque(maxlen=3)
+        # Rolling buffer of recent block RMS values (covers ~320ms acoustic travel & hardware DAC ring buffer)
+        self._recent_rms: deque[float] = deque(maxlen=8)
         self._energy_callbacks: list = []
         self._last_play_time: float = 0.0
 

@@ -13,7 +13,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 logger = structlog.get_logger()
@@ -28,6 +28,16 @@ class ChatRequest(BaseModel):
     text: str
     session_id: str | None = None
     personality: str | None = None
+
+
+class ChatSpeakRequest(BaseModel):
+    """Request model for synthesizing speech audio for a chat message."""
+    text: str
+    personality: str | None = None
+    voice_model: str | None = None
+    speed: float = 1.0
+    pitch: float = 1.0
+    play_hardware: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -240,6 +250,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "models": models,
                 "count": len(models),
                 "current_model": current_model,
+                "active_model": current_model,
                 "base_url": target_url,
             }
         except Exception as e:
@@ -249,6 +260,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "models": [],
                 "count": 0,
                 "current_model": current_model,
+                "active_model": current_model,
                 "base_url": target_url,
             }
 
@@ -278,7 +290,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             engine.llm.model = new_model
 
         await engine.events.emit("llm.model_changed", provider="openai_compatible", model=new_model)
-        return {"status": "ok", "model": new_model}
+        return {"status": "ok", "model": new_model, "active_model": new_model}
 
     @app.post("/api/llm/openai/config")
     async def configure_openai_compatible(req: dict[str, Any]):
@@ -594,6 +606,102 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             turn=engine.state.state.turn_count,
             personality=engine.state.state.active_personality,
             session_id=req.session_id or engine._session_id,
+        )
+
+    @app.post("/api/chat/speak")
+    async def speak_chat_message(req: ChatSpeakRequest) -> Response:
+        """Synthesize and return speech WAV audio for a chat message response.
+
+        Converts message text into 16-bit PCM WAV audio using the active or specified
+        Piper TTS voice model and prosody configuration. Emits a robot phrase event
+        for synchronized avatar lipsync animation.
+
+        Args:
+            req: ChatSpeakRequest containing text, personality, voice_model, speed, pitch.
+
+        Returns:
+            Response containing binary audio/wav content for in-browser playback.
+
+        Raises:
+            HTTPException: 400 if text or audio is empty; 503 if TTS is unavailable.
+        """
+        import io
+        import wave
+        import numpy as np
+
+        raw_text = req.text.strip()
+        if not raw_text:
+            raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+        tts = getattr(engine, "tts", None)
+        if tts is None or not hasattr(tts, "synthesize"):
+            raise HTTPException(status_code=503, detail="TTS provider is not initialized or unavailable.")
+
+        # Resolve voice model and prosody from personality if not explicitly overridden
+        pers_name = req.personality or getattr(engine.state.state, "active_personality", "neo")
+        pers = engine.personalities.get(pers_name) if hasattr(engine, "personalities") and engine.personalities else None
+
+        voice_model = req.voice_model or (getattr(pers, "voice_model", None) if pers else None)
+        speed = req.speed
+        pitch = req.pitch
+        noise_scale: float | None = None
+        noise_w: float | None = None
+
+        if pers and hasattr(pers, "tts_config") and isinstance(pers.tts_config, dict):
+            cfg = pers.tts_config
+            if req.speed == 1.0 and "speed" in cfg:
+                speed = float(cfg["speed"])
+            if req.pitch == 1.0 and "pitch" in cfg:
+                pitch = float(cfg["pitch"])
+            noise_scale = cfg.get("noise_scale")
+            noise_w = cfg.get("noise_w")
+
+        try:
+            audio, sr = await tts.synthesize(
+                raw_text,
+                speed=speed,
+                pitch=pitch,
+                voice_model=voice_model,
+                noise_scale=noise_scale,
+                noise_w=noise_w,
+            )
+        except Exception as exc:
+            logger.error("chat_speak_synthesis_failed", error=str(exc))
+            raise HTTPException(status_code=500, detail=f"Synthesis failed: {exc}")
+
+        if audio is None or len(audio) == 0:
+            raise HTTPException(status_code=400, detail="Synthesized audio was empty.")
+
+        # Optionally play on robot hardware speaker if requested
+        if req.play_hardware and hasattr(engine, "player") and engine.player:
+            asyncio.create_task(engine.player.play(audio, sr))
+
+        # Emit robot_phrase event for avatar lip-sync / expressions
+        if hasattr(engine, "events") and engine.events:
+            try:
+                from robot.tts import clean_text_for_speech
+                clean_phrase = clean_text_for_speech(raw_text)
+                await engine.events.emit("robot_phrase", robot_phrase=clean_phrase)
+            except Exception as e:
+                logger.debug("speak_phrase_event_failed", error=str(e))
+
+        # Convert float32 numpy array to 16-bit PCM WAV
+        int16_audio = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+        wav_buf = io.BytesIO()
+        with wave.open(wav_buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(int16_audio.tobytes())
+        wav_bytes = wav_buf.getvalue()
+
+        return Response(
+            content=wav_bytes,
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": 'inline; filename="response.wav"',
+                "Cache-Control": "no-cache",
+            },
         )
 
     @app.post("/api/transcribe")

@@ -650,8 +650,14 @@ class OpenAICompatibleLLM(LLMProvider):
 
         msgs_payload = copy.deepcopy(messages)
 
-        # Prompt Caching optimization for Anthropic / OpenRouter endpoints
-        if self.enable_prompt_caching and ("openrouter" in self.base_url or "anthropic" in self.base_url):
+        # Prompt Caching optimization for Anthropic / OpenRouter / AICredits / Claude endpoints
+        is_claude_or_caching_proxy = (
+            "openrouter" in self.base_url
+            or "anthropic" in self.base_url
+            or "aicredits" in self.base_url
+            or "claude" in (self.model or "").lower()
+        )
+        if self.enable_prompt_caching and is_claude_or_caching_proxy:
             if msgs_payload and msgs_payload[0].get("role") == "system":
                 sys_content = msgs_payload[0].get("content")
                 if isinstance(sys_content, str):

@@ -13,8 +13,8 @@ llm:
   gemini:
     api_key: "[REDACTED_API_KEY]"
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-    model: "gemini-2.0-flash"
-    fallback_models: ["gemini-1.5-flash", "gemini-2.5-flash"]
+    model: "gemini-3.5-flash"
+    fallback_models: ["gemini-3.5-flash-lite", "gemini-flash-latest"]
 
     context_window: 1000000
     max_tokens: 1024
@@ -45,12 +45,12 @@ audio:
   vad_frame_size: 512       # 32ms at 16kHz
   silence_threshold_ms: 130 # Ultra-low latency voice turnaround (<130ms silence detection)
   barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
-  barge_in_frames: 4        # ~128ms consecutive speech required to interrupt
-  barge_in_confidence: 0.92 # High confidence required during playback to prevent self-interruption
+  barge_in_frames: 3        # ~96ms consecutive speech required to interrupt
+  barge_in_confidence: 0.55 # Threshold during playback after subtracting physical speaker bleed
   normal_confidence: 0.50
   energy_threshold: 0.005
-  barge_in_energy: 0.035    # User voice speaking clearly over laptop speaker playback
-  echo_coupling_ratio: 0.45 # Measured acoustic leakage ratio from laptop chassis speakers to internal mic
+  barge_in_energy: 0.008    # Excess user voice energy margin required over speaker bleed envelope
+  echo_coupling_ratio: 0.40 # Measured acoustic leakage ratio from laptop chassis speakers to internal mic
   echo_guard_confidence: 0.85
   echo_guard_energy: 0.020
   pre_roll_ms: 300

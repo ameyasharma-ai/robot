@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Share+Tech+Mono&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=3.5">
+    <link rel="stylesheet" href="/static/index.css?v=4.1">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -38,6 +38,17 @@
                 </div>
                 <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
             </button>
+            <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
+            <div class="top-nav-openai-controls" id="topNavOpenaiControls" style="display: none;">
+                <button class="top-nav-model-picker-btn" id="btnTopNavModelPicker" type="button" title="Search and select OpenAI-compatible model (400+ available)">
+                    <span class="model-picker-icon">🔍</span>
+                    <span class="model-picker-label" id="topNavModelPickerLabel">Search Model...</span>
+                    <span class="model-picker-caret">▾</span>
+                </button>
+                <button class="top-nav-sub-btn" id="btnTopNavOpenaiConfig" type="button" title="Configure API Endpoint & Key">
+                    ⚙️
+                </button>
+            </div>
         </div>
         <div class="header-center">
             <div class="status-pill status-idle" id="globalStatusPill">
@@ -227,20 +238,22 @@
             <div class="hud-bottom-split" id="hudBottomSplit">
                 <!-- Pipeline Metrics & Execution Flow -->
                 <div class="card card-metrics">
-                    <div class="card-header">
-                        <div class="card-title">
+                    <div class="card-header metrics-card-header">
+                        <div class="card-title metrics-card-title">
                             <span class="icon">⚡</span> LATENCY TARGETS & PIPELINE
                         </div>
-                        <div class="card-badges">
-                            <span class="badge badge-accent" id="coordinatorBadge" style="display: none;">COORDINATOR: IDLE</span>
-                            <span class="badge badge-accent" id="activeToolBadge" style="display: none;">TOOL: NONE</span>
-                            <span class="badge badge-accent" id="activeTraceBadge">TRACE: IDLE</span>
-                        </div>
-                        <div class="health-dots" id="healthDots">
-                            <span class="h-dot h-stt" title="STT (Whisper)">STT</span>
-                            <span class="h-dot h-llm" title="LLM (Qwen 4B)">LLM</span>
-                            <span class="h-dot h-tts" title="TTS (Piper)">TTS</span>
-                            <span class="h-dot h-mem" title="Memory (Mem0)">MEM</span>
+                        <div class="card-header-actions" id="metricsHeaderActions">
+                            <div class="card-badges" id="metricsBadges">
+                                <span class="badge badge-accent" id="coordinatorBadge" style="display: none;">COORD: IDLE</span>
+                                <span class="badge badge-accent" id="activeToolBadge" style="display: none;">TOOL: NONE</span>
+                                <span class="badge badge-accent" id="activeTraceBadge">TRACE: IDLE</span>
+                            </div>
+                            <div class="health-dots" id="healthDots">
+                                <span class="h-dot h-stt" title="STT (Whisper)">STT</span>
+                                <span class="h-dot h-llm" title="LLM (Qwen 4B)">LLM</span>
+                                <span class="h-dot h-tts" title="TTS (Piper)">TTS</span>
+                                <span class="h-dot h-mem" title="Memory (Mem0)">MEM</span>
+                            </div>
                         </div>
                     </div>
 
@@ -251,12 +264,10 @@
                             <span class="model-title" id="activeModelName">Qwen 3.5 4B • RTX 3050 • 16K</span>
                         </div>
                         <div class="openai-model-controls" id="openaiModelControls" style="display: none;">
-                            <select id="openaiModelSelect" class="openai-model-dropdown" title="Select Scanned Model">
-                                <option value="gpt-4o">gpt-4o</option>
-                            </select>
-                            <button class="model-sub-btn" id="btnScanOpenaiModels" title="Scan available models from OpenAI-compatible API">
-                                <span class="scan-icon" id="scanBtnIcon">🔄</span>
-                                <span>Scan</span>
+                            <button class="hud-model-picker-btn" id="btnHudModelPicker" type="button" title="Search & select from 400+ OpenAI-compatible models">
+                                <span class="model-picker-icon">🔍</span>
+                                <span class="model-picker-label" id="hudModelPickerLabel">Search Model...</span>
+                                <span class="caret">▾</span>
                             </button>
                             <button class="model-sub-btn" id="btnOpenaiConfig" title="Configure API Base URL, Key & Prompt Caching">
                                 <span>⚙️</span>
@@ -644,15 +655,12 @@
                         </div>
                         <!-- OpenAI-Compatible Model Selector in Chat Mode -->
                         <div class="chat-openai-controls" id="chatOpenaiControls" style="display: none;">
-                            <div class="chat-openai-dropdown-wrapper">
-                                <select class="chat-openai-select" id="chatOpenaiModelSelect" title="Select active OpenAI-compatible model">
-                                    <option value="gpt-4o">gpt-4o</option>
-                                </select>
+                            <button class="chat-openai-model-btn" id="btnChatModelPicker" type="button" title="Search & select from 400+ OpenAI-compatible models">
+                                <span class="model-picker-icon">🔍</span>
+                                <span class="model-picker-label" id="chatModelPickerLabel">Search Model...</span>
                                 <span class="chat-select-arrow">▾</span>
-                            </div>
-                            <button class="chat-openai-btn" id="btnChatScanOpenai" type="button" title="Scan available models from OpenAI endpoint">
-                                <span class="scan-icon">↻</span>
                             </button>
+
                             <button class="chat-openai-btn" id="btnChatOpenaiConfig" type="button" title="Configure OpenAI API URL and key">
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                                     <circle cx="12" cy="12" r="3"></circle>
@@ -824,6 +832,59 @@
         </section>
     </main>
 
+    <!-- Searchable Model Selector Popover / Modal -->
+    <div class="cyber-modal-backdrop model-search-modal-backdrop" id="openaiModelSearchModal" style="display: none;">
+        <div class="cyber-modal model-search-modal">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🌐</span>
+                    <span>CUSTOM API MODEL SELECTOR</span>
+                </div>
+                <button class="modal-close-btn" id="btnCloseModelSearchModal" title="Close (Esc)">✕</button>
+            </div>
+            <div class="model-search-subbar">
+                <div class="model-search-input-box">
+                    <span class="search-ico">🔍</span>
+                    <input type="text" id="modelSearchInput" class="model-search-input" placeholder="Search 400+ models (e.g. gpt-4o, claude, qwen, llama, gemini, deepseek)..." autocomplete="off" spellcheck="false">
+                    <button type="button" class="search-clear-btn" id="btnClearModelSearch" title="Clear filter" style="display: none;">✕</button>
+                </div>
+                <!-- Quick Vendor Filters -->
+                <div class="model-vendor-tabs" id="modelVendorTabs">
+                    <button class="vendor-tab active" data-vendor="all" type="button">All (<span id="countAllModels">0</span>)</button>
+                    <button class="vendor-tab" data-vendor="openai" type="button">OpenAI</button>
+                    <button class="vendor-tab" data-vendor="anthropic" type="button">Claude</button>
+                    <button class="vendor-tab" data-vendor="google" type="button">Gemini / Gemma</button>
+                    <button class="vendor-tab" data-vendor="meta" type="button">Llama</button>
+                    <button class="vendor-tab" data-vendor="qwen" type="button">Qwen</button>
+                    <button class="vendor-tab" data-vendor="deepseek" type="button">DeepSeek</button>
+                    <button class="vendor-tab" data-vendor="mistral" type="button">Mistral</button>
+                </div>
+                <div class="model-search-meta">
+                    <span id="modelSearchCountLabel">Showing 0 models</span>
+                    <span class="model-endpoint-hint" id="modelEndpointHint">Endpoint: https://api.openai.com/v1</span>
+                </div>
+            </div>
+            <!-- Scrollable Results List -->
+            <div class="model-search-results-list" id="modelSearchResultsList" role="listbox">
+                <!-- Dynamically populated model items -->
+            </div>
+            <div class="modal-footer model-search-footer">
+                <div class="footer-actions-left">
+                    <button class="cyber-btn btn-secondary" id="btnModalRescanModels" type="button" title="Rescan models from endpoint">
+                        <span class="scan-icon" id="modalRescanIcon">🔄</span>
+                        <span>Rescan API</span>
+                    </button>
+                    <button class="cyber-btn btn-secondary" id="btnModalOpenConfig" type="button" title="Edit Endpoint URL and API Key">
+                        <span>⚙️ Configure Endpoint</span>
+                    </button>
+                </div>
+                <button class="cyber-btn btn-secondary" id="btnCancelModelSearch" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- OpenAI-Compatible API Configuration Cyberdeck Modal -->
     <div class="cyber-modal-backdrop" id="openaiConfigModal" style="display: none;">
         <div class="cyber-modal">
@@ -876,13 +937,13 @@
     </div>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
-    <script src="/static/three.min.js?v=3.5"></script>
-    <script src="/static/GLTFLoader.js?v=3.5"></script>
-    <script src="/static/character/CharacterRig.js?v=3.5"></script>
-    <script src="/static/character/CharacterLoader.js?v=3.5"></script>
-    <script src="/static/character/AnimationSystem.js?v=3.5"></script>
-    <script src="/static/character/GazeSystem.js?v=3.5"></script>
-    <script src="/static/character/CharacterEngine.js?v=3.5"></script>
-    <script src="/static/app.js?v=3.5"></script>
+    <script src="/static/three.min.js?v=4.0"></script>
+    <script src="/static/GLTFLoader.js?v=4.0"></script>
+    <script src="/static/character/CharacterRig.js?v=4.0"></script>
+    <script src="/static/character/CharacterLoader.js?v=4.0"></script>
+    <script src="/static/character/AnimationSystem.js?v=4.0"></script>
+    <script src="/static/character/GazeSystem.js?v=4.0"></script>
+    <script src="/static/character/CharacterEngine.js?v=4.0"></script>
+    <script src="/static/app.js?v=4.0"></script>
 </body>
 </html>

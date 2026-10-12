@@ -327,12 +327,12 @@ class RobotEngine:
         self.vad = VoiceActivityDetector(
             sample_rate=audio_cfg.get("sample_rate", 16000),
             normal_threshold=audio_cfg.get("normal_confidence", 0.50),
-            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.92),
+            barge_in_threshold=audio_cfg.get("barge_in_confidence", 0.55),
             echo_guard_threshold=audio_cfg.get("echo_guard_confidence", 0.85),
             energy_threshold=audio_cfg.get("energy_threshold", 0.005),
-            barge_in_energy=audio_cfg.get("barge_in_energy", 0.035),
+            barge_in_energy=audio_cfg.get("barge_in_energy", 0.008),
             echo_guard_energy=audio_cfg.get("echo_guard_energy", 0.02),
-            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.45),
+            echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.40),
         )
 
         # EasyEffects background service & default robot equalizer profile
@@ -857,7 +857,7 @@ class RobotEngine:
             / audio_cfg.get("vad_frame_size", 512)
         )
         barge_in_enabled = audio_cfg.get("barge_in_enabled", False)
-        barge_in_required = audio_cfg.get("barge_in_frames", 5)
+        barge_in_required = audio_cfg.get("barge_in_frames", 3)
         barge_in_cooldown = audio_cfg.get("barge_in_cooldown_s", 0.3)
         echo_guard_s = audio_cfg.get("echo_guard_s", 0.4)
 
@@ -895,12 +895,13 @@ class RobotEngine:
 
             in_echo_guard = (time.time() - self._speech_ended_ts) < echo_guard_s
 
+            ref_rms = self.player.current_rms
             is_voice, prob = self.vad.detect(
                 clean_chunk,
                 rms,
                 (self._is_speaking or self.player.is_playing),
                 in_echo_guard,
-                ref_rms=self.player.current_rms,
+                ref_rms=ref_rms,
             )
 
             if is_voice:
@@ -921,6 +922,11 @@ class RobotEngine:
                     speech_age = time.time() - getattr(self, "_speech_started_ts", 0.0)
                     if speech_age < 0.45:
                         # Grace period: ignore acoustic onset bleed during the first 450ms of robot speech
+                        # Online acoustic transfer calibration clamped to physical hardware bounds (<= 0.45)
+                        if ref_rms > 0.04:
+                            ratio = rms / max(0.01, ref_rms)
+                            if ratio > self.vad._learned_coupling:
+                                self.vad._learned_coupling = min(0.45, self.vad._learned_coupling * 0.85 + ratio * 0.15)
                         barge_in_consecutive = 0
                     elif (time.time() - last_barge_in_time) < barge_in_cooldown:
                         barge_in_consecutive = 0
@@ -1862,11 +1868,16 @@ class RobotEngine:
 
         tools = self.tool_registry.get_schemas() if hasattr(self, "tool_registry") and self.tool_registry else None
 
+        active_model_name = getattr(self.llm, "model", None)
+        if not active_model_name and getattr(self, "llm_provider_type", "local") in ("openai_compatible", "openai"):
+            active_model_name = getattr(self, "_get_persisted_openai_model", lambda d: d)("gpt-4o")
+
         yield {
             "event": "start",
             "session_id": target_session,
             "personality": active_pers_name,
             "provider": getattr(self, "llm_provider_type", "local"),
+            "model": active_model_name,
         }
 
         t_start = time.perf_counter()
@@ -2030,6 +2041,7 @@ class RobotEngine:
                 "tokens": token_count,
                 "duration_ms": round(total_dur_ms, 1),
                 "provider": getattr(self, "llm_provider_type", "local"),
+                "model": active_model_name,
                 "tools": [t.get("name") for t in tools_called],
             }
             primary_tool = tools_called[0] if tools_called else None
