@@ -1030,6 +1030,11 @@ class RobotUI {
                             const speed = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : "0.0";
                             if (this.chatLiveSpeed) this.chatLiveSpeed.textContent = `${speed} tok/s`;
                             if (textSpan) textSpan.innerHTML = this.renderChatMarkdown(streamedRawText);
+                            if (this.hudTokens) this.hudTokens.textContent = `${tokenCount}`;
+                            if (tokenCount === 1 && this.hudTtft) {
+                                const liveTtft = payload.ttft_ms !== undefined ? Math.round(payload.ttft_ms) : Math.round(performance.now() - streamStartTime);
+                                this.hudTtft.textContent = `${liveTtft} ms`;
+                            }
                             this.scrollChatToBottom();
                         }
                     } else if (eventType === "tool_call") {
@@ -1096,14 +1101,24 @@ class RobotUI {
                                 }
                             });
                         }
+                        const finalTtft = payload.ttft_ms !== undefined ? payload.ttft_ms : (performance.now() - streamStartTime);
+                        const finalDuration = payload.duration_ms !== undefined ? payload.duration_ms : (performance.now() - streamStartTime);
+                        const finalTokens = payload.tokens || tokenCount;
+                        if (typeof this.updateMetrics === "function") {
+                            this.updateMetrics({
+                                ttft: finalTtft,
+                                e2e: finalDuration,
+                                tokens: finalTokens,
+                            });
+                        }
                         if (telemDiv) {
                             telemDiv.style.display = "flex";
-                            const durationSec = payload.duration_ms ? (payload.duration_ms / 1000) : 0;
+                            const durationSec = finalDuration ? (finalDuration / 1000) : 0;
                             telemDiv.innerHTML = `
-                                <span class="telem-item">⚡ ${payload.tokens || tokenCount} tokens</span>
+                                <span class="telem-item">⚡ ${finalTokens} tokens</span>
                                 <span class="telem-item">🚀 ${(payload.tok_per_sec || 0).toFixed(1)} tok/s</span>
                                 <span class="telem-item">⏱️ ${durationSec.toFixed(2)}s</span>
-                                <span class="telem-item">🎯 TTFT: ${(payload.ttft_ms || 0).toFixed(0)} ms</span>
+                                <span class="telem-item">🎯 TTFT: ${Math.round(finalTtft)} ms</span>
                             `;
                         }
                         if (this.chatLiveSpeed) {
@@ -1984,7 +1999,8 @@ class RobotUI {
 
         this.btnLlmToggle = btn;
         this.currentLlmProvider = "local";
-        this.activeOpenaiModel = "gpt-4o";
+        const storedModel = typeof localStorage !== "undefined" ? localStorage.getItem("active_openai_model") : null;
+        this.activeOpenaiModel = storedModel || "deepseek/deepseek-v4.1-flash";
 
         const panelStrip = document.getElementById("activeModelStrip");
         const panelBadge = document.getElementById("activeModelBadge");
@@ -2045,7 +2061,13 @@ class RobotUI {
          * @returns {void}
          */
         this.updateOpenaiModelDisplays = (modelName) => {
-            const m = modelName || this.activeOpenaiModel || "gpt-4o";
+            const m = modelName || this.activeOpenaiModel || (typeof localStorage !== "undefined" ? localStorage.getItem("active_openai_model") : null) || "deepseek/deepseek-v4.1-flash";
+            this.activeOpenaiModel = m;
+            try {
+                if (typeof localStorage !== "undefined") {
+                    localStorage.setItem("active_openai_model", m);
+                }
+            } catch (e) {}
             const topNavLabel = document.getElementById("topNavModelPickerLabel");
             if (topNavLabel) topNavLabel.textContent = m;
             const hudLabel = document.getElementById("hudModelPickerLabel");
@@ -2261,6 +2283,11 @@ class RobotUI {
                 if (data.status === "ok") {
                     const newModel = data.active_model || data.model || selectedModel;
                     this.activeOpenaiModel = newModel;
+                    try {
+                        if (typeof localStorage !== "undefined") {
+                            localStorage.setItem("active_openai_model", newModel);
+                        }
+                    } catch (e) {}
                     this.updateOpenaiModelDisplays(newModel);
                     this.updateLlmToggleUi("openai_compatible");
                     this.logEvent("LLM", `Active OpenAI model set to "${newModel}" with prompt caching.`, "success");
@@ -2307,13 +2334,15 @@ class RobotUI {
 
                 // Vendor tab filter
                 if (vendor !== "all") {
-                    if (vendor === "openai" && !(id.includes("openai") || id.includes("gpt") || id.includes("o1") || id.includes("o3"))) return false;
-                    if (vendor === "anthropic" && !(id.includes("anthropic") || id.includes("claude"))) return false;
-                    if (vendor === "google" && !(id.includes("google") || id.includes("gemini") || id.includes("gemma"))) return false;
-                    if (vendor === "meta" && !(id.includes("meta") || id.includes("llama"))) return false;
-                    if (vendor === "qwen" && !id.includes("qwen")) return false;
-                    if (vendor === "deepseek" && !id.includes("deepseek")) return false;
-                    if (vendor === "mistral" && !(id.includes("mistral") || id.includes("codestral") || id.includes("mixtral"))) return false;
+                    if (vendor === "free") {
+                        if (!m.is_free && !id.includes(":free") && !id.includes("-free")) return false;
+                    } else if (vendor === "openai" && !(id.includes("openai") || id.includes("gpt") || id.includes("o1") || id.includes("o3"))) return false;
+                    else if (vendor === "anthropic" && !(id.includes("anthropic") || id.includes("claude"))) return false;
+                    else if (vendor === "google" && !(id.includes("google") || id.includes("gemini") || id.includes("gemma"))) return false;
+                    else if (vendor === "meta" && !(id.includes("meta") || id.includes("llama"))) return false;
+                    else if (vendor === "qwen" && !id.includes("qwen")) return false;
+                    else if (vendor === "deepseek" && !id.includes("deepseek")) return false;
+                    else if (vendor === "mistral" && !(id.includes("mistral") || id.includes("codestral") || id.includes("mixtral"))) return false;
                 }
 
                 // Text search filter
@@ -2348,9 +2377,11 @@ class RobotUI {
                 row.dataset.modelId = m.id;
 
                 const vTag = getModelVendorTag(m.id);
+                const isFree = Boolean(m.is_free || (m.id && (m.id.includes(":free") || m.id.includes("-free"))));
                 row.innerHTML = `
                     <div class="model-row-info">
                         <span class="model-row-vendor-tag">${vTag}</span>
+                        ${isFree ? '<span class="model-row-badge free-badge" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); margin-right: 6px; font-weight: 700;">FREE</span>' : ""}
                         <span class="model-row-name" title="${m.id}">${m.id}</span>
                     </div>
                     ${isActive ? '<span class="model-row-badge">✓ ACTIVE</span>' : ""}
@@ -2591,13 +2622,16 @@ class RobotUI {
                 if (data.context_window && data.provider === "local") {
                     this.localContextWindow = data.context_window;
                 }
-                if (data.active_model) {
-                    this.activeOpenaiModel = data.active_model;
-                } else if (data.openai_compatible && data.openai_compatible.model) {
-                    this.activeOpenaiModel = data.openai_compatible.model;
-                } else if (data.provider === "openai_compatible" && data.model) {
-                    this.activeOpenaiModel = data.model;
+                const serverModel = data.active_openai_model || (data.openai_compatible && data.openai_compatible.model);
+                if (serverModel) {
+                    this.activeOpenaiModel = serverModel;
+                    try {
+                        if (typeof localStorage !== "undefined") {
+                            localStorage.setItem("active_openai_model", serverModel);
+                        }
+                    } catch (e) {}
                 }
+                this.updateOpenaiModelDisplays(this.activeOpenaiModel);
                 this.updateLlmToggleUi(data.provider, data.mode);
                 // Background scan of available models for immediate search readiness
                 this.scanOpenaiModels(false);

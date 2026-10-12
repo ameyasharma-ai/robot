@@ -122,7 +122,18 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
     if "OPENAI_COMPATIBLE_API_KEY" in os.environ:
         openai_comp["api_key"] = os.environ["OPENAI_COMPATIBLE_API_KEY"].strip()
     if "OPENAI_COMPATIBLE_MODEL" in os.environ:
-        openai_comp["model"] = os.environ["OPENAI_COMPATIBLE_MODEL"].strip()
+        openai_comp["model"] = os.environ["OPENAI_COMPATIBLE_MODEL"].strip().strip('"').strip("'")
+    
+    # Priority check for active_openai_model.txt persistence
+    persisted_model_file = get_project_root() / "data" / "active_openai_model.txt"
+    if persisted_model_file.exists():
+        try:
+            persisted_val = persisted_model_file.read_text(encoding="utf-8").strip().strip('"').strip("'")
+            if persisted_val:
+                openai_comp["model"] = persisted_val
+        except Exception:
+            pass
+
     if "OPENAI_COMPATIBLE_CONTEXT_WINDOW" in os.environ:
         try:
             openai_comp["context_window"] = int(os.environ["OPENAI_COMPATIBLE_CONTEXT_WINDOW"])

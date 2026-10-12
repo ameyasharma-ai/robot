@@ -1,0 +1,24 @@
+[Unit]
+Description=Robot Core Autonomous Intelligence Platform
+After=network.target sound.target pipewire.service easyeffects.service
+Wants=sound.target pipewire.service
+
+[Service]
+Type=simple
+User=ameya
+Group=ameya
+WorkingDirectory=/home/ameya/robot
+Environment=HOME=/home/ameya
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONWARNINGS="ignore::DeprecationWarning"
+Environment=PATH=/home/ameya/robot/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ameya/robot/scripts/run.sh
+Restart=on-failure
+RestartSec=5s
+KillMode=control-group
+TimeoutStopSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

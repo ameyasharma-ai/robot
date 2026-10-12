@@ -49,8 +49,9 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Advanced Context & Intelligence System** | `ContextEngine` + `MemoryManager` + Telemetry Banner + Profile Sheet | ✅ **Active** | Local Qwen 3.5 4B / Gemini API | Real-time situation banner (IST time, pending timers, music, battery, visual scene), user profile sheet, conversation history micro-summarizer, Gemini 800k context archive, and `<thought>` tag stripping for speech. |
 | **Chat Dashboard Tools & Persona Themes** | 42 Interactive Category Chips + 4 Persona CSS Themes + 3D Avatar WebGL Lighting | ✅ **Active** | Static Web Frontend & WebGL | Sleek, non-scrollable compact category chips deck, persona-tailored color palettes (Luna/Neo/Aria/GLaDOS), dynamic 3D WebGL lighting/pedestal transitions, and aligned female voice definitions. |
 | **ChatGPT Multi-Agent Bridge & Skill** | Autonomous Bidirectional Loop + Extension Bridge (`chatgpt-bridge`) | ✅ **Active** | Chrome + Antigravity (127.0.0.1:8765) | Real-time WebSocket bridge between open ChatGPT tab in Chrome and Antigravity IDE; autonomous multi-turn loops (spec -> implement -> verify -> review -> sign-off). |
-| **Root `.env` Configuration Manager** | Centralized System Config (`src/robot/config.py` + `.env`) | ✅ **Active** | System-Wide / All Subsystems | Root `.env` outside folders configuring all engines; dynamic runtime updates and hot persistence via `update_env_variable()`. |
 | **OpenAI-Compatible LLM & Model Scanner** | `OpenAICompatibleLLM` + Prompt Caching + Live Model Discovery | ✅ **Active** | Cloud API / Core Engine / Web HUD | 3-way toggle (Local / Gemini / OpenAI), live `/models` scanner with cyberdeck dropdown, settings modal, and prefix prompt caching. |
+| **Context Layer & Prompt Cache Inspector** | Dynamic Debugger (`/contextlayer` & `/api/context/inspect`) | ✅ **Active** | Core Engine / Web HUD | Real-time structured breakdown of System Prompt, Profile Sheet, Grounding Telemetry, Memories, History, and Token Prefix/Suffix Invariance. |
+| **Mobile Top Bar & Chat Workspace Telemetry** | Streamlined Mobile Top Bar & Live Chat Metrics | ✅ **Active** | Web Frontend / CSS | Zero-overflow mobile header, chat IDLE pill removal, live TTFT/E2E/Tokens updates in chat mode top bar, and model persistence across restarts. |
 
 
 Legend:
@@ -84,6 +85,12 @@ Legend:
 - [ ] **Day 4: Phase 5 Orchestration Intelligence & Reliability** *(Architectural Directive active — see [.agents/artifacts/latest_chatgpt_spec.md](file:///home/ameya/robot/.agents/artifacts/latest_chatgpt_spec.md))*:
   - [x] **Step 0: Regression Verification & Invariant Prefix Integrity**: Fixed module-level `NameError: name 'asyncio' is not defined` in `src/robot/api/__init__.py` allowing background pre-warming (`warm_up_llm`) on persona switches; aligned `CuriosityEngine` in `src/robot/core/autonomy.py` to route through `ContextEngine.build_messages()` with invariant system prompt and canonical tools schemas, eliminating random Slot 0 KV cache evictions during idle periods. Added 2 regression tests (`test_personality_switch_endpoint_triggers_warmup`, `test_curiosity_engine_proactive_thought_prefix_invariance`). All 185 tests passing.
   - [x] **Local 16K Context Overflow & KV-Cache Capping Fix**: Resolved `400 Bad Request: request (20673 tokens) exceeds the available context size (16384 tokens)` by enforcing a strict 4,800-token local message cap in `ContextEngine` (`src/robot/core/context.py`). With 10,280 invariant canonical tool tokens, total prompt is constrained to ~15,080 tokens leaving >1,300 tokens generation headroom. Added tail-grounding trimming on `messages[-1]` to safeguard single-turn user overflows without evicting invariant system prompts. Enhanced `LlamaServerLLM` overflow recovery in `src/robot/llm/__init__.py` to deep-trim grounding wrappers. Added plaintext tool invocation fallback (`music.play(...)`, `system.calculate(...)`) in `RobotEngine` to intercept raw LLM tool syntax and strip code from Piper TTS output. Verified 100% KV-cache hit (`f_sim_best = 0.954`, warm TTFT = 433.0ms) across consecutive turns with 197/197 tests passing.
+  - [x] **Context Layer Inspector & Local Prompt Caching Debugger (`/contextlayer`)**: Built dedicated real-time debug interface and `/api/context/inspect` endpoint dynamically exposing the verbatim 7-layer context assembled for the LLM (System Prompt, User Profile Sheet, Grounding Banner, Durable Memories, Turn-Pair History, 59 Invariant Tool Schemas, and full Assembled Messages JSON) along with KV cache prefix hit ratio and headroom telemetry.
+  - [x] **Custom API Model Persistence Across Restarts**: Preserved OpenAI-compatible model selection across server restarts in `data/active_openai_model.txt`, root `.env` (`OPENAI_COMPATIBLE_MODEL`), and browser `localStorage`, ensuring selection is never reset to `gpt-4o`.
+  - [x] **Mobile Top Bar Decluttering & Zero-Overflow Layout**: Streamlined top navigation header across dual and chat modes on viewports `<= 768px` and `<= 480px`. Eliminated element cramping, hidden bulky model pickers and telemetry pills, and fixed single-row alignment with zero container shifting.
+  - [x] **Chat Mode Telemetry & IDLE Pill Removal**: Removed redundant IDLE status pill from chat dashboard across desktop and mobile, hooked live `TTFT`, `E2E`, and `Tokens` telemetry to chat streaming `done` and token events.
+  - [x] **Tool Execution & Post-Tool Speech Synthesis Reliability**: Added conversational greeting directives to `GROUNDING_POLICY` and tool definitions forbidding retrieval tool calls (`memory.all`, `memory.search`) on basic hellos; enforced tool omission on Pass 2 continuation with automatic natural language synthesis fallback to guarantee speech and text responses.
+  - [ ] **Pending: Voice Barge-In & Full-Duplex Echo Cancellation**: Documented in `ToDo.txt` (## Pending) for comprehensive acoustic echo suppression and live interruption calibration.
   - [ ] **Step 1: Observability**: Implement trace IDs and monotonic timestamps across routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion. Correct benchmark classification and reporting. Establish representative baseline distributions.
 
   - [ ] **Step 2: Tool Contracts & Network Reliability**: Audit all 59 tools, consolidate canonical execution metadata, standardize structured outcomes, and test permissions, validation, timeouts (3.0s cap for weather/search), retries only on idempotent operations, cancellation, and duplicate-side-effect prevention.
@@ -1375,6 +1382,76 @@ Legend:
       - User barge-in verification: intentional human speech ("Stop robot now") interrupts bot playback within 150ms.
       - 203/203 unit tests passed in `pytest`.
       - 100% zero import errors verified across 90 Python files via `verify_imports.py`.
+
+28. **Avatar Motion Tool Disqualification in Chat Mode & Thought Directive Hardening**:
+    - *Issues Resolved*: In chat mode, queries like "generate a 200 word essay on you" erroneously triggered `character.execute_action {"action": "think"}`.
+    - *Fixes Applied*:
+      - Disallowed `character.execute_action` and motion family tools in Chat mode (`stream_text_chat`), restricting them exclusively to avatar speech interactions when physical movement is explicitly commanded.
+      - Clarified tool descriptions in `motion.py` and updated `GROUNDING_POLICY` in `context.py` so cognitive actions like "think" are not interpreted as bodily gestures.
+
+29. **Tool Execution Null-Safety, Latency Budgets & Network Scans**:
+    - *Issues Resolved*: `web.search`, `weather.forecast`, and `network.wifi_scan` returned `null` to the frontend and LLM.
+    - *Root Causes*:
+      - In `engine.py`, `t_res = exec_res.get("result", exec_res.get("error", "Executed"))`. Since `exec_res` contains `"result": None` on timeout/failure, `.get("result")` returned `None` instead of evaluating the fallback error message.
+      - `nmcli dev wifi list` runs an 8s active channel rescan while tool timeout was 3.0s (`--rescan no` takes only 11ms).
+      - `web.search` and `weather.forecast` had tight 3.0s timeouts on multi-step external network requests.
+    - *Fixes Applied*:
+      - Fixed `engine.py` result extraction check: never falls through to `None`, cleanly defaults to `error` string.
+      - Standardized `PermissionManager.execute` error outcome from `"result": None` to `{"status": status, "error": err_msg}` so callers never see `null`.
+      - Optimized `network.wifi_scan` to query cached scan (`nmcli dev wifi list --rescan no`, ~11ms) first, falling back to active scan, and set `timeout_s = 10.0`.
+      - Bumped `web.search` timeout to 7.0s and `weather.forecast` timeout to 6.0s (HTTP client timeout 4.0s).
+
+30. **Self-Introspection Cascade Prevention & Second-Pass Conversational Synthesis**:
+    - *Issues Resolved*: Asking "what all tools do you have?" triggered a cascade of 4 heavy tools (`system.status`, `system.hardware`, `memory.all`, `memory.search`), stalled for 7.87s, and output 0 tokens.
+    - *Fixes Applied*:
+      - Added canonical `system.list_tools` tool allowing the LLM to inspect all registered capabilities in a structured format without invoking heavy inspection cascades.
+      - Capped consecutive tool executions per turn to 2 in `stream_text_chat` to eliminate cascading freezes.
+      - Enforced robust second-pass conversational synthesis fallback, guaranteeing that the model generates an informative text response instead of stalling with 0 tokens.
+
+31. **Custom API Free Models Discovery, Tagging & Filter Tab**:
+    - *Issues Resolved*: Clarified why token reseller endpoints (e.g. `aicredits.in`) list 428 paid models and 0 free models, while OpenRouter hosts 19 free models with `:free` suffixes.
+    - *Fixes Applied*:
+      - Implemented `:free` model tagger and free pricing detection in `OpenAICompatibleLLM.scan_models`.
+      - Added `⚡ Free Models` tab and green `FREE` badges in the frontend cyberdeck modal.
+
+32. **Dynamic Generation Token Budgeting (`_allocate_generation_budget`)**:
+    - *Issues Resolved*: Long responses (e.g. essays, stories, deep analyses) were truncated or constrained by fixed token budgets.
+    - *Fixes Applied*: Added `_allocate_generation_budget` dynamically scaling generation budget from 160 up to 2048 tokens based on prompt complexity and keywords ("essay", "story", "code", "explain in detail").
+
+33. **Actuarial Death Clock Tool (`system.death_clock`) with Epidemiological Baseline & Gemini Cloud Clinical Synthesis**:
+    - *Features Implemented*:
+      - Implemented `src/robot/tools/builtins/death_clock.py` combining WHO country life expectancy tables, epidemiological risk factors (smoking, exercise, sleep, diet, stress, alcohol, BMI), high-precision countdowns (remaining days/hours/seconds), actionable longevity recommendations, and generative clinical analysis via Gemini API.
+      - Added automated unit test suite in `tests/test_death_clock.py` with 100% pass rate.
+
+34. **Linux Mint Systemd Service & Automated Boot Configuration**:
+    - *Features Implemented*:
+      - Created production systemd unit `scripts/robot.service` with process supervision, auto-restart policies, audio stack dependencies (PipeWire, EasyEffects), and automated installer `scripts/install_service.sh`.
+
+35. **Automated End-to-End Diagnostic Pipeline Suite**:
+    - *Features Implemented*:
+      - Created `scripts/test_e2e_pipeline.py` verifying context prompt construction, tool registry execution contracts, null-safety, and speech clause chunking with 100% pass rate.
+    - *Verification*:
+      - 207/207 unit tests passed in `pytest` (14.65s).
+      - 100% zero import errors verified across 92 Python files via `verify_imports.py`.
+
+36. **Context Layer Inspector Missing `import time`, Route Aliases (`/inspect`, `/contextlayer`) & UI Interactivity Fixes**:
+    - *Symptoms*:
+      - `/contextlayer` page hung indefinitely with all cards stuck on "Loading ...", and buttons (REFRESH, COPY RAW JSON, TEST PROMPT ASSEMBLY) appeared unresponsive.
+      - Navigating to `http://127.0.0.1:8888/inspect` returned `{"detail": "Not Found"}`.
+      - Terminal log was flooded every 1.5 seconds with:
+        `NameError: name 'time' is not defined. Did you forget to import 'time' in inspect_context_layer`.
+    - *Root Causes*:
+      - `inspect_context_layer` in `api/__init__.py` referenced `time.time()`, but `time` was never imported at the module level.
+      - The endpoint crashed with HTTP 500 every 1.5s when polled by `contextlayer.html`, preventing `lastData` from ever populating and breaking button click handlers that required loaded data.
+      - Only `/contextlayer` was registered as a route, causing `/inspect` to return 404.
+    - *Fixes Applied*:
+      - Added `import time` to top-level imports in `src/robot/api/__init__.py`.
+      - Registered multi-route aliases for both HTML and API endpoints: `@app.get("/contextlayer")`, `@app.get("/inspect")`, `@app.get("/context-layer")`, and `@app.get("/api/inspect")`.
+      - Hardened `contextlayer.html`: added clipboard fallback copy helper (`execCommand`), toast notifications on click, visual button loading state dimming, clear error display on fetch failure, and adjusted auto-poll interval to 2.0s.
+    - *Verification*:
+      - Verified HTTP 200 responses across `/contextlayer`, `/inspect`, `/context-layer`, and `/api/inspect`.
+      - 207/207 unit tests passed in `pytest`.
+      - 100% zero import errors verified across 92 Python files via `verify_imports.py`.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

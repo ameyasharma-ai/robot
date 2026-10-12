@@ -26,6 +26,8 @@ import re
 GROUNDING_POLICY = (
     "Truth, Tools & Real-Time Action Directives:\n"
     "- User Entity Ownership & Attribution Directive: The human speaking with you is your creator and conversational partner. All facts, likes, dislikes, family members, friends, and romantic interests (e.g. 'crush', 'partner', 'friends', 'goals') stored in user memories belong exclusively to the USER. NEVER claim or misattribute the user's personal relationships or crushes as your own! If a fact states 'Crush: Anubha', Anubha is the USER'S crush, not yours. You must refer to them accurately as 'your crush Anubha'.\n"
+    "- Conversational Greetings & General Pleasantries: For basic greetings (such as 'Hi', 'Hello', 'Hey', 'Good morning', 'How are you?', 'What's up'), casual conversation, acknowledgments, or pleasantries, NEVER invoke tools or query memory (STRICTLY DO NOT call 'memory.all' or 'memory.search'). Respond immediately, naturally, and warmly in character with conversational text without calling any tool.\n"
+    "- Tool Precision & Execution Restraint: ONLY invoke a tool when the user's current instruction explicitly asks to execute an action, check external data, set timers/alarms, control media, or specifically retrieve memories. Never invoke tools proactively during greetings or chitchat.\n"
     "- Mandatory Tool Calling Directive: You possess real, executable tools for music, volume, time, memory, vision, motion, web search, timers, and alarms. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'I am adjusting the volume for you', 'Setting a timer for you now', or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction.\n"
     "- Timers, Alarms & Scheduling: When the user asks to set a timer ('set a timer for 10 seconds', '5 min timer for tea'), set an alarm ('wake me up at 7:30 AM', 'set daily alarm at 8 AM'), schedule a reminder ('remind me in 15 mins to stretch'), list active jobs, cancel a timer/alarm, or asks for a morning briefing, you MUST immediately invoke the corresponding tool (`timer.set`, `alarm.set`, `reminder.schedule`, `timer.list`, `alarm.list`, `reminder.list`, `timer.cancel`, `alarm.cancel`, `reminder.cancel`, `system.daily_briefing`). Never claim to set a timer or alarm without calling the tool.\n"
     "- Volume & Music Controls: Whenever the user asks to change volume ('set volume to 20%', 'louder', 'turn it down', 'mute'), replay or play again ('play it again', 'replay', 'play that song again'), pause, resume, or stop, you MUST immediately emit a `music.control` tool call. Never narrate volume adjustments in text.\n"
@@ -34,13 +36,18 @@ GROUNDING_POLICY = (
     "- Autonomous Persistence: When the user asks you to remember something ('remember that ...', 'keep in mind that ...'), acknowledge it naturally. Emit a `memory.write` call only when a vital enduring user preference or fact must be permanently stored across sessions.\n"
     "- Sequential Multi-Action Chaining Directive: When the user asks you to perform multiple actions or requests in a single turn (e.g. 'check what you see, play some music, and set volume to 50%'), you MUST invoke all required tools. NEVER stop after one tool and claim you did the others in text without calling the tool. In multi-step turns, address each step sequentially with real execution.\n"
     "- Factual Truth & Zero Hallucination: Ground every factual assertion directly in tool results, system telemetry, or memory facts provided. If information is absent or unverified, state clearly and concisely that you do not know or ask for clarification rather than inventing facts.\n"
+    "- Capability & Tool Inquiries: When the user asks what tools, functions, or capabilities you have (e.g. 'what all tools do you have?', 'list your tools', 'what can you do?'), you MUST invoke 'system.list_tools' once or explain your capabilities directly in character. NEVER invoke 'system.status', 'system.hardware', 'memory.all', or other unrelated tools when asked about your capabilities.\n"
+    "- Physical Motions & Gestures: Tools starting with 'character.' (such as 'character.execute_action') control a physical humanoid avatar body. ONLY invoke them when the user explicitly commands a physical gesture or bodily movement (e.g. 'wave', 'bow', 'turn around', 'nod'). NEVER invoke motion tools when answering questions, thinking, or writing essays.\n"
     "- Grounding Context Separation: Any environment grounding, player status, or tool results provided are background telemetry. Never repeat raw background labels or formatting tags to the user."
 )
 
 
 def format_system_prompt(personality_prompt: str, high_intelligence: bool = False) -> str:
     """Format canonical system prompt with Grounding Policy for 100% KV-cache invariance."""
-    system_parts = [personality_prompt.strip(), GROUNDING_POLICY]
+    clean_pers = personality_prompt.strip()
+    if GROUNDING_POLICY in clean_pers:
+        return clean_pers
+    system_parts = [clean_pers, GROUNDING_POLICY]
     if high_intelligence:
         system_parts.append(
             "High-Intelligence Cognitive Directives:\n"
@@ -196,7 +203,7 @@ class ContextEngine:
             "system_personality": 600,
             "tool_schemas": 10500,
             "retrieved_memories": 800,
-            "recent_conversation": 2500,
+            "recent_conversation": 2200,
             "world_state": 200,
             "robot_state": 100,
             "generation_headroom": 1500,
@@ -317,7 +324,7 @@ class ContextEngine:
                 grounding_parts.append(f"[Historical Multi-Session Conversation Archive]:\n{archive_str}")
 
         # 5. Recent Conversation History (Current Session)
-        conv_budget = 250000 if high_intelligence else self._budget.get("recent_conversation", 2500)
+        conv_budget = 250000 if high_intelligence else self._budget.get("recent_conversation", 2200)
         if resolved_recent:
             trimmed = _trim_conversation(
                 resolved_recent, conv_budget

@@ -264,9 +264,13 @@ class RobotEngine:
         else:
             logger.warning("tts_model_missing", path=model_path)
 
-        # LLM (supports local llama-server on RTX 3050 and Gemini Cloud 1M context)
+        # LLM (supports local llama-server on RTX 3050, Gemini Cloud 1M context, and OpenAI-Compatible)
         llm_cfg = self.config.get("llm", {})
         gemini_cfg = llm_cfg.get("gemini", {})
+        openai_cfg = llm_cfg.setdefault("openai_compatible", {})
+        persisted_openai_model = self._get_persisted_openai_model(openai_cfg.get("model", "gpt-4o"))
+        openai_cfg["model"] = persisted_openai_model
+
         self.llm_provider_type = self._get_persisted_llm_provider(llm_cfg.get("provider", "local"))
         self._speech_started_ts = 0.0
 
@@ -279,16 +283,14 @@ class RobotEngine:
             )
             logger.info("gemini_llm_initialized_on_boot")
         elif self.llm_provider_type in ("openai_compatible", "openai"):
-            openai_cfg = llm_cfg.get("openai_compatible", {})
-            persisted_model = self._get_persisted_openai_model(openai_cfg.get("model", "gpt-4o"))
             self.llm = OpenAICompatibleLLM(
                 api_key=openai_cfg.get("api_key"),
                 base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
-                model=persisted_model,
+                model=persisted_openai_model,
                 context_window=openai_cfg.get("context_window", 128000),
                 enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
             )
-            logger.info("openai_compatible_llm_initialized_on_boot", model=persisted_model)
+            logger.info("openai_compatible_llm_initialized_on_boot", model=persisted_openai_model)
         else:
             self.llm = LlamaServerLLM(
                 base_url=llm_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
@@ -496,18 +498,26 @@ class RobotEngine:
         model_file = Path("data/active_openai_model.txt")
         if model_file.exists():
             try:
-                m = model_file.read_text().strip()
+                m = model_file.read_text(encoding="utf-8").strip().strip('"').strip("'")
                 if m:
                     return m
             except Exception:
                 pass
+        env_m = os.environ.get("OPENAI_COMPATIBLE_MODEL", "").strip().strip('"').strip("'")
+        if env_m:
+            return env_m
         return default
 
     def _persist_openai_model(self, model: str) -> None:
+        clean = model.strip().strip('"').strip("'")
+        if not clean:
+            return
         try:
             model_file = Path("data/active_openai_model.txt")
             model_file.parent.mkdir(parents=True, exist_ok=True)
-            model_file.write_text(model.strip())
+            model_file.write_text(clean, encoding="utf-8")
+            if hasattr(self, "config") and isinstance(self.config, dict):
+                self.config.setdefault("llm", {}).setdefault("openai_compatible", {})["model"] = clean
         except Exception as e:
             logger.warning("failed_to_persist_openai_model", error=str(e))
 
@@ -1768,6 +1778,33 @@ class RobotEngine:
 
         return response
 
+    def _allocate_generation_budget(self, text: str, is_cloud: bool = False, has_tools: bool = True) -> int:
+        """Dynamically allocate output token budget based on query complexity and requested length.
+
+        Rationale:
+        - Casual greetings/acknowledgments: 120-180 tokens (minimal latency, fast TTFT).
+        - Standard conversational QA & Tool calls: 350-500 tokens.
+        - Long-form explanations, essays, creative writing, stories, code: 800-1200 tokens (up to 2048 for cloud).
+        """
+        clean = (text or "").strip().lower()
+        word_count = len(clean.split())
+
+        long_triggers = (
+            "essay", "explain in detail", "write a story", "detailed", "comprehensive",
+            "compare and contrast", "write code", "analyze", "list all", "step by step",
+            "outline", "break down", "report", "pros and cons", "summary of", "write a long"
+        )
+        is_long_form = any(trigger in clean for trigger in long_triggers) or word_count >= 30
+
+        if is_long_form:
+            return 2048 if is_cloud else 1024
+        elif re.match(r"^(?:hi|hello|hey|sup|what's up|how are you|good morning)[!.,?\s]*$", clean):
+            return 160
+        elif has_tools:
+            return 450
+        else:
+            return 350
+
     async def stream_text_chat(
         self,
         text: str,
@@ -1867,6 +1904,20 @@ class RobotEngine:
         )
 
         tools = self.tool_registry.get_schemas() if hasattr(self, "tool_registry") and self.tool_registry else None
+        if tools:
+            # Chat mode is purely text-based without 3D humanoid avatar canvas;
+            # filter out physical character and robotic movement tools.
+            tools = [
+                t for t in tools
+                if not (
+                    (isinstance(t, dict) and t.get("name", "").startswith("character."))
+                    or (isinstance(t, dict) and t.get("function", {}).get("name", "").startswith("character."))
+                    or (isinstance(t, dict) and t.get("family") in ("motion", "character", "avatar"))
+                )
+            ]
+        clean_prompt = text.strip().lower()
+        if re.match(r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|sup|what's\s+up|yo)[!.,?\s]*$", clean_prompt):
+            tools = []
 
         active_model_name = getattr(self.llm, "model", None)
         if not active_model_name and getattr(self, "llm_provider_type", "local") in ("openai_compatible", "openai"):
@@ -1879,6 +1930,12 @@ class RobotEngine:
             "provider": getattr(self, "llm_provider_type", "local"),
             "model": active_model_name,
         }
+
+        dynamic_max_tokens = self._allocate_generation_budget(
+            text,
+            is_cloud=is_gemini or getattr(self, "llm_provider_type", "local") in ("openai_compatible", "openai"),
+            has_tools=bool(tools),
+        )
 
         t_start = time.perf_counter()
         ttft_ms = None
@@ -1895,9 +1952,20 @@ class RobotEngine:
                 for item in gen:
                     yield item
 
+        def _call_llm_stream(msgs, tools=None):
+            import inspect
+            sig = inspect.signature(self.llm.stream_chat)
+            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            kwargs = {}
+            if accepts_kwargs or "tools" in sig.parameters:
+                kwargs["tools"] = tools
+            if accepts_kwargs or "max_tokens" in sig.parameters:
+                kwargs["max_tokens"] = dynamic_max_tokens
+            return self.llm.stream_chat(msgs, **kwargs)
+
         try:
             # First pass generation
-            async for chunk in _iterate_stream(self.llm.stream_chat(messages, tools=tools)):
+            async for chunk in _iterate_stream(_call_llm_stream(messages, tools=tools)):
                 if ttft_ms is None:
                     ttft_ms = (time.perf_counter() - t_start) * 1000
 
@@ -1944,6 +2012,11 @@ class RobotEngine:
 
             # If tool calls were initiated, execute them and run second-pass continuation
             if collected_tool_calls:
+                # Cap consecutive tool calls to 2 per turn to prevent cascading runaway tool loops
+                if len(collected_tool_calls) > 2:
+                    logger.warning("capping_tool_calls_per_turn", original_count=len(collected_tool_calls), cap=2)
+                    collected_tool_calls = collected_tool_calls[:2]
+
                 for t_idx, tc in enumerate(collected_tool_calls):
                     if t_idx > 0:
                         # Sequential pacing so multiple tool calls do not pop simultaneously
@@ -1970,7 +2043,11 @@ class RobotEngine:
                     if tool_def and hasattr(self, "permissions") and self.permissions:
                         try:
                             exec_res = await self.permissions.execute(tool_def, t_args)
-                            t_res = exec_res.get("result", exec_res.get("error", "Executed"))
+                            t_val = exec_res.get("result")
+                            if t_val is not None:
+                                t_res = t_val
+                            else:
+                                t_res = exec_res.get("error") or "Tool completed with no output."
                         except Exception as e:
                             t_res = f"Error: {e}"
                     else:
@@ -1995,18 +2072,21 @@ class RobotEngine:
                 # Second pass continuation with tool outputs
                 messages.append({
                     "role": "assistant",
-                    "content": full_text or None,
+                    "content": full_text or "",
                     "tool_calls": collected_tool_calls,
                 })
+                import json as _json
                 for tc, tool_info in zip(collected_tool_calls, tools_called):
+                    res_raw = tool_info.get("result")
+                    res_str = _json.dumps(res_raw) if isinstance(res_raw, (dict, list)) else str(res_raw or "Executed")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", f"call_{int(time.time()*1000)}"),
-                        "content": str(tool_info.get("result", "")),
+                        "content": res_str,
                     })
 
                 second_pass_text = ""
-                async for chunk in _iterate_stream(self.llm.stream_chat(messages, tools=None)):
+                async for chunk in _iterate_stream(_call_llm_stream(messages, tools=None)):
                     if chunk.startswith("__TOOL_CALL__"):
                         continue
                     token_count += 1
@@ -2021,6 +2101,33 @@ class RobotEngine:
                         "ttft_ms": round(ttft_ms or 0, 1),
                         "tok_per_sec": tok_per_sec,
                     }
+
+                # Fallback: If second pass yielded no text, force conversational synthesis
+                if not second_pass_text.strip():
+                    tool_name_summary = ", ".join(t["name"] for t in tools_called) if tools_called else "system"
+                    synth_prompt = (
+                        f"You executed the following tools: {tool_name_summary}. "
+                        "Synthesize the tool results now in character and answer the user's question directly. "
+                        "Do not output raw JSON, code tags, or repeat tool parameters."
+                    )
+                    synth_messages = [
+                        m for m in messages if m.get("role") != "tool"
+                    ] + [{"role": "user", "content": synth_prompt}]
+                    async for chunk in _iterate_stream(_call_llm_stream(synth_messages, tools=[])):
+                        if chunk.startswith("__TOOL_CALL__"):
+                            continue
+                        token_count += 1
+                        second_pass_text += chunk
+                        elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                        tok_per_sec = round(token_count / elapsed, 1)
+                        yield {
+                            "event": "token",
+                            "token": chunk,
+                            "token_index": token_count,
+                            "ttft_ms": round(ttft_ms or 0, 1),
+                            "tok_per_sec": tok_per_sec,
+                        }
+
                 full_text = second_pass_text.strip() if second_pass_text else full_text.strip()
 
         except Exception as e:

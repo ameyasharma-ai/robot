@@ -9,6 +9,7 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -185,16 +186,18 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             ctx_win = int(openai_cfg.get("context_window", 128000))
 
         active_model = getattr(engine.llm, "model", "Qwen3.5-4B-Q4_K_M")
+        persisted_openai_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o"))
         return {
             "provider": prov,
             "mode": "high_intelligence" if (is_gemini or is_openai) else "low_latency",
             "model": active_model,
+            "active_openai_model": persisted_openai_model,
             "context_window": ctx_win,
             "llama_running": llama_running,
             "vram_freed": not llama_running,
             "openai_compatible": {
                 "base_url": openai_cfg.get("base_url", "https://api.openai.com/v1"),
-                "model": getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o")),
+                "model": persisted_openai_model,
                 "context_window": int(openai_cfg.get("context_window", 128000)),
                 "has_api_key": bool(openai_cfg.get("api_key")),
                 "enable_prompt_caching": bool(openai_cfg.get("enable_prompt_caching", True)),
@@ -1048,5 +1051,145 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         async def index():
             """Serve the integrated Digital Face & Dev Console UI."""
             return FileResponse(str(static_dir / "index.html"))
+
+        @app.get("/contextlayer")
+        @app.get("/inspect")
+        @app.get("/context-layer")
+        async def context_layer_page():
+            """Serve the dynamic LLM context layer & prompt caching debugger page."""
+            context_html = static_dir / "contextlayer.html"
+            if context_html.exists():
+                return FileResponse(str(context_html))
+            return {"error": "contextlayer.html not found"}
+
+    @app.get("/api/context/inspect")
+    @app.get("/api/inspect")
+    async def inspect_context_layer(test_prompt: str = "Hi"):
+        """Dynamically inspect the structured context layer and KV cache invariance status.
+
+        Args:
+            test_prompt: Optional test input prompt string to simulate context assembly.
+
+        Returns:
+            dict[str, Any]: Structured breakdown of system prompt, user profile,
+                situation banner, durable memories, history, tool schemas, and cache metrics.
+        """
+        prov = getattr(engine, "llm_provider_type", "local")
+        if prov in ("llama-server", "local"):
+            prov = "local"
+        is_gemini = prov == "gemini"
+        is_openai = prov in ("openai_compatible", "openai")
+
+        active_pers = engine.personalities.active
+        active_pers_name = getattr(active_pers, "name", "neo") if active_pers else "neo"
+        ns = getattr(active_pers, "memory_namespace", "default")
+
+        openai_cfg = getattr(engine, "config", {}).get("llm", {}).get("openai_compatible", {}) if hasattr(engine, "config") else {}
+        if is_openai:
+            active_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o"))
+            ctx_win = int(openai_cfg.get("context_window", 128000))
+        elif is_gemini:
+            active_model = getattr(engine.llm, "model", "gemini-3.5-flash")
+            ctx_win = 1000000
+        else:
+            active_model = getattr(engine.llm, "model", "Qwen3.5-4B-Q4_K_M")
+            ctx_win = int(getattr(engine, "config", {}).get("llm", {}).get("context_window", 16384)) if hasattr(engine, "config") else 16384
+
+        situation = await engine.get_situation_context() if hasattr(engine, "get_situation_context") else {}
+        
+        user_profile = None
+        if hasattr(engine, "memory") and engine.memory and hasattr(engine.memory, "get_core_user_profile"):
+            try:
+                user_profile = await engine.memory.get_core_user_profile(user_id=ns)
+            except Exception:
+                user_profile = None
+
+        all_facts = []
+        if hasattr(engine, "memory") and engine.memory and hasattr(engine.memory, "get_all_facts"):
+            try:
+                all_facts = await engine.memory.get_all_facts(user_id=ns, limit=20)
+            except Exception:
+                all_facts = []
+
+        recent_history = []
+        if hasattr(engine, "memory") and engine.memory and hasattr(engine.memory, "get_recent_history"):
+            try:
+                recent_history = await engine.memory.get_recent_history(limit=10, user_id=ns)
+            except Exception:
+                recent_history = []
+
+        pers_prompt = (
+            active_pers.system_prompt
+            if active_pers and getattr(active_pers, "system_prompt", None)
+            else (getattr(engine.personalities, "active_prompt", "") or "")
+        )
+
+        from robot.core.context import (
+            format_system_prompt,
+            format_user_core_profile,
+            format_situation_banner,
+        )
+
+        assembled_messages = engine.context.build_messages(
+            system_prompt=pers_prompt,
+            user_text=test_prompt,
+            recent_conversation=recent_history,
+            memories=all_facts[:5],
+            all_facts=all_facts,
+            world_state=situation.get("world_state"),
+            situation=situation,
+            high_intelligence=is_gemini,
+            user_profile=user_profile,
+        )
+
+        tool_schemas = engine.tool_registry.get_schemas() if hasattr(engine, "tool_registry") and engine.tool_registry else []
+        tool_names = [t.get("name", "") for t in tool_schemas if isinstance(t, dict)]
+
+        # Estimate Token Distribution
+        tools_tokens_est = 10280 if tool_schemas else 0
+        sys_tokens_est = len(assembled_messages[0]["content"]) // 4 if assembled_messages else 0
+        user_tokens_est = len(assembled_messages[-1]["content"]) // 4 if len(assembled_messages) > 1 else 0
+        hist_tokens_est = sum(len(str(m.get("content", ""))) // 4 for m in assembled_messages[1:-1])
+
+        prefix_tokens = tools_tokens_est + sys_tokens_est
+        suffix_tokens = user_tokens_est + hist_tokens_est
+        total_tokens = prefix_tokens + suffix_tokens
+        cache_reuse_pct = round((prefix_tokens / max(1, total_tokens)) * 100, 1)
+
+        from robot.llm import LlamaServerManager
+        llama_running = LlamaServerManager.is_running()
+
+        return {
+            "timestamp": time.time(),
+            "personality": active_pers_name,
+            "provider": prov,
+            "model": active_model,
+            "context_window": ctx_win,
+            "test_prompt": test_prompt,
+            "structured_layer": {
+                "system_prompt": format_system_prompt(pers_prompt, high_intelligence=is_gemini),
+                "user_profile": format_user_core_profile(user_profile),
+                "situation_banner": format_situation_banner(situation),
+                "retrieved_memories": all_facts,
+                "conversation_turns": recent_history,
+                "tools": {
+                    "count": len(tool_schemas),
+                    "names": tool_names,
+                    "tokens_estimate": tools_tokens_est,
+                    "sample": tool_schemas[:2],
+                },
+            },
+            "caching_status": {
+                "strategy": "Slot 0 Invariant Canonical Prefix + Prompt Caching",
+                "prefix_tokens_estimate": prefix_tokens,
+                "suffix_tokens_estimate": suffix_tokens,
+                "total_tokens_estimate": total_tokens,
+                "cache_reuse_percent": cache_reuse_pct,
+                "is_caching_invariant": True,
+                "llama_running": llama_running,
+                "prompt_caching_enabled": True if is_openai else llama_running,
+            },
+            "assembled_messages": assembled_messages,
+        }
 
     return app

@@ -183,6 +183,15 @@ class ToolRegistry:
         "speedtest": "network.speedtest",
         "network_status": "network.speedtest",
         "ping": "network.speedtest",
+        "list_tools": "system.list_tools",
+        "system_list_tools": "system.list_tools",
+        "capabilities": "system.list_tools",
+        "tools": "system.list_tools",
+        "death_clock": "system.death_clock",
+        "system_death_clock": "system.death_clock",
+        "health.death_clock": "system.death_clock",
+        "life_expectancy": "system.death_clock",
+        "longevity": "system.death_clock",
     }
 
     def __init__(self) -> None:
@@ -246,7 +255,8 @@ class ToolRouter:
             "system status", "robot status", "system health", "system uptime", "restart service",
             "what time", "what's the time", "current time", "what day", "what date", "clock",
             "calculate", "calculator", "math", "sqrt", "multiply", "divide", "plus", "minus", "sum", "equation", "formula",
-            "hardware", "cpu", "gpu", "vram", "ram", "memory usage", "disk", "temperature", "specs"
+            "hardware", "cpu", "gpu", "vram", "ram", "memory usage", "disk", "temperature", "specs",
+            "death clock", "death date", "life expectancy", "longevity", "how long do i have to live", "how long will i live", "lifespan"
         ],
         "scheduler": [
             "timer", "timers", "set timer", "start timer", "cancel timer", "stop timer",
@@ -667,7 +677,7 @@ class PermissionManager:
         return {
             "status": status,
             "tool": tool.name,
-            "result": None,
+            "result": {"status": status, "error": err_msg or "Unknown execution failure"},
             "error": err_msg or "Unknown execution failure",
             "duration_ms": round(dur_ms, 2),
             "retries": retries_done,

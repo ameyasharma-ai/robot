@@ -61,6 +61,8 @@ tool_permissions:
   system.time: true
   system.stop_listening: true
   system.daily_briefing: true
+  system.list_tools: true
+  system.death_clock: true
   knowledge.wikipedia: true
   timer.set: true
   timer.list: true

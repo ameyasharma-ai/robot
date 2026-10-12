@@ -74,7 +74,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     engine.tool_registry.register(
         ToolDefinition(
             name="memory.all",
-            description="Retrieve all durable facts, memories, preferences, and personal details saved about the user across past sessions. Call this whenever the user asks what you remember or know about them, asks to see their memories/facts, or asks for a general summary of everything saved.",
+            description="Retrieve all durable facts, memories, preferences, and personal details saved about the user across past sessions. Call this ONLY when the user explicitly asks what you remember about them, asks to see their saved memories/facts, or asks for a profile summary. NEVER call this on greetings ('Hi', 'Hello', 'Hey') or general conversational chitchat.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -98,7 +98,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     engine.tool_registry.register(
         ToolDefinition(
             name="memory.search",
-            description="Search persistent memories for a specific topic, keyword, person, or preference. To retrieve all stored memories and facts about the user, set query='all' or call memory.all.",
+            description="Search persistent memories for a specific topic, keyword, person, or preference. Call this ONLY when the user asks a question about a past topic or saved preference. NEVER call this on greetings, pleasantries, or general conversational dialogue.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -356,7 +356,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=web_search,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="web",
-            timeout_s=3.0,
+            timeout_s=7.0,
             is_idempotent=True,
             max_retries=1,
         )
@@ -397,6 +397,46 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             description="Get current robot state, service health, and telemetry metrics",
             parameters={"type": "object", "properties": {}},
             handler=system_status,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="system",
+        )
+    )
+
+    async def system_list_tools(category: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        """List all active capabilities and tools available to the robot in structured format."""
+        all_defs = engine.tool_registry.get_all() if hasattr(engine, "tool_registry") else []
+        tools_by_family: dict[str, list[dict[str, str]]] = {}
+        for td in all_defs:
+            fam = td.family or "general"
+            if category and category.lower() not in (fam.lower(), td.name.lower()):
+                continue
+            if fam not in tools_by_family:
+                tools_by_family[fam] = []
+            tools_by_family[fam].append({
+                "name": td.name,
+                "description": td.description,
+            })
+        return {
+            "status": "success",
+            "total_tools": sum(len(v) for v in tools_by_family.values()),
+            "categories": list(tools_by_family.keys()),
+            "tools_by_category": tools_by_family,
+        }
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="system.list_tools",
+            description="List all available robot capabilities, functions, and tools in structured format. Use when user asks what tools you have or what you can do.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category filter (e.g. 'system', 'weather', 'media', 'memory', 'web', 'network')",
+                    },
+                },
+            },
+            handler=system_list_tools,
             permission_level=PermissionLevel.READ_ONLY,
             family="system",
         )
@@ -1090,6 +1130,10 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Extended System & Network Tools ---
     from robot.tools.builtins.system_extended import register_system_extended_tools
     register_system_extended_tools(engine)
+
+    # --- Actuarial Death Clock & Longevity Estimation Tools ---
+    from robot.tools.builtins.death_clock import register_death_clock_tools
+    register_death_clock_tools(engine)
 
 
 

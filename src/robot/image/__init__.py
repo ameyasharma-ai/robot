@@ -183,8 +183,19 @@ class ImageGenerationService:
         self.default_width = default_width
         self.default_height = default_height
 
-        from robot.image.sd_provider import LocalStableDiffusionProvider
-        self.provider: ImageProvider = LocalStableDiffusionProvider(output_dir=str(self.output_dir))
+        import os
+        from robot.image.sd_provider import LocalStableDiffusionProvider, RemoteOpenAIImageProvider
+        openai_base = os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip()
+        openai_key = os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip()
+        self._fallback_provider: ImageProvider = LocalStableDiffusionProvider(output_dir=str(self.output_dir))
+        if openai_base and openai_key:
+            self.provider: ImageProvider = RemoteOpenAIImageProvider(
+                base_url=openai_base,
+                api_key=openai_key,
+                output_dir=str(self.output_dir),
+            )
+        else:
+            self.provider: ImageProvider = self._fallback_provider
         self._jobs: dict[str, ImageJob] = {}
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._queue: asyncio.Queue[ImageJob] = asyncio.Queue()
@@ -293,6 +304,17 @@ class ImageGenerationService:
                 job.status = JobStatus.CANCELLED
                 await self._emit_job_event("image.cancelled", job)
             except Exception as e:
+                # Fallback to local provider if remote image generation fails
+                if hasattr(self, "_fallback_provider") and self.provider != self._fallback_provider:
+                    logger.warning("remote_image_gen_fallback", error=str(e), job_id=job.job_id)
+                    try:
+                        out_path = await self._fallback_provider.generate(job, interrupt)
+                        job.output_path = out_path
+                        await self._emit_job_event("image.completed", job)
+                        logger.info("image_job_completed_fallback", job_id=job.job_id)
+                        continue
+                    except Exception as fb_err:
+                        logger.error("image_fallback_also_failed", error=str(fb_err))
                 job.status = JobStatus.FAILED
                 job.error = str(e)
                 job.completed_at = time.time()

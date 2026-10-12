@@ -155,3 +155,97 @@ class LocalStableDiffusionProvider(ImageProvider):
         )
         
         return job.output_path
+
+
+class RemoteOpenAIImageProvider(ImageProvider):
+    """Remote OpenAI-compatible image provider to offload compute (/v1/images/generations)."""
+
+    def __init__(
+        self,
+        base_url: str = "https://api.openai.com/v1",
+        api_key: str = "",
+        model: str = "dall-e-3",
+        output_dir: str = "data/images",
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def list_models(self) -> list[str]:
+        return [self.model]
+
+    async def health_check(self) -> bool:
+        return bool(self.base_url)
+
+    async def generate(self, job: ImageJob, interrupt: asyncio.Event) -> str:
+        """Call remote /images/generations endpoint, download resulting image, and save to output_dir."""
+        import base64
+        import httpx
+
+        job.status = JobStatus.RUNNING
+        job.started_at = time.time()
+        job.backend = "remote_openai_compatible"
+        job.device = f"Cloud Endpoint ({self.base_url})"
+        job.model = self.model
+        job.progress = 10
+
+        filename = f"img_{job.job_id}_{int(time.time())}.png"
+        full_path = self.output_dir / filename
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        # Standard OpenAI Images API payload
+        payload = {
+            "prompt": job.prompt,
+            "n": 1,
+            "size": f"{job.width}x{job.height}" if job.width in (256, 512, 1024) else "512x512",
+            "response_format": "b64_json",
+        }
+        if self.model and self.model != "default":
+            payload["model"] = self.model
+
+        url = f"{self.base_url}/images/generations"
+        logger.info("remote_image_generation_request", url=url, prompt=job.prompt[:40])
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                err_msg = resp.text[:200]
+                logger.error("remote_image_gen_error", status=resp.status_code, body=err_msg)
+                raise RuntimeError(f"Remote Image API returned {resp.status_code}: {err_msg}")
+
+            data = resp.json()
+            images_data = data.get("data", [])
+            if not images_data:
+                raise RuntimeError("No image data returned from remote endpoint")
+
+            first_item = images_data[0]
+            if "b64_json" in first_item:
+                raw_bytes = base64.b64decode(first_item["b64_json"])
+                full_path.write_bytes(raw_bytes)
+            elif "url" in first_item:
+                img_url = first_item["url"]
+                dl_resp = await client.get(img_url)
+                if dl_resp.status_code == 200:
+                    full_path.write_bytes(dl_resp.content)
+                else:
+                    raise RuntimeError(f"Failed to download image from {img_url}")
+            else:
+                raise RuntimeError("Unrecognized image response format")
+
+        job.progress = 100
+        job.completed_at = time.time()
+        job.duration_s = job.completed_at - job.started_at
+        job.output_path = f"/data/images/{filename}"
+        job.status = JobStatus.COMPLETED
+
+        logger.info(
+            "remote_image_generated",
+            output_path=job.output_path,
+            duration_s=round(job.duration_s, 2),
+        )
+        return job.output_path

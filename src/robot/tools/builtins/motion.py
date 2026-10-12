@@ -72,7 +72,7 @@ def register_motion_tools(engine: "RobotEngine") -> None:
     engine.tool_registry.register(
         ToolDefinition(
             name="character.execute_action",
-            description="Control the robot's physical visual body to perform gestures and movements (e.g. raise_hand, wave, kick, walk, turn, point, look_at, sit, stand, set_emotion, stop).",
+            description="Control the robot's physical visual body to perform gestures and movements (e.g. wave, bow, walk, turn, raise_hand). ONLY use when the user explicitly commands a physical gesture or bodily movement. NEVER invoke for cognitive reasoning, thinking, or regular conversational text replies.",
             parameters={
                 "type": "object",
                 "properties": {

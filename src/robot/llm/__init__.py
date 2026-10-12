@@ -188,10 +188,11 @@ class LlamaServerLLM(LLMProvider):
 
         # Resolve effective tools:
         # Invariant tool set guarantees token 0 (# Tools) stays 100% byte-invariant across turns.
-        # Explicit empty list [] allows opt-out.
-        if tools == []:
+        # Explicit empty list [] or tool response continuation allows opt-out to synthesize text.
+        is_tool_continuation = bool(messages and messages[-1].get("role") == "tool")
+        if tools == [] or is_tool_continuation:
             effective_tools = None
-        elif self.use_invariant_tools and self.canonical_tools:
+        elif self.use_invariant_tools and self.canonical_tools and tools is None:
             effective_tools = self.canonical_tools
         elif tools is not None:
             effective_tools = tools
@@ -774,16 +775,26 @@ class OpenAICompatibleLLM(LLMProvider):
                     for item in raw_list:
                         if isinstance(item, str):
                             m_id = item
+                            is_free = ":free" in m_id.lower()
                         elif isinstance(item, dict):
                             m_id = item.get("id") or item.get("name") or ""
+                            pricing = item.get("pricing", {})
+                            prompt_price = pricing.get("prompt") if isinstance(pricing, dict) else None
+                            is_free = bool(
+                                ":free" in m_id.lower()
+                                or m_id.lower().endswith("-free")
+                                or (prompt_price in ("0", 0, "0.0", 0.0))
+                            )
                         else:
                             continue
                         if m_id:
                             models.append({
                                 "id": m_id,
                                 "name": m_id,
+                                "is_free": is_free,
                             })
-                    models.sort(key=lambda x: str(x["id"]).lower())
+                    # Sort so free models and active models are easily discoverable
+                    models.sort(key=lambda x: (not x.get("is_free", False), str(x["id"]).lower()))
                     logger.info("openai_models_scanned", count=len(models), base_url=self.base_url)
                     return models
                 else:

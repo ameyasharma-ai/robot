@@ -204,11 +204,21 @@ async def network_wifi_scan() -> dict[str, Any]:
         dict containing list of visible Wi-Fi access points and signal strength.
     """
     def _scan() -> dict[str, Any]:
+        # Fast path: Query cached scan results without blocking radio (instantaneous ~10ms)
         res = subprocess.run(
-            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi"],
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "no"],
             capture_output=True,
             text=True,
+            timeout=3.0,
         )
+        # Fall back to active channel scan only if cached list is completely empty
+        if res.returncode != 0 or not res.stdout.strip():
+            res = subprocess.run(
+                ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi"],
+                capture_output=True,
+                text=True,
+                timeout=8.0,
+            )
         if res.returncode != 0:
             return {"status": "error", "error": "nmcli is not available or Wi-Fi hardware is disabled."}
 
@@ -372,7 +382,7 @@ def register_system_extended_tools(engine: RobotEngine) -> None:
             handler=_wifi_scan,
             permission_level=PermissionLevel.READ_ONLY,
             family="network",
-            timeout_s=3.0,
+            timeout_s=10.0,
             is_idempotent=True,
             max_retries=1,
         )
