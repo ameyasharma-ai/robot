@@ -142,6 +142,20 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
     if "OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING" in os.environ:
         openai_comp["enable_prompt_caching"] = os.environ["OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING"].strip().lower() in ("true", "1", "yes")
 
+    # OpenRouter Provider Overrides
+    openrouter = llm.setdefault("openrouter", {})
+    openrouter["base_url"] = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+    if "OPENROUTER_API_KEY" in os.environ:
+        openrouter["api_key"] = os.environ["OPENROUTER_API_KEY"].strip()
+    openrouter["model"] = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip().strip('"').strip("'")
+
+    # AICredits Provider Overrides
+    aicredits = llm.setdefault("aicredits", {})
+    aicredits["base_url"] = os.environ.get("AICREDITS_BASE_URL", "https://aicredits.in/v1").strip()
+    if "AICREDITS_API_KEY" in os.environ:
+        aicredits["api_key"] = os.environ["AICREDITS_API_KEY"].strip()
+    aicredits["model"] = os.environ.get("AICREDITS_MODEL", "aion-labs/aion-3.0").strip().strip('"').strip("'")
+
     # ─── STT Overrides ──────────────────────────────────────────────────────────
     stt = config.setdefault("stt", {})
     if "WHISPER_SERVER_URL" in os.environ:

@@ -52,6 +52,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **OpenAI-Compatible LLM & Model Scanner** | `OpenAICompatibleLLM` + Prompt Caching + Live Model Discovery | ✅ **Active** | Cloud API / Core Engine / Web HUD | 3-way toggle (Local / Gemini / OpenAI), live `/models` scanner with cyberdeck dropdown, settings modal, and prefix prompt caching. |
 | **Context Layer & Prompt Cache Inspector** | Dynamic Debugger (`/contextlayer` & `/api/context/inspect`) | ✅ **Active** | Core Engine / Web HUD | Real-time structured breakdown of System Prompt, Profile Sheet, Grounding Telemetry, Memories, History, and Token Prefix/Suffix Invariance. |
 | **Mobile Top Bar & Chat Workspace Telemetry** | Streamlined Mobile Top Bar & Live Chat Metrics | ✅ **Active** | Web Frontend / CSS | Zero-overflow mobile header, chat IDLE pill removal, live TTFT/E2E/Tokens updates in chat mode top bar, and model persistence across restarts. |
+| **OpenRouter Preset & Mobile Workstation Polish** | OpenRouter Custom API + 61+ Tools Categories + Mobile View Aesthetics & Viewport Scroll | ✅ **Active** | Core Engine / Static Web Frontend | Added OpenRouter preset with free models discovery (:free tag & OpenRouter vendor tab), populated all 61 tools across 9 categories with "All" filter tab, fixed mobile hardware observability 2-column balanced grid, eliminated squished bottom panels, and ensured memory search box smoothly scrolls to viewport with 120px clearance. |
 
 
 Legend:
@@ -1452,6 +1453,86 @@ Legend:
       - Verified HTTP 200 responses across `/contextlayer`, `/inspect`, `/context-layer`, and `/api/inspect`.
       - 207/207 unit tests passed in `pytest`.
       - 100% zero import errors verified across 92 Python files via `verify_imports.py`.
+
+37. **Chat Message Stream TypeError: `this.updateTelemetry is not a function`**:
+    - *Symptoms*:
+      - In the Chat Workspace UI (`CyberDeckUI`), completed message streams (such as after executing a tool like `network.wifi_scan` or encountering a stream error) appended an inline error badge:
+        `[Error: this.updateTelemetry is not a function]`.
+    - *Root Causes*:
+      - In `src/robot/api/static/app.js`, when handling the SSE stream completion event (`eventType === "done"`), the reader invoked `this.updateTelemetry({...})`.
+      - However, the telemetry update method on the `CyberDeckUI` class was defined as `updateMetrics(metrics)`.
+      - Because `this.updateTelemetry` was `undefined`, calling it as a function threw a JavaScript `TypeError: this.updateTelemetry is not a function`.
+      - The streaming fetch loop caught the error in its outer `catch (err)` block and injected `<span class="chat-stream-error">[Error: ${this.escapeHtml(err.message)}]</span>` directly into the chat bubble text container.
+    - *Fixes Applied*:
+      - Guarded and updated `sendChatMessage()` stream completion in `src/robot/api/static/app.js` to call `this.updateMetrics({...})` with a defensive `typeof` check.
+      - Added an explicit `updateTelemetry(metrics)` backward-compatibility alias method on `CyberDeckUI` delegating to `this.updateMetrics(metrics)` with comprehensive JSDoc annotations.
+      - Bumped script cache-buster query parameter in `src/robot/api/static/index.html` from `app.js?v=4.0` to `app.js?v=4.2`.
+      - Added direct `🔍 CONTEXT INSPECTOR ↗` shortcut chip in the CyberDeck LLM telemetry monitor.
+    - *Verification*:
+      - Confirmed `updateTelemetry` and `updateMetrics` exist and execute without errors.
+      - 207/207 unit tests passed in `pytest`.
+      - 100% zero import errors verified across 92 Python files via `verify_imports.py`.
+
+38. **Dynamic Character Binding in Chat Workspace UI**:
+    - *Symptoms*:
+      - While interacting in the Chat Workspace with a character selected (e.g., `LUNA (Devoted Girlfriend)`), message bubble headers displayed static `🤖 NEO` instead of the active companion's name.
+    - *Root Causes*:
+      - Historical message rendering in `appendHistoricalMessage()` directly rendered `msg.personality.toUpperCase()` from the SQLite record without checking the active UI selector (`personaSelect`). If a turn was originally generated under Neo prior to switching to Luna, it permanently rendered `"NEO"`.
+      - Neo was rendered as raw internal key `"NEO"` rather than canonical display name `"CYPHER"`.
+      - Changing the personality selector in the top bar did not dynamically update the sender badges of existing messages in the active thread.
+      - Session loading in `selectChatSession()` did not synchronize `personaSelect` with the session's recorded personality.
+    - *Fixes Applied*:
+      - Added `formatPersonaName(personaKey)` helper converting keys to canonical display names (`neo` -> `CYPHER`).
+      - Updated `appendHistoricalMessage()` to dynamically bind to the currently selected character in `personaSelect`.
+      - Added dynamic DOM batch update in `personaSelect.addEventListener("change")` and the status poller to update all assistant sender badges in real time.
+      - Synchronized `personaSelect` upon session selection in `selectChatSession()`.
+      - Bumped script cache buster in `index.html` to `app.js?v=4.3`.
+    - *Verification*:
+      - 207/207 unit tests passed in `pytest`.
+      - 100% zero import errors verified across 92 Python files via `verify_imports.py`.
+
+39. **OpenRouter Custom API Mode, 61+ Chat Tools Categories & Mobile Workstation Aesthetics**:
+    - *Symptoms*:
+      - Custom API mode lacked an explicit OpenRouter preset, environment variables, and auto-configuration for free models.
+      - Several registered system tools were missing from the quick chips dock in the Chat Workspace.
+      - On mobile viewports (e.g. iPhone 16 Pro Max 440x956), Hardware Observability meter bars were squished and unevenly distributed, `LATENCY TARGETS & PIPELINE` collapsed into an unreadable sliver, and the Cyber-Studio Memory Deck search box was trapped off-screen and could not be scrolled into the viewport.
+    - *Root Causes*:
+      - `index.html` quick chips dock only had 42 tools with missing vision, memory write, gesture, and music history chips.
+      - Missing `OPENROUTER_*` variables in `.env` and `.env.example`, and missing preset selector in `openaiConfigModal`.
+      - `.hud-top-row .hardware-grid` had `grid-template-columns: repeat(3, 1fr)` on mobile with the 5th item spanning 2 columns, leaving a collapsed column.
+      - `.hud-bottom-split .card-metrics` and `.card-cyber-deck` inherited `height: 100%` and `overflow: hidden`, collapsing into flat strips inside indefinite mobile flex rows.
+      - `.main-viewport` lacked bottom clearance padding on mobile, preventing full scrolling to bottom inputs.
+    - *Fixes Applied*:
+      - **All Tools in Categories**: Added all missing system tools across 9 categories (`quick`, `os`, `schedule`, `system`, `vision`, `media`, `smarthome`, `feeds`, `persona`) plus an "All Tools" tab (`data-cat="all"`) and updated badge to `61+ ACTIVE`.
+      - **OpenRouter Custom API Integration**: Added `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL` (`https://openrouter.ai/api/v1`), and `OPENROUTER_MODEL` (`meta-llama/llama-3.3-70b-instruct:free`) to `.env` and `.env.example`. Added Provider Preset dropdown in `openaiConfigModal` with auto-population of endpoints and free tier defaults, added OpenRouter filter tab in model scanner, and added OpenRouter attribution headers in `scan_models()`.
+      - **Mobile View Aesthetics & Consistency**: Converted mobile Hardware Observability grid to a clean 2-column layout (`repeat(2, 1fr)`) with `AMD RADEON 680M` spanning both columns (`grid-column: span 2`). Converted `.hud-bottom-split`, `.card-metrics`, and `.card-cyber-deck` to `height: auto !important; min-height: auto !important; overflow: visible !important;` to eliminate collapsed panels.
+      - **Memory Deck Viewport Scrolling**: Added `padding-bottom: 120px !important;` and `-webkit-overflow-scrolling: touch` to `.main-viewport`. Implemented smooth auto-scroll when clicking `#tabBtnMemory`, focusing `#deckMemSearchInput`, or running memory searches.
+      - **Updated ToDo.txt**: Added clear milestone notice in `docs/ToDo.txt` that only Proactive Engine, Tools Reliability, and Context Bloat / Layer Optimization remain.
+    - *Verification*:
+      - Verified zero import errors across 92 Python files (`verify_imports.py`).
+      - All 207 unit tests passed with 0 failures (`pytest tests/`).
+
+77. **OpenRouter API Key Added in `.env` Still Displaying AICredits Models**:
+    - *Symptoms*: User added `OPENROUTER_API_KEY` to `.env`, but the custom API model picker and model scanner continued to display models from the previous `aicredits` endpoint (`https://aicredits.in/v1` / `aion-labs/aion-3.0`).
+    - *Root Causes*:
+      1. `.env` held separate variables for `OPENAI_COMPATIBLE_BASE_URL` (`https://aicredits.in/v1`) and `OPENROUTER_BASE_URL`. Adding `OPENROUTER_API_KEY` left the active `OPENAI_COMPATIBLE_*` variables pointing to `aicredits.in`.
+      2. `data/active_openai_model.txt` was holding `aion-labs/aion-3.0`.
+      3. Backend `/api/llm/openai/models` endpoint lacked preset resolution, querying `OPENAI_COMPATIBLE_BASE_URL` without falling back to `OPENROUTER_*` credentials.
+      4. Web UI configuration modal pre-filled whichever endpoint was active, without auto-populating saved API keys across presets.
+    - *Fixes Applied*:
+      1. Updated [`.env`](file:///home/ameya/robot/.env) to set `OPENAI_COMPATIBLE_BASE_URL=https://openrouter.ai/api/v1`, `OPENAI_COMPATIBLE_API_KEY` to user's OpenRouter key, and `OPENAI_COMPATIBLE_MODEL=meta-llama/llama-3.3-70b-instruct:free`, while preserving AICredits keys in dedicated `AICREDITS_*` variables.
+      2. Updated [`data/active_openai_model.txt`](file:///home/ameya/robot/data/active_openai_model.txt) to `meta-llama/llama-3.3-70b-instruct:free`.
+      3. Enhanced [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) in `scan_openai_models`: added `preset` query parameter support (`?preset=openrouter`, `aicredits`, `openai`, `deepseek`, `groq`, `ollama`), fallback credentials, and `provider_preset` detection in responses.
+      4. Updated `configure_openai_compatible` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) to automatically synchronize both `OPENAI_COMPATIBLE_*` and preset-specific variables in `.env` and `engine.config`.
+      5. Enhanced [`src/robot/api/static/app.js`](file:///home/ameya/robot/src/robot/api/static/app.js):
+         - Added `preset` support to `this.scanOpenaiModels(autoSelectCurrent, preset)`.
+         - Auto-filled API keys when switching between presets in `cfgOpenaiPreset`.
+         - Clicking the `OpenRouter` vendor tab in the model picker now auto-scans OpenRouter if currently on a different endpoint.
+         - Updated OpenRouter vendor filter to match all models when connected to OpenRouter.
+    - *Verification*:
+      - Verified `/api/llm/openai/models` scans OpenRouter and returns 459 models (19 free models).
+      - Zero import errors verified (`verify_imports.py`).
+      - All 207 unit tests passed (`pytest tests/`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

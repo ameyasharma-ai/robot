@@ -397,7 +397,7 @@ class RobotUI {
                 chatChips.forEach((chip) => {
                     const rawCats = chip.getAttribute("data-cat") || "";
                     const catList = rawCats.split(/\s+/);
-                    if (catList.includes(chosenCat)) {
+                    if (chosenCat === "all" || catList.includes(chosenCat)) {
                         chip.classList.remove("hidden-by-cat");
                         visibleCount++;
                     } else {
@@ -441,13 +441,25 @@ class RobotUI {
     }
 
     /**
+     * Format a personality key to a clean, canonical human-readable display name.
+     * @param {string} [personaKey] - Persona identifier ('neo', 'luna', 'aria', 'glados').
+     * @returns {string} Formatted display name ('CYPHER', 'LUNA', 'ARIA', 'GLADOS', or 'ROBOT').
+     */
+    formatPersonaName(personaKey) {
+        if (!personaKey) return "ROBOT";
+        const clean = personaKey.trim().toLowerCase();
+        if (clean === "neo") return "CYPHER";
+        return clean.toUpperCase();
+    }
+
+    /**
      * Synchronize the chat interface top bar indicators (persona label, theme, active model pill).
      * @returns {void}
      */
     syncChatTopBar() {
         if (this.chatPersonaLabel && this.personaSelect) {
             const p = this.personaSelect.value;
-            this.chatPersonaLabel.textContent = p === "neo" ? "CYPHER" : p.toUpperCase();
+            this.chatPersonaLabel.textContent = this.formatPersonaName(p);
             this.applyPersonaTheme(p);
         }
         const modelPill = document.getElementById("chatActiveModelPill") || this.chatActiveModelPill;
@@ -716,6 +728,12 @@ class RobotUI {
                 this.chatActiveTitle.textContent = data.title || "Conversation";
             }
 
+            if (data.personality && this.personaSelect && this.personaSelect.value !== data.personality) {
+                this.personaSelect.value = data.personality;
+                this.applyPersonaTheme(data.personality);
+                localStorage.setItem("robot_active_personality", data.personality);
+            }
+
             if (!this.chatMessagesContainer) return;
             this.chatMessagesContainer.innerHTML = "";
 
@@ -817,7 +835,11 @@ class RobotUI {
             timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         }
 
-        const senderLabel = isUser ? "YOU" : (msg.personality ? msg.personality.toUpperCase() : (this.personaSelect ? this.personaSelect.value.toUpperCase() : "ROBOT"));
+        // Dynamically bind to the currently selected character so the active companion is reflected consistently
+        const activePersona = (this.personaSelect && this.personaSelect.value)
+            ? this.personaSelect.value
+            : (msg.personality || "neo");
+        const senderLabel = isUser ? "YOU" : this.formatPersonaName(activePersona);
         const avatarIcon = isUser ? "👤" : "🤖";
         const contentHtml = this.renderChatMarkdown(msg.content);
         let badgeHtml = "";
@@ -927,7 +949,8 @@ class RobotUI {
 
         // Create Assistant Streaming row
         const streamId = `stream_${Date.now()}`;
-        const currentPersona = (this.personaSelect ? this.personaSelect.value : "neo").toUpperCase();
+        const activePersonaKey = this.personaSelect ? this.personaSelect.value : "neo";
+        const currentPersona = this.formatPersonaName(activePersonaKey);
         const badgeInfo = this.getChatMsgBadgeInfo(this.currentLlmProvider, this.activeOpenaiModel);
 
         const assistantRow = document.createElement("div");
@@ -1008,6 +1031,12 @@ class RobotUI {
                         streamStartTime = performance.now();
                         if (this.chatLiveSpeed) {
                             this.chatLiveSpeed.style.display = "inline";
+                        }
+                        if (payload.personality) {
+                            const senderEl = assistantRow.querySelector(".chat-msg-sender");
+                            if (senderEl) {
+                                senderEl.textContent = this.formatPersonaName(payload.personality);
+                            }
                         }
                         if (payload.provider) {
                             this.currentLlmProvider = payload.provider;
@@ -1954,7 +1983,7 @@ class RobotUI {
             try {
                 localStorage.setItem("robot_active_personality", chosen);
                 this.applyPersonaTheme(chosen);
-                const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+                const disp = this.formatPersonaName(chosen);
                 if (this.bubbleTag) {
                     this.bubbleTag.textContent = `${disp}: WARMING UP...`;
                     this.bubbleTag.style.color = "var(--accent-amber, #f59e0b)";
@@ -1962,6 +1991,10 @@ class RobotUI {
                 if (this.bubbleContent) {
                     this.bubbleContent.textContent = "Priming neural cache & sensory context in background...";
                 }
+                // Dynamically update all assistant sender labels in the current conversation view
+                document.querySelectorAll(".msg-assistant .chat-msg-sender").forEach((el) => {
+                    el.textContent = disp;
+                });
                 const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
                 if (switchRes.ok) {
                     this.logEvent("PERSONA", `Personality switched to ${disp} (priming in background)`, "system");
@@ -2050,6 +2083,71 @@ class RobotUI {
         const inputContext = document.getElementById("cfgOpenaiContext") || document.getElementById("inputOpenaiContext");
         const checkCaching = document.getElementById("cfgOpenaiPromptCaching") || document.getElementById("checkOpenaiPromptCaching");
         const modalFeedback = document.getElementById("openaiConfigFeedback");
+        const selectPreset = document.getElementById("cfgOpenaiPreset");
+
+        const PRESETS = {
+            custom: {
+                baseUrl: "",
+                model: "",
+                contextWindow: 128000,
+            },
+            openrouter: {
+                baseUrl: "https://openrouter.ai/api/v1",
+                model: "meta-llama/llama-3.3-70b-instruct:free",
+                contextWindow: 131072,
+            },
+            aicredits: {
+                baseUrl: "https://aicredits.in/v1",
+                model: "aion-labs/aion-3.0",
+                contextWindow: 128000,
+            },
+            openai: {
+                baseUrl: "https://api.openai.com/v1",
+                model: "gpt-4o",
+                contextWindow: 128000,
+            },
+            deepseek: {
+                baseUrl: "https://api.deepseek.com/v1",
+                model: "deepseek-chat",
+                contextWindow: 64000,
+            },
+            groq: {
+                baseUrl: "https://api.groq.com/openai/v1",
+                model: "llama-3.3-70b-versatile",
+                contextWindow: 128000,
+            },
+            ollama: {
+                baseUrl: "http://127.0.0.1:11434/v1",
+                model: "llama3.2",
+                contextWindow: 8192,
+            },
+        };
+
+        if (selectPreset) {
+            selectPreset.addEventListener("change", () => {
+                const p = selectPreset.value;
+                if (PRESETS[p]) {
+                    const presetData = PRESETS[p];
+                    if (presetData.baseUrl && inputBaseUrl) inputBaseUrl.value = presetData.baseUrl;
+                    if (presetData.model && inputModel) inputModel.value = presetData.model;
+                    if (presetData.contextWindow && inputContext) inputContext.value = presetData.contextWindow;
+                    if (p === "openrouter" && this.openrouterApiKey && inputApiKey) {
+                        inputApiKey.value = this.openrouterApiKey;
+                    } else if (p === "aicredits" && this.aicreditsApiKey && inputApiKey) {
+                        inputApiKey.value = this.aicreditsApiKey;
+                    }
+                    if (modalFeedback) {
+                        if (p === "openrouter") {
+                            modalFeedback.textContent = "🌐 OpenRouter preset selected with configured key. Defaults to free model (meta-llama/llama-3.3-70b-instruct:free).";
+                            modalFeedback.className = "cyberdeck-modal-feedback success";
+                        } else {
+                            modalFeedback.textContent = `Applied ${p.toUpperCase()} endpoint preset defaults.`;
+                            modalFeedback.className = "cyberdeck-modal-feedback";
+                        }
+                    }
+                }
+            });
+        }
 
         this.scannedOpenaiModels = [];
         this.currentModelVendorFilter = "all";
@@ -2211,11 +2309,13 @@ class RobotUI {
 
         /**
          * Scan available models from the configured OpenAI-compatible endpoint.
-         * Populates memory cache, synchronizes active selection, and refreshes search picker.
-         * @param {boolean} [autoSelectCurrent=true] - Whether to highlight currently configured model.
-         * @returns {Promise<Array<Object>>} List of model objects.
+          /**
+         * Scan available models from the OpenAI-compatible endpoint.
+         * @param {boolean} [autoSelectCurrent=true] - Whether to synchronize active model selection.
+         * @param {string|null} [preset=null] - Optional preset target ('openrouter', 'aicredits', etc.).
+         * @returns {Promise<Array<Object>>}
          */
-        this.scanOpenaiModels = async (autoSelectCurrent = true) => {
+        this.scanOpenaiModels = async (autoSelectCurrent = true, preset = null) => {
             const scanIcons = [
                 document.querySelector("#btnScanOpenaiModels .scan-icon"),
                 document.querySelector("#btnChatScanOpenai .scan-icon"),
@@ -2233,10 +2333,15 @@ class RobotUI {
             scanButtons.forEach((b) => b.disabled = true);
 
             try {
-                const res = await fetch("/api/llm/openai/models");
+                let url = "/api/llm/openai/models";
+                if (preset) {
+                    url += `?preset=${encodeURIComponent(preset)}`;
+                }
+                const res = await fetch(url);
                 const data = await res.json();
                 if (data.status === "ok" && Array.isArray(data.models)) {
                     this.scannedOpenaiModels = data.models;
+                    this.activeOpenaiEndpoint = data.base_url || "";
                     const targetModel = data.active_model || data.current_model || data.model || this.activeOpenaiModel;
                     if (targetModel) {
                         this.activeOpenaiModel = targetModel;
@@ -2244,14 +2349,15 @@ class RobotUI {
 
                     const endpointHint = document.getElementById("modelEndpointHint");
                     if (endpointHint && data.base_url) {
-                        endpointHint.textContent = `Endpoint: ${data.base_url}`;
+                        const provTag = data.provider_preset ? ` [${data.provider_preset.toUpperCase()}]` : "";
+                        endpointHint.textContent = `Endpoint: ${data.base_url}${provTag}`;
                     }
 
                     this.updateOpenaiModelDisplays(this.activeOpenaiModel);
                     if (this.isModelSearchModalOpen) {
                         this.renderModelSearchResults();
                     }
-                    this.logEvent("LLM", `Discovered ${data.count} models at OpenAI endpoint (Active: ${this.activeOpenaiModel}).`, "success");
+                    this.logEvent("LLM", `Discovered ${data.count} models at ${data.provider_preset || "OpenAI"} endpoint (Active: ${this.activeOpenaiModel}).`, "success");
                     return data.models;
                 } else {
                     this.logEvent("WARNING", `Model scan warning: ${data.message || data.error || "No models returned"}`, "warning");
@@ -2336,7 +2442,10 @@ class RobotUI {
                 if (vendor !== "all") {
                     if (vendor === "free") {
                         if (!m.is_free && !id.includes(":free") && !id.includes("-free")) return false;
-                    } else if (vendor === "openai" && !(id.includes("openai") || id.includes("gpt") || id.includes("o1") || id.includes("o3"))) return false;
+                    } else if (vendor === "openrouter") {
+                        const isOr = (this.activeOpenaiEndpoint || "").includes("openrouter.ai") || (inputBaseUrl && inputBaseUrl.value.includes("openrouter.ai"));
+                        if (!isOr && !id.includes("openrouter")) return false;
+                    } else if (vendor === "openai" && !(id.includes("openai") || id.includes("gpt") || id.includes("o1") || id.includes("o3") || id.includes("chatgpt"))) return false;
                     else if (vendor === "anthropic" && !(id.includes("anthropic") || id.includes("claude"))) return false;
                     else if (vendor === "google" && !(id.includes("google") || id.includes("gemini") || id.includes("gemma"))) return false;
                     else if (vendor === "meta" && !(id.includes("meta") || id.includes("llama"))) return false;
@@ -2472,11 +2581,15 @@ class RobotUI {
 
         // Wire vendor filter tabs
         vendorTabs.forEach((tab) => {
-            tab.addEventListener("click", () => {
+            tab.addEventListener("click", async () => {
                 vendorTabs.forEach((t) => t.classList.remove("active"));
                 tab.classList.add("active");
                 this.currentModelVendorFilter = tab.dataset.vendor || "all";
-                this.renderModelSearchResults();
+                if (this.currentModelVendorFilter === "openrouter" && !(this.activeOpenaiEndpoint || "").includes("openrouter.ai")) {
+                    await this.scanOpenaiModels(true, "openrouter");
+                } else {
+                    this.renderModelSearchResults();
+                }
             });
         });
 
@@ -2498,12 +2611,37 @@ class RobotUI {
                 const res = await fetch("/api/llm/status");
                 if (res.ok) {
                     const data = await res.json();
+                    if (data.openrouter && data.openrouter.api_key) {
+                        this.openrouterApiKey = data.openrouter.api_key;
+                    }
+                    if (data.aicredits && data.aicredits.api_key) {
+                        this.aicreditsApiKey = data.aicredits.api_key;
+                    }
                     const cfg = data.openai_compatible || {};
                     if (inputBaseUrl) inputBaseUrl.value = cfg.base_url || "";
-                    if (inputApiKey) inputApiKey.value = cfg.api_key || "";
-                    if (inputModel) inputModel.value = cfg.model || this.activeOpenaiModel || "gpt-4o";
+                    if (inputApiKey) inputApiKey.value = cfg.api_key || (data.openrouter && cfg.base_url && cfg.base_url.includes("openrouter.ai") ? data.openrouter.api_key : "");
+                    if (inputModel) inputModel.value = cfg.model || this.activeOpenaiModel || "meta-llama/llama-3.3-70b-instruct:free";
                     if (inputContext) inputContext.value = cfg.context_window || 128000;
                     if (checkCaching) checkCaching.checked = cfg.enable_prompt_caching !== false;
+
+                    if (selectPreset) {
+                        const curUrl = (cfg.base_url || "").toLowerCase();
+                        if (curUrl.includes("openrouter.ai")) {
+                            selectPreset.value = "openrouter";
+                        } else if (curUrl.includes("aicredits")) {
+                            selectPreset.value = "aicredits";
+                        } else if (curUrl.includes("api.openai.com")) {
+                            selectPreset.value = "openai";
+                        } else if (curUrl.includes("deepseek.com")) {
+                            selectPreset.value = "deepseek";
+                        } else if (curUrl.includes("groq.com")) {
+                            selectPreset.value = "groq";
+                        } else if (curUrl.includes("11434")) {
+                            selectPreset.value = "ollama";
+                        } else {
+                            selectPreset.value = "custom";
+                        }
+                    }
                 }
             } catch (e) {}
 
@@ -2555,7 +2693,8 @@ class RobotUI {
                     api_key: inputApiKey ? inputApiKey.value.trim() : "",
                     model: inputModel ? inputModel.value.trim() : "",
                     context_window: parseInt(inputContext ? inputContext.value : "128000", 10) || 128000,
-                    enable_prompt_caching: checkCaching ? checkCaching.checked : true
+                    enable_prompt_caching: checkCaching ? checkCaching.checked : true,
+                    preset: selectPreset ? selectPreset.value : "custom"
                 };
 
                 if (modalFeedback) {
@@ -2621,6 +2760,12 @@ class RobotUI {
                 const data = await res.json();
                 if (data.context_window && data.provider === "local") {
                     this.localContextWindow = data.context_window;
+                }
+                if (data.openrouter && data.openrouter.api_key) {
+                    this.openrouterApiKey = data.openrouter.api_key;
+                }
+                if (data.aicredits && data.aicredits.api_key) {
+                    this.aicreditsApiKey = data.aicredits.api_key;
                 }
                 const serverModel = data.active_openai_model || (data.openai_compatible && data.openai_compatible.model);
                 if (serverModel) {
@@ -3132,7 +3277,22 @@ class RobotUI {
         }
     }
 
+    /**
+     * Update telemetry metrics in the CyberDeck HUD indicators and progress bars.
+     * @param {Object} metrics - Latency and throughput metrics object.
+     * @param {number} [metrics.vad] - Voice Activity Detection latency in milliseconds.
+     * @param {number} [metrics.stt] - Speech-to-Text latency in milliseconds.
+     * @param {number} [metrics.context] - Context assembly latency in milliseconds.
+     * @param {number} [metrics.ttft] - Time to first token in milliseconds.
+     * @param {number} [metrics.synth] - Speech synthesis latency in milliseconds.
+     * @param {number} [metrics.e2e] - End-to-end turn latency in milliseconds.
+     * @param {number} [metrics.tokens] - Total tokens generated.
+     * @param {number} [metrics.tokens_in] - Input prompt tokens.
+     * @param {number} [metrics.tokens_out] - Output completion tokens.
+     * @returns {void}
+     */
     updateMetrics(metrics) {
+        if (!metrics) return;
         if (metrics.vad !== undefined && this.metricVad) {
             this.metricVad.textContent = `${Math.round(metrics.vad)} ms`;
             if (this.barVad) this.barVad.style.width = `${Math.min(100, (metrics.vad / 500) * 100)}%`;
@@ -3170,6 +3330,16 @@ class RobotUI {
         }
     }
 
+    /**
+     * Backward-compatible alias for updateMetrics to ensure any legacy callers or
+     * cached client sessions do not throw "this.updateTelemetry is not a function".
+     * @param {Object} metrics - Telemetry metrics object.
+     * @returns {void}
+     */
+    updateTelemetry(metrics) {
+        return this.updateMetrics(metrics);
+    }
+
     startPollers() {
         // Poll status every 1.5 seconds for robust state synchronization
         setInterval(async () => {
@@ -3187,10 +3357,14 @@ class RobotUI {
                         this.updateVoiceUI(data.voice_enabled);
                     }
                     if (data.personality) {
-                        const pUpper = data.personality.toUpperCase();
+                        const pUpper = this.formatPersonaName(data.personality);
                         if (this.personaName) this.personaName.textContent = pUpper;
                         if (this.personaSelect && document.activeElement !== this.personaSelect && this.personaSelect.value !== data.personality) {
                             this.personaSelect.value = data.personality;
+                            this.syncChatTopBar();
+                            document.querySelectorAll(".msg-assistant .chat-msg-sender").forEach((el) => {
+                                el.textContent = pUpper;
+                            });
                         }
                     }
                     if (data.services) {
@@ -3297,8 +3471,18 @@ class RobotUI {
                 document.querySelectorAll(".deck-pane").forEach((pane) => {
                     pane.style.display = pane.id === targetId ? "flex" : "none";
                 });
-                if (targetId === "paneMemoryDeck" && typeof this.refreshMemoryDeck === "function") {
-                    this.refreshMemoryDeck();
+                if (targetId === "paneMemoryDeck") {
+                    if (typeof this.refreshMemoryDeck === "function") {
+                        this.refreshMemoryDeck();
+                    }
+                    if (window.innerWidth <= 768) {
+                        setTimeout(() => {
+                            const searchEl = document.getElementById("deckMemSearchInput") || document.getElementById("paneMemoryDeck");
+                            if (searchEl) {
+                                searchEl.scrollIntoView({ behavior: "smooth", block: "center" });
+                            }
+                        }, 100);
+                    }
                 }
             });
         });
@@ -3987,6 +4171,11 @@ class RobotUI {
                 });
 
                 resultsContainer.innerHTML = html;
+                if (window.innerWidth <= 768) {
+                    setTimeout(() => {
+                        resultsContainer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                    }, 80);
+                }
             } catch (err) {
                 console.error("Memory search failed:", err);
                 resultsContainer.innerHTML = `<div class="mem-empty-hint" style="color: #ff4444;">Search failed: ${this.escapeHtml(err.message)}</div>`;
@@ -3998,6 +4187,13 @@ class RobotUI {
         }
 
         if (searchInput) {
+            searchInput.addEventListener("focus", () => {
+                if (window.innerWidth <= 768) {
+                    setTimeout(() => {
+                        searchInput.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }, 120);
+                }
+            });
             searchInput.addEventListener("keydown", (e) => {
                 if (e.key === "Enter") {
                     e.preventDefault();
@@ -4013,6 +4209,11 @@ class RobotUI {
                 const q = chip.dataset.query || "";
                 if (searchInput) searchInput.value = q;
                 performSearch(q);
+                if (window.innerWidth <= 768 && searchInput) {
+                    setTimeout(() => {
+                        searchInput.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }, 100);
+                }
             });
         });
     }

@@ -187,6 +187,14 @@ def create_app(engine: "RobotEngine") -> FastAPI:
 
         active_model = getattr(engine.llm, "model", "Qwen3.5-4B-Q4_K_M")
         persisted_openai_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o"))
+        openrouter_cfg = getattr(engine, "config", {}).get("llm", {}).get("openrouter", {}) if hasattr(engine, "config") else {}
+        openrouter_key = openrouter_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "")
+        has_openrouter_key = bool(openrouter_key)
+
+        aicredits_cfg = getattr(engine, "config", {}).get("llm", {}).get("aicredits", {}) if hasattr(engine, "config") else {}
+        aicredits_key = aicredits_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
+        has_aicredits_key = bool(aicredits_key)
+
         return {
             "provider": prov,
             "mode": "high_intelligence" if (is_gemini or is_openai) else "low_latency",
@@ -196,11 +204,23 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             "llama_running": llama_running,
             "vram_freed": not llama_running,
             "openai_compatible": {
-                "base_url": openai_cfg.get("base_url", "https://api.openai.com/v1"),
+                "base_url": openai_cfg.get("base_url", "https://openrouter.ai/api/v1"),
                 "model": persisted_openai_model,
                 "context_window": int(openai_cfg.get("context_window", 128000)),
                 "has_api_key": bool(openai_cfg.get("api_key")),
                 "enable_prompt_caching": bool(openai_cfg.get("enable_prompt_caching", True)),
+            },
+            "openrouter": {
+                "base_url": openrouter_cfg.get("base_url", "https://openrouter.ai/api/v1"),
+                "model": openrouter_cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"),
+                "has_api_key": has_openrouter_key,
+                "api_key": openrouter_key,
+            },
+            "aicredits": {
+                "base_url": aicredits_cfg.get("base_url", "https://aicredits.in/v1"),
+                "model": aicredits_cfg.get("model", "aion-labs/aion-3.0"),
+                "has_api_key": has_aicredits_key,
+                "api_key": aicredits_key,
             },
         }
 
@@ -225,21 +245,60 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         return res
 
     @app.get("/api/llm/openai/models")
-    async def scan_openai_models(base_url: str | None = None, api_key: str | None = None):
+    async def scan_openai_models(
+        base_url: str | None = None,
+        api_key: str | None = None,
+        preset: str | None = None,
+    ):
         """Scan available models from the OpenAI-compatible endpoint.
 
         Args:
             base_url: Optional override endpoint URL to scan.
             api_key: Optional override API key.
+            preset: Optional provider preset ('openrouter', 'aicredits', 'openai', etc.).
 
         Returns:
             dict[str, Any]: Status and list of discovered model identifiers.
         """
         from robot.llm import OpenAICompatibleLLM
-        openai_cfg = getattr(engine, "config", {}).get("llm", {}).get("openai_compatible", {}) if hasattr(engine, "config") else {}
-        target_url = base_url or openai_cfg.get("base_url", "https://api.openai.com/v1")
-        target_key = api_key if api_key is not None else openai_cfg.get("api_key", "")
-        current_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "gpt-4o"))
+        cfg_root = getattr(engine, "config", {}).get("llm", {}) if hasattr(engine, "config") else {}
+        openai_cfg = cfg_root.get("openai_compatible", {})
+        openrouter_cfg = cfg_root.get("openrouter", {})
+        aicredits_cfg = cfg_root.get("aicredits", {})
+
+        target_url = base_url
+        target_key = api_key
+
+        if preset == "openrouter":
+            target_url = base_url or openrouter_cfg.get("base_url") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            target_key = api_key if api_key is not None else (openrouter_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", ""))
+        elif preset == "aicredits":
+            target_url = base_url or aicredits_cfg.get("base_url") or os.environ.get("AICREDITS_BASE_URL", "https://aicredits.in/v1")
+            target_key = api_key if api_key is not None else (aicredits_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", ""))
+        elif preset == "openai":
+            target_url = base_url or "https://api.openai.com/v1"
+            target_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY", "")
+        elif preset == "deepseek":
+            target_url = base_url or "https://api.deepseek.com/v1"
+            target_key = api_key if api_key is not None else os.environ.get("DEEPSEEK_API_KEY", "")
+        elif preset == "groq":
+            target_url = base_url or "https://api.groq.com/openai/v1"
+            target_key = api_key if api_key is not None else os.environ.get("GROQ_API_KEY", "")
+        elif preset == "ollama":
+            target_url = base_url or "http://127.0.0.1:11434/v1"
+            target_key = api_key if api_key is not None else ""
+        else:
+            if not target_url:
+                target_url = openai_cfg.get("base_url", "https://openrouter.ai/api/v1")
+            if target_key is None:
+                if "openrouter.ai" in str(target_url):
+                    target_key = openai_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "")
+                elif "aicredits.in" in str(target_url):
+                    target_key = openai_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
+                else:
+                    target_key = openai_cfg.get("api_key", "")
+
+        current_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"))
 
         scanner = OpenAICompatibleLLM(
             base_url=target_url,
@@ -248,6 +307,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         )
         try:
             models = await scanner.scan_models()
+            provider_preset = "openrouter" if "openrouter.ai" in str(target_url) else ("aicredits" if "aicredits.in" in str(target_url) else "custom")
             return {
                 "status": "ok",
                 "models": models,
@@ -255,8 +315,10 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "current_model": current_model,
                 "active_model": current_model,
                 "base_url": target_url,
+                "provider_preset": provider_preset,
             }
         except Exception as e:
+            provider_preset = "openrouter" if "openrouter.ai" in str(target_url) else ("aicredits" if "aicredits.in" in str(target_url) else "custom")
             return {
                 "status": "error",
                 "message": str(e),
@@ -265,6 +327,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "current_model": current_model,
                 "active_model": current_model,
                 "base_url": target_url,
+                "provider_preset": provider_preset,
             }
 
     @app.post("/api/llm/openai/model")
@@ -336,13 +399,52 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         openai_cfg["enable_prompt_caching"] = bool(prompt_caching)
         update_env_variable("OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING", "true" if prompt_caching else "false")
 
+        # Fallback to stored preset keys if api_key not provided in request
+        preset = req.get("preset", "")
+        if (preset == "openrouter" or "openrouter.ai" in base_url) and not api_key:
+            api_key = os.environ.get("OPENROUTER_API_KEY", "") or getattr(engine, "config", {}).get("llm", {}).get("openrouter", {}).get("api_key", "")
+            if api_key:
+                openai_cfg["api_key"] = api_key
+                update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
+        elif (preset == "aicredits" or "aicredits.in" in base_url) and not api_key:
+            api_key = os.environ.get("AICREDITS_API_KEY", "") or getattr(engine, "config", {}).get("llm", {}).get("aicredits", {}).get("api_key", "")
+            if api_key:
+                openai_cfg["api_key"] = api_key
+                update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
+
+        # Keep OPENROUTER_* in sync if targeted
+        if "openrouter.ai" in base_url or preset == "openrouter":
+            or_cfg = getattr(engine, "config", {}).setdefault("llm", {}).setdefault("openrouter", {})
+            if api_key:
+                update_env_variable("OPENROUTER_API_KEY", api_key)
+                or_cfg["api_key"] = api_key
+            if base_url:
+                update_env_variable("OPENROUTER_BASE_URL", base_url)
+                or_cfg["base_url"] = base_url
+            if model:
+                update_env_variable("OPENROUTER_MODEL", model)
+                or_cfg["model"] = model
+
+        # Keep AICREDITS_* in sync if targeted
+        if "aicredits.in" in base_url or preset == "aicredits":
+            ai_cfg = getattr(engine, "config", {}).setdefault("llm", {}).setdefault("aicredits", {})
+            if api_key:
+                update_env_variable("AICREDITS_API_KEY", api_key)
+                ai_cfg["api_key"] = api_key
+            if base_url:
+                update_env_variable("AICREDITS_BASE_URL", base_url)
+                ai_cfg["base_url"] = base_url
+            if model:
+                update_env_variable("AICREDITS_MODEL", model)
+                ai_cfg["model"] = model
+
         # If currently active, refresh live LLM instance
         if getattr(engine, "llm_provider_type", "") in ("openai_compatible", "openai") and engine.llm:
             from robot.llm import OpenAICompatibleLLM
             engine.llm = OpenAICompatibleLLM(
-                base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
+                base_url=openai_cfg.get("base_url", "https://openrouter.ai/api/v1"),
                 api_key=openai_cfg.get("api_key", ""),
-                model=openai_cfg.get("model", "gpt-4o"),
+                model=openai_cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"),
                 context_window=openai_cfg.get("context_window", 128000),
                 enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
             )

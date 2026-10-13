@@ -28,6 +28,7 @@
 28. [DONE] Actuarial Death Clock estimation tool: system.death_clock tool combining WHO country baselines, epidemiological lifestyle deltas, and Gemini Cloud generative clinical analysis with 100% test coverage.
 
 ## Pending
+- [PENDING] The only things remaining to fix are: Proactive Engine, Tools Reliability, and Context Bloat / Layer Optimization.
 - [PENDING] Local wake word engine using open-source model.
 - [PENDING] 7-day endurance test with continuous memory leak & crash monitoring.
 - [PENDING] Web-hostable free architecture (browser VAD, Groq Whisper STT, Gemini Free LLM, Edge TTS, Cloudflare Workers, Mem0/Supabase, Next.js on Vercel). Deadline: 15th-16th October.

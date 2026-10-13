@@ -593,7 +593,12 @@ class OpenAICompatibleLLM(LLMProvider):
         """
         import os as _os
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key if api_key is not None else _os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
+        if not api_key:
+            if "openrouter.ai" in self.base_url:
+                api_key = _os.environ.get("OPENROUTER_API_KEY", "") or _os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
+            else:
+                api_key = _os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
+        self.api_key = api_key
         self.model = model
         self.context_window = context_window
         self.max_tokens = max_tokens
@@ -763,6 +768,9 @@ class OpenAICompatibleLLM(LLMProvider):
         headers: dict[str, str] = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        if "openrouter.ai" in self.base_url:
+            headers["HTTP-Referer"] = "https://github.com/ameya/robot"
+            headers["X-Title"] = "Robot Core Humanoid Brain"
 
         url = f"{self.base_url}/models"
         try:

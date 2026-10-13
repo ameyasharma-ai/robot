@@ -5853,9 +5853,17 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     }
 
     /* Main Viewport in Dual Mode */
-    .main-viewport {
-        padding: 6px 8px;
-        gap: 10px;
+    .main-viewport,
+    body.mode-dual .main-viewport {
+        display: flex !important;
+        flex-direction: column !important;
+        height: auto !important;
+        min-height: calc(100vh - 44px) !important;
+        max-height: none !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding: 6px 8px 120px 8px !important;
+        gap: 10px !important;
     }
 
     body.mode-chat .main-viewport {
@@ -5963,83 +5971,235 @@ body.mode-chat .chat-workspace-panel { display: flex; }
         padding: 6px 8px;
     }
 
-    /* Hardware Grid */
+    /* Hardware Observability Grid: Balanced 2-Columns with Full-Width AMD 680M */
+    .hud-top-row .card-hardware {
+        width: 100% !important;
+        height: auto !important;
+        min-height: auto !important;
+        padding: 10px 12px !important;
+    }
+
     .hud-top-row .hardware-grid {
-        grid-template-columns: repeat(3, 1fr);
-        gap: 6px;
+        display: grid !important;
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 6px !important;
+    }
+
+    .hud-top-row .hardware-grid .hw-item-wide {
+        grid-column: span 2 !important;
+    }
+
+    .hud-top-row .hw-item {
+        padding: 6px 8px !important;
+        min-width: 0 !important;
+        box-sizing: border-box !important;
+    }
+
+    .hud-top-row .hw-item-top {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        gap: 4px !important;
+        margin-bottom: 4px !important;
+    }
+
+    .hud-top-row .hw-lbl {
+        font-size: 8.5px !important;
+        letter-spacing: 0.3px !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        flex: 1 !important;
+        min-width: 0 !important;
+    }
+
+    .hud-top-row .hw-val {
+        font-size: 10.5px !important;
+        flex-shrink: 0 !important;
+    }
+
+    .hud-top-row .hw-meter-bar {
+        height: 4px !important;
+        background: rgba(0, 0, 0, 0.5) !important;
+        border-radius: 2px !important;
+        overflow: hidden !important;
+    }
+
+    /* HUD Bottom Split & Cards (Zero Squishing, Natural Auto-Height) */
+    .hud-bottom-split {
+        display: flex !important;
+        flex-direction: column !important;
+        grid-template-columns: none !important;
+        height: auto !important;
+        min-height: auto !important;
+        gap: 12px !important;
     }
 
     /* Latency & Metrics Card */
     .hud-bottom-split .card-metrics {
-        padding: 12px;
+        height: auto !important;
+        min-height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        padding: 10px 12px !important;
     }
 
     .hud-bottom-split .card-metrics .metrics-grid {
-        grid-template-columns: repeat(3, 1fr);
-        gap: 6px;
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 6px !important;
     }
 
     .metric-box {
-        padding: 6px 8px;
+        padding: 6px 8px !important;
     }
 
     .m-lbl {
-        font-size: 8px;
+        font-size: 8px !important;
     }
 
     .m-val {
-        font-size: 13px;
+        font-size: 12px !important;
     }
 
     .integrated-pipeline-flow {
-        overflow-x: auto;
-        flex-wrap: nowrap;
-        -webkit-overflow-scrolling: touch;
-        padding-bottom: 6px;
-        scrollbar-width: none;
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding-bottom: 6px !important;
+        scrollbar-width: none !important;
     }
 
     .integrated-pipeline-flow::-webkit-scrollbar {
-        display: none;
+        display: none !important;
     }
 
     .pipe-node {
-        min-width: 50px;
-        padding: 4px 6px;
+        min-width: 48px !important;
+        padding: 4px 6px !important;
     }
 
     .tool-stats-row {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 6px;
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 6px !important;
     }
 
-    /* Image Studio Card */
-    .hud-bottom-split .card-image-studio {
-        padding: 12px;
+    /* Cyber-Studio Deck (Tabbed Workstation on Mobile) */
+    .hud-bottom-split .card-cyber-deck {
+        height: auto !important;
+        min-height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        padding: 10px 12px !important;
+    }
+
+    .cyber-deck-panes,
+    .deck-pane {
+        height: auto !important;
+        min-height: auto !important;
+        flex: none !important;
+        overflow: visible !important;
+    }
+
+    #paneImageStudio {
+        height: auto !important;
+        min-height: auto !important;
+    }
+
+    .card-cyber-deck .image-preview-area,
+    #paneImageStudio .cyber-canvas-viewport {
+        min-height: 220px !important;
+        height: 260px !important;
+        width: 100% !important;
     }
 
     .img-style-chips {
-        flex-wrap: wrap;
-        gap: 5px;
+        flex-wrap: wrap !important;
+        gap: 5px !important;
     }
 
     .img-style-chip {
-        padding: 4px 8px;
-        font-size: 10.5px;
+        padding: 4px 8px !important;
+        font-size: 10px !important;
     }
 
     .image-input-row {
-        flex-direction: column;
-        gap: 6px;
+        flex-direction: column !important;
+        gap: 6px !important;
     }
 
     .image-input-row .img-prompt-input {
-        width: 100%;
+        width: 100% !important;
     }
 
     .image-controls-row {
-        flex-wrap: wrap;
-        gap: 8px;
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+    }
+
+    #paneAudioDeck {
+        height: auto !important;
+        min-height: auto !important;
+    }
+
+    #paneMemoryDeck,
+    .memory-deck-content {
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
+        gap: 8px !important;
+    }
+
+    .mem-deck-stats {
+        grid-template-columns: repeat(3, 1fr) !important;
+        gap: 6px !important;
+    }
+
+    .mem-stat-card {
+        padding: 6px 8px !important;
+    }
+
+    .mem-stat-val {
+        font-size: 13px !important;
+    }
+
+    .mem-stat-lbl {
+        font-size: 7.5px !important;
+    }
+
+    .mem-filter-chips {
+        flex-wrap: wrap !important;
+        gap: 4px !important;
+    }
+
+    .mem-chip {
+        padding: 3px 7px !important;
+        font-size: 9.5px !important;
+    }
+
+    .mem-search-box {
+        display: flex !important;
+        gap: 6px !important;
+        width: 100% !important;
+    }
+
+    .mem-search-input {
+        flex: 1 !important;
+        font-size: 11px !important;
+        padding: 6px 10px !important;
+    }
+
+    .mem-search-btn {
+        padding: 6px 12px !important;
+        font-size: 10.5px !important;
+        flex-shrink: 0 !important;
+    }
+
+    .mem-results-list {
+        min-height: 180px !important;
+        max-height: 280px !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding: 8px 10px !important;
     }
 
     /* Chat Workspace Mobile Drawer */
@@ -6975,6 +7135,40 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     font-size: 9.5px;
     color: var(--text-main);
     line-height: 1.35;
+}
+
+/* ─── Responsive Guarantees for Cyber-Deck & Memory Viewport Scroll (Mobile Screens) ─── */
+@media (max-width: 768px) {
+    .card-cyber-deck {
+        height: auto !important;
+        min-height: auto !important;
+        max-height: none !important;
+        flex: none !important;
+    }
+
+    #paneMemoryDeck,
+    .memory-deck-content {
+        height: auto !important;
+        min-height: auto !important;
+        max-height: none !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
+    .mem-search-box {
+        position: relative !important;
+        z-index: 5 !important;
+        margin: 4px 0 !important;
+        display: flex !important;
+        width: 100% !important;
+    }
+
+    .mem-results-list {
+        min-height: 180px !important;
+        max-height: 280px !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
 }
 
 

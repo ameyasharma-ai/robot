@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Share+Tech+Mono&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=4.1">
+    <link rel="stylesheet" href="/static/index.css?v=4.3">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -416,6 +416,7 @@
                                     <span class="lt-chip" title="Fast FP16 CUDA Tensor Engine">RTX 3050 FP16</span>
                                     <span class="lt-chip" id="ttftTargetChip" title="Time to first audio token">&lt;150ms TTFT</span>
                                     <span class="lt-chip" id="streamHealthChip" title="Concurrent audio stream guarantee">ZERO DROP</span>
+                                    <a href="/contextlayer" target="_blank" class="lt-chip lt-chip-link" style="text-decoration: none; color: #00ff66; border-color: rgba(0, 255, 102, 0.4); display: inline-flex; align-items: center; gap: 4px;" title="Open Context Layer & Prompt Cache Inspector">🔍 CONTEXT INSPECTOR ↗</a>
                                 </div>
                             </div>
                         </div>
@@ -687,10 +688,11 @@
                             <div class="chat-tools-title">
                                 <span class="pulse-dot"></span>
                                 <span class="tools-title-text">SYSTEM TOOLS</span>
-                                <span class="chat-tools-count" id="chatToolsCount">42 ACTIVE</span>
+                                <span class="chat-tools-count" id="chatToolsCount">61+ ACTIVE</span>
                             </div>
                             <div class="chat-category-tabs" id="chatCategoryTabs">
                                 <button class="cat-tab active" data-cat="quick">⚡ Quick</button>
+                                <button class="cat-tab" data-cat="all">🌐 All</button>
                                 <button class="cat-tab" data-cat="os">💻 OS & Apps</button>
                                 <button class="cat-tab" data-cat="schedule">⏱️ Schedule</button>
                                 <button class="cat-tab" data-cat="system">🧮 System</button>
@@ -705,13 +707,14 @@
                         <div class="chat-quick-chips" id="chatQuickChips">
                             <!-- Feeds & Online Info -->
                             <button class="chat-chip" data-cat="quick feeds" data-tool="weather.forecast" data-prefix="What is the weather forecast for " title="weather.forecast: Open-Meteo live weather & multi-day forecast"><span class="chip-icon">⛅</span> Weather</button>
+                            <button class="chat-chip" data-cat="feeds" data-tool="weather.current" data-prefix="What is the current temperature and conditions right now?" title="weather.current: Real-time current temperature & weather"><span class="chip-icon">🌡️</span> Current Weather</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="news.headlines" data-prefix="Show me the latest top tech and world news headlines" title="news.headlines: Categorized live RSS news feeds"><span class="chip-icon">📰</span> News Feeds</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="finance.quote" data-prefix="What is the current price and market quote for " title="finance.quote: Real-time crypto & stock market ticker"><span class="chip-icon">📈</span> Finance Quote</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="knowledge.wikipedia" data-prefix="Look up on Wikipedia: " title="knowledge.wikipedia: Encyclopedia knowledge"><span class="chip-icon">📚</span> Wikipedia</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="wikipedia.lookup" data-prefix="Search Wikipedia summary for: " title="wikipedia.lookup: Fast factual article lookup"><span class="chip-icon">📖</span> Wiki Summary</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="notes.vault_search" data-prefix="Search knowledge vault notes for: " title="notes.vault_search: Local Markdown vault search"><span class="chip-icon">📓</span> Vault Search</button>
                             <button class="chat-chip" data-cat="feeds" data-tool="web.scrape_page" data-prefix="Scrape and summarize webpage URL: " title="web.scrape_page: Webpage main content extractor"><span class="chip-icon">📄</span> Scrape Web</button>
-                            <button class="chat-chip" data-cat="feeds" data-tool="web.search" data-prefix="Search the web for: " title="web.search: DuckDuckGo live query"><span class="chip-icon">🔍</span> Web Search</button>
+                            <button class="chat-chip" data-cat="quick feeds" data-tool="web.search" data-prefix="Search the web for: " title="web.search: DuckDuckGo live query"><span class="chip-icon">🔍</span> Web Search</button>
 
                             <!-- Smart Home & IoT -->
                             <button class="chat-chip" data-cat="smarthome" data-tool="homeassistant.control" data-prefix="Turn on the desk lamp and check living room lights" title="homeassistant.control: Control smart lights and switches"><span class="chip-icon">💡</span> Smart Lights</button>
@@ -734,37 +737,68 @@
 
                             <!-- Schedule & Time -->
                             <button class="chat-chip" data-cat="quick schedule" data-tool="timer.set" data-prefix="Set a timer for 5 minutes for " title="timer.set: SQLite-backed countdown timer"><span class="chip-icon">⏱️</span> Set Timer</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="timer.status" data-prefix="What is the remaining countdown time on my timer?" title="timer.status: Check countdown timer progress"><span class="chip-icon">⌛</span> Timer Status</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="timer.cancel" data-prefix="Cancel active timer" title="timer.cancel: Cancel running countdown timer"><span class="chip-icon">🛑</span> Cancel Timer</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="timer.list" data-prefix="What active timers do I have running?" title="timer.list: View countdown timers"><span class="chip-icon">⏳</span> Active Timers</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="alarm.set" data-prefix="Set an alarm for 7:30 AM for " title="alarm.set: Scheduled clock alarm"><span class="chip-icon">⏰</span> Set Alarm</button>
-                            <button class="chat-chip" data-cat="schedule" data-tool="reminder.schedule" data-prefix="Remind me in 15 minutes to " title="reminder.schedule: Natural language reminder"><span class="chip-icon">🔔</span> Set Reminder</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="alarm.list" data-prefix="What alarms are currently set?" title="alarm.list: View all active and scheduled alarms"><span class="chip-icon">⏰</span> List Alarms</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="alarm.cancel" data-prefix="Cancel alarm with ID: " title="alarm.cancel: Cancel a scheduled alarm"><span class="chip-icon">🔕</span> Cancel Alarm</button>
+                            <button class="chat-chip" data-cat="quick schedule" data-tool="reminder.schedule" data-prefix="Remind me in 15 minutes to " title="reminder.schedule: Natural language reminder"><span class="chip-icon">🔔</span> Set Reminder</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="reminder.list" data-prefix="Show all my pending reminders" title="reminder.list: List scheduled NLP reminders"><span class="chip-icon">📋</span> List Reminders</button>
+                            <button class="chat-chip" data-cat="schedule" data-tool="reminder.cancel" data-prefix="Cancel reminder with ID: " title="reminder.cancel: Remove a reminder"><span class="chip-icon">🗑️</span> Cancel Reminder</button>
                             <button class="chat-chip" data-cat="schedule" data-tool="system.daily_briefing" data-prefix="Give me an executive daily briefing with system status and upcoming events." title="system.daily_briefing: Daily executive summary"><span class="chip-icon">☀️</span> Daily Briefing</button>
                             <button class="chat-chip" data-cat="quick schedule" data-tool="system.time" data-prefix="What's the current time and date?" title="system.time: World clock & date"><span class="chip-icon">🕒</span> Clock Time</button>
 
                             <!-- System & Hardware -->
-                            <button class="chat-chip" data-cat="system" data-tool="code.run_script" data-prefix="Run Python script snippet: " title="code.run_script: Sandboxed script execution"><span class="chip-icon">💻</span> Run Script</button>
-                            <button class="chat-chip" data-cat="system" data-tool="calculator.evaluate" data-prefix="Evaluate formula: " title="calculator.evaluate: Complex math & unit conversions"><span class="chip-icon">🧮</span> Evaluator</button>
-                            <button class="chat-chip" data-cat="system" data-tool="translation.translate" data-prefix="Translate text to Spanish: " title="translation.translate: Offline multi-lingual translation"><span class="chip-icon">🌐</span> Translate</button>
-                            <button class="chat-chip" data-cat="system" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math"><span class="chip-icon">🧮</span> Math Calc</button>
+                            <button class="chat-chip" data-cat="quick system" data-tool="system.death_clock" data-prefix="Estimate my actuarial death clock: " title="system.death_clock: WHO actuarial life expectancy & lifestyle calculation"><span class="chip-icon">⏳</span> Death Clock</button>
+                            <button class="chat-chip" data-cat="system" data-tool="system.status" data-prefix="What is the system status and telemetry metrics?" title="system.status: Health status of STT, LLM, TTS, scheduler, memory"><span class="chip-icon">🩺</span> System Status</button>
                             <button class="chat-chip" data-cat="quick system" data-tool="system.hardware" data-prefix="Check system hardware metrics and GPU status" title="system.hardware: VRAM, CPU & thermals"><span class="chip-icon">💻</span> Hardware</button>
+                            <button class="chat-chip" data-cat="system" data-tool="system.list_tools" data-prefix="List all available tools and capabilities in detail" title="system.list_tools: Enumerate all registered system tools"><span class="chip-icon">🧰</span> List All Tools</button>
+                            <button class="chat-chip" data-cat="quick system" data-tool="system.calculate" data-prefix="Calculate the exact value of: " title="system.calculate: High-precision math"><span class="chip-icon">🧮</span> Math Calc</button>
+                            <button class="chat-chip" data-cat="system" data-tool="calculator.evaluate" data-prefix="Evaluate formula: " title="calculator.evaluate: Complex math & unit conversions"><span class="chip-icon">🧮</span> Evaluator</button>
+                            <button class="chat-chip" data-cat="system os" data-tool="code.run_script" data-prefix="Run Python script snippet: " title="code.run_script: Sandboxed script execution"><span class="chip-icon">💻</span> Run Script</button>
+                            <button class="chat-chip" data-cat="system" data-tool="translation.translate" data-prefix="Translate text to Spanish: " title="translation.translate: Offline multi-lingual translation"><span class="chip-icon">🌐</span> Translate</button>
+                            <button class="chat-chip" data-cat="system" data-tool="history.search" data-prefix="Search conversation history for: " title="history.search: Search past conversations"><span class="chip-icon">📜</span> Chat History</button>
                             <button class="chat-chip" data-cat="system" data-tool="system.stop_listening" data-prefix="Stop listening and enter standby mode." title="system.stop_listening: Hands-free wake word standby"><span class="chip-icon">🛑</span> Standby Voice</button>
+                            <button class="chat-chip" data-cat="quick system" data-tool="memory.write" data-prefix="Store in memory that: " title="memory.write: Persist durable fact in Mem0"><span class="chip-icon">💾</span> Remember Fact</button>
                             <button class="chat-chip" data-cat="quick system" data-tool="memory.search" data-prefix="Check memory for: " title="memory.search: Mem0 vector search"><span class="chip-icon">🧠</span> Vector Memory</button>
+                            <button class="chat-chip" data-cat="system" data-tool="memory.all" data-prefix="List all stored memories and user facts" title="memory.all: Show all durable user memories"><span class="chip-icon">📜</span> All Memories</button>
+                            <button class="chat-chip" data-cat="system" data-tool="memory.delete" data-prefix="Delete memory with ID: " title="memory.delete: Remove specific memory fact"><span class="chip-icon">🗑️</span> Delete Memory</button>
 
                             <!-- Vision & Perception -->
-                            <button class="chat-chip" data-cat="vision" data-tool="os.capture_screen" data-prefix="Capture screen and describe active windows" title="os.capture_screen: Instant screen VLM analysis"><span class="chip-icon">📸</span> Screen Cap</button>
+                            <button class="chat-chip" data-cat="quick vision" data-tool="camera.capture_snapshot" data-prefix="Take a camera snapshot and inspect it" title="camera.capture_snapshot: Capture camera photo snapshot"><span class="chip-icon">📸</span> Camera Photo</button>
                             <button class="chat-chip" data-cat="quick vision" data-tool="perception.what_do_you_see" data-prefix="Look through camera and describe what you see" title="perception.what_do_you_see: Real-time visual scene"><span class="chip-icon">👁️</span> Camera Vision</button>
+                            <button class="chat-chip" data-cat="vision" data-tool="perception.inspect_view" data-prefix="Deeply inspect camera view and explain everything in sight" title="perception.inspect_view: Deep visual inspection"><span class="chip-icon">🔍</span> Deep View VLM</button>
                             <button class="chat-chip" data-cat="vision" data-tool="perception.inspect_tabletop" data-prefix="Inspect the tabletop workspace and describe the items" title="perception.inspect_tabletop: AMD iGPU VLM deep visual grounding"><span class="chip-icon">🔬</span> Tabletop VLM</button>
+                            <button class="chat-chip" data-cat="vision" data-tool="perception.get_world_state" data-prefix="What is your perceptual world state and tracked people?" title="perception.get_world_state: Real-time detected world state"><span class="chip-icon">🌐</span> World State</button>
+                            <button class="chat-chip" data-cat="vision" data-tool="os.capture_screen" data-prefix="Capture screen and describe active windows" title="os.capture_screen: Instant screen VLM analysis"><span class="chip-icon">📸</span> Screen Cap</button>
 
                             <!-- Media & Creative -->
                             <button class="chat-chip" data-cat="quick media" data-tool="music.play" data-prefix="Play music: " title="music.play: Audio streaming deck"><span class="chip-icon">🎵</span> Play Music</button>
                             <button class="chat-chip" data-cat="media" data-tool="music.control" data-prefix="Pause the music" title="music.control: Volume & playback control"><span class="chip-icon">⏯️</span> Music Control</button>
+                            <button class="chat-chip" data-cat="media" data-tool="music.status" data-prefix="Check current music player and track status" title="music.status: Check PipeWire playback status"><span class="chip-icon">📻</span> Player Status</button>
+                            <button class="chat-chip" data-cat="media" data-tool="music.equalizer" data-prefix="Set equalizer sound profile to " title="music.equalizer: EasyEffects sound presets (bass_boost, spatial, vocal, etc.)"><span class="chip-icon">🎚️</span> EQ Presets</button>
+                            <button class="chat-chip" data-cat="media" data-tool="music.history" data-prefix="Show recently played music history" title="music.history: View recent music tracks"><span class="chip-icon">📜</span> Music History</button>
                             <button class="chat-chip" data-cat="quick media" data-tool="image.generate" data-prefix="Generate an image of: " title="image.generate: Cyber-Studio diffusion"><span class="chip-icon">🎨</span> Generate Image</button>
+                            <button class="chat-chip" data-cat="media" data-tool="image.cancel" data-prefix="Cancel active image generation" title="image.cancel: Abort background diffusion generation"><span class="chip-icon">🛑</span> Cancel Image</button>
 
                             <!-- Personality & Gestures -->
                             <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Cypher" title="personality.switch: Switch to Cypher (Hacker)"><span class="chip-icon">🕶️</span> Switch Cypher</button>
                             <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Luna" title="personality.switch: Switch to Luna (Girlfriend)"><span class="chip-icon">💖</span> Switch Luna</button>
                             <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to Aria" title="personality.switch: Switch to Aria (Companion)"><span class="chip-icon">✨</span> Switch Aria</button>
                             <button class="chat-chip" data-cat="persona" data-tool="personality.switch" data-prefix="Switch personality to GLaDOS" title="personality.switch: Switch to GLaDOS (Clinical AI)"><span class="chip-icon">🔬</span> Switch GLaDOS</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.stop" data-prefix="Stop avatar animation and return to idle" title="character.stop: Stop active avatar animation"><span class="chip-icon">🛑</span> Avatar Stop</button>
                             <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Wave your hand at me" title="character.execute_action: Kinematic 3D gesture"><span class="chip-icon">👋</span> Avatar Wave</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Nod your head" title="character.execute_action: Nod gesture"><span class="chip-icon">🙆</span> Avatar Nod</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Do a thinking gesture" title="character.execute_action: Thinking pose"><span class="chip-icon">🤔</span> Avatar Think</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Clap your hands" title="character.execute_action: Clapping animation"><span class="chip-icon">👏</span> Avatar Clap</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Cheer with excitement" title="character.execute_action: Cheer gesture"><span class="chip-icon">🎉</span> Avatar Cheer</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Make a heart gesture" title="character.execute_action: Heart hands"><span class="chip-icon">🫶</span> Heart Gesture</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Take a polite bow" title="character.execute_action: Bow gesture"><span class="chip-icon">🙇</span> Avatar Bow</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Shrug your shoulders" title="character.execute_action: Shrug gesture"><span class="chip-icon">🤷</span> Avatar Shrug</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Tilt your head curiously" title="character.execute_action: Tilt head"><span class="chip-icon">🤔</span> Tilt Head</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Shake your head no" title="character.execute_action: Shake head"><span class="chip-icon">🙅</span> Shake Head</button>
+                            <button class="chat-chip" data-cat="persona" data-tool="character.execute_action" data-prefix="Put your hands on your hips" title="character.execute_action: Hands on hips"><span class="chip-icon">🧍</span> Hands on Hips</button>
                         </div>
                     </div>
 
@@ -854,6 +888,7 @@
                 <div class="model-vendor-tabs" id="modelVendorTabs">
                     <button class="vendor-tab active" data-vendor="all" type="button">All (<span id="countAllModels">0</span>)</button>
                     <button class="vendor-tab" data-vendor="free" type="button" style="color: #10b981; font-weight: 700;">⚡ Free Models</button>
+                    <button class="vendor-tab" data-vendor="openrouter" type="button">OpenRouter</button>
                     <button class="vendor-tab" data-vendor="openai" type="button">OpenAI</button>
                     <button class="vendor-tab" data-vendor="anthropic" type="button">Claude</button>
                     <button class="vendor-tab" data-vendor="google" type="button">Gemini / Gemma</button>
@@ -900,9 +935,21 @@
             </div>
             <div class="modal-body">
                 <div class="form-group">
+                    <label for="cfgOpenaiPreset">API Provider Preset</label>
+                    <select id="cfgOpenaiPreset" class="cyber-select">
+                        <option value="custom">⚙️ Custom / Manual Endpoint</option>
+                        <option value="openrouter" selected>🌐 OpenRouter (Free & Universal Models)</option>
+                        <option value="aicredits">⚡ AI Credits (High-Throughput)</option>
+                        <option value="openai">🤖 OpenAI Official (api.openai.com)</option>
+                        <option value="deepseek">🐋 DeepSeek Official (api.deepseek.com)</option>
+                        <option value="groq">⚡ Groq Cloud (Ultra-Fast)</option>
+                        <option value="ollama">🦙 Ollama Local (127.0.0.1:11434)</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label for="cfgOpenaiBaseUrl">API Base URL</label>
-                    <input type="text" id="cfgOpenaiBaseUrl" class="cyber-input" placeholder="https://api.openai.com/v1" value="https://api.openai.com/v1">
-                    <span class="form-hint">Compatible with OpenAI, OpenRouter (https://openrouter.ai/api/v1), DeepSeek (https://api.deepseek.com/v1), Ollama (http://127.0.0.1:11434/v1), Groq, vLLM, LM Studio</span>
+                    <input type="text" id="cfgOpenaiBaseUrl" class="cyber-input" placeholder="https://api.openai.com/v1" value="https://openrouter.ai/api/v1">
+                    <span class="form-hint">Compatible with OpenRouter (https://openrouter.ai/api/v1), AI Credits, DeepSeek, OpenAI, Ollama, Groq, vLLM, LM Studio</span>
                 </div>
                 <div class="form-group">
                     <label for="cfgOpenaiApiKey">API Key / Bearer Token</label>
@@ -945,6 +992,6 @@
     <script src="/static/character/AnimationSystem.js?v=4.0"></script>
     <script src="/static/character/GazeSystem.js?v=4.0"></script>
     <script src="/static/character/CharacterEngine.js?v=4.0"></script>
-    <script src="/static/app.js?v=4.0"></script>
+    <script src="/static/app.js?v=4.4"></script>
 </body>
 </html>
