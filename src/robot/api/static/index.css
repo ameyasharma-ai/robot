@@ -7171,5 +7171,214 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     }
 }
 
+/* ==============================================================================
+   CYBERDECK DUAL-COLUMN CUSTOM API PROVIDER GRID (OPENROUTER + AI CREDITS)
+   ==============================================================================
+   Provides independent side-by-side columns for concurrent provider setup.
+   Desktop breakpoint: 2-column grid (50/50 split).
+   Mobile breakpoint (<= 768px): Stacks into clear vertical provider cards.
+   ============================================================================== */
 
+.cyber-modal-wide {
+    max-width: 860px !important;
+    width: 94vw !important;
+}
 
+.dual-provider-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+@media (max-width: 768px) {
+    .dual-provider-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+}
+
+.provider-column {
+    background: rgba(8, 18, 30, 0.85);
+    border: 1px solid rgba(0, 242, 254, 0.2);
+    border-radius: 6px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: all 0.2s ease-in-out;
+    position: relative;
+}
+
+.provider-column:hover {
+    border-color: rgba(0, 242, 254, 0.4);
+}
+
+.provider-column.active-provider {
+    border-color: var(--primary-cyan, #00f2fe);
+    background: rgba(0, 242, 254, 0.04);
+    box-shadow: 0 0 16px rgba(0, 242, 254, 0.12), inset 0 0 8px rgba(0, 242, 254, 0.04);
+}
+
+.provider-column#colAicredits.active-provider {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.04);
+    box-shadow: 0 0 16px rgba(245, 158, 11, 0.12), inset 0 0 8px rgba(245, 158, 11, 0.04);
+}
+
+.provider-column-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px dashed rgba(255, 255, 255, 0.1);
+}
+
+.provider-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-display, "Orbitron", sans-serif);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--text-main, #ffffff);
+}
+
+.provider-title .provider-icon {
+    font-size: 13px;
+}
+
+.provider-tag {
+    font-family: var(--font-mono, monospace);
+    font-size: 8px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: 0.04em;
+}
+
+.provider-tag.free-tag {
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.provider-tag.premium-tag {
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+    border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.btn-provider-active {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    padding: 3px 9px;
+    color: var(--text-dim, #94a3b8);
+    font-family: var(--font-mono, monospace);
+    font-size: 9px;
+    font-weight: 700;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.2s ease;
+}
+
+.btn-provider-active .radio-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transition: all 0.2s ease;
+}
+
+.btn-provider-active:hover {
+    background: rgba(0, 242, 254, 0.15);
+    border-color: var(--primary-cyan, #00f2fe);
+    color: #ffffff;
+}
+
+.provider-column.active-provider .btn-provider-active {
+    background: rgba(0, 242, 254, 0.25);
+    border-color: var(--primary-cyan, #00f2fe);
+    color: #00f2fe;
+}
+
+.provider-column#colAicredits.active-provider .btn-provider-active {
+    background: rgba(245, 158, 11, 0.25);
+    border-color: #f59e0b;
+    color: #f59e0b;
+}
+
+.provider-column.active-provider .btn-provider-active .radio-dot {
+    background: #00f2fe;
+    box-shadow: 0 0 6px #00f2fe;
+}
+
+.provider-column#colAicredits.active-provider .btn-provider-active .radio-dot {
+    background: #f59e0b;
+    box-shadow: 0 0 6px #f59e0b;
+}
+
+.provider-col-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+}
+
+.provider-status-badge {
+    font-family: var(--font-mono, monospace);
+    font-size: 9px;
+    font-weight: 600;
+    color: #10b981;
+}
+
+.provider-status-badge.missing {
+    color: #94a3b8;
+}
+
+/* ─── Collapsible Custom / Manual Advanced Endpoint Section ─── */
+.custom-endpoint-bar {
+    margin-top: 4px;
+    margin-bottom: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    overflow: hidden;
+    background: rgba(5, 12, 20, 0.5);
+}
+
+.cyber-accordion-toggle {
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-dim, #94a3b8);
+    font-family: var(--font-mono, monospace);
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.cyber-accordion-toggle:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-main, #ffffff);
+}
+
+.custom-endpoint-body {
+    padding: 10px 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(2, 6, 12, 0.4);
+}
+
+.modal-advanced-row {
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}

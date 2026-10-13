@@ -53,6 +53,8 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Context Layer & Prompt Cache Inspector** | Dynamic Debugger (`/contextlayer` & `/api/context/inspect`) | ✅ **Active** | Core Engine / Web HUD | Real-time structured breakdown of System Prompt, Profile Sheet, Grounding Telemetry, Memories, History, and Token Prefix/Suffix Invariance. |
 | **Mobile Top Bar & Chat Workspace Telemetry** | Streamlined Mobile Top Bar & Live Chat Metrics | ✅ **Active** | Web Frontend / CSS | Zero-overflow mobile header, chat IDLE pill removal, live TTFT/E2E/Tokens updates in chat mode top bar, and model persistence across restarts. |
 | **OpenRouter Preset & Mobile Workstation Polish** | OpenRouter Custom API + 61+ Tools Categories + Mobile View Aesthetics & Viewport Scroll | ✅ **Active** | Core Engine / Static Web Frontend | Added OpenRouter preset with free models discovery (:free tag & OpenRouter vendor tab), populated all 61 tools across 9 categories with "All" filter tab, fixed mobile hardware observability 2-column balanced grid, eliminated squished bottom panels, and ensured memory search box smoothly scrolls to viewport with 120px clearance. |
+| **Dual-Column Custom API Dashboard** | Independent OpenRouter & AI Credits Columns + Unified Persistence | ✅ **Active** | Static Web Frontend & FastEngine API | Transformed custom API settings modal into responsive cyberdeck dual-column layout. Both OpenRouter and AI Credits have independent URL inputs, API key inputs, model selectors, model scanning buttons, and active provider selectors. Dedicated `.env` keys (`OPENROUTER_*` and `AICREDITS_*`) prevent offloading or wiping when switching. Added AI Credits vendor tab in model search modal. |
+| **Dynamic Proactive Intelligence & Chat Suppression** | `CuriosityEngine` Dynamic Visual & Activity Arbitration | ✅ **Active** | Core Engine / `autonomy.py` | Eliminated annoying static 90s/10m timer interruptions. Autonomy is strictly suppressed when in chat mode (`is_chat_mode`), muted mic, within 120s of active user interaction, or for low-proactivity personas (GLaDOS). Dynamically triggers contextual visual greetings upon user arrival after extended absence (>180s). |
 
 
 Legend:
@@ -97,9 +99,10 @@ Legend:
   - [ ] **Step 2: Tool Contracts & Network Reliability**: Audit all 59 tools, consolidate canonical execution metadata, standardize structured outcomes, and test permissions, validation, timeouts (3.0s cap for weather/search), retries only on idempotent operations, cancellation, and duplicate-side-effect prevention.
   - [ ] **Step 3: Sequential Planner–Executor**: Implement bounded, authorized, sequential plan execution with structured results, dependencies, revision/termination logic, cancellation, deadlines, and step limits.
   - [ ] **Step 4: Memory & Context Integrity**: Test bounded context growth during long sessions, prevent duplicated historical turns, and test persistent-memory writes and retrieval across multi-step sessions.
-- [ ] **Day 5: Cognitive Architecture & Proactive Intelligence Engine**:
-  - Proactive environmental triggers in `autonomy.py`: morning briefing, low battery alerts (<15%), and camera face entry greetings without user prompt.
-  - Anti-repetition frequency filter preventing duplicate proactive remarks within 2 hours.
+- [x] **Day 5: Cognitive Architecture & Proactive Intelligence Engine**:
+  - [x] Disabled irritating static 90s/10m timer check-ins (`enable_static_timer = False`).
+  - [x] Implemented intelligent dynamic autonomy triggers: visual arrival greeting after absence (>180s absence with 3s debounce), activity quiet window (120s post-interaction), and persona proactivity profile enforcement (e.g. GLaDOS `proactivity: low` suppression).
+  - [x] Implemented chat mode and voice mode synchronization: complete suppression of proactive remarks while user is actively typing or viewing chat interface (`/api/view-mode`), or when microphone is muted.
 - [ ] **Day 6: Long-Term Memory Precision & Dynamic User Modeling**:
   - Calibrate Mem0 cosine similarity threshold to 0.82 to eliminate false fact hallucinations.
   - Background conversational profile summarizer updating SQLite `User Profile Sheet` in real time.
@@ -1533,6 +1536,76 @@ Legend:
       - Verified `/api/llm/openai/models` scans OpenRouter and returns 459 models (19 free models).
       - Zero import errors verified (`verify_imports.py`).
       - All 207 unit tests passed (`pytest tests/`).
+
+65. **Custom API Settings Offloading Credentials & Single-Column Limitation**:
+    - *Cause*: The custom OpenAI-compatible configuration modal in the UI used a single set of form inputs for all providers. Selecting OpenRouter dynamically overwrote base URL, model, and API key fields, offloading and destroying active AICredits configuration from memory and root `.env`.
+    - *Fix*:
+      - Re-architected modal in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html) into a cyberdeck dual-column layout (`#colOpenrouter` and `#colAicredits`) with independent inputs for base URLs, API keys, models, independent scan buttons (`#btnScanOrModels`, `#btnScanAiModels`), and active provider toggles (`btn-provider-active`). Added collapsible manual/custom endpoint accordion.
+      - Added `⚡ AI Credits` vendor filter tab to model search modal in [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js).
+      - Updated backend `/api/llm/status` and `/api/llm/openai/config` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) to accept dual `openrouter` and `aicredits` config blocks, persisting both to `.env` as `OPENROUTER_*` and `AICREDITS_*` while mirroring the active provider to `OPENAI_COMPATIBLE_*`.
+      - Added full integration tests in [`tests/test_dual_custom_api.py`](file:///home/ameya/robot/tests/test_dual_custom_api.py).
+
+66. **Static Proactive Interruption Irritation & Ambient Chat Collision**:
+    - *Cause*: `CuriosityEngine` in [`src/robot/core/autonomy.py`](file:///home/ameya/robot/src/robot/core/autonomy.py) had an unconditional 90s/10m static timer that triggered speech prompts indiscriminately, even when the user was actively reading or typing in chat mode, during active conversations, or for quiet personas like GLaDOS.
+    - *Fix*:
+      - Disabled static timer (`enable_static_timer = False`).
+      - Added dynamic context suppression: suppressed when in Chat Mode (`engine.is_chat_mode`), when voice is disabled (`not voice_enabled`), or within 120 seconds of user interaction (`quiet_after_user_activity_s`).
+      - Added persona profile proactivity check: completely suppresses proactive commentary for personas with `behavior.proactivity == "low"` (e.g. GLaDOS).
+      - Added dynamic visual arrival greeting (`_check_visual_arrival`): triggers contextual greeting only when a person arrives after an extended absence (>180s) with 3-second face detection debounce.
+      - Added `/api/view-mode` endpoint to keep backend synchronized with frontend dual/chat mode switches.
+      - Added unit tests in [`tests/test_autonomy.py`](file:///home/ameya/robot/tests/test_autonomy.py).
+
+67. **LLM Provider Toggle Buttons & Avatar Unresponsive Due to Missing Brace in app.js**:
+    - *Cause*: In [`src/robot/api/static/app.js`](file:///home/ameya/robot/src/robot/api/static/app.js), during removal of legacy `btnToggleApiKeyVisibility`, a closing brace `}` on `if (configModal)` was inadvertently omitted. This caused a downstream JavaScript `SyntaxError: Unexpected token '{'` at `setView`, preventing the entire `app.js` bundle from parsing. As a result, `RobotUI` never instantiated, leaving the 3D character avatar canvas blank/unloaded and the LLM provider toggle buttons completely unattached to click event listeners.
+    - *Fix*: Restored the missing closing brace in `app.js`, bumped cache-busting asset query parameter to `app.js?v=4.5` in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html), and validated end-to-end via headless Chrome CDP: confirmed `CharacterEngine: online`, `#characterContainer` canvas rendered, and interactive cycling verified (`Local (RTX 3050) -> Gemini (Cloud) -> OpenAI Compat / Custom`).
+
+68. **OpenAI-Compatible 402 Insufficient Balance on OpenRouter Free Models**:
+    - *Cause*: The active custom endpoint in `.env` (`OPENAI_COMPATIBLE_BASE_URL`) was set to `https://aicredits.in/v1` with an AI Credits API key that had an exhausted (0 credit) account balance. When selecting OpenRouter free models from the model search modal, only the model identifier was updated in state, sending the request to the zero-balance AI Credits endpoint which returned HTTP 402 `{"error":{"code":402,"message":"Insufficient Balance","type":"insufficient_quota"}}`.
+    - *Fix*: Added intelligent provider auto-routing in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) (`set_openai_model`). Selecting OpenRouter models (`:free` or vendor prefixes) automatically synchronizes the active endpoint to OpenRouter (`https://openrouter.ai/api/v1`) using `OPENROUTER_API_KEY`. Selecting `aion-labs/*` models routes to AI Credits. Aligned active `.env` defaults to OpenRouter (`apodex/apodex-1.1-mini:free`). Verified live chat returns complete responses with zero 402 errors.
+
+69. **Conversational Command Memory Pollution & Search Pronoun Hijacking**:
+    - *Cause*: Two compounded issues:
+      1. Overly loose `remember_triggers` in `store_turn` (`src/robot/memory/__init__.py`) matched `"i am"` on any utterance containing "I am", causing a temporary conversational command from earlier (*"No, I am talking about the protest in India today. Please search it using your tool"*) to be permanently stored as fact ID 99 in SQLite `facts` and Mem0 vector store.
+      2. When the user later asked *"Then go ahead, use your tool and search the internet about it"*, Mem0 ran semantic vector search on that phrase and retrieved Fact 99 due to heavy keyword overlap (*"use your tool and search"*). Injected as durable user background facts, the local 4B LLM became confused and searched for the protests instead of the active conversational subject (OpenAI GPT-6).
+      3. On *"Who is my crush"*, the LLM answered directly from the injected User Core Profile Sheet without emitting `memory.search` because it already possessed the answer in its prompt.
+    - *Fix*:
+      1. Deleted spurious non-biographical fact rows (IDs 99, 100, 89, 97, 84, 91) from `facts` and `facts_fts`.
+      2. Hardened `store_turn` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py): restricted `"i am"` to strictly biographical patterns (`r"\bi am\s+(?:a|an|the|\d+|allergic\s+to|from|working\s+as|interested\s+in)\b"`), and explicitly prevented conversational commands or trivial utterances from being stored into `facts` or Mem0.
+      3. Gated memory injection in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py) (`action_patterns`) to prevent injecting retrieved memories during web search or tool execution commands.
+      4. Strengthened `GROUNDING_POLICY` in `context.py` with explicit mandates: user requests to search memory MUST invoke `memory.search`, and pronoun search references must resolve from the immediate conversation subject rather than older memories.
+
+70. **NameError: name 'os' is not defined & OpenAI Custom Model Selection Failure**:
+    - *Cause*:
+      1. Missing `import os` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) caused HTTP 500 crashes (`NameError: name 'os' is not defined`) whenever the frontend posted to `/api/llm/openai/model` (`set_openai_model`).
+      2. The user was selecting `google/gemma-4-26b-a4b-it:free` which was experiencing upstream 429 rate limiting on OpenRouter. When trying to switch to another model, the 500 error prevented updating `engine.llm` and `.env`, keeping the rate-limited model locked in place and making the bot unable to respond.
+      3. Symtable analysis revealed additional undeclared / missing imports: `os` in `engine.py`, `uuid` and `re` in `memory/__init__.py`, and `c_frames_written` in `tools/builtins/music.py`.
+      4. `RobotEngine` lacked automated credential resolution on provider switch (`switch_llm_provider`), causing endpoint and API key mismatches between OpenRouter and AI Credits.
+    - *Fix*:
+      1. Added `import os` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) and [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py).
+      2. Added `import re` and `import uuid` in [`src/robot/memory/__init__.py`](file:///home/ameya/robot/src/robot/memory/__init__.py).
+      3. Declared and updated `c_frames_written` in [`src/robot/tools/builtins/music.py`](file:///home/ameya/robot/src/robot/tools/builtins/music.py).
+      4. Added `_resolve_openai_credentials` to [`RobotEngine`](file:///home/ameya/robot/src/robot/core/engine.py) to automatically align `base_url` and `api_key` for OpenRouter (`:free` and common model vendors) vs AI Credits (`aion-labs/*`), wired into both boot initialization (`__init__`) and runtime provider toggle (`switch_llm_provider`).
+      5. Initialized `self.llm_provider_type` directly in `RobotEngine.__init__`.
+      6. Verified 100% of 214 test cases pass (`.venv/bin/pytest tests/`) and updated knowledge graph via `graphify update .`.
+
+71. **Bracketed Tool Call Leakage (`[system.time] [perception.what_do_you_see]`), Meta-Tag Stripping & False Network Error Suppression**:
+    - *Symptoms*:
+      1. During conversational greetings (e.g. "Hi"), the assistant message bubble in the web UI displayed raw bracketed tool invocations and meta-commentary: `[system.time] [perception.what_do_you_see] Greetings, Ameya. I see you are currently engaged in your school activities... [Error: network error]`.
+      2. The message concluded with an unsightly `[Error: network error]` banner despite the full text and telemetry being successfully received.
+    - *Root Causes*:
+      1. **Bracketed Tool Syntax Leakage**: For simple greetings, `stream_text_chat()` omitted tool schemas (`tools = []`). Because `glados.yaml` declared active tools, Qwen3.5-4B attempted to invoke tools in plain text by outputting `[system.time] [perception.what_do_you_see]`. Neither the backend streamer nor the frontend `cleanHumanText()` intercepted or stripped bracketed tool patterns or planning headers (`GREETING_HANDLING: ...`), leaking them into user-facing chat.
+      2. **Pre-Tool Preamble Retention**: When tool calls were detected, any preliminary tokens output before the tool call remained in the stream accumulator and persisted into second-pass continuation.
+      3. **False `[Error: network error]` Banner**: In `src/robot/api/static/app.js`, `ReadableStreamDefaultReader.read()` threw a benign `TypeError: network error` when the browser or server closed the HTTP connection after stream completion. The outer `catch (err)` block unconditionally appended `[Error: ${err.message}]` to `textSpan` even after the `done` event had already been processed and rendered.
+    - *Fixes Applied*:
+      1. **Bracketed Tool Parsing**: Updated `parse_qwen_tool_call_block()` in [`src/robot/llm/__init__.py`](file:///home/ameya/robot/src/robot/llm/__init__.py) to detect and parse bracketed tool calls (`[system.time]`, `[perception.what_do_you_see]`, `[image.generate]`, etc.) into structured function call payloads.
+      2. **Backend Streaming Interception**: Enhanced `LlamaServerLLM.stream_chat()` with holdback buffering for unclosed square brackets, intercepting bracketed tool calls into `tool_calls_acc` and stripping internal meta headers (`[conversation]`, `[tools]`, `GREETING_HANDLING: ...`) before yielding tokens to the client.
+      3. **Engine Preamble Clearing & Safe Finalization**: In [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) (`stream_text_chat`), added fallback extraction for bracketed tool calls from `full_text`, emitted `tool_started` with `clear_preamble: true`, isolated pass 1 assistant message to `content: ""` with `tool_calls: collected_tool_calls`, wrapped SQLite turn storage in a safe `finally:` block, and sanitized `full_text` before saving and emitting `done`.
+      4. **Anti-Leakage Grounding Directive**: Added `Pure Conversational Speech & Anti-Leakage Directive` to `GROUNDING_POLICY` in [`src/robot/core/context.py`](file:///home/ameya/robot/src/robot/core/context.py), strictly forbidding raw tool names in brackets and category headers in conversational speech.
+      5. **Frontend Anti-Leakage Filtering & Error Guard**: In [`src/robot/api/static/app.js`](file:///home/ameya/robot/src/robot/api/static/app.js), updated `cleanHumanText()` with bracketed tool and category regexes, tracked `isStreamCompleted` in `sendMessageStream()`, cleared pre-tool preamble on `tool_started`, re-rendered clean markdown on `done`, and suppressed `[Error: network error]` in `catch (err)` if `isStreamCompleted` is true. Bumped script cache-buster in [`index.html`](file:///home/ameya/robot/src/robot/api/static/index.html) to `app.js?v=4.6`.
+      6. **Unit Tests**: Added automated unit tests in [`tests/test_synthetic_robustness.py`](file:///home/ameya/robot/tests/test_synthetic_robustness.py) verifying bracketed tool parsing and anti-leakage grounding policy directives.
+    - *Verification*:
+      - 100% of unit tests passed (214/214) via `.venv/bin/pytest tests/`.
+      - 100% zero import errors verified across all 93 Python modules via `verify_imports.py`.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

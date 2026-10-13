@@ -539,7 +539,10 @@ class MusicPlayerService:
 
             import queue
             cache_q = queue.Queue(maxsize=500) if cache_container else None
+            c_frames_written = 0
+
             def _disk_cache_worker():
+                nonlocal c_frames_written
                 if not cache_container or not cache_stream or not resampler:
                     return
                 while True:
@@ -550,6 +553,7 @@ class MusicPlayerService:
                         for rf in resampler.resample(f):
                             for pkt in cache_stream.encode(rf):
                                 cache_container.mux(pkt)
+                                c_frames_written += 1
                         cache_q.task_done()
                     except Exception:
                         break
@@ -558,7 +562,7 @@ class MusicPlayerService:
                 threading.Thread(target=_disk_cache_worker, daemon=True, name="MusicDiskCache").start()
 
             def _stream_pump():
-                nonlocal cache_container, cache_stream, resampler
+                nonlocal cache_container, cache_stream, resampler, c_frames_written
                 try:
                     for frame in container.decode(audio_stream):
                         if paplay.poll() is not None or self._current_process != paplay:

@@ -9,6 +9,7 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -129,6 +130,9 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     async def set_voice_mode(req: VoiceModeRequest):
         """Toggle voice/mic listening on or off for text-only chatting."""
         engine.voice_enabled = bool(req.enabled)
+        engine.is_chat_mode = not engine.voice_enabled
+        if hasattr(engine, "notify_user_activity"):
+            engine.notify_user_activity()
         # Physically pause/resume mic stream to free audio hardware and ensure no audio is captured
         if hasattr(engine, "capture") and engine.capture:
             if engine.voice_enabled:
@@ -136,7 +140,23 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             else:
                 engine.capture.pause()
         await engine.events.emit("voice_mode_changed", voice_enabled=engine.voice_enabled)
-        return {"status": "ok", "voice_enabled": engine.voice_enabled}
+        return {"status": "ok", "voice_enabled": engine.voice_enabled, "is_chat_mode": engine.is_chat_mode}
+
+    @app.post("/api/view-mode")
+    async def set_view_mode(req: dict[str, Any]):
+        """Synchronize UI active view mode ('chat' vs 'dual') with engine state.
+
+        Args:
+            req: Payload dictionary containing 'mode' ('chat' | 'dual').
+
+        Returns:
+            dict[str, Any]: Status summary and confirmation.
+        """
+        mode = req.get("mode", "dual")
+        engine.is_chat_mode = (mode == "chat")
+        if hasattr(engine, "notify_user_activity"):
+            engine.notify_user_activity()
+        return {"status": "ok", "mode": mode, "is_chat_mode": engine.is_chat_mode}
 
     @app.get("/personalities")
     async def list_personalities():
@@ -349,6 +369,36 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             engine._persist_openai_model(new_model)
         update_env_variable("OPENAI_COMPATIBLE_MODEL", new_model)
 
+        # Intelligent auto-routing: if model belongs to OpenRouter or AI Credits, align base_url and api_key
+        current_base = os.environ.get("OPENAI_COMPATIBLE_BASE_URL", "").lower()
+        is_or_model = ":free" in new_model or any(new_model.startswith(p) for p in ("meta-llama/", "google/", "nvidia/", "liquid/", "apodex/", "thinkingmachines/", "mistralai/"))
+        is_ai_model = new_model.startswith("aion-labs/")
+
+        if is_or_model and "openrouter" not in current_base:
+            or_base = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            or_key = os.environ.get("OPENROUTER_API_KEY", "")
+            update_env_variable("OPENAI_COMPATIBLE_BASE_URL", or_base)
+            update_env_variable("OPENAI_COMPATIBLE_API_KEY", or_key)
+            if hasattr(engine, "config"):
+                cfg = engine.config.setdefault("llm", {}).setdefault("openai_compatible", {})
+                cfg["base_url"] = or_base
+                cfg["api_key"] = or_key
+            if getattr(engine, "llm_provider_type", "") in ("openai_compatible", "openai") and engine.llm:
+                engine.llm.base_url = or_base
+                engine.llm.api_key = or_key
+        elif is_ai_model and "aicredits" not in current_base:
+            ai_base = os.environ.get("AICREDITS_BASE_URL", "https://aicredits.in/v1")
+            ai_key = os.environ.get("AICREDITS_API_KEY", "")
+            update_env_variable("OPENAI_COMPATIBLE_BASE_URL", ai_base)
+            update_env_variable("OPENAI_COMPATIBLE_API_KEY", ai_key)
+            if hasattr(engine, "config"):
+                cfg = engine.config.setdefault("llm", {}).setdefault("openai_compatible", {})
+                cfg["base_url"] = ai_base
+                cfg["api_key"] = ai_key
+            if getattr(engine, "llm_provider_type", "") in ("openai_compatible", "openai") and engine.llm:
+                engine.llm.base_url = ai_base
+                engine.llm.api_key = ai_key
+
         if hasattr(engine, "config"):
             engine.config.setdefault("llm", {}).setdefault("openai_compatible", {})["model"] = new_model
 
@@ -375,20 +425,80 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         model = req.get("model", "").strip()
         ctx_win = req.get("context_window")
         prompt_caching = req.get("enable_prompt_caching", True)
+        active_provider = req.get("active_provider") or req.get("preset", "custom")
 
-        openai_cfg = getattr(engine, "config", {}).setdefault("llm", {}).setdefault("openai_compatible", {})
+        cfg_root = getattr(engine, "config", {}).setdefault("llm", {})
+        openai_cfg = cfg_root.setdefault("openai_compatible", {})
+        or_cfg = cfg_root.setdefault("openrouter", {})
+        ai_cfg = cfg_root.setdefault("aicredits", {})
 
-        if base_url:
-            openai_cfg["base_url"] = base_url
-            update_env_variable("OPENAI_COMPATIBLE_BASE_URL", base_url)
-        if api_key is not None and api_key != "":
-            openai_cfg["api_key"] = api_key
-            update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
-        if model:
-            openai_cfg["model"] = model
-            if hasattr(engine, "_persist_openai_model"):
-                engine._persist_openai_model(model)
-            update_env_variable("OPENAI_COMPATIBLE_MODEL", model)
+        # 1. Update OpenRouter specific fields if passed
+        or_data = req.get("openrouter")
+        if isinstance(or_data, dict):
+            or_b = or_data.get("base_url", "").strip()
+            or_k = or_data.get("api_key", "").strip()
+            or_m = or_data.get("model", "").strip()
+            if or_b:
+                or_cfg["base_url"] = or_b
+                update_env_variable("OPENROUTER_BASE_URL", or_b)
+            if or_k:
+                or_cfg["api_key"] = or_k
+                update_env_variable("OPENROUTER_API_KEY", or_k)
+            if or_m:
+                or_cfg["model"] = or_m
+                update_env_variable("OPENROUTER_MODEL", or_m)
+
+        # 2. Update AI Credits specific fields if passed
+        ai_data = req.get("aicredits")
+        if isinstance(ai_data, dict):
+            ai_b = ai_data.get("base_url", "").strip()
+            ai_k = ai_data.get("api_key", "").strip()
+            ai_m = ai_data.get("model", "").strip()
+            if ai_b:
+                ai_cfg["base_url"] = ai_b
+                update_env_variable("AICREDITS_BASE_URL", ai_b)
+            if ai_k:
+                ai_cfg["api_key"] = ai_k
+                update_env_variable("AICREDITS_API_KEY", ai_k)
+            if ai_m:
+                ai_cfg["model"] = ai_m
+                update_env_variable("AICREDITS_MODEL", ai_m)
+
+        # 3. Synchronize active provider target
+        if active_provider == "openrouter":
+            target_url = (or_data.get("base_url") if isinstance(or_data, dict) else "") or base_url or or_cfg.get("base_url") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            target_key = (or_data.get("api_key") if isinstance(or_data, dict) else "") or api_key or or_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "")
+            target_model = (or_data.get("model") if isinstance(or_data, dict) else "") or model or or_cfg.get("model") or os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+            openai_cfg["base_url"] = target_url
+            openai_cfg["api_key"] = target_key
+            openai_cfg["model"] = target_model
+            update_env_variable("OPENAI_COMPATIBLE_BASE_URL", target_url)
+            update_env_variable("OPENAI_COMPATIBLE_API_KEY", target_key)
+            update_env_variable("OPENAI_COMPATIBLE_MODEL", target_model)
+        elif active_provider == "aicredits":
+            target_url = (ai_data.get("base_url") if isinstance(ai_data, dict) else "") or base_url or ai_cfg.get("base_url") or os.environ.get("AICREDITS_BASE_URL", "https://aicredits.in/v1")
+            target_key = (ai_data.get("api_key") if isinstance(ai_data, dict) else "") or api_key or ai_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
+            target_model = (ai_data.get("model") if isinstance(ai_data, dict) else "") or model or ai_cfg.get("model") or os.environ.get("AICREDITS_MODEL", "aion-labs/aion-3.0")
+            openai_cfg["base_url"] = target_url
+            openai_cfg["api_key"] = target_key
+            openai_cfg["model"] = target_model
+            update_env_variable("OPENAI_COMPATIBLE_BASE_URL", target_url)
+            update_env_variable("OPENAI_COMPATIBLE_API_KEY", target_key)
+            update_env_variable("OPENAI_COMPATIBLE_MODEL", target_model)
+        else:
+            if base_url:
+                openai_cfg["base_url"] = base_url
+                update_env_variable("OPENAI_COMPATIBLE_BASE_URL", base_url)
+            if api_key is not None and api_key != "":
+                openai_cfg["api_key"] = api_key
+                update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
+            if model:
+                openai_cfg["model"] = model
+                update_env_variable("OPENAI_COMPATIBLE_MODEL", model)
+
+        if hasattr(engine, "_persist_openai_model") and openai_cfg.get("model"):
+            engine._persist_openai_model(openai_cfg["model"])
+
         if ctx_win:
             try:
                 int_ctx = int(ctx_win)
@@ -396,47 +506,9 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 update_env_variable("OPENAI_COMPATIBLE_CONTEXT_WINDOW", str(int_ctx))
             except ValueError:
                 pass
+
         openai_cfg["enable_prompt_caching"] = bool(prompt_caching)
         update_env_variable("OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING", "true" if prompt_caching else "false")
-
-        # Fallback to stored preset keys if api_key not provided in request
-        preset = req.get("preset", "")
-        if (preset == "openrouter" or "openrouter.ai" in base_url) and not api_key:
-            api_key = os.environ.get("OPENROUTER_API_KEY", "") or getattr(engine, "config", {}).get("llm", {}).get("openrouter", {}).get("api_key", "")
-            if api_key:
-                openai_cfg["api_key"] = api_key
-                update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
-        elif (preset == "aicredits" or "aicredits.in" in base_url) and not api_key:
-            api_key = os.environ.get("AICREDITS_API_KEY", "") or getattr(engine, "config", {}).get("llm", {}).get("aicredits", {}).get("api_key", "")
-            if api_key:
-                openai_cfg["api_key"] = api_key
-                update_env_variable("OPENAI_COMPATIBLE_API_KEY", api_key)
-
-        # Keep OPENROUTER_* in sync if targeted
-        if "openrouter.ai" in base_url or preset == "openrouter":
-            or_cfg = getattr(engine, "config", {}).setdefault("llm", {}).setdefault("openrouter", {})
-            if api_key:
-                update_env_variable("OPENROUTER_API_KEY", api_key)
-                or_cfg["api_key"] = api_key
-            if base_url:
-                update_env_variable("OPENROUTER_BASE_URL", base_url)
-                or_cfg["base_url"] = base_url
-            if model:
-                update_env_variable("OPENROUTER_MODEL", model)
-                or_cfg["model"] = model
-
-        # Keep AICREDITS_* in sync if targeted
-        if "aicredits.in" in base_url or preset == "aicredits":
-            ai_cfg = getattr(engine, "config", {}).setdefault("llm", {}).setdefault("aicredits", {})
-            if api_key:
-                update_env_variable("AICREDITS_API_KEY", api_key)
-                ai_cfg["api_key"] = api_key
-            if base_url:
-                update_env_variable("AICREDITS_BASE_URL", base_url)
-                ai_cfg["base_url"] = base_url
-            if model:
-                update_env_variable("AICREDITS_MODEL", model)
-                ai_cfg["model"] = model
 
         # If currently active, refresh live LLM instance
         if getattr(engine, "llm_provider_type", "") in ("openai_compatible", "openai") and engine.llm:
@@ -684,6 +756,9 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         from fastapi.responses import StreamingResponse
         import json
 
+        if hasattr(engine, "notify_user_activity"):
+            engine.notify_user_activity()
+
         async def _event_generator():
             async for chunk in engine.stream_text_chat(
                 text=req.text,
@@ -705,6 +780,8 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     @app.post("/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
         """Text-based chat endpoint (non-voice)."""
+        if hasattr(engine, "notify_user_activity"):
+            engine.notify_user_activity()
         response = await engine.process_text_input(req.text, session_id=req.session_id)
         return ChatResponse(
             response=response,

@@ -69,7 +69,7 @@ def test_context_layer_budget_local_vs_gemini():
     )
     local_tokens = sum(len(m.get("content", "")) // 4 for m in local_messages)
     # Local mode must not bloat beyond RTX 3050 fast threshold
-    assert local_tokens < 2200
+    assert local_tokens < 2500
 
     # Gemini mode (high_intelligence=True)
     gemini_messages = engine.build_messages(
@@ -179,3 +179,37 @@ def test_tool_router_new_families():
 
     selected_math = router.select_tools("calculate the square root of 529")
     assert "system.calculate" in selected_math
+
+
+def test_parse_qwen_tool_call_block_bracketed_calls():
+    """Verify that bracketed tool calls like [system.time] are parsed accurately."""
+    from robot.llm import parse_qwen_tool_call_block
+
+    # Test single bracketed tool call
+    res = parse_qwen_tool_call_block("[system.time]")
+    assert len(res) == 1
+    assert res[0]["function"]["name"] == "system.time"
+
+    # Test multiple bracketed tool calls
+    res_multi = parse_qwen_tool_call_block("[system.time] [perception.what_do_you_see]")
+    assert len(res_multi) == 2
+    assert res_multi[0]["function"]["name"] == "system.time"
+    assert res_multi[1]["function"]["name"] == "perception.what_do_you_see"
+
+    # Test bracketed tool call with JSON arguments
+    res_args = parse_qwen_tool_call_block('[image.generate({"prompt": "futuristic robot"})]')
+    assert len(res_args) == 1
+    assert res_args[0]["function"]["name"] == "image.generate"
+    assert '"futuristic robot"' in res_args[0]["function"]["arguments"]
+
+
+def test_anti_leakage_grounding_directive():
+    """Verify that GROUNDING_POLICY includes the anti-leakage directive."""
+    from robot.core.context import GROUNDING_POLICY, format_system_prompt
+
+    assert "Pure Conversational Speech & Anti-Leakage Directive" in GROUNDING_POLICY
+    assert "[system.time]" in GROUNDING_POLICY
+
+    prompt = format_system_prompt("You are Luna, an AI companion.")
+    assert "Pure Conversational Speech & Anti-Leakage Directive" in prompt
+

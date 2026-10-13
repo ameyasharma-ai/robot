@@ -28,21 +28,27 @@ class AutonomyConfig:
     """Configuration settings for autonomous curiosity and proactive checks."""
 
     enabled: bool = True
-    idle_threshold_s: float = 90.0
-    cooldown_s: float = 180.0
-    check_interval_s: float = 5.0
+    enable_static_timer: bool = False
+    idle_threshold_s: float = 300.0
+    cooldown_s: float = 240.0
+    check_interval_s: float = 3.0
     require_human_presence: bool = False
     max_proactive_per_session: int = 15
     allowed_modes: list[str] = field(
-        default_factory=lambda: ["idle", "standby", "listening"]
+        default_factory=lambda: ["idle", "standby"]
     )
+    quiet_after_user_activity_s: float = 120.0
+    arrival_absence_threshold_s: float = 180.0
+    arrival_debounce_s: float = 3.0
+    enable_arrival_trigger: bool = True
 
 
 class CuriosityEngine:
-    """Autonomous engine for proactive idle reasoning and ambient check-ins.
+    """Autonomous engine for proactive idle reasoning and dynamic contextual check-ins.
 
     Monitors system silence, user presence, time-of-day, and recent memory
     to formulate timely, natural observations without requiring direct user prompt.
+    Suppresses interruptions when in chat mode or during recent user interaction.
 
     Attributes:
         engine: Reference to the parent RobotEngine.
@@ -71,15 +77,22 @@ class CuriosityEngine:
         self._running: bool = False
         self._task: asyncio.Task[None] | None = None
 
+        # Dynamic state tracking
+        self._was_present: bool = False
+        self._absence_start_ts: float | None = time.time()
+        self._arrival_candidate_ts: float | None = None
+        self._last_arrival_greeting_ts: float = 0.0
+
         logger.info(
             "curiosity_engine_initialized",
             enabled=self.config.enabled,
-            idle_threshold=self.config.idle_threshold_s,
+            enable_static_timer=self.config.enable_static_timer,
+            enable_arrival_trigger=self.config.enable_arrival_trigger,
             cooldown=self.config.cooldown_s,
         )
 
     def notify_activity(self) -> None:
-        """Record activity to reset the idle timer."""
+        """Record activity to reset the idle timer and quiet window."""
         self.last_activity_ts = time.time()
 
     def start(self) -> None:
@@ -99,7 +112,7 @@ class CuriosityEngine:
         logger.info("curiosity_engine_stopped")
 
     async def _autonomy_loop(self) -> None:
-        """Main periodic evaluation loop for proactive curiosity."""
+        """Evaluate dynamic situational conditions periodically."""
         while self._running:
             try:
                 await asyncio.sleep(self.config.check_interval_s)
@@ -107,46 +120,58 @@ class CuriosityEngine:
                     break
 
                 now = time.time()
-                idle_duration = now - self.last_activity_ts
-                time_since_proactive = now - self.last_proactive_ts
 
-                # Check basic cooldowns and session limits
+                # 1. Hard Suppression: Chat Mode or Voice Muted
                 if (
-                    idle_duration < self.config.idle_threshold_s
-                    or time_since_proactive < self.config.cooldown_s
-                    or self.proactive_count >= self.config.max_proactive_per_session
+                    not getattr(self.engine, "voice_enabled", True)
+                    or getattr(self.engine, "is_chat_mode", False)
                 ):
                     continue
 
-                # Check robot state
+                # 2. Hard Suppression: Recent User Activity (Typing, Voice, Tool)
+                if (now - self.last_activity_ts) < self.config.quiet_after_user_activity_s:
+                    continue
+
+                # 3. Hard Suppression: Robot Speaking or Media Playing
+                if (
+                    getattr(self.engine, "_is_speaking", False)
+                    or getattr(getattr(self.engine, "player", None), "is_playing", False)
+                ):
+                    continue
+
+                # 4. Check Robot Mode
                 current_mode = self.engine.state.state.mode.value
                 if current_mode not in self.config.allowed_modes:
                     continue
 
-                # Check if robot is currently speaking or music is playing
+                # 5. Persona Proactivity Behavioral Filtering
+                active_pers = self.engine.personalities.active if hasattr(self.engine, "personalities") else None
+                pers_proactivity = "medium"
+                if active_pers and hasattr(active_pers, "behavior") and isinstance(active_pers.behavior, dict):
+                    pers_proactivity = active_pers.behavior.get("proactivity", "medium")
+
+                # Low proactivity personas (like GLaDOS) completely suppress proactive chatter
+                if pers_proactivity == "low":
+                    continue
+
+                # 6. Session limit & global cooldown
                 if (
-                    getattr(self.engine, "_is_speaking", False)
-                    or self.engine.player.is_playing
+                    self.proactive_count >= self.config.max_proactive_per_session
+                    or (now - self.last_proactive_ts) < self.config.cooldown_s
                 ):
                     continue
 
-                # Check human presence if perception is enabled
-                if self.config.require_human_presence:
-                    has_human = False
-                    if (
-                        hasattr(self.engine, "perception")
-                        and self.engine.perception is not None
-                    ):
-                        scene = self.engine.perception.get_latest_scene()
-                        has_human = scene.get("num_faces", 0) > 0 or any(
-                            obj.get("label") == "person"
-                            for obj in scene.get("objects", [])
-                        )
-                    if not has_human:
+                # 7. Dynamic Condition A: Visual Arrival after Extended Absence
+                if self.config.enable_arrival_trigger:
+                    triggered_arrival = await self._check_visual_arrival(now, active_pers)
+                    if triggered_arrival:
                         continue
 
-                # Trigger proactive curiosity action
-                await self._trigger_proactive_thought(idle_duration)
+                # 8. Dynamic Condition B: Static Timer (ONLY IF explicitly enabled by user)
+                if self.config.enable_static_timer:
+                    idle_duration = now - self.last_activity_ts
+                    if idle_duration >= self.config.idle_threshold_s:
+                        await self._trigger_proactive_thought(idle_duration)
 
             except asyncio.CancelledError:
                 break
@@ -154,51 +179,132 @@ class CuriosityEngine:
                 logger.error("autonomy_loop_error", error=str(e))
                 await asyncio.sleep(self.config.check_interval_s * 2)
 
+    async def _check_visual_arrival(self, now: float, active_pers: Any) -> bool:
+        """Check if a user has arrived in front of the camera after being absent.
+
+        Args:
+            now: Current timestamp.
+            active_pers: Active personality object.
+
+        Returns:
+            bool: True if an arrival greeting was triggered, False otherwise.
+        """
+        if not hasattr(self.engine, "perception") or self.engine.perception is None:
+            return False
+
+        scene = self.engine.perception.get_latest_scene()
+        has_human = scene.get("num_faces", 0) > 0 or any(
+            obj.get("label") == "person" for obj in scene.get("objects", [])
+        )
+
+        if not has_human:
+            # Human is absent
+            if self._was_present:
+                self._was_present = False
+                self._absence_start_ts = now
+                self._arrival_candidate_ts = None
+            return False
+
+        # Human is present in the scene
+        if not self._was_present:
+            # Transition from absent to present
+            absence_duration = (now - self._absence_start_ts) if self._absence_start_ts else 0.0
+            if absence_duration >= self.config.arrival_absence_threshold_s:
+                if self._arrival_candidate_ts is None:
+                    self._arrival_candidate_ts = now
+                    return False
+
+                # Debounce check: must remain present steadily for arrival_debounce_s
+                if (now - self._arrival_candidate_ts) >= self.config.arrival_debounce_s:
+                    if (now - self._last_arrival_greeting_ts) >= self.config.cooldown_s:
+                        self._was_present = True
+                        self._arrival_candidate_ts = None
+                        self._last_arrival_greeting_ts = now
+                        await self._trigger_arrival_greeting(absence_duration=absence_duration)
+                        return True
+            else:
+                self._was_present = True
+                self._arrival_candidate_ts = None
+        else:
+            self._absence_start_ts = None
+            self._arrival_candidate_ts = None
+
+        return False
+
+    async def _trigger_arrival_greeting(self, absence_duration: float) -> None:
+        """Formulate and express a context-aware welcome back observation.
+
+        Args:
+            absence_duration: Number of seconds the user was away from the camera.
+        """
+        mins_away = max(1, int(absence_duration // 60))
+        logger.info("proactive_arrival_trigger", mins_away=mins_away, count=self.proactive_count + 1)
+
+        active_pers = self.engine.personalities.active if hasattr(self.engine, "personalities") else None
+        pers_name = active_pers.name if active_pers else "Lisa"
+        hour = datetime.now().hour
+        time_greeting = "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
+
+        arrival_prompt = (
+            f"You are {pers_name}. The user just walked back and sat down at their desk after being away for about {mins_away} minutes this {time_greeting}. "
+            f"Give one brief, natural welcome back (under 12 words). Do not use asterisks or markdown."
+        )
+        await self._synthesize_and_speak_proactive(arrival_prompt, reason=f"arrival_after_{mins_away}m")
+
     async def _trigger_proactive_thought(self, idle_duration: float) -> None:
-        """Formulate and express a proactive contextual observation.
+        """Formulate and express a proactive contextual observation on idle timer.
 
         Args:
             idle_duration: Number of seconds the system has been idle.
         """
-        self.last_proactive_ts = time.time()
-        self.proactive_count += 1
-        logger.info(
-            "proactive_curiosity_trigger",
-            idle_s=round(idle_duration, 1),
-            count=self.proactive_count,
+        active_pers = self.engine.personalities.active if hasattr(self.engine, "personalities") else None
+        pers_name = active_pers.name if active_pers else "Lisa"
+        hour = datetime.now().hour
+        time_greeting = (
+            "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
         )
 
-        try:
-            # Build situational context prompt
-            active_pers = self.engine.personalities.active
-            pers_name = active_pers.name if active_pers else "Lisa"
-            hour = datetime.now().hour
-            time_greeting = (
-                "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
+        recent_fact = ""
+        if self.engine.memory:
+            try:
+                facts = await self.engine.memory.get_all_facts(limit=3)
+                if facts:
+                    recent_fact = random.choice(facts).get("content", "")
+            except Exception:
+                pass
+
+        curiosity_prompts = [
+            f"You are {pers_name}. The user has been focused and working quietly for {int(idle_duration // 60)} minutes this {time_greeting}. Say one brief, friendly, non-intrusive sentence (under 15 words) offering a quick check-in or gentle encouragement. Do not use asterisks.",
+            f"You are {pers_name}. It's a calm {time_greeting}. Make a concise, curious 1-sentence observation or ask if there is anything you can help look up or calculate. Keep it natural and warm. Do not use asterisks.",
+        ]
+        if recent_fact:
+            curiosity_prompts.append(
+                f"You are {pers_name}. Remembering that the user mentioned: '{recent_fact}', make a short 1-sentence check-in related to their interests or focus. Under 15 words. Do not use asterisks."
             )
 
-            # Sample recent user memories if available
-            recent_fact = ""
-            if self.engine.memory:
-                try:
-                    facts = await self.engine.memory.get_all_facts(limit=3)
-                    if facts:
-                        recent_fact = random.choice(facts).get("content", "")
-                except Exception:
-                    pass
+        selected_prompt = random.choice(curiosity_prompts)
+        await self._synthesize_and_speak_proactive(selected_prompt, reason="idle_timer", idle_s=idle_duration)
 
-            curiosity_prompts = [
-                f"You are {pers_name}. The user has been focused and working quietly for {int(idle_duration // 60)} minutes this {time_greeting}. Say one brief, friendly, non-intrusive sentence (under 15 words) offering a quick check-in or gentle encouragement. Do not use asterisks.",
-                f"You are {pers_name}. It's a calm {time_greeting}. Make a concise, curious 1-sentence observation or ask if there is anything you can help look up or calculate. Keep it natural and warm. Do not use asterisks.",
-            ]
-            if recent_fact:
-                curiosity_prompts.append(
-                    f"You are {pers_name}. Remembering that the user mentioned: '{recent_fact}', make a short 1-sentence check-in related to their interests or focus. Under 15 words. Do not use asterisks."
-                )
+    async def _synthesize_and_speak_proactive(
+        self,
+        prompt: str,
+        reason: str = "dynamic",
+        idle_s: float = 0.0,
+    ) -> None:
+        """Synthesize proactive line via LLM and output via audio pipeline.
 
-            selected_prompt = random.choice(curiosity_prompts)
+        Args:
+            prompt: Text prompt instruction for the LLM.
+            reason: Identifier string describing the trigger origin.
+            idle_s: Idle seconds duration if applicable.
+        """
+        self.last_proactive_ts = time.time()
+        self.proactive_count += 1
 
-            # Generate proactive line via local LLM while preserving slot 0 KV cache invariance
+        try:
+            active_pers = self.engine.personalities.active if hasattr(self.engine, "personalities") else None
+            pers_name = active_pers.name if active_pers else "Lisa"
+
             ctx = getattr(self.engine, "context", None)
             if not ctx:
                 from robot.core.context import ContextEngine
@@ -223,7 +329,7 @@ class CuriosityEngine:
 
             messages = ctx.build_messages(
                 system_prompt=sys_prompt,
-                user_text=f"[Proactive check-in]: {selected_prompt}",
+                user_text=f"[Proactive check-in]: {prompt}",
                 user_profile=user_profile,
                 situation=situation,
                 high_intelligence=getattr(self.engine, "high_intelligence_mode", False),
@@ -232,17 +338,13 @@ class CuriosityEngine:
             full_thought = ""
             async for token in self.engine.llm.stream_chat(messages, max_tokens=60):
                 full_thought += token
-                # Complete the sentence naturally upon punctuation boundary
                 if len(full_thought) >= 40 and any(p in token for p in [".", "!", "?", ".\n", "!\n", "?\n"]):
                     break
-                # Hard safety ceiling (250 chars) only if no punctuation is produced
                 if len(full_thought) >= 250:
                     break
 
             cleaned_thought = full_thought.strip().replace('"', "").replace("\n", " ")
-            # Ensure the thought ends with proper sentence punctuation
             if cleaned_thought and not cleaned_thought.endswith((".", "!", "?")):
-                # If cut off before punctuation, try to trim to last valid punctuation
                 last_punc = max(cleaned_thought.rfind("."), cleaned_thought.rfind("!"), cleaned_thought.rfind("?"))
                 if last_punc > 20:
                     cleaned_thought = cleaned_thought[: last_punc + 1].strip()
@@ -252,19 +354,17 @@ class CuriosityEngine:
                 return
 
             print(
-                f"\n✨ \033[1;35m[{pers_name.upper()} PROACTIVE]\033[0m {cleaned_thought}"
+                f"\n✨ \033[1;35m[{pers_name.upper()} PROACTIVE - {reason.upper()}]\033[0m {cleaned_thought}"
             )
 
-            # Execute through engine response pipeline / speech output
             await self.engine.events.emit(
                 "proactive_thought",
                 text=cleaned_thought,
-                idle_s=idle_duration,
+                reason=reason,
+                idle_s=idle_s,
             )
 
-            # Queue utterance to TTS / UI
             if hasattr(self.engine, "_speech_queue"):
-                # Play speech through speech queue or direct synthesis
                 self.notify_activity()
                 asyncio.create_task(
                     self.engine._stream_response(
@@ -275,4 +375,4 @@ class CuriosityEngine:
                 )
 
         except Exception as e:
-            logger.error("proactive_thought_failed", error=str(e))
+            logger.error("proactive_thought_failed", error=str(e), reason=reason)

@@ -888,7 +888,8 @@
                 <div class="model-vendor-tabs" id="modelVendorTabs">
                     <button class="vendor-tab active" data-vendor="all" type="button">All (<span id="countAllModels">0</span>)</button>
                     <button class="vendor-tab" data-vendor="free" type="button" style="color: #10b981; font-weight: 700;">⚡ Free Models</button>
-                    <button class="vendor-tab" data-vendor="openrouter" type="button">OpenRouter</button>
+                    <button class="vendor-tab" data-vendor="openrouter" type="button">🌐 OpenRouter</button>
+                    <button class="vendor-tab" data-vendor="aicredits" type="button" style="color: #f59e0b; font-weight: 700;">⚡ AI Credits</button>
                     <button class="vendor-tab" data-vendor="openai" type="button">OpenAI</button>
                     <button class="vendor-tab" data-vendor="anthropic" type="button">Claude</button>
                     <button class="vendor-tab" data-vendor="google" type="button">Gemini / Gemma</button>
@@ -923,63 +924,154 @@
 
     <!-- OpenAI-Compatible API Configuration Cyberdeck Modal -->
     <div class="cyber-modal-backdrop" id="openaiConfigModal" style="display: none;">
-        <div class="cyber-modal">
+        <div class="cyber-modal cyber-modal-wide">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
                 <div class="modal-title">
                     <span class="modal-icon">🌐</span>
-                    <span>OPENAI-COMPATIBLE API CONFIGURATION</span>
+                    <span>CUSTOM API ENDPOINTS & MODEL SELECTORS</span>
                 </div>
                 <button class="modal-close-btn" id="btnCloseOpenaiModal" title="Close">✕</button>
             </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <label for="cfgOpenaiPreset">API Provider Preset</label>
-                    <select id="cfgOpenaiPreset" class="cyber-select">
-                        <option value="custom">⚙️ Custom / Manual Endpoint</option>
-                        <option value="openrouter" selected>🌐 OpenRouter (Free & Universal Models)</option>
-                        <option value="aicredits">⚡ AI Credits (High-Throughput)</option>
-                        <option value="openai">🤖 OpenAI Official (api.openai.com)</option>
-                        <option value="deepseek">🐋 DeepSeek Official (api.deepseek.com)</option>
-                        <option value="groq">⚡ Groq Cloud (Ultra-Fast)</option>
-                        <option value="ollama">🦙 Ollama Local (127.0.0.1:11434)</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="cfgOpenaiBaseUrl">API Base URL</label>
-                    <input type="text" id="cfgOpenaiBaseUrl" class="cyber-input" placeholder="https://api.openai.com/v1" value="https://openrouter.ai/api/v1">
-                    <span class="form-hint">Compatible with OpenRouter (https://openrouter.ai/api/v1), AI Credits, DeepSeek, OpenAI, Ollama, Groq, vLLM, LM Studio</span>
-                </div>
-                <div class="form-group">
-                    <label for="cfgOpenaiApiKey">API Key / Bearer Token</label>
-                    <div class="input-with-action">
-                        <input type="password" id="cfgOpenaiApiKey" class="cyber-input" placeholder="sk-... (leave blank for local Ollama / LM Studio)">
-                        <button type="button" id="btnToggleApiKeyVisibility" class="btn-input-action" title="Toggle visibility">👁️</button>
+                <!-- Dual Provider Columns: OpenRouter & AI Credits -->
+                <div class="dual-provider-grid">
+                    <!-- COLUMN 1: OPENROUTER -->
+                    <div class="provider-column" id="colOpenrouter">
+                        <div class="provider-column-header">
+                            <div class="provider-title">
+                                <span class="provider-icon">🌐</span>
+                                <span class="provider-name">OPENROUTER</span>
+                                <span class="provider-tag free-tag">FREE & UNIVERSAL</span>
+                            </div>
+                            <button type="button" class="btn-provider-active" id="btnActivateOpenrouter" title="Set OpenRouter as active custom LLM">
+                                <span class="radio-dot"></span>
+                                <span class="activate-label">ACTIVE</span>
+                            </button>
+                        </div>
+                        <div class="provider-form">
+                            <div class="form-group">
+                                <label for="cfgOrBaseUrl">Endpoint URL</label>
+                                <input type="text" id="cfgOrBaseUrl" class="cyber-input" placeholder="https://openrouter.ai/api/v1" value="https://openrouter.ai/api/v1">
+                            </div>
+                            <div class="form-group">
+                                <label for="cfgOrApiKey">OpenRouter API Key</label>
+                                <div class="input-with-action">
+                                    <input type="password" id="cfgOrApiKey" class="cyber-input" placeholder="sk-or-v1-...">
+                                    <button type="button" id="btnToggleOrApiKey" class="btn-input-action" title="Toggle visibility">👁️</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="cfgOrModel">Selected / Active Model</label>
+                                <input type="text" id="cfgOrModel" class="cyber-input" placeholder="meta-llama/llama-3.3-70b-instruct:free" value="meta-llama/llama-3.3-70b-instruct:free">
+                            </div>
+                            <div class="provider-col-actions">
+                                <button type="button" class="cyber-btn btn-secondary btn-sm" id="btnScanOrModels">
+                                    <span class="scan-icon" id="scanOrIcon">🔄</span>
+                                    <span>Scan Models</span>
+                                </button>
+                                <span class="provider-status-badge" id="orStatusBadge">Configured</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- COLUMN 2: AI CREDITS -->
+                    <div class="provider-column" id="colAicredits">
+                        <div class="provider-column-header">
+                            <div class="provider-title">
+                                <span class="provider-icon">⚡</span>
+                                <span class="provider-name">AI CREDITS</span>
+                                <span class="provider-tag premium-tag">HIGH-THROUGHPUT</span>
+                            </div>
+                            <button type="button" class="btn-provider-active" id="btnActivateAicredits" title="Set AI Credits as active custom LLM">
+                                <span class="radio-dot"></span>
+                                <span class="activate-label">USE THIS</span>
+                            </button>
+                        </div>
+                        <div class="provider-form">
+                            <div class="form-group">
+                                <label for="cfgAiBaseUrl">Endpoint URL</label>
+                                <input type="text" id="cfgAiBaseUrl" class="cyber-input" placeholder="https://aicredits.in/v1" value="https://aicredits.in/v1">
+                            </div>
+                            <div class="form-group">
+                                <label for="cfgAiApiKey">AI Credits API Key</label>
+                                <div class="input-with-action">
+                                    <input type="password" id="cfgAiApiKey" class="cyber-input" placeholder="sk-live-...">
+                                    <button type="button" id="btnToggleAiApiKey" class="btn-input-action" title="Toggle visibility">👁️</button>
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="cfgAiModel">Selected / Active Model</label>
+                                <input type="text" id="cfgAiModel" class="cyber-input" placeholder="aion-labs/aion-3.0" value="aion-labs/aion-3.0">
+                            </div>
+                            <div class="provider-col-actions">
+                                <button type="button" class="cyber-btn btn-secondary btn-sm" id="btnScanAiModels">
+                                    <span class="scan-icon" id="scanAiIcon">🔄</span>
+                                    <span>Scan Models</span>
+                                </button>
+                                <span class="provider-status-badge" id="aiStatusBadge">Configured</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="form-row">
-                    <div class="form-group flex-1">
-                        <label for="cfgOpenaiModel">Default / Active Model</label>
-                        <input type="text" id="cfgOpenaiModel" class="cyber-input" placeholder="gpt-4o" value="gpt-4o">
+
+                <!-- Custom / Local Advanced Endpoint Option (Collapsible) -->
+                <div class="custom-endpoint-bar">
+                    <button type="button" class="cyber-accordion-toggle" id="btnToggleCustomEndpoint">
+                        <span>⚙️ Manual / Custom Endpoint (Ollama, DeepSeek, Local vLLM, LM Studio)</span>
+                        <span class="caret" id="caretCustomEndpoint">▾</span>
+                    </button>
+                    <div class="custom-endpoint-body" id="customEndpointBody" style="display: none;">
+                        <div class="form-row">
+                            <div class="form-group flex-2">
+                                <label for="cfgManualBaseUrl">Custom Base URL</label>
+                                <input type="text" id="cfgManualBaseUrl" class="cyber-input" placeholder="http://127.0.0.1:11434/v1">
+                            </div>
+                            <div class="form-group flex-2">
+                                <label for="cfgManualApiKey">Custom API Key</label>
+                                <input type="password" id="cfgManualApiKey" class="cyber-input" placeholder="Optional for local">
+                            </div>
+                            <div class="form-group flex-1">
+                                <label for="cfgManualModel">Model</label>
+                                <input type="text" id="cfgManualModel" class="cyber-input" placeholder="llama3.2">
+                            </div>
+                            <div class="form-group flex-auto align-end">
+                                <button type="button" class="cyber-btn btn-secondary btn-sm" id="btnActivateManual">Activate Custom</button>
+                            </div>
+                        </div>
                     </div>
+                </div>
+
+                <div class="form-row modal-advanced-row">
                     <div class="form-group flex-1">
                         <label for="cfgOpenaiContext">Context Window (Tokens)</label>
                         <input type="number" id="cfgOpenaiContext" class="cyber-input" placeholder="128000" value="128000">
                     </div>
+                    <div class="form-group flex-2 align-center">
+                        <label class="cyber-checkbox-label">
+                            <input type="checkbox" id="cfgOpenaiPromptCaching" checked>
+                            <span class="checkbox-custom"></span>
+                            <span>Enable Prefix Prompt Caching (DeepSeek / Anthropic / OpenRouter 1024+ token cache discount)</span>
+                        </label>
+                    </div>
                 </div>
-                <div class="form-group checkbox-group">
-                    <label class="cyber-checkbox-label">
-                        <input type="checkbox" id="cfgOpenaiPromptCaching" checked>
-                        <span class="checkbox-custom"></span>
-                        <span>Enable Prefix Prompt Caching (DeepSeek / Anthropic / OpenAI automatic 1024+ token cache discount)</span>
-                    </label>
-                </div>
+
+                <!-- Hidden inputs for legacy selectors backwards compatibility -->
+                <input type="hidden" id="cfgOpenaiBaseUrl" value="">
+                <input type="hidden" id="cfgOpenaiApiKey" value="">
+                <input type="hidden" id="cfgOpenaiModel" value="">
+                <select id="cfgOpenaiPreset" style="display: none;">
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="aicredits">AICredits</option>
+                    <option value="custom">Custom</option>
+                </select>
+
                 <div class="modal-feedback" id="openaiConfigFeedback"></div>
             </div>
             <div class="modal-footer">
-                <button class="cyber-btn btn-secondary" id="btnTestAndScanModal">🔄 Test & Scan Models</button>
-                <button class="cyber-btn btn-primary" id="btnSaveOpenaiConfig">💾 Save & Connect</button>
+                <button class="cyber-btn btn-secondary" id="btnTestAndScanModal">🔄 Rescan Active Models</button>
+                <button class="cyber-btn btn-primary" id="btnSaveOpenaiConfig">💾 Save All Configurations</button>
             </div>
         </div>
     </div>
@@ -992,6 +1084,6 @@
     <script src="/static/character/AnimationSystem.js?v=4.0"></script>
     <script src="/static/character/GazeSystem.js?v=4.0"></script>
     <script src="/static/character/CharacterEngine.js?v=4.0"></script>
-    <script src="/static/app.js?v=4.4"></script>
+    <script src="/static/app.js?v=4.6"></script>
 </body>
 </html>

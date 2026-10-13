@@ -9,8 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -950,23 +952,45 @@ class MemoryManager:
         )
 
         # Store user statements that declare preferences or biographical facts into isolated SQLite facts
-        lower_u = user_text.lower()
-        remember_triggers = [
-            "remember that", "remember this", "keep in mind that", "i like", "my favorite",
-            "i am", "my name is", "i love", "my phone is", "i live in", "i work as", "call me",
-            "my partner is", "my friend is", "i prefer", "my goal is", "don't forget",
-            "note that", "fyi", "by the way, i", "i hate", "i dislike"
+        lower_u = user_text.lower().strip()
+        is_command = any(cmd in lower_u for cmd in (
+            "search", "find", "google", "look up", "play", "stop", "pause", "resume",
+            "set a timer", "set an alarm", "use your tool", "using your tool", "check time",
+            "volume to", "turn it up", "turn it down"
+        ))
+
+        # Distinct biographical declarations
+        bio_patterns = [
+            r"\bremember\s+(?:that|this)\b",
+            r"\bkeep\s+in\s+mind\s+that\b",
+            r"\bmy\s+favorite\b",
+            r"\bmy\s+name\s+is\b",
+            r"\bmy\s+phone\s+is\b",
+            r"\bi\s+live\s+in\b",
+            r"\bi\s+work\s+as\b",
+            r"\bcall\s+me\b",
+            r"\bmy\s+partner\s+is\b",
+            r"\bmy\s+friend\s+is\b",
+            r"\bmy\s+crush\s+is\b",
+            r"\bi\s+prefer\b",
+            r"\bmy\s+goal\s+is\b",
+            r"\bdon't\s+forget\b",
+            r"\bi\s+am\s+(?:a|an|the|\d+|allergic\s+to|from|working\s+as|interested\s+in)\b",
+            r"\bi\s+have\s+(?:a|an)\s+(?:severe\s+)?(?:allergy|job|pet|car)\b",
         ]
-        if any(trig in lower_u for trig in remember_triggers):
+
+        if not is_command and any(re.search(pat, lower_u) for pat in bio_patterns):
             await self.history.add_fact(user_text, user_id=active_ns)
 
         # Mem0 semantic memory (isolated per personality namespace)
-        if bot_text and bot_text.strip() not in ("[", "]", ""):
-            messages = [
-                {"role": "user", "content": user_text},
-                {"role": "assistant", "content": bot_text},
-            ]
-            await self.mem0.add(messages, user_id=active_ns, infer=False)
+        # Avoid storing commands, trivial utterances (hi, no, yes), or empty strings
+        if bot_text and bot_text.strip() not in ("[", "]", "") and not is_command:
+            if len(lower_u) > 3 and lower_u not in ("hi", "hello", "hey", "yes", "no", "ok", "okay", "bye", "thanks", "thank you"):
+                messages = [
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": bot_text},
+                ]
+                await self.mem0.add(messages, user_id=active_ns, infer=False)
 
     async def create_session(
         self, session_id: str | None = None, personality: str = "neo", title: str = "New Chat"

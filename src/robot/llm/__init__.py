@@ -76,6 +76,26 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
         except Exception:
             pass
 
+    # Check for bracketed tool calls e.g. [system.time], [perception.what_do_you_see]
+    bracket_calls = re.findall(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", content)
+    if bracket_calls:
+        parsed_calls = []
+        for b_name, b_args1, b_args2 in bracket_calls:
+            raw_arg = (b_args1 or b_args2 or "").strip()
+            args = {}
+            if raw_arg:
+                try:
+                    args = json.loads(raw_arg) if raw_arg.startswith("{") else {"query": raw_arg}
+                except Exception:
+                    args = {"query": raw_arg}
+            parsed_calls.append({
+                "id": f"call_{int(_time.time()*1000)}_{len(parsed_calls)}",
+                "type": "function",
+                "function": {"name": b_name, "arguments": json.dumps(args)},
+            })
+        if parsed_calls:
+            return parsed_calls
+
     fn_match = re.search(r"<function=([^>]+)>(.*?)(?:</function>|$)", content, re.DOTALL)
     if fn_match:
         fn_name = fn_match.group(1).strip()
@@ -321,14 +341,54 @@ class LlamaServerLLM(LLMProvider):
                                                 qwen_tag_buf = ""
                                                 pending_text_buf += post_close
                                         else:
-                                            # Hold back if pending_text_buf ends with an unclosed angle bracket
-                                            match = re.search(r"<[^>]*$", pending_text_buf)
+                                            # Hold back if pending_text_buf ends with an unclosed angle or square bracket
+                                            match = re.search(r"(?:<[^>]*$|\[[^\]]*$)", pending_text_buf)
                                             if match:
                                                 safe_len = match.start()
                                                 if safe_len > 0:
                                                     yield pending_text_buf[:safe_len]
                                                     pending_text_buf = pending_text_buf[safe_len:]
                                             else:
+                                                # Check if pending_text_buf contains bracketed tool calls to intercept
+                                                b_tool_match = re.search(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", pending_text_buf)
+                                                if b_tool_match:
+                                                    pre = pending_text_buf[:b_tool_match.start()]
+                                                    if pre:
+                                                        yield pre
+                                                    t_name = b_tool_match.group(1).strip()
+                                                    raw_a = (b_tool_match.group(2) or b_tool_match.group(3) or "").strip()
+                                                    parsed_a = {}
+                                                    if raw_a:
+                                                        try:
+                                                            parsed_a = json.loads(raw_a) if raw_a.startswith("{") else {"query": raw_a}
+                                                        except Exception:
+                                                            parsed_a = {"query": raw_a}
+                                                    tool_calls_acc[len(tool_calls_acc)] = {
+                                                        "id": f"call_{int(_time.time()*1000)}_{len(tool_calls_acc)}",
+                                                        "type": "function",
+                                                        "function": {"name": t_name, "arguments": json.dumps(parsed_a)},
+                                                    }
+                                                    pending_text_buf = pending_text_buf[b_tool_match.end():]
+                                                    continue
+
+                                                # Strip meta category markers like [conversation] or [tools]
+                                                b_meta_match = re.search(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", pending_text_buf, re.IGNORECASE)
+                                                if b_meta_match:
+                                                    pre = pending_text_buf[:b_meta_match.start()]
+                                                    if pre:
+                                                        yield pre
+                                                    pending_text_buf = pending_text_buf[b_meta_match.end():]
+                                                    continue
+
+                                                # Strip internal planning headers e.g. GREETING_HANDLING: ...
+                                                b_plan_match = re.search(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", pending_text_buf, re.MULTILINE)
+                                                if b_plan_match:
+                                                    pre = pending_text_buf[:b_plan_match.start()]
+                                                    if pre:
+                                                        yield pre
+                                                    pending_text_buf = pending_text_buf[b_plan_match.end():]
+                                                    continue
+
                                                 yield pending_text_buf
                                                 pending_text_buf = ""
                                 except (json.JSONDecodeError, KeyError, IndexError):
@@ -339,7 +399,7 @@ class LlamaServerLLM(LLMProvider):
                             for p_tc in parsed:
                                 tool_calls_acc[len(tool_calls_acc)] = p_tc
 
-                        if pending_text_buf and not pending_text_buf.startswith("<"):
+                        if pending_text_buf and not pending_text_buf.startswith("<") and not re.match(r"^\[(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|conversation|tools?)[^\]]*\]", pending_text_buf):
                             yield pending_text_buf
 
                         if tool_calls_acc:

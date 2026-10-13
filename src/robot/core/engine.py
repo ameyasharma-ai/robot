@@ -11,6 +11,7 @@ The LLM reasons; Robot Core owns the robot.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 import uuid
@@ -137,6 +138,9 @@ class RobotEngine:
         self.context = ContextEngine(self.config.get("context_budget"))
 
         # Providers (initialized in setup)
+        self.llm_provider_type: str = self._get_persisted_llm_provider(
+            self.config.get("llm", {}).get("provider", "local")
+        )
         self.stt: WhisperServerSTT | None = None
         self.tts: PiperTTS | None = None
         self.llm: LlamaServerLLM | None = None
@@ -208,6 +212,7 @@ class RobotEngine:
         self._speech_ended_ts = 0.0
         self._last_bot_phrases: list[str] = []
         self.voice_enabled = True
+        self.is_chat_mode = False
         self._pending_motion: dict | None = None
         self.tool_coordinator: ToolConversationCoordinator | None = None
         self._provider_switch_lock = asyncio.Lock()
@@ -226,9 +231,14 @@ class RobotEngine:
             engine=self,
             config=AutonomyConfig(
                 enabled=autonomy_cfg.get("enabled", True),
-                idle_threshold_s=autonomy_cfg.get("idle_threshold_s", 90.0),
-                cooldown_s=autonomy_cfg.get("cooldown_s", 180.0),
-                check_interval_s=autonomy_cfg.get("check_interval_s", 5.0),
+                enable_static_timer=autonomy_cfg.get("enable_static_timer", False),
+                idle_threshold_s=autonomy_cfg.get("idle_threshold_s", 300.0),
+                cooldown_s=autonomy_cfg.get("cooldown_s", 240.0),
+                check_interval_s=autonomy_cfg.get("check_interval_s", 3.0),
+                quiet_after_user_activity_s=autonomy_cfg.get("quiet_after_user_activity_s", 120.0),
+                arrival_absence_threshold_s=autonomy_cfg.get("arrival_absence_threshold_s", 180.0),
+                arrival_debounce_s=autonomy_cfg.get("arrival_debounce_s", 3.0),
+                enable_arrival_trigger=autonomy_cfg.get("enable_arrival_trigger", True),
             ),
         )
         sched_cfg = self.config.get("scheduler", {})
@@ -283,14 +293,15 @@ class RobotEngine:
             )
             logger.info("gemini_llm_initialized_on_boot")
         elif self.llm_provider_type in ("openai_compatible", "openai"):
+            resolved_base, resolved_key, resolved_model = self._resolve_openai_credentials(persisted_openai_model)
             self.llm = OpenAICompatibleLLM(
-                api_key=openai_cfg.get("api_key"),
-                base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
-                model=persisted_openai_model,
+                api_key=resolved_key,
+                base_url=resolved_base,
+                model=resolved_model,
                 context_window=openai_cfg.get("context_window", 128000),
                 enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
             )
-            logger.info("openai_compatible_llm_initialized_on_boot", model=persisted_openai_model)
+            logger.info("openai_compatible_llm_initialized_on_boot", model=resolved_model, base_url=resolved_base)
         else:
             self.llm = LlamaServerLLM(
                 base_url=llm_cfg.get("base_url", "http://127.0.0.1:8080/v1"),
@@ -521,6 +532,37 @@ class RobotEngine:
         except Exception as e:
             logger.warning("failed_to_persist_openai_model", error=str(e))
 
+    def _resolve_openai_credentials(self, model: str | None = None) -> tuple[str, str, str]:
+        """Resolve effective base_url, api_key, and model for OpenAI-compatible provider.
+
+        Args:
+            model: Optional model override.
+
+        Returns:
+            tuple[str, str, str]: (base_url, api_key, active_model)
+        """
+        openai_cfg = self.config.get("llm", {}).get("openai_compatible", {})
+        active_model = model or self._get_persisted_openai_model(openai_cfg.get("model", "gpt-4o"))
+
+        is_or_model = ":free" in active_model or any(
+            active_model.startswith(p) for p in (
+                "meta-llama/", "google/", "nvidia/", "liquid/", "apodex/", "thinkingmachines/", "mistralai/", "cohere/", "dots-studio/", "poolside/"
+            )
+        )
+        is_ai_model = active_model.startswith("aion-labs/")
+
+        if is_or_model:
+            base_url = os.environ.get("OPENROUTER_BASE_URL") or openai_cfg.get("base_url") or "https://openrouter.ai/api/v1"
+            api_key = os.environ.get("OPENROUTER_API_KEY") or openai_cfg.get("api_key", "")
+        elif is_ai_model:
+            base_url = os.environ.get("AICREDITS_BASE_URL") or openai_cfg.get("base_url") or "https://aicredits.in/v1"
+            api_key = os.environ.get("AICREDITS_API_KEY") or openai_cfg.get("api_key", "")
+        else:
+            base_url = os.environ.get("OPENAI_COMPATIBLE_BASE_URL") or openai_cfg.get("base_url") or "https://api.openai.com/v1"
+            api_key = os.environ.get("OPENAI_COMPATIBLE_API_KEY") or openai_cfg.get("api_key", "")
+
+        return base_url, api_key, active_model
+
     async def switch_llm_provider(self, target: str) -> dict:
         """Dynamically toggle between Local (RTX 3050), Cloud Gemini, and OpenAI-Compatible API.
         
@@ -580,11 +622,11 @@ class RobotEngine:
                 # 1. Kill local llama-server to free 3.4GB VRAM
                 await LlamaServerManager.stop()
                 # 2. Switch to OpenAI-Compatible provider
-                active_model = self._get_persisted_openai_model(openai_cfg.get("model", "gpt-4o"))
+                resolved_base, resolved_key, resolved_model = self._resolve_openai_credentials()
                 self.llm = OpenAICompatibleLLM(
-                    api_key=openai_cfg.get("api_key"),
-                    base_url=openai_cfg.get("base_url", "https://api.openai.com/v1"),
-                    model=active_model,
+                    api_key=resolved_key,
+                    base_url=resolved_base,
+                    model=resolved_model,
                     context_window=openai_cfg.get("context_window", 128000),
                     enable_prompt_caching=openai_cfg.get("enable_prompt_caching", True),
                 )
@@ -595,7 +637,7 @@ class RobotEngine:
                     "status": "ok",
                     "provider": "openai_compatible",
                     "mode": "high_intelligence",
-                    "model": active_model,
+                    "model": resolved_model,
                     "context_window": openai_cfg.get("context_window", 128000),
                     "vram_freed": True,
                     "prompt_caching": openai_cfg.get("enable_prompt_caching", True),
@@ -831,6 +873,11 @@ class RobotEngine:
         self._running = False
         if hasattr(self, "_api_server") and self._api_server:
             self._api_server.should_exit = True
+
+    def notify_user_activity(self) -> None:
+        """Signal user interaction (chat text, voice, or UI action) to reset silence and quiet timers."""
+        if hasattr(self, "curiosity") and self.curiosity:
+            self.curiosity.notify_activity()
 
     async def _run_api(self) -> None:
         """Start the FastAPI server."""
@@ -2010,8 +2057,35 @@ class RobotEngine:
                     except Exception:
                         pass
 
+            # Check for bracketed tool calls e.g. [system.time], [perception.what_do_you_see]
+            if not collected_tool_calls:
+                bracket_matches = re.findall(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", full_text)
+                for b_name, b_args1, b_args2 in bracket_matches:
+                    if hasattr(self, "tool_registry") and self.tool_registry and self.tool_registry.get(b_name):
+                        raw_arg_str = (b_args1 or b_args2 or "").strip()
+                        parsed_args = {}
+                        if raw_arg_str:
+                            try:
+                                import json as _json
+                                parsed_args = _json.loads(raw_arg_str) if raw_arg_str.startswith("{") else {"query": raw_arg_str}
+                            except Exception:
+                                parsed_args = {"query": raw_arg_str}
+                        import json as _json
+                        collected_tool_calls.append({
+                            "id": f"call_{len(collected_tool_calls)}_{int(time.time()*1000)}",
+                            "type": "function",
+                            "function": {"name": b_name, "arguments": _json.dumps(parsed_args) if isinstance(parsed_args, dict) else str(parsed_args)},
+                        })
+
             # If tool calls were initiated, execute them and run second-pass continuation
             if collected_tool_calls:
+                # Inform client that tools are executing so pre-tool preamble tokens are cleared
+                yield {
+                    "event": "tool_started",
+                    "tools": [tc.get("function", tc).get("name", "") for tc in collected_tool_calls],
+                    "clear_preamble": True,
+                }
+
                 # Cap consecutive tool calls to 2 per turn to prevent cascading runaway tool loops
                 if len(collected_tool_calls) > 2:
                     logger.warning("capping_tool_calls_per_turn", original_count=len(collected_tool_calls), cap=2)
@@ -2069,10 +2143,10 @@ class RobotEngine:
                         "status": "completed",
                     }
 
-                # Second pass continuation with tool outputs
+                # Second pass continuation with tool outputs — isolate assistant turn to tool proposal
                 messages.append({
                     "role": "assistant",
-                    "content": full_text or "",
+                    "content": "",
                     "tool_calls": collected_tool_calls,
                 })
                 import json as _json
@@ -2134,46 +2208,58 @@ class RobotEngine:
             logger.error("stream_text_chat_error", error=str(e))
             yield {"event": "error", "error": str(e)}
 
-        t_end = time.perf_counter()
-        total_dur_ms = (t_end - t_start) * 1000
-        gen_time_s = max(0.001, (total_dur_ms - (ttft_ms or 0)) / 1000.0)
-        final_speed = round(token_count / gen_time_s, 1)
+        finally:
+            t_end = time.perf_counter()
+            total_dur_ms = (t_end - t_start) * 1000
+            gen_time_s = max(0.001, (total_dur_ms - (ttft_ms or 0)) / 1000.0)
+            final_speed = round(token_count / gen_time_s, 1)
 
-        # Store turn and shared memories in Database
-        turn_num = await self.state.increment_turn()
-        if self.memory:
-            meta = {
+            # Clean full_text of any raw tool names or bracketed metadata
+            clean_resp = full_text or ""
+            clean_resp = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_resp)
+            clean_resp = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
+            clean_resp = re.sub(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", "", clean_resp, flags=re.MULTILINE)
+            clean_resp = re.sub(r"\[\s*(?:motion|action|emotion|character\.)\s*:[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
+            full_text = clean_resp.strip()
+
+            # Store turn and shared memories in Database safely
+            try:
+                turn_num = await self.state.increment_turn()
+                if self.memory:
+                    meta = {
+                        "ttft_ms": round(ttft_ms or 0, 1),
+                        "tok_per_sec": final_speed,
+                        "tokens": token_count,
+                        "duration_ms": round(total_dur_ms, 1),
+                        "provider": getattr(self, "llm_provider_type", "local"),
+                        "model": active_model_name,
+                        "tools": [t.get("name") for t in tools_called],
+                    }
+                    primary_tool = tools_called[0] if tools_called else None
+                    await self.memory.store_turn(
+                        session_id=target_session,
+                        user_text=text,
+                        bot_text=full_text,
+                        personality=active_pers_name,
+                        turn_number=turn_num,
+                        namespace=ns,
+                        tool_name=primary_tool.get("name") if primary_tool else None,
+                        tool_result=str(primary_tool.get("result"))[:500] if primary_tool else None,
+                        metadata=meta,
+                    )
+            except Exception as store_err:
+                logger.warning("store_turn_failed_silently", error=str(store_err))
+
+            yield {
+                "event": "done",
+                "session_id": target_session,
+                "response": full_text,
                 "ttft_ms": round(ttft_ms or 0, 1),
                 "tok_per_sec": final_speed,
                 "tokens": token_count,
                 "duration_ms": round(total_dur_ms, 1),
-                "provider": getattr(self, "llm_provider_type", "local"),
-                "model": active_model_name,
-                "tools": [t.get("name") for t in tools_called],
+                "tools": tools_called,
             }
-            primary_tool = tools_called[0] if tools_called else None
-            await self.memory.store_turn(
-                session_id=target_session,
-                user_text=text,
-                bot_text=full_text,
-                personality=active_pers_name,
-                turn_number=turn_num,
-                namespace=ns,
-                tool_name=primary_tool.get("name") if primary_tool else None,
-                tool_result=str(primary_tool.get("result"))[:500] if primary_tool else None,
-                metadata=meta,
-            )
-
-        yield {
-            "event": "done",
-            "session_id": target_session,
-            "response": full_text,
-            "ttft_ms": round(ttft_ms or 0, 1),
-            "tok_per_sec": final_speed,
-            "tokens": token_count,
-            "duration_ms": round(total_dur_ms, 1),
-            "tools": tools_called,
-        }
 
     def trigger_interrupt(self) -> None:
         """Manually interrupt active LLM generation, tool execution, and audio playback."""

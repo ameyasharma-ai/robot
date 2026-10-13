@@ -576,6 +576,14 @@ class RobotUI {
             console.error("Failed to unload mic on entering chat mode:", e);
         }
 
+        try {
+            await fetch("/api/view-mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: "chat" }),
+            });
+        } catch (e) {}
+
         this.syncChatTopBar();
 
         if (!this.chatSessions || this.chatSessions.length === 0) {
@@ -607,6 +615,14 @@ class RobotUI {
         } catch (e) {
             console.error("Failed to restore voice mode:", e);
         }
+
+        try {
+            await fetch("/api/view-mode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: "dual" }),
+            });
+        } catch (e) {}
     }
 
     async loadChatSessions() {
@@ -984,6 +1000,7 @@ class RobotUI {
         let streamedRawText = "";
         let tokenCount = 0;
         let streamStartTime = performance.now();
+        let isStreamCompleted = false;
 
         try {
             const res = await fetch("/chat/stream", {
@@ -1066,6 +1083,11 @@ class RobotUI {
                             }
                             this.scrollChatToBottom();
                         }
+                    } else if (eventType === "tool_started") {
+                        if (payload.clear_preamble) {
+                            streamedRawText = "";
+                            if (textSpan) textSpan.innerHTML = "";
+                        }
                     } else if (eventType === "tool_call") {
                         if (toolBox) {
                             const callId = payload.call_id || `call_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -1118,6 +1140,13 @@ class RobotUI {
                             this.scrollChatToBottom();
                         }
                     } else if (eventType === "done") {
+                        isStreamCompleted = true;
+                        if (payload.response !== undefined) {
+                            streamedRawText = payload.response;
+                            if (textSpan) textSpan.innerHTML = this.renderChatMarkdown(payload.response);
+                        } else if (textSpan && streamedRawText) {
+                            textSpan.innerHTML = this.renderChatMarkdown(streamedRawText);
+                        }
                         if (cursorSpan) cursorSpan.remove();
                         if (toolBox) {
                             toolBox.querySelectorAll(".chat-tool-card.running").forEach(rc => {
@@ -1164,7 +1193,7 @@ class RobotUI {
         } catch (err) {
             if (err.name === "AbortError") {
                 if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-stopped">[Generation stopped]</span>`;
-            } else {
+            } else if (!isStreamCompleted) {
                 if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-error">[Error: ${this.escapeHtml(err.message)}]</span>`;
             }
         } finally {
@@ -1683,14 +1712,21 @@ class RobotUI {
         cleaned = cleaned.replace(/__TOOL_CALL__[^\]]*\]?/gi, "");
         cleaned = cleaned.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "");
         cleaned = cleaned.replace(/<\/?(?:tool_call|function|parameter)[^>]*>/gi, "");
+        // Strip bracketed tool calls e.g. [system.time], [perception.what_do_you_see], [music.play(query='...')]
+        cleaned = cleaned.replace(/\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]/gi, "");
+        // Strip internal category tags e.g. [conversation], [tools], [call], [meta], [greeting]
+        cleaned = cleaned.replace(/\[\s*(?:conversation|tools?|call|meta|internal|action|greeting)\b[^\]]*\]/gi, "");
+        // Strip planning or handling prefixes e.g. GREETING_HANDLING: ...
+        cleaned = cleaned.replace(/^[A-Z_]+_HANDLING:\s*[^\n]*\n?/gim, "");
+        cleaned = cleaned.replace(/\b[A-Z_]+_HANDLING:\s*[^\n]*/gi, "");
         // Strip explicit motion markers like [motion: wave], [motion: raise_hand left], [motion: lean_in]
         cleaned = cleaned.replace(/\[\s*(?:motion|action|emotion|character\.)\s*:[^\]]*\]/gi, "");
         // Strip general bracketed tags e.g. [motion: wave] or [character.execute_action ...]
         cleaned = cleaned.replace(/\[(?:motion|action|emotion)?:?\s*(?:wave|nod|point|kick|walk|turn|sit|stand|lean_in|raise_hand|stop)[^\]]*\]/gi, "");
         // Strip stage directions in asterisks e.g. *waves*, *smiles*, *nods*
         cleaned = cleaned.replace(/\*(?:waves?|raises?\s+(?:her\s+|his\s+|right\s+|left\s+)?hand|points?|kicks?|nods?|smiles?|stops?|leans?|looks?\s+around|shrugs?|pauses?|blinks?|winks?)[^*]*\*/gi, "");
-        // Strip stray unclosed motion tags at end of stream like [motion: or [motion
-        cleaned = cleaned.replace(/\[\s*(?:motion|action|emotion)?:?[^\]\n]*$/i, "");
+        // Strip stray unclosed motion tags or bracketed prefixes at end of stream like [motion: or [system.
+        cleaned = cleaned.replace(/\[\s*(?:motion|action|emotion|[a-zA-Z0-9_\-]+\.)?:?[^\]\n]*$/i, "");
         return cleaned.trim();
     }
 
@@ -2070,13 +2106,43 @@ class RobotUI {
         const btnCloseModelSearchModal = document.getElementById("btnCloseModelSearchModal");
         const btnCancelModelSearch = document.getElementById("btnCancelModelSearch");
 
-        // OpenAI Endpoint Configuration Modal Elements
+        // OpenAI Endpoint Configuration Modal Elements (Dual-Column Cyberdeck Grid)
         const configModal = document.getElementById("openaiConfigModal");
         const btnCloseModal = document.getElementById("btnCloseOpenaiModal");
         const btnCancelModal = document.getElementById("btnCancelOpenaiModal");
         const btnSaveConfig = document.getElementById("btnSaveOpenaiConfig");
         const btnTestScanModal = document.getElementById("btnTestAndScanModal");
-        const btnToggleApiKeyVisibility = document.getElementById("btnToggleApiKeyVisibility");
+
+        // Column 1: OpenRouter
+        const colOpenrouter = document.getElementById("colOpenrouter");
+        const btnActivateOr = document.getElementById("btnActivateOpenrouter");
+        const inputOrBaseUrl = document.getElementById("cfgOrBaseUrl");
+        const inputOrApiKey = document.getElementById("cfgOrApiKey");
+        const inputOrModel = document.getElementById("cfgOrModel");
+        const btnScanOr = document.getElementById("btnScanOrModels");
+        const btnToggleOrApiKey = document.getElementById("btnToggleOrApiKey");
+        const orStatusBadge = document.getElementById("orStatusBadge");
+
+        // Column 2: AI Credits
+        const colAicredits = document.getElementById("colAicredits");
+        const btnActivateAi = document.getElementById("btnActivateAicredits");
+        const inputAiBaseUrl = document.getElementById("cfgAiBaseUrl");
+        const inputAiApiKey = document.getElementById("cfgAiApiKey");
+        const inputAiModel = document.getElementById("cfgAiModel");
+        const btnScanAi = document.getElementById("btnScanAiModels");
+        const btnToggleAiApiKey = document.getElementById("btnToggleAiApiKey");
+        const aiStatusBadge = document.getElementById("aiStatusBadge");
+
+        // Advanced / Manual Section
+        const btnToggleCustomEndpoint = document.getElementById("btnToggleCustomEndpoint");
+        const customEndpointBody = document.getElementById("customEndpointBody");
+        const caretCustomEndpoint = document.getElementById("caretCustomEndpoint");
+        const inputManualBaseUrl = document.getElementById("cfgManualBaseUrl");
+        const inputManualApiKey = document.getElementById("cfgManualApiKey");
+        const inputManualModel = document.getElementById("cfgManualModel");
+        const btnActivateManual = document.getElementById("btnActivateManual");
+
+        // Legacy / Shared
         const inputBaseUrl = document.getElementById("cfgOpenaiBaseUrl") || document.getElementById("inputOpenaiBaseUrl");
         const inputApiKey = document.getElementById("cfgOpenaiApiKey") || document.getElementById("inputOpenaiApiKey");
         const inputModel = document.getElementById("cfgOpenaiModel") || document.getElementById("inputOpenaiModel");
@@ -2085,66 +2151,87 @@ class RobotUI {
         const modalFeedback = document.getElementById("openaiConfigFeedback");
         const selectPreset = document.getElementById("cfgOpenaiPreset");
 
-        const PRESETS = {
-            custom: {
-                baseUrl: "",
-                model: "",
-                contextWindow: 128000,
-            },
-            openrouter: {
-                baseUrl: "https://openrouter.ai/api/v1",
-                model: "meta-llama/llama-3.3-70b-instruct:free",
-                contextWindow: 131072,
-            },
-            aicredits: {
-                baseUrl: "https://aicredits.in/v1",
-                model: "aion-labs/aion-3.0",
-                contextWindow: 128000,
-            },
-            openai: {
-                baseUrl: "https://api.openai.com/v1",
-                model: "gpt-4o",
-                contextWindow: 128000,
-            },
-            deepseek: {
-                baseUrl: "https://api.deepseek.com/v1",
-                model: "deepseek-chat",
-                contextWindow: 64000,
-            },
-            groq: {
-                baseUrl: "https://api.groq.com/openai/v1",
-                model: "llama-3.3-70b-versatile",
-                contextWindow: 128000,
-            },
-            ollama: {
-                baseUrl: "http://127.0.0.1:11434/v1",
-                model: "llama3.2",
-                contextWindow: 8192,
-            },
+        this.activeCustomProvider = "openrouter";
+
+        /**
+         * Select and highlight the active provider column.
+         * @param {string} prov - 'openrouter', 'aicredits', or 'custom'.
+         * @returns {void}
+         */
+        const setProviderActive = (prov) => {
+            this.activeCustomProvider = prov;
+            if (colOpenrouter) colOpenrouter.classList.toggle("active-provider", prov === "openrouter");
+            if (colAicredits) colAicredits.classList.toggle("active-provider", prov === "aicredits");
+
+            if (btnActivateOr) {
+                const lbl = btnActivateOr.querySelector(".activate-label");
+                if (lbl) lbl.textContent = prov === "openrouter" ? "ACTIVE" : "USE THIS";
+            }
+            if (btnActivateAi) {
+                const lbl = btnActivateAi.querySelector(".activate-label");
+                if (lbl) lbl.textContent = prov === "aicredits" ? "ACTIVE" : "USE THIS";
+            }
+
+            if (modalFeedback) {
+                if (prov === "openrouter") {
+                    modalFeedback.textContent = "🌐 OpenRouter selected as active provider. Free models available.";
+                    modalFeedback.className = "cyberdeck-modal-feedback success";
+                } else if (prov === "aicredits") {
+                    modalFeedback.textContent = "⚡ AI Credits selected as active provider. High-throughput inference active.";
+                    modalFeedback.className = "cyberdeck-modal-feedback success";
+                } else {
+                    modalFeedback.textContent = "⚙️ Custom / Manual endpoint selected.";
+                    modalFeedback.className = "cyberdeck-modal-feedback";
+                }
+            }
         };
 
-        if (selectPreset) {
-            selectPreset.addEventListener("change", () => {
-                const p = selectPreset.value;
-                if (PRESETS[p]) {
-                    const presetData = PRESETS[p];
-                    if (presetData.baseUrl && inputBaseUrl) inputBaseUrl.value = presetData.baseUrl;
-                    if (presetData.model && inputModel) inputModel.value = presetData.model;
-                    if (presetData.contextWindow && inputContext) inputContext.value = presetData.contextWindow;
-                    if (p === "openrouter" && this.openrouterApiKey && inputApiKey) {
-                        inputApiKey.value = this.openrouterApiKey;
-                    } else if (p === "aicredits" && this.aicreditsApiKey && inputApiKey) {
-                        inputApiKey.value = this.aicreditsApiKey;
-                    }
-                    if (modalFeedback) {
-                        if (p === "openrouter") {
-                            modalFeedback.textContent = "🌐 OpenRouter preset selected with configured key. Defaults to free model (meta-llama/llama-3.3-70b-instruct:free).";
-                            modalFeedback.className = "cyberdeck-modal-feedback success";
-                        } else {
-                            modalFeedback.textContent = `Applied ${p.toUpperCase()} endpoint preset defaults.`;
-                            modalFeedback.className = "cyberdeck-modal-feedback";
-                        }
-                    }
+        if (btnActivateOr) btnActivateOr.addEventListener("click", () => setProviderActive("openrouter"));
+        if (btnActivateAi) btnActivateAi.addEventListener("click", () => setProviderActive("aicredits"));
+        if (btnActivateManual) btnActivateManual.addEventListener("click", () => setProviderActive("custom"));
+
+        if (btnToggleOrApiKey && inputOrApiKey) {
+            btnToggleOrApiKey.addEventListener("click", () => {
+                inputOrApiKey.type = inputOrApiKey.type === "password" ? "text" : "password";
+            });
+        }
+        if (btnToggleAiApiKey && inputAiApiKey) {
+            btnToggleAiApiKey.addEventListener("click", () => {
+                inputAiApiKey.type = inputAiApiKey.type === "password" ? "text" : "password";
+            });
+        }
+        if (btnToggleCustomEndpoint && customEndpointBody) {
+            btnToggleCustomEndpoint.addEventListener("click", () => {
+                const isHidden = customEndpointBody.style.display === "none";
+                customEndpointBody.style.display = isHidden ? "block" : "none";
+                if (caretCustomEndpoint) caretCustomEndpoint.textContent = isHidden ? "▴" : "▾";
+            });
+        }
+
+        if (btnScanOr) {
+            btnScanOr.addEventListener("click", async () => {
+                if (modalFeedback) {
+                    modalFeedback.textContent = "Scanning OpenRouter models...";
+                    modalFeedback.className = "cyberdeck-modal-feedback";
+                }
+                const models = await this.scanOpenaiModels(true, "openrouter");
+                if (modalFeedback) {
+                    modalFeedback.textContent = `✓ Discovered ${models.length} models on OpenRouter!`;
+                    modalFeedback.className = "cyberdeck-modal-feedback success";
+                }
+            });
+        }
+
+        if (btnScanAi) {
+            btnScanAi.addEventListener("click", async () => {
+                if (modalFeedback) {
+                    modalFeedback.textContent = "Scanning AI Credits models...";
+                    modalFeedback.className = "cyberdeck-modal-feedback";
+                }
+                const models = await this.scanOpenaiModels(true, "aicredits");
+                if (modalFeedback) {
+                    modalFeedback.textContent = `✓ Discovered ${models.length} models on AI Credits!`;
+                    modalFeedback.className = "cyberdeck-modal-feedback success";
                 }
             });
         }
@@ -2443,8 +2530,11 @@ class RobotUI {
                     if (vendor === "free") {
                         if (!m.is_free && !id.includes(":free") && !id.includes("-free")) return false;
                     } else if (vendor === "openrouter") {
-                        const isOr = (this.activeOpenaiEndpoint || "").includes("openrouter.ai") || (inputBaseUrl && inputBaseUrl.value.includes("openrouter.ai"));
+                        const isOr = (this.activeOpenaiEndpoint || "").includes("openrouter.ai") || (inputOrBaseUrl && inputOrBaseUrl.value.includes("openrouter.ai"));
                         if (!isOr && !id.includes("openrouter")) return false;
+                    } else if (vendor === "aicredits") {
+                        const isAi = (this.activeOpenaiEndpoint || "").includes("aicredits") || (inputAiBaseUrl && inputAiBaseUrl.value.includes("aicredits"));
+                        if (!isAi && !id.includes("aicredits") && !id.includes("aion")) return false;
                     } else if (vendor === "openai" && !(id.includes("openai") || id.includes("gpt") || id.includes("o1") || id.includes("o3") || id.includes("chatgpt"))) return false;
                     else if (vendor === "anthropic" && !(id.includes("anthropic") || id.includes("claude"))) return false;
                     else if (vendor === "google" && !(id.includes("google") || id.includes("gemini") || id.includes("gemma"))) return false;
@@ -2587,6 +2677,8 @@ class RobotUI {
                 this.currentModelVendorFilter = tab.dataset.vendor || "all";
                 if (this.currentModelVendorFilter === "openrouter" && !(this.activeOpenaiEndpoint || "").includes("openrouter.ai")) {
                     await this.scanOpenaiModels(true, "openrouter");
+                } else if (this.currentModelVendorFilter === "aicredits" && !(this.activeOpenaiEndpoint || "").includes("aicredits")) {
+                    await this.scanOpenaiModels(true, "aicredits");
                 } else {
                     this.renderModelSearchResults();
                 }
@@ -2603,7 +2695,7 @@ class RobotUI {
         }
 
         /**
-         * Open the cyberdeck OpenAI configuration modal and prefill current values.
+         * Open the cyberdeck OpenAI configuration modal and prefill current values for both providers.
          * @returns {Promise<void>}
          */
         const openConfigModal = async () => {
@@ -2611,37 +2703,42 @@ class RobotUI {
                 const res = await fetch("/api/llm/status");
                 if (res.ok) {
                     const data = await res.json();
-                    if (data.openrouter && data.openrouter.api_key) {
-                        this.openrouterApiKey = data.openrouter.api_key;
-                    }
-                    if (data.aicredits && data.aicredits.api_key) {
-                        this.aicreditsApiKey = data.aicredits.api_key;
-                    }
-                    const cfg = data.openai_compatible || {};
-                    if (inputBaseUrl) inputBaseUrl.value = cfg.base_url || "";
-                    if (inputApiKey) inputApiKey.value = cfg.api_key || (data.openrouter && cfg.base_url && cfg.base_url.includes("openrouter.ai") ? data.openrouter.api_key : "");
-                    if (inputModel) inputModel.value = cfg.model || this.activeOpenaiModel || "meta-llama/llama-3.3-70b-instruct:free";
-                    if (inputContext) inputContext.value = cfg.context_window || 128000;
-                    if (checkCaching) checkCaching.checked = cfg.enable_prompt_caching !== false;
-
-                    if (selectPreset) {
-                        const curUrl = (cfg.base_url || "").toLowerCase();
-                        if (curUrl.includes("openrouter.ai")) {
-                            selectPreset.value = "openrouter";
-                        } else if (curUrl.includes("aicredits")) {
-                            selectPreset.value = "aicredits";
-                        } else if (curUrl.includes("api.openai.com")) {
-                            selectPreset.value = "openai";
-                        } else if (curUrl.includes("deepseek.com")) {
-                            selectPreset.value = "deepseek";
-                        } else if (curUrl.includes("groq.com")) {
-                            selectPreset.value = "groq";
-                        } else if (curUrl.includes("11434")) {
-                            selectPreset.value = "ollama";
-                        } else {
-                            selectPreset.value = "custom";
+                    if (data.openrouter) {
+                        this.openrouterApiKey = data.openrouter.api_key || "";
+                        if (inputOrBaseUrl) inputOrBaseUrl.value = data.openrouter.base_url || "https://openrouter.ai/api/v1";
+                        if (inputOrApiKey) inputOrApiKey.value = data.openrouter.api_key || "";
+                        if (inputOrModel) inputOrModel.value = data.openrouter.model || "meta-llama/llama-3.3-70b-instruct:free";
+                        if (orStatusBadge) {
+                            orStatusBadge.textContent = data.openrouter.has_api_key ? "✓ Configured" : "No Key Set";
+                            orStatusBadge.className = `provider-status-badge ${data.openrouter.has_api_key ? "" : "missing"}`;
                         }
                     }
+                    if (data.aicredits) {
+                        this.aicreditsApiKey = data.aicredits.api_key || "";
+                        if (inputAiBaseUrl) inputAiBaseUrl.value = data.aicredits.base_url || "https://aicredits.in/v1";
+                        if (inputAiApiKey) inputAiApiKey.value = data.aicredits.api_key || "";
+                        if (inputAiModel) inputAiModel.value = data.aicredits.model || "aion-labs/aion-3.0";
+                        if (aiStatusBadge) {
+                            aiStatusBadge.textContent = data.aicredits.has_api_key ? "✓ Configured" : "No Key Set";
+                            aiStatusBadge.className = `provider-status-badge ${data.aicredits.has_api_key ? "" : "missing"}`;
+                        }
+                    }
+
+                    const cfg = data.openai_compatible || {};
+                    const curUrl = (cfg.base_url || "").toLowerCase();
+                    if (curUrl.includes("openrouter.ai")) {
+                        setProviderActive("openrouter");
+                    } else if (curUrl.includes("aicredits")) {
+                        setProviderActive("aicredits");
+                    } else {
+                        setProviderActive("custom");
+                        if (inputManualBaseUrl) inputManualBaseUrl.value = cfg.base_url || "";
+                        if (inputManualApiKey) inputManualApiKey.value = cfg.api_key || "";
+                        if (inputManualModel) inputManualModel.value = cfg.model || "";
+                    }
+
+                    if (inputContext) inputContext.value = cfg.context_window || 128000;
+                    if (checkCaching) checkCaching.checked = cfg.enable_prompt_caching !== false;
                 }
             } catch (e) {}
 
@@ -2680,25 +2777,57 @@ class RobotUI {
             });
         }
 
-        if (btnToggleApiKeyVisibility && inputApiKey) {
-            btnToggleApiKeyVisibility.addEventListener("click", () => {
-                inputApiKey.type = inputApiKey.type === "password" ? "text" : "password";
-            });
-        }
-
         if (btnSaveConfig) {
             btnSaveConfig.addEventListener("click", async () => {
+                const orBase = inputOrBaseUrl ? inputOrBaseUrl.value.trim() : "https://openrouter.ai/api/v1";
+                const orKey = inputOrApiKey ? inputOrApiKey.value.trim() : "";
+                const orModel = inputOrModel ? inputOrModel.value.trim() : "meta-llama/llama-3.3-70b-instruct:free";
+
+                const aiBase = inputAiBaseUrl ? inputAiBaseUrl.value.trim() : "https://aicredits.in/v1";
+                const aiKey = inputAiApiKey ? inputAiApiKey.value.trim() : "";
+                const aiModel = inputAiModel ? inputAiModel.value.trim() : "aion-labs/aion-3.0";
+
+                const manualBase = inputManualBaseUrl ? inputManualBaseUrl.value.trim() : "";
+                const manualKey = inputManualApiKey ? inputManualApiKey.value.trim() : "";
+                const manualModel = inputManualModel ? inputManualModel.value.trim() : "";
+
+                const activeProv = this.activeCustomProvider || "openrouter";
+                let activeBase = orBase;
+                let activeKey = orKey;
+                let activeModel = orModel;
+
+                if (activeProv === "aicredits") {
+                    activeBase = aiBase;
+                    activeKey = aiKey;
+                    activeModel = aiModel;
+                } else if (activeProv === "custom") {
+                    activeBase = manualBase || orBase;
+                    activeKey = manualKey || orKey;
+                    activeModel = manualModel || orModel;
+                }
+
                 const payload = {
-                    base_url: inputBaseUrl ? inputBaseUrl.value.trim() : "",
-                    api_key: inputApiKey ? inputApiKey.value.trim() : "",
-                    model: inputModel ? inputModel.value.trim() : "",
+                    active_provider: activeProv,
+                    preset: activeProv,
+                    openrouter: {
+                        base_url: orBase,
+                        api_key: orKey,
+                        model: orModel,
+                    },
+                    aicredits: {
+                        base_url: aiBase,
+                        api_key: aiKey,
+                        model: aiModel,
+                    },
+                    base_url: activeBase,
+                    api_key: activeKey,
+                    model: activeModel,
                     context_window: parseInt(inputContext ? inputContext.value : "128000", 10) || 128000,
                     enable_prompt_caching: checkCaching ? checkCaching.checked : true,
-                    preset: selectPreset ? selectPreset.value : "custom"
                 };
 
                 if (modalFeedback) {
-                    modalFeedback.textContent = "Writing config to .env and updating runtime...";
+                    modalFeedback.textContent = "Saving OpenRouter & AI Credits configurations to .env...";
                     modalFeedback.className = "cyberdeck-modal-feedback";
                 }
 
@@ -2711,13 +2840,14 @@ class RobotUI {
                     const data = await res.json();
                     if (data.status === "ok") {
                         if (modalFeedback) {
-                            modalFeedback.textContent = "✓ Configuration saved to .env! Rescanning models...";
+                            modalFeedback.textContent = "✓ Configurations saved to .env! Active provider connected.";
                             modalFeedback.className = "cyberdeck-modal-feedback success";
                         }
                         if (payload.model) this.activeOpenaiModel = payload.model;
+                        this.updateOpenaiModelDisplays(payload.model);
                         setTimeout(() => {
                             closeModal();
-                            this.scanOpenaiModels();
+                            this.scanOpenaiModels(true, activeProv);
                         }, 750);
                     } else {
                         if (modalFeedback) {
