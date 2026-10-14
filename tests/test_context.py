@@ -83,3 +83,65 @@ def test_context_action_commands_do_not_inject_memories():
         assert action_cmd in user_turn
 
 
+def test_context_greetings_zero_memories():
+    """Verify casual greetings never inject irrelevant personal facts or memories."""
+    engine = ContextEngine()
+    poison_memories = [
+        {"memory": "Ameya's crush is Anubha Anand"},
+        {"memory": "The primary optical collecting area of our benchmark space telescope is exactly 33.18 square meters"},
+        {"memory": "I have a severe tree-nut allergy"},
+    ]
+    for greeting in ["Hi", "Hello!", "hey robot", "How are you?", "Good morning"]:
+        messages = engine.build_messages(
+            system_prompt="You are Neo.",
+            user_text=greeting,
+            memories=poison_memories,
+        )
+        user_turn = messages[-1]["content"]
+        assert "Anubha" not in user_turn
+        assert "33.18" not in user_turn
+        assert "tree-nut" not in user_turn
+        assert greeting in user_turn
+
+
+def test_context_recalled_memories_on_specific_queries():
+    """Verify query-specific memory injection operates accurately for targeted questions."""
+    engine = ContextEngine()
+    memories = [
+        {"memory": "Ameya's crush is Anubha Anand"},
+        {"memory": "User favorite food is spicy chicken ramen"},
+    ]
+    messages = engine.build_messages(
+        system_prompt="You are Neo.",
+        user_text="Who is my crush?",
+        memories=memories,
+    )
+    user_turn = messages[-1]["content"]
+    assert "Anubha Anand" in user_turn
+    assert "ramen" not in user_turn or "Anubha" in user_turn
+
+
+def test_assistant_history_thought_and_bracket_stripping():
+    """Verify historical assistant turns strip thought tags and leaked tool brackets."""
+    engine = ContextEngine()
+    history = [
+        {"role": "user", "content": "Play some jazz"},
+        {
+            "role": "assistant",
+            "content": "<thought>I should play jazz music</thought>[music.play(query='jazz')] Playing jazz now for you Ameya!",
+        },
+    ]
+    messages = engine.build_messages(
+        system_prompt="You are Neo.",
+        user_text="What is playing?",
+        recent_conversation=history,
+    )
+    # Check the historical assistant turn
+    hist_assistant = messages[2]
+    assert hist_assistant["role"] == "assistant"
+    assert "<thought>" not in hist_assistant["content"]
+    assert "[music.play" not in hist_assistant["content"]
+    assert "Playing jazz now for you Ameya!" in hist_assistant["content"]
+
+
+

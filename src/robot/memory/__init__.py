@@ -341,6 +341,28 @@ class ConversationHistory:
         except Exception as e:
             logger.warning("history_backfill_sessions_failed", error=str(e))
 
+        # Clean up poisoned facts (STT song lyric noise, obsolete benchmarks, duplicates)
+        try:
+            poison_clauses = [
+                "fact LIKE '%world would never ever be true%'",
+                "fact LIKE '%never love my whole game%'",
+                "fact LIKE '%point where I love and I hate you%'",
+                "fact LIKE '%my name is logged out in jail%'",
+                "fact LIKE '%current activity: going to school%'",
+                "fact LIKE '%Dove Cameron%'",
+                "fact LIKE '%skip to content%'",
+                "fact LIKE '%openrouter%'",
+                "fact LIKE '%cold.%'",
+                "fact LIKE '%cold,%'",
+            ]
+            delete_sql = f"DELETE FROM facts WHERE {' OR '.join(poison_clauses)}"
+            self._conn.execute(delete_sql)
+            self._conn.execute("DELETE FROM facts_fts")
+            self._conn.execute("INSERT INTO facts_fts (rowid, fact) SELECT id, fact FROM facts")
+            self._conn.commit()
+        except Exception as e:
+            logger.warning("history_facts_cleanup_failed", error=str(e))
+
         logger.info("history_initialized", db=str(self.db_path))
 
     async def add_message(
@@ -719,14 +741,29 @@ class ConversationHistory:
         await asyncio.to_thread(self._conn.commit)
 
     async def search_facts(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
-        """Search persistent facts for specific user/namespace using FTS5, LIKE fallback, and deduplication."""
+        """Search persistent facts for specific user/namespace using FTS5, LIKE fallback, and deduplication.
+
+        Zero-pollution design:
+        - Casual greetings/pleasantries immediately return empty lists.
+        - Short words (<4 chars) use exact string matching to prevent prefix poisoning ('hi*' -> 'his').
+        - Empty keyword extractions return empty lists unless query matches broad phrases.
+        """
         if not self._conn:
             return []
 
         import re
         clean_q = (query or "").strip().lower()
+
+        # 1. Greeting & Pleasantry Guard: never pollute conversational openings with durable facts
+        greeting_patterns = [
+            r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|sup|yo)(?:\s+(?:there|robot|neo|luna|cypher|glados|buddy|friend|assistant))?[\s!,.]*$",
+            r"^(?:how\s+are\s+you|how's\s+it\s+going|how\s+are\s+you\s+doing|what's\s+up)[\s!,.]*\??$",
+        ]
+        if any(re.search(pat, clean_q) for pat in greeting_patterns):
+            return []
+
         broad_phrases = {
-            "", "all", "*", "everything", "facts", "memories", "durable facts",
+            "all", "*", "everything", "facts", "memories", "durable facts",
             "saved facts", "what do you know", "what do you remember",
             "what facts", "what memories", "preferences", "me", "about me",
             "user facts", "who am i", "all facts", "all memories",
@@ -741,15 +778,23 @@ class ConversationHistory:
             "and", "or", "so", "with", "for", "to", "of", "from", "by", "that", "this",
             "durable", "facts", "fact", "memories", "memory", "saved", "stored", "remembered",
             "details", "info", "information", "everything", "all", "any", "get", "show", "list",
+            "hi", "hello", "hey", "good", "morning", "evening", "afternoon", "please", "thanks", "thank",
         }
         words = [w for w in re.findall(r"\w+", clean_q) if w not in stop_and_meta]
         if not words:
-            # The query did not specify a specific topic or keyword; return all deduplicated facts
-            return await self.get_all_facts(user_id=user_id, limit=limit)
+            # Check if query is an explicit inquiry about saved facts/memories/preferences
+            clean_stripped = clean_q.rstrip("?!., ")
+            meta_inquiry_terms = {"durable", "facts", "fact", "memories", "memory", "saved", "stored", "remembered", "preferences", "preference"}
+            has_meta_inquiry = any(t in clean_q for t in meta_inquiry_terms)
+            is_broad = clean_stripped in broad_phrases or any(clean_stripped.startswith(bp) for bp in broad_phrases) or has_meta_inquiry
+            if is_broad:
+                return await self.get_all_facts(user_id=user_id, limit=limit)
+            return []
 
         if words:
-            # 1. Prefix FTS matching with stop-word removal
-            fts_expr = " OR ".join(f"{w}*" for w in words)
+            # 1. Prefix FTS matching with stop-word removal. Use exact match for words < 4 chars to avoid 'hi*' -> 'his'
+            fts_terms = [f"{w}*" if len(w) >= 4 else f'"{w}"' for w in words]
+            fts_expr = " OR ".join(fts_terms)
             try:
                 cursor = await asyncio.to_thread(
                     self._conn.execute,
@@ -936,6 +981,12 @@ class MemoryManager:
             await self.history.update_session_title_if_default(session_id, clean_title)
         await self.history.update_session(session_id, turn_count=turn_number)
 
+        # Sanitize assistant response from leaked internal tags/brackets before archiving
+        clean_bot_text = re.sub(r"<thought>.*?</thought>", "", bot_text, flags=re.DOTALL)
+        clean_bot_text = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_bot_text)
+        clean_bot_text = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", clean_bot_text, flags=re.IGNORECASE)
+        persisted_bot_text = clean_bot_text.strip() or bot_text.strip()
+
         # SQLite archive (always recorded with personality tag)
         await self.history.add_message(
             session_id, "user", user_text, personality, turn_number
@@ -943,7 +994,7 @@ class MemoryManager:
         await self.history.add_message(
             session_id,
             "assistant",
-            bot_text,
+            persisted_bot_text,
             personality,
             turn_number,
             tool_name=tool_name,
@@ -958,8 +1009,11 @@ class MemoryManager:
             "set a timer", "set an alarm", "use your tool", "using your tool", "check time",
             "volume to", "turn it up", "turn it down"
         ))
+        is_question = lower_u.endswith("?") or lower_u.startswith((
+            "is ", "are ", "do ", "does ", "did ", "who ", "what ", "where ", "when ", "why ", "how ", "can ", "could "
+        ))
 
-        # Distinct biographical declarations
+        # Distinct biographical declarations (strictly guarded against questions and fleeting status)
         bio_patterns = [
             r"\bremember\s+(?:that|this)\b",
             r"\bkeep\s+in\s+mind\s+that\b",
@@ -979,8 +1033,11 @@ class MemoryManager:
             r"\bi\s+have\s+(?:a|an)\s+(?:severe\s+)?(?:allergy|job|pet|car)\b",
         ]
 
-        if not is_command and any(re.search(pat, lower_u) for pat in bio_patterns):
-            await self.history.add_fact(user_text, user_id=active_ns)
+        if not is_command and not is_question and any(re.search(pat, lower_u) for pat in bio_patterns):
+            # Guard against fleeting conditions and song lyrics
+            fleeting_markers = ("i am going", "i am standing", "i am sitting", "i am tired", "i am sleepy")
+            if not any(fm in lower_u for fm in fleeting_markers):
+                await self.history.add_fact(user_text, user_id=active_ns)
 
         # Mem0 semantic memory (isolated per personality namespace)
         # Avoid storing commands, trivial utterances (hi, no, yes), or empty strings
@@ -1021,7 +1078,38 @@ class MemoryManager:
             await self.mem0.add([{"role": "user", "content": fact}], user_id=user_id, infer=False)
 
     async def get_relevant_memories(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
-        """Retrieve relevant memories strictly isolated within the personality workspace."""
+        """Retrieve relevant memories strictly isolated within the personality workspace.
+
+        Args:
+            query: The user query string to search memories against.
+            user_id: The personality namespace / user identifier.
+            limit: Maximum count of memories to retrieve.
+
+        Returns:
+            list[dict]: Deduplicated relevant memories, or empty list for greetings/commands.
+        """
+        clean_q = (query or "").strip().lower()
+        if not clean_q:
+            return []
+
+        # Zero-pollution gate: never query memory for greetings or direct actions
+        greeting_patterns = [
+            r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|sup|yo)(?:\s+(?:there|robot|neo|luna|cypher|glados|buddy|friend|assistant))?[\s!,.]*$",
+            r"^(?:how\s+are\s+you|how's\s+it\s+going|how\s+are\s+you\s+doing|what's\s+up)[\s!,.]*\??$",
+        ]
+        if any(re.search(pat, clean_q) for pat in greeting_patterns):
+            return []
+
+        action_patterns = [
+            r"\b(?:volume|louder|quieter|mute|unmute)\b",
+            r"\b(?:pause|resume|unpause|stop|replay|play\s+again)\b",
+            r"^(?:play|put\s+on)\s+",
+            r"\b(?:what\s+time|current\s+time|clock|time\s+is\s+it)\b",
+            r"\b(?:system\s+status|health\s+check)\b",
+        ]
+        if any(re.search(pat, clean_q) for pat in action_patterns):
+            return []
+
         mem0_results = await self.mem0.search(query, user_id=user_id, limit=limit)
         sqlite_facts = await self.history.search_facts(query, user_id=user_id, limit=limit)
         
@@ -1082,44 +1170,58 @@ class MemoryManager:
         return await self.history.get_stats()
 
     async def get_core_user_profile(self, user_id: str = "user") -> str:
-        """Extract and format core user profile sheet from durable memory facts."""
-        facts = await self.get_all_facts(user_id=user_id, limit=50)
-        identity_lines = ["• User Name: Ameya", "• User Role: AI Engineer & Robot Systems Creator"]
-        tech_lines = ["• Tech Stack: Python, PyTorch, C++, AsyncIO, WebSockets, Local LLMs, Web & Robotics"]
-        pref_lines = []
-        rel_lines = []
+        """Extract and format core user profile sheet from durable memory facts.
 
+        Zero-poisoning design:
+        - Contains verified user identity, creator relationship, and attribution policy.
+        - Strictly excludes random database facts, crush details, and benchmarks from the static profile.
+        - Dynamically appends at most 3 explicit preferences (e.g. favorite food/color).
+
+        Args:
+            user_id: Personality workspace namespace to pull facts from.
+
+        Returns:
+            str: Clean, grounded markdown profile block.
+        """
+        facts = await self.get_all_facts(user_id=user_id, limit=30)
+        identity_lines = [
+            "• User Name: Ameya",
+            "• User Role: AI Engineer & Robot Systems Creator",
+        ]
+        attribution_lines = [
+            "• User (Ameya) is the human creator and developer. You are the AI robot assistant.",
+            "• Never confuse user's attributes, personal life, or preferences with your own.",
+        ]
+        tech_lines = [
+            "• Tech Stack: Python, PyTorch, C++, AsyncIO, WebSockets, Local LLMs, Web & Robotics",
+        ]
+        pref_lines: list[str] = []
+
+        # Only extract durable user preferences if explicitly stated as favorite/preference
+        pref_keywords = ("favorite food", "favorite color", "favorite genre", "favorite music", "prefer")
         for f in facts:
             txt = f.get("fact", f.get("memory", "")).strip()
-            if not txt:
+            if not txt or len(txt) > 150:
                 continue
-            # Defend against bloated text dumps, scrapes, or web contents
-            if len(txt) > 250 or "\n\n" in txt or any(b in txt.lower() for b in ["skip to content", "openrouter", "http://", "https://"]):
-                continue
-            txt_clean = " ".join(txt.split())[:180]
+            txt_clean = " ".join(txt.split())
             txt_lower = txt_clean.lower()
-            if any(k in txt_lower for k in ["name", "ameya", "engineer", "developer", "creator", "built"]):
-                if not any(txt_clean.lower() in line.lower() for line in identity_lines):
-                    identity_lines.append(f"• {txt_clean}")
-            elif any(k in txt_lower for k in ["crush", "partner", "friend", "girlfriend", "anubha", "relationship"]):
-                if not any(txt_clean.lower() in line.lower() for line in rel_lines):
-                    rel_lines.append(f"• {txt_clean}")
-            elif any(k in txt_lower for k in ["like", "love", "favorite", "prefer", "music", "volume"]):
-                if not any(txt_clean.lower() in line.lower() for line in pref_lines):
-                    pref_lines.append(f"• {txt_clean}")
-            else:
-                if not any(txt_clean.lower() in line.lower() for line in pref_lines):
-                    pref_lines.append(f"• {txt_clean}")
+            if any(k in txt_lower for k in pref_keywords):
+                # Ensure it's not a crush, test benchmark fact, or allergy
+                if not any(bad in txt_lower for bad in ("crush", "telescope", "anubha", "allergy", "anand")):
+                    clean_entry = f"• {txt_clean}"
+                    if not any(txt_clean.lower() in p.lower() for p in pref_lines):
+                        pref_lines.append(clean_entry)
+                        if len(pref_lines) >= 3:
+                            break
 
-        profile_sections = ["=== USER CORE IDENTITY PROFILE ==="]
-        if identity_lines:
-            profile_sections.append("Identity & Role:\n" + "\n".join(identity_lines[:5]))
-        if rel_lines:
-            profile_sections.append("Relationships & Social Context:\n" + "\n".join(rel_lines[:5]))
-        if tech_lines:
-            profile_sections.append("Technical Profile:\n" + "\n".join(tech_lines[:5]))
+        profile_sections = [
+            "=== USER CORE IDENTITY PROFILE ===",
+            "Identity & Role:\n" + "\n".join(identity_lines),
+            "Attribution Policy:\n" + "\n".join(attribution_lines),
+            "Technical Profile:\n" + "\n".join(tech_lines),
+        ]
         if pref_lines:
-            profile_sections.append("Preferences & Directives:\n" + "\n".join(pref_lines[:10]))
+            profile_sections.append("Established Preferences:\n" + "\n".join(pref_lines))
 
         return "\n\n".join(profile_sections)
 

@@ -178,12 +178,13 @@ def format_user_core_profile(user_profile: str | None = None) -> str:
         "Identity & Role:\n"
         "• User Name: Ameya\n"
         "• User Role: AI Engineer & Robot Systems Creator\n\n"
+        "Attribution Policy:\n"
+        "• User (Ameya) is the human creator and developer. You are the AI robot assistant.\n"
+        "• Never confuse user's attributes, personal life, or preferences with your own.\n\n"
         "Technical Profile:\n"
         "• Stack: Python, PyTorch, C++, WebSockets, FastAPI, Local LLMs, Web & Robotics\n\n"
-        "Social Context & Relationships:\n"
-        "• Primary Relationships belong exclusively to User (refer to them as 'your crush', 'your friend')\n\n"
-        "Directives & Preferences:\n"
-        "• Direct, intelligent, highly articulate, supportive companion tone"
+        "Directives & Tone:\n"
+        "• Direct, concise, intelligent, highly articulate, supportive companion tone"
     )
 
 
@@ -261,7 +262,13 @@ class ContextEngine:
         profile_sheet = format_user_core_profile(resolved_profile)
         grounding_parts.append(profile_sheet)
 
-        # Gate memories: do NOT inject irrelevant memories if user turn is an action/command
+        # Gate memories: do NOT inject irrelevant memories if user turn is a greeting or action/command
+        greeting_patterns = [
+            r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|sup|yo)(?:\s+(?:there|robot|neo|luna|cypher|glados|buddy|friend|assistant))?[\s!,.]*$",
+            r"^(?:how\s+are\s+you|how's\s+it\s+going|how\s+are\s+you\s+doing|what's\s+up)[\s!,.]*\??$",
+        ]
+        is_greeting = any(re.search(pat, (resolved_user or "").strip().lower()) for pat in greeting_patterns)
+
         action_patterns = [
             r"\b(?:volume|louder|quieter|mute|unmute)\b",
             r"\b(?:pause|resume|unpause|stop|replay|play\s+again)\b",
@@ -273,15 +280,14 @@ class ContextEngine:
         is_direct_action = any(re.search(pat, (resolved_user or "").lower()) for pat in action_patterns)
 
         # 2. Complete User Facts & Knowledge Base (Durable facts placed first to ensure static KV-cache invariance)
-        if high_intelligence and all_facts and not is_direct_action:
+        if high_intelligence and all_facts and not is_direct_action and not is_greeting:
             facts_str = _format_all_facts(all_facts, budget_tokens=100000)
             if facts_str:
                 grounding_parts.append(f"[Comprehensive User Knowledge Base & Memory Facts (Belonging to User)]:\n{facts_str}")
-        elif (resolved_memories or all_facts) and not is_direct_action:
+        elif resolved_memories and not is_direct_action and not is_greeting:
             combined_mems: list[dict] = []
             seen_texts = set()
-            # Invariant durable facts come first, followed by query-specific recalled context
-            for m in (all_facts or []) + (resolved_memories or []):
+            for m in resolved_memories:
                 if isinstance(m, dict):
                     txt = m.get("memory", m.get("fact", m.get("text", ""))).strip()
                     m_item = m
@@ -499,16 +505,26 @@ def _trim_conversation(messages: list[dict[str, Any]], budget_tokens: int) -> li
     if not messages:
         return []
 
-    # 1. Sanitize messages: ensure clean structure and strip any accidental historical grounding wrappers
+    # 1. Sanitize messages: ensure clean structure and strip any accidental historical grounding wrappers / leaked assistant tokens
     clean_msgs: list[dict[str, Any]] = []
     for msg in messages:
         m = dict(msg)
         content = m.get("content")
-        if isinstance(content, str) and m.get("role") == "user":
-            if "[User Instruction]:\n" in content:
-                m["content"] = content.split("[User Instruction]:\n", 1)[1].strip()
-            elif "[User Instruction]:" in content:
-                m["content"] = content.split("[User Instruction]:", 1)[1].strip()
+        role = m.get("role")
+        if isinstance(content, str):
+            if role == "user":
+                if "[User Instruction]:\n" in content:
+                    m["content"] = content.split("[User Instruction]:\n", 1)[1].strip()
+                elif "[User Instruction]:" in content:
+                    m["content"] = content.split("[User Instruction]:", 1)[1].strip()
+                elif "[User Input]:\n" in content:
+                    m["content"] = content.split("[User Input]:\n", 1)[1].strip()
+            elif role == "assistant":
+                # Clean assistant history: strip leaked thoughts, internal motion/tool brackets
+                c = re.sub(r"<thought>.*?</thought>", "", content, flags=re.DOTALL)
+                c = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", c)
+                c = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", c, flags=re.IGNORECASE)
+                m["content"] = c.strip()
         clean_msgs.append(m)
 
     # 2. Walk backwards to collect turns within budget

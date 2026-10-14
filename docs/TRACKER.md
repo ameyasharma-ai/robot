@@ -46,7 +46,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Agent Customization & Skills Suite** | 4 Specialized Skills & Rules (`code-documentation`, `zero-import-errors`, `suggest-next-fix`, `subagent-handling`) | ✅ **Active** | Local Agent Environment | Automated docstring audits, AST/import integrity verification (`verify_imports.py`), proactive roadmap scanning (`scan_next_fixes.py`), and subagent orchestration protocol. |
 | **Temporal Scheduling & Alert Engine** | `TemporalScheduler` + SQLite + 10 Tool Suite (`timer.*`, `alarm.*`, `reminder.*`, `system.daily_briefing`) | ✅ **Active** | Core Engine / SQLite | 1Hz async background polling; relative countdowns, recurring alarms, NLP reminders, daily briefing, and audio alert chimes. |
 | **OS & Workspace Automation Tools** | `system_os.py` + 5 Tool Suite (`os.app_launch`, `os.system_control`, `os.clipboard_read`, `os.clipboard_write`, `os.notify_desktop`) | ✅ **Active** | Local OS (Linux Desktop) | Detached process launching, display/audio/battery power management, multi-tier clipboard fallbacks, native desktop notifications. |
-| **Advanced Context & Intelligence System** | `ContextEngine` + `MemoryManager` + Telemetry Banner + Profile Sheet | ✅ **Active** | Local Qwen 3.5 4B / Gemini API | Real-time situation banner (IST time, pending timers, music, battery, visual scene), user profile sheet, conversation history micro-summarizer, Gemini 800k context archive, and `<thought>` tag stripping for speech. |
+| **Advanced Context & Intelligence System** | `ContextEngine` + `MemoryManager` + Zero-Poisoning Defenses + Telemetry Banner + Profile Sheet | ✅ **Active** | Local Qwen 3.5 4B / Gemini API | Real-time situation banner, verified non-evictable Core User Profile (Name: Ameya, Creator, Attribution Policy), greeting/action zero-memory gating, FTS short-word prefix protection, assistant `<thought>`/bracket tag stripping, STT lyric fact purge, and Gemini 800k context archive. |
 | **Chat Dashboard Tools & Persona Themes** | 42 Interactive Category Chips + 4 Persona CSS Themes + 3D Avatar WebGL Lighting | ✅ **Active** | Static Web Frontend & WebGL | Sleek, non-scrollable compact category chips deck, persona-tailored color palettes (Luna/Neo/Aria/GLaDOS), dynamic 3D WebGL lighting/pedestal transitions, and aligned female voice definitions. |
 | **ChatGPT Multi-Agent Bridge & Skill** | Autonomous Bidirectional Loop + Extension Bridge (`chatgpt-bridge`) | ✅ **Active** | Chrome + Antigravity (127.0.0.1:8765) | Real-time WebSocket bridge between open ChatGPT tab in Chrome and Antigravity IDE; autonomous multi-turn loops (spec -> implement -> verify -> review -> sign-off). |
 | **OpenAI-Compatible LLM & Model Scanner** | `OpenAICompatibleLLM` + Prompt Caching + Live Model Discovery | ✅ **Active** | Cloud API / Core Engine / Web HUD | 3-way toggle (Local / Gemini / OpenAI), live `/models` scanner with cyberdeck dropdown, settings modal, and prefix prompt caching. |
@@ -1635,6 +1635,31 @@ Legend:
     - *Verification*:
       - 222/222 unit tests passing (100%) via `.venv/bin/pytest tests/`.
       - 100% zero import errors verified across all 95 Python modules via `verify_imports.py`.
+
+74. **Complete Elimination of Context Layer Poisoning & Conversational Reliability Hardening**:
+    - *Symptoms*:
+      1. Everyday conversations suffered severe context poisoning: basic greetings (*"Hi"*, *"Hello"*, *"How are you?"*) were polluted with up to 50 unrelated biographical facts, benchmark test figures (*"James Webb space telescope optical area is 33.18 sq m"*), tree nut allergies, and romantic crushes.
+      2. The model hallucinated or misattributed user preferences and personal relationships to itself during dialogue.
+      3. Whisper STT microphone noise captured song lyrics playing in the room (*"It's to the point where I love and I hate you"*, *"I like and promise you the world would never ever be true to you"*) and permanently ingested them as user facts.
+      4. Leaked assistant tool syntax (`[music.play(...)]`) and `<thought>` tags in historical conversation turns re-entered the context window and poisoned future assistant generations.
+    - *Root Causes*:
+      1. In [`SQLiteHistoryManager.search_facts`](file:///home/ameya/robot/src/robot/memory/__init__.py), FTS prefix wildcarding `f"{w}*"` converted `"hi"` to `"hi*"`, which matched `"his"` in `"his crush is Anubha Anand"`, injecting romantic crush facts on a simple greeting.
+      2. When queries contained only stop words (e.g. `"how are you"`), `words` was empty, triggering a blind fallback that dumped all 50 facts.
+      3. In [`MemoryManager.get_core_user_profile`](file:///home/ameya/robot/src/robot/memory/__init__.py), an `else: if not any(...): pref_lines.append(f"• {txt_clean}")` catch-all classified every fact in the database (including benchmark space telescope optical areas) as a user preference / directive.
+      4. In [`ContextEngine.build_messages`](file:///home/ameya/robot/src/robot/core/context.py), `all_facts` (50 facts) was fetched on every local voice turn and injected into `grounding_parts` alongside the bloated profile sheet, expanding a 2-word greeting into a 1,891-character prompt wall.
+      5. In [`RobotEngine._stream_response`](file:///home/ameya/robot/src/robot/core/engine.py), raw responses were stored into memory without stripping leaked `<thought>` tags or bracketed tool syntax.
+    - *Fixes Applied*:
+      1. **Strict Greeting & Action Memory Gating**: Added regex classifiers in `search_facts`, `get_relevant_memories`, and `build_messages` to immediately return empty memory lists for greetings (`"Hi"`, `"Hello"`, `"Hey robot"`, `"How are you?"`) and direct hardware actions (`"set volume"`, `"pause music"`, `"what time is it"`).
+      2. **FTS Prefix Matching Hardening**: Constrained FTS wildcard `*` to words with length >= 4, enforcing exact matching for short words (`'"hi"'`) to prevent `"hi*"` from matching `"his"`. Added meta-inquiry detection for broad memory questions (*"What durable facts do you have saved about me?"*).
+      3. **Verified Core User Profile Sheet**: Restructured `get_core_user_profile` to strictly contain verified identity (Name: Ameya, Role: AI Engineer & Creator), explicit Attribution Policy (user is human creator, bot is AI robot assistant), and core technical stack. Eliminated the catch-all `else` block and restricted established preferences to at most 3 items.
+      4. **Local Mode Memory Optimization**: Gated `all_facts` retrieval in `RobotEngine` so local mode (RTX 3050 4GB) only receives top relevant recalled memories for specific queries, never dumping the entire 50-fact database.
+      5. **Historical Turn & Response Sanitization**: In `_trim_conversation`, sanitized assistant history by stripping leaked `<thought>` tags, motion tags, and bracketed tool calls. Added regex cleaning in `_stream_response` before storing turns.
+      6. **Automated SQLite Database Fact Cleanup**: Added automated purge on initialization in `SQLiteHistoryManager.initialize` to delete STT song lyrics, fleeting activities, and obsolete contradictory entries, and rebuilt `facts_fts`.
+      7. **Automated Unit Testing**: Added tests in [`tests/test_context.py`](file:///home/ameya/robot/tests/test_context.py) verifying greetings contain zero memories, specific queries retrieve targeted facts, and assistant history strips `<thought>` tags and tool brackets.
+    - *Verification*:
+      - 225/225 unit tests passed 100% via `.venv/bin/pytest tests/`.
+      - 100% zero import errors verified across all 95 Python modules via `verify_imports.py`.
+      - Live inspection on `conversations.db` confirmed "Hi" produces zero memories with 844 chars (profile + status + user prompt) instead of 1,891 chars, while "Who is my crush?" accurately retrieves the crush memory.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

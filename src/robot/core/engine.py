@@ -1263,10 +1263,9 @@ class RobotEngine:
                     except Exception as e:
                         logger.warning("gemini_context_expansion_failed", error=str(e))
                 elif not is_gemini:
-                    try:
-                        all_facts = await self.memory.get_all_facts(user_id=ns, limit=50)
-                    except Exception as e:
-                        logger.debug("local_facts_retrieval_failed", error=str(e))
+                    # In Local Mode (RTX 3050 4GB), do NOT dump all durable facts to prevent context poisoning.
+                    # Only specific, relevant memories retrieved via query matching are injected.
+                    all_facts = None
 
         # Get recent conversation
         recent = []
@@ -1591,7 +1590,12 @@ class RobotEngine:
             )
         )
 
-        return full_response.strip()
+        # Clean response from internal brackets, thoughts, and control lines before returning for storage
+        clean_resp = re.sub(r"<thought>.*?</thought>", "", full_response, flags=re.DOTALL)
+        clean_resp = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_resp)
+        clean_resp = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
+        clean_resp = re.sub(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", "", clean_resp, flags=re.MULTILINE)
+        return clean_resp.strip() if clean_resp.strip() else full_response.strip()
 
     async def _tts_synthesizer_loop(self) -> None:
         """Background pipeline worker: dequeue text phrases, synthesize with Piper, push to audio queue."""
