@@ -55,6 +55,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **OpenRouter Preset & Mobile Workstation Polish** | OpenRouter Custom API + 61+ Tools Categories + Mobile View Aesthetics & Viewport Scroll | ✅ **Active** | Core Engine / Static Web Frontend | Added OpenRouter preset with free models discovery (:free tag & OpenRouter vendor tab), populated all 61 tools across 9 categories with "All" filter tab, fixed mobile hardware observability 2-column balanced grid, eliminated squished bottom panels, and ensured memory search box smoothly scrolls to viewport with 120px clearance. |
 | **Dual-Column Custom API Dashboard** | Independent OpenRouter & AI Credits Columns + Unified Persistence | ✅ **Active** | Static Web Frontend & FastEngine API | Transformed custom API settings modal into responsive cyberdeck dual-column layout. Both OpenRouter and AI Credits have independent URL inputs, API key inputs, model selectors, model scanning buttons, and active provider selectors. Dedicated `.env` keys (`OPENROUTER_*` and `AICREDITS_*`) prevent offloading or wiping when switching. Added AI Credits vendor tab in model search modal. |
 | **Dynamic Proactive Intelligence & Chat Suppression** | `CuriosityEngine` Dynamic Visual & Activity Arbitration | ✅ **Active** | Core Engine / `autonomy.py` | Eliminated annoying static 90s/10m timer interruptions. Autonomy is strictly suppressed when in chat mode (`is_chat_mode`), muted mic, within 120s of active user interaction, or for low-proactivity personas (GLaDOS). Dynamically triggers contextual visual greetings upon user arrival after extended absence (>180s). |
+| **Dynamic Sentiment & Prosody Modulation** | `ProsodyModulator` + Piper Pitch/Speed/Noise Scaling + 3D Avatar Emotion Sync | ✅ **Active** | Host CPU (Piper ONNX) / Browser WebGL | Real-time sentiment and emotional analysis dynamically modulating pitch (±15%), speech speed (±10%), and noise variance across 9 emotion categories with synchronized 3D avatar facial blendshapes and visor colors. |
 
 
 Legend:
@@ -1606,6 +1607,21 @@ Legend:
     - *Verification*:
       - 100% of unit tests passed (214/214) via `.venv/bin/pytest tests/`.
       - 100% zero import errors verified across all 93 Python modules via `verify_imports.py`.
+
+72. **Dynamic Sentiment & Prosody Modulation (Piper Pitch ±15%, Speed ±10%, Noise Scaling & Avatar Emotion Sync)**:
+    - *Features & Implementation*:
+      1. **Sub-Millisecond Lexical & Syntactic Sentiment Analyzer**: Built `ProsodyModulator` in [`src/robot/tts/prosody.py`](file:///home/ameya/robot/src/robot/tts/prosody.py) evaluating text sentiment across 9 canonical emotional categories (`HAPPY`, `EXCITED`, `AFFECTIONATE`, `SAD`, `ANGRY`, `SURPRISED`, `CURIOUS`, `DEADPAN`, `NEUTRAL`) using deterministic emotional word lexicons, syntax markers (exclamations, question marks, uppercase tokens), and personality behavioral biases.
+      2. **Strict Prosody Modulation Bounds**:
+         - Pitch shift clamped strictly to `±15%` of baseline pitch (`[base * 0.85, base * 1.15]`).
+         - Speech speed clamped strictly to `±10%` of baseline speed (`[base * 0.90, base * 1.10]`).
+         - Noise scale and noise_w dynamically modulated for expressive phoneme duration and inflections (e.g. tender lingering in affection, monotone suppression in GLaDOS deadpan).
+      3. **PiperTTS Prosody Engine Integration**: Updated [`PiperTTS`](file:///home/ameya/robot/src/robot/tts/__init__.py) with `modulate_prosody`, `synthesize_with_prosody`, and optional `modulate=True` in synchronous and asynchronous synthesis.
+      4. **End-to-End Engine & Pipeline Telemetry**: In [`src/robot/core/engine.py`](file:///home/ameya/robot/src/robot/core/engine.py) (`_tts_synthesizer_loop` and `_tts_player_loop`), dequeued phrases are dynamically modulated before synthesis, recording `emotion`, `pitch_delta`, `speed_delta`, `valence`, and `arousal` into ObservabilityHub spans and telemetry.
+      5. **Synchronized 3D Avatar Expressions**: Emitted `emotion` in `robot_phrase` events across both live voice speech and `/api/chat/speak` web responses. In [`app.js`](file:///home/ameya/robot/src/robot/api/static/app.js), wired `eng.setEmotion(data.emotion)` to trigger matching Three.js VRM blendshapes (`Face_Blendshape.Fcl_EYE_Joy`) and visor eye color shifts (`#00f5a0` emerald for happy, `#ff69b4` rose pink for affection, `#ff0844` crimson for anger, `#4facfe` soft blue for sad).
+      6. **Automated Unit Testing**: Created [`tests/test_prosody.py`](file:///home/ameya/robot/tests/test_prosody.py) covering emotion classification, strict boundary limits, personality biases, tag parsing, and Piper integration.
+    - *Verification*:
+      - 222/222 unit tests passed 100% via `.venv/bin/pytest tests/`.
+      - 100% zero import errors verified across all 95 Python modules via `verify_imports.py`.
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

@@ -3229,15 +3229,22 @@ class RobotUI {
 
         if (data.event === "robot_speech_ended" || data.robot_speech_ended) {
             this.stopMouthSpeaking();
-            this._forEachEngine((eng) => eng.speakStop());
+            this._forEachEngine((eng) => {
+                eng.speakStop();
+                eng.setEmotion("neutral");
+            });
             this.setRobotMode("idle");
             this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
         }
 
         if (data.robot_phrase) {
             const cleanPhrase = this.cleanHumanText(data.robot_phrase) || data.robot_phrase;
+            if (data.emotion) {
+                this._forEachEngine((eng) => eng.setEmotion(data.emotion));
+            }
             if (this.bubbleTag) {
-                this.bubbleTag.textContent = "ROBOT RESPONSE";
+                const emoLabel = data.emotion && data.emotion !== "neutral" ? ` • ${data.emotion.toUpperCase()}` : "";
+                this.bubbleTag.textContent = `ROBOT RESPONSE${emoLabel}`;
                 this.bubbleTag.style.color = "var(--accent-emerald)";
             }
             if (this.bubbleContent) {
@@ -3254,7 +3261,10 @@ class RobotUI {
             this._forEachEngine((eng) => eng.speakStart());
             if (this._phraseTimeout) clearTimeout(this._phraseTimeout);
             this._phraseTimeout = setTimeout(() => {
-                this._forEachEngine((eng) => eng.speakStop());
+                this._forEachEngine((eng) => {
+                    eng.speakStop();
+                    eng.setEmotion("neutral");
+                });
                 this.stopMouthSpeaking();
                 if (this.currentMode === "speaking") {
                     this.setRobotMode("idle");

@@ -119,23 +119,28 @@ class TTSProvider:
 
 import os
 from pathlib import Path
+from typing import Any
+
+from robot.tts.prosody import EmotionCategory, ProsodyModulation, ProsodyModulator
+
 
 class PiperTTS(TTSProvider):
     """Piper ONNX TTS engine — local, low-latency, multi-voice synthesis.
 
     Produces WAV audio from text using ONNX Runtime with support for
     distinct voice models per personality, dynamic expressive prosody
-    (length_scale, noise_scale, noise_w_scale, pitch shift), and an
-    in-memory phrase cache for instant 0ms playback of acknowledgment phrases.
+    (length_scale, noise_scale, noise_w_scale, pitch shift), dynamic sentiment
+    analysis, and an in-memory phrase cache for instant 0ms playback.
     """
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(self, model_path: str, enable_prosody: bool = True) -> None:
         self._voices: dict[str, piper.PiperVoice] = {}
         self._phrase_cache: dict[str, tuple[np.ndarray, int]] = {}
         self._default_model = self._resolve_model_path(model_path)
         self._active_model = self._default_model
+        self.prosody = ProsodyModulator(enabled=enable_prosody)
         self._load_voice(self._default_model)
-        logger.info("piper_initialized", default_model=self._default_model)
+        logger.info("piper_initialized", default_model=self._default_model, dynamic_prosody=enable_prosody)
 
     def _resolve_model_path(self, model_path: str) -> str:
         if not model_path:
@@ -194,6 +199,37 @@ class PiperTTS(TTSProvider):
         nw_str = f"{noise_w:.2f}" if noise_w is not None else "def"
         return f"{voice_key}|{text.strip().lower()}|s={speed:.2f}|p={pitch:.2f}|ns={ns_str}|nw={nw_str}"
 
+    def modulate_prosody(
+        self,
+        text: str,
+        base_speed: float = 1.0,
+        base_pitch: float = 1.0,
+        base_noise_scale: float | None = None,
+        base_noise_w: float | None = None,
+        personality_name: str | None = None,
+    ) -> tuple[float, float, float | None, float | None, ProsodyModulation]:
+        """Calculate dynamic sentiment-driven prosody modulation for a phrase.
+
+        Args:
+            text: Text phrase to analyze.
+            base_speed: Baseline speech speed.
+            base_pitch: Baseline speech pitch.
+            base_noise_scale: Baseline noise scale.
+            base_noise_w: Baseline noise_w phoneme duration.
+            personality_name: Active personality name.
+
+        Returns:
+            Tuple of (modulated_speed, modulated_pitch, modulated_noise_scale, modulated_noise_w, modulation).
+        """
+        return self.prosody.modulate_prosody(
+            text,
+            base_speed=base_speed,
+            base_pitch=base_pitch,
+            base_noise_scale=base_noise_scale,
+            base_noise_w=base_noise_w,
+            personality_name=personality_name,
+        )
+
     def _synthesize_sync(
         self,
         text: str,
@@ -202,14 +238,31 @@ class PiperTTS(TTSProvider):
         voice_model: str | None = None,
         noise_scale: float | None = None,
         noise_w: float | None = None,
+        modulate: bool = False,
+        personality_name: str | None = None,
     ) -> tuple[np.ndarray, int]:
         clean_text = clean_text_for_speech(text)
         if not clean_text:
             return np.array([], dtype=np.float32), 16000
 
+        eff_speed = speed
+        eff_pitch = pitch
+        eff_ns = noise_scale
+        eff_nw = noise_w
+
+        if modulate:
+            eff_speed, eff_pitch, eff_ns, eff_nw, _ = self.modulate_prosody(
+                clean_text,
+                base_speed=speed,
+                base_pitch=pitch,
+                base_noise_scale=noise_scale,
+                base_noise_w=noise_w,
+                personality_name=personality_name,
+            )
+
         target_voice_key = self._resolve_model_path(voice_model or self._active_model)
         norm_key = self._normalize_key(
-            clean_text, speed, pitch, target_voice_key, noise_scale, noise_w
+            clean_text, eff_speed, eff_pitch, target_voice_key, eff_ns, eff_nw
         )
         if norm_key in self._phrase_cache:
             audio, sr = self._phrase_cache[norm_key]
@@ -218,12 +271,12 @@ class PiperTTS(TTSProvider):
         voice = self._load_voice(target_voice_key)
 
         # Piper length_scale: higher values = slower speech; lower values = faster speech
-        length_scale = 1.0 / max(0.5, min(2.0, speed))
+        length_scale = 1.0 / max(0.5, min(2.0, eff_speed))
         syn_kwargs: dict[str, Any] = {"length_scale": length_scale}
-        if noise_scale is not None:
-            syn_kwargs["noise_scale"] = float(noise_scale)
-        if noise_w is not None:
-            syn_kwargs["noise_w_scale"] = float(noise_w)
+        if eff_ns is not None:
+            syn_kwargs["noise_scale"] = float(eff_ns)
+        if eff_nw is not None:
+            syn_kwargs["noise_w_scale"] = float(eff_nw)
 
         syn_config = piper.SynthesisConfig(**syn_kwargs)
 
@@ -242,8 +295,8 @@ class PiperTTS(TTSProvider):
             raw_audio = np.concatenate(chunks)
 
         # Apply pitch shift if configured (e.g. thin high-pitched voice for Luna)
-        if abs(pitch - 1.0) >= 0.02 and len(raw_audio) > 0:
-            raw_audio = _shift_pitch(raw_audio, pitch)
+        if abs(eff_pitch - 1.0) >= 0.02 and len(raw_audio) > 0:
+            raw_audio = _shift_pitch(raw_audio, eff_pitch)
 
         res = (raw_audio, sr)
 
@@ -279,18 +332,21 @@ class PiperTTS(TTSProvider):
         voice_model: str | None = None,
         noise_scale: float | None = None,
         noise_w: float | None = None,
+        modulate: bool = False,
+        personality_name: str | None = None,
     ) -> tuple[np.ndarray, int]:
         clean_text = clean_text_for_speech(text)
         if not clean_text:
             return np.array([], dtype=np.float32), 16000
 
         target_voice_key = self._resolve_model_path(voice_model or self._active_model)
-        norm_key = self._normalize_key(
-            clean_text, speed, pitch, target_voice_key, noise_scale, noise_w
-        )
-        if norm_key in self._phrase_cache:
-            audio, sr = self._phrase_cache[norm_key]
-            return audio.copy(), sr
+        if not modulate:
+            norm_key = self._normalize_key(
+                clean_text, speed, pitch, target_voice_key, noise_scale, noise_w
+            )
+            if norm_key in self._phrase_cache:
+                audio, sr = self._phrase_cache[norm_key]
+                return audio.copy(), sr
 
         import asyncio
         return await asyncio.to_thread(
@@ -301,8 +357,67 @@ class PiperTTS(TTSProvider):
             voice_model,
             noise_scale,
             noise_w,
+            modulate,
+            personality_name,
         )
+
+    async def synthesize_with_prosody(
+        self,
+        text: str,
+        speed: float = 1.0,
+        pitch: float = 1.0,
+        voice_model: str | None = None,
+        noise_scale: float | None = None,
+        noise_w: float | None = None,
+        personality_name: str | None = None,
+    ) -> tuple[np.ndarray, int, ProsodyModulation]:
+        """Synthesize text using dynamic sentiment-driven prosody modulation.
+
+        Args:
+            text: Conversational speech text to synthesize.
+            speed: Baseline personality speed.
+            pitch: Baseline personality pitch.
+            voice_model: Optional voice ONNX model path.
+            noise_scale: Baseline noise scale.
+            noise_w: Baseline noise_w duration.
+            personality_name: Name of active personality.
+
+        Returns:
+            Tuple of (audio_float32, sample_rate, ProsodyModulation).
+        """
+        clean_text = clean_text_for_speech(text)
+        if not clean_text:
+            return np.array([], dtype=np.float32), 16000, ProsodyModulation()
+
+        eff_speed, eff_pitch, eff_ns, eff_nw, modulation = self.modulate_prosody(
+            clean_text,
+            base_speed=speed,
+            base_pitch=pitch,
+            base_noise_scale=noise_scale,
+            base_noise_w=noise_w,
+            personality_name=personality_name,
+        )
+        audio, sr = await self.synthesize(
+            clean_text,
+            speed=eff_speed,
+            pitch=eff_pitch,
+            voice_model=voice_model,
+            noise_scale=eff_ns,
+            noise_w=eff_nw,
+        )
+        return audio, sr, modulation
 
     async def health_check(self) -> bool:
         return bool(self._voices)
+
+
+__all__ = [
+    "clean_text_for_speech",
+    "split_into_phrases",
+    "TTSProvider",
+    "PiperTTS",
+    "EmotionCategory",
+    "ProsodyModulation",
+    "ProsodyModulator",
+]
 

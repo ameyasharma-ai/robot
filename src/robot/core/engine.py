@@ -207,7 +207,7 @@ class RobotEngine:
         self._interrupt_event = asyncio.Event()
         self._speech_queue: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
         self._tts_queue: asyncio.Queue[tuple[str, asyncio.Event, dict | None] | None] = asyncio.Queue()
-        self._audio_queue: asyncio.Queue[tuple[np.ndarray, int, str, asyncio.Event, dict | None, dict | None, float] | None] = asyncio.Queue(maxsize=16)
+        self._audio_queue: asyncio.Queue[tuple[Any, ...] | None] = asyncio.Queue(maxsize=16)
         self._is_speaking = False
         self._speech_ended_ts = 0.0
         self._last_bot_phrases: list[str] = []
@@ -1639,26 +1639,63 @@ class RobotEngine:
             voice_model = getattr(pers, "voice_model", None)
             noise_scale = tts_cfg.get("noise_scale", None)
             noise_w = tts_cfg.get("noise_w", None)
+            pers_name = getattr(pers, "name", "neo") if pers else "neo"
+
+            # Apply dynamic sentiment analysis and prosody modulation
+            from robot.tts.prosody import ProsodyModulation
+            eff_speed, eff_pitch, eff_ns, eff_nw = speed, pitch, noise_scale, noise_w
+            detected_emotion = "neutral"
+            modulation = ProsodyModulation()
+
+            if hasattr(self.tts, "modulate_prosody"):
+                try:
+                    res = self.tts.modulate_prosody(
+                        phrase,
+                        base_speed=speed,
+                        base_pitch=pitch,
+                        base_noise_scale=noise_scale,
+                        base_noise_w=noise_w,
+                        personality_name=pers_name,
+                    )
+                    if isinstance(res, tuple) and len(res) == 5:
+                        eff_speed, eff_pitch, eff_ns, eff_nw, modulation = res
+                        detected_emotion = getattr(modulation, "emotion", "neutral")
+                except Exception:
+                    pass
 
             t_synth = time.perf_counter()
             audio, sr = await self.tts.synthesize(
                 phrase,
-                speed=speed,
-                pitch=pitch,
+                speed=eff_speed,
+                pitch=eff_pitch,
                 voice_model=voice_model,
-                noise_scale=noise_scale,
-                noise_w=noise_w,
+                noise_scale=eff_ns,
+                noise_w=eff_nw,
             )
             synth_ms = (time.perf_counter() - t_synth) * 1000
 
             self.telemetry.record("TTS_SYNTHESIS_LATENCY", synth_ms)
-            self.observability.finish_span(tts_span, metadata={"synth_ms": round(synth_ms, 1)})
+            self.observability.finish_span(
+                tts_span,
+                metadata={
+                    "synth_ms": round(synth_ms, 1),
+                    "emotion": detected_emotion,
+                    "pitch_delta": modulation.pitch_delta,
+                    "speed_delta": modulation.speed_delta,
+                    "valence": modulation.valence,
+                    "arousal": modulation.arousal,
+                },
+            )
 
             if interrupt.is_set():
                 continue
 
+            # If no explicit physical motion is queued, set avatar emotion from detected sentiment
+            if motion_action is None and detected_emotion != "neutral":
+                motion_action = {"action": "set_emotion", "emotion": detected_emotion}
+
             await self._audio_queue.put(
-                (audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms)
+                (audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms, detected_emotion)
             )
 
     async def _tts_player_loop(self) -> None:
@@ -1675,7 +1712,11 @@ class RobotEngine:
                 await self.events.emit("robot_speech_ended", mode="idle")
                 continue
 
-            audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms = item
+            if len(item) >= 8:
+                audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms, emotion = item[:8]
+            else:
+                audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms = item[:7]
+                emotion = (motion_action or {}).get("emotion", "neutral")
 
             if interrupt.is_set():
                 continue
@@ -1685,7 +1726,7 @@ class RobotEngine:
                 self._speech_started_ts = time.time()
 
             await self.state.set_mode(RobotMode.SPEAKING)
-            await self.events.emit("robot_phrase", robot_phrase=phrase)
+            await self.events.emit("robot_phrase", robot_phrase=phrase, emotion=emotion)
 
             if timing_ref:
                 t_start = timing_ref.get("t_tts_start", time.perf_counter() - synth_ms / 1000)

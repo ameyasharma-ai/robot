@@ -838,6 +838,24 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             noise_scale = cfg.get("noise_scale")
             noise_w = cfg.get("noise_w")
 
+        # Apply dynamic sentiment analysis and prosody modulation
+        detected_emotion = "neutral"
+        if hasattr(tts, "modulate_prosody"):
+            try:
+                res = tts.modulate_prosody(
+                    raw_text,
+                    base_speed=speed,
+                    base_pitch=pitch,
+                    base_noise_scale=noise_scale,
+                    base_noise_w=noise_w,
+                    personality_name=pers_name,
+                )
+                if isinstance(res, tuple) and len(res) == 5:
+                    speed, pitch, noise_scale, noise_w, modulation = res
+                    detected_emotion = getattr(modulation, "emotion", "neutral")
+            except Exception:
+                pass
+
         try:
             audio, sr = await tts.synthesize(
                 raw_text,
@@ -863,7 +881,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             try:
                 from robot.tts import clean_text_for_speech
                 clean_phrase = clean_text_for_speech(raw_text)
-                await engine.events.emit("robot_phrase", robot_phrase=clean_phrase)
+                await engine.events.emit("robot_phrase", robot_phrase=clean_phrase, emotion=detected_emotion)
             except Exception as e:
                 logger.debug("speak_phrase_event_failed", error=str(e))
 
