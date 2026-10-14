@@ -794,9 +794,10 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     async def speak_chat_message(req: ChatSpeakRequest) -> Response:
         """Synthesize and return speech WAV audio for a chat message response.
 
-        Converts message text into 16-bit PCM WAV audio using the active or specified
-        Piper TTS voice model and prosody configuration. Emits a robot phrase event
-        for synchronized avatar lipsync animation.
+        Splits message text into natural clause phrases, applying dynamic sentiment
+        prosody modulation (pitch, speed, noise scale) to each clause individually,
+        mirroring the active avatar TTS pipeline. Emits a robot phrase event for
+        synchronized avatar lipsync animation.
 
         Args:
             req: ChatSpeakRequest containing text, personality, voice_model, speed, pitch.
@@ -810,6 +811,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         import io
         import wave
         import numpy as np
+        from robot.tts import clean_text_for_speech, split_into_phrases
 
         raw_text = req.text.strip()
         if not raw_text:
@@ -838,50 +840,70 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             noise_scale = cfg.get("noise_scale")
             noise_w = cfg.get("noise_w")
 
-        # Apply dynamic sentiment analysis and prosody modulation
-        detected_emotion = "neutral"
-        if hasattr(tts, "modulate_prosody"):
+        phrases = split_into_phrases(raw_text)
+        if not phrases:
+            fallback = clean_text_for_speech(raw_text) or raw_text
+            phrases = [fallback] if fallback.strip() else []
+
+        if not phrases:
+            raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+        audio_chunks: list[np.ndarray] = []
+        sample_rate = 16000
+        primary_emotion = "neutral"
+
+        for phrase in phrases:
+            eff_speed, eff_pitch, eff_ns, eff_nw = speed, pitch, noise_scale, noise_w
+            phrase_emotion = "neutral"
+
+            # Apply dynamic sentiment analysis and prosody modulation per clause
+            if hasattr(tts, "modulate_prosody"):
+                try:
+                    res = tts.modulate_prosody(
+                        phrase,
+                        base_speed=speed,
+                        base_pitch=pitch,
+                        base_noise_scale=noise_scale,
+                        base_noise_w=noise_w,
+                        personality_name=pers_name,
+                    )
+                    if isinstance(res, tuple) and len(res) == 5:
+                        eff_speed, eff_pitch, eff_ns, eff_nw, modulation = res
+                        phrase_emotion = getattr(modulation, "emotion", "neutral")
+                        if primary_emotion == "neutral" and phrase_emotion != "neutral":
+                            primary_emotion = phrase_emotion
+                except Exception:
+                    pass
+
             try:
-                res = tts.modulate_prosody(
-                    raw_text,
-                    base_speed=speed,
-                    base_pitch=pitch,
-                    base_noise_scale=noise_scale,
-                    base_noise_w=noise_w,
-                    personality_name=pers_name,
+                chunk, sr = await tts.synthesize(
+                    phrase,
+                    speed=eff_speed,
+                    pitch=eff_pitch,
+                    voice_model=voice_model,
+                    noise_scale=eff_ns,
+                    noise_w=eff_nw,
                 )
-                if isinstance(res, tuple) and len(res) == 5:
-                    speed, pitch, noise_scale, noise_w, modulation = res
-                    detected_emotion = getattr(modulation, "emotion", "neutral")
-            except Exception:
-                pass
+                if chunk is not None and len(chunk) > 0:
+                    audio_chunks.append(chunk)
+                    sample_rate = sr
+            except Exception as exc:
+                logger.error("chat_speak_phrase_failed", phrase=phrase[:30], error=str(exc))
 
-        try:
-            audio, sr = await tts.synthesize(
-                raw_text,
-                speed=speed,
-                pitch=pitch,
-                voice_model=voice_model,
-                noise_scale=noise_scale,
-                noise_w=noise_w,
-            )
-        except Exception as exc:
-            logger.error("chat_speak_synthesis_failed", error=str(exc))
-            raise HTTPException(status_code=500, detail=f"Synthesis failed: {exc}")
-
-        if audio is None or len(audio) == 0:
+        if not audio_chunks:
             raise HTTPException(status_code=400, detail="Synthesized audio was empty.")
+
+        audio = np.concatenate(audio_chunks) if len(audio_chunks) > 1 else audio_chunks[0]
 
         # Optionally play on robot hardware speaker if requested
         if req.play_hardware and hasattr(engine, "player") and engine.player:
-            asyncio.create_task(engine.player.play(audio, sr))
+            asyncio.create_task(engine.player.play(audio, sample_rate))
 
         # Emit robot_phrase event for avatar lip-sync / expressions
         if hasattr(engine, "events") and engine.events:
             try:
-                from robot.tts import clean_text_for_speech
                 clean_phrase = clean_text_for_speech(raw_text)
-                await engine.events.emit("robot_phrase", robot_phrase=clean_phrase, emotion=detected_emotion)
+                await engine.events.emit("robot_phrase", robot_phrase=clean_phrase, emotion=primary_emotion)
             except Exception as e:
                 logger.debug("speak_phrase_event_failed", error=str(e))
 
@@ -891,7 +913,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         with wave.open(wav_buf, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(2)
-            wf.setframerate(sr)
+            wf.setframerate(sample_rate)
             wf.writeframes(int16_audio.tobytes())
         wav_bytes = wav_buf.getvalue()
 
@@ -903,6 +925,160 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "Cache-Control": "no-cache",
             },
         )
+
+    @app.post("/api/chat/speak/stream")
+    async def speak_chat_message_stream(req: ChatSpeakRequest, request: Request) -> StreamingResponse:
+        """Synthesize and stream speech WAV audio clauses via Server-Sent Events (SSE).
+
+        Splits input text into natural punctuation clauses/phrases and modulates each phrase
+        individually for dynamic pitch, speed, and emotion prosody. Yields phrases as soon as
+        they are synthesized so the client begins audio playback on phrase 0 immediately.
+
+        Args:
+            req: ChatSpeakRequest containing text, personality, voice_model, speed, pitch.
+            request: Active Starlette/FastAPI Request used to detect client disconnections.
+
+        Returns:
+            StreamingResponse emitting SSE text/event-stream events containing base64 WAV chunks.
+
+        Raises:
+            HTTPException: 400 if text is empty; 503 if TTS is unavailable.
+        """
+        import base64
+        import io
+        import json
+        import wave
+        import numpy as np
+        from fastapi.responses import StreamingResponse
+        from robot.tts import clean_text_for_speech, split_into_phrases
+
+        raw_text = req.text.strip()
+        if not raw_text:
+            raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+        tts = getattr(engine, "tts", None)
+        if tts is None or not hasattr(tts, "synthesize"):
+            raise HTTPException(status_code=503, detail="TTS provider is not initialized or unavailable.")
+
+        # Resolve voice model and prosody defaults from active personality
+        pers_name = req.personality or getattr(engine.state.state, "active_personality", "neo")
+        pers = engine.personalities.get(pers_name) if hasattr(engine, "personalities") and engine.personalities else None
+
+        base_voice_model = req.voice_model or (getattr(pers, "voice_model", None) if pers else None)
+        base_speed = req.speed
+        base_pitch = req.pitch
+        base_noise_scale: float | None = None
+        base_noise_w: float | None = None
+
+        if pers and hasattr(pers, "tts_config") and isinstance(pers.tts_config, dict):
+            cfg = pers.tts_config
+            if req.speed == 1.0 and "speed" in cfg:
+                base_speed = float(cfg["speed"])
+            if req.pitch == 1.0 and "pitch" in cfg:
+                base_pitch = float(cfg["pitch"])
+            base_noise_scale = cfg.get("noise_scale")
+            base_noise_w = cfg.get("noise_w")
+
+        # Split text into natural clause phrases for low-latency streaming
+        phrases = split_into_phrases(raw_text)
+        if not phrases:
+            fallback = clean_text_for_speech(raw_text) or raw_text
+            phrases = [fallback] if fallback.strip() else []
+
+        if not phrases:
+            raise HTTPException(status_code=400, detail="No speakable phrases found in input text.")
+
+        async def _phrase_stream_generator():
+            total = len(phrases)
+            for idx, phrase in enumerate(phrases):
+                if await request.is_disconnected():
+                    logger.debug("chat_speak_stream_client_disconnected", phrase_idx=idx, total=total)
+                    break
+
+                eff_speed = base_speed
+                eff_pitch = base_pitch
+                eff_noise_scale = base_noise_scale
+                eff_noise_w = base_noise_w
+                detected_emotion = "neutral"
+
+                # Apply dynamic sentiment analysis and prosody modulation per phrase
+                if hasattr(tts, "modulate_prosody"):
+                    try:
+                        res = tts.modulate_prosody(
+                            phrase,
+                            base_speed=base_speed,
+                            base_pitch=base_pitch,
+                            base_noise_scale=base_noise_scale,
+                            base_noise_w=base_noise_w,
+                            personality_name=pers_name,
+                        )
+                        if isinstance(res, tuple) and len(res) == 5:
+                            eff_speed, eff_pitch, eff_noise_scale, eff_noise_w, modulation = res
+                            detected_emotion = getattr(modulation, "emotion", "neutral")
+                    except Exception as err:
+                        logger.debug("phrase_prosody_modulation_skipped", error=str(err))
+
+                try:
+                    audio, sr = await tts.synthesize(
+                        phrase,
+                        speed=eff_speed,
+                        pitch=eff_pitch,
+                        voice_model=base_voice_model,
+                        noise_scale=eff_noise_scale,
+                        noise_w=eff_noise_w,
+                    )
+                except Exception as exc:
+                    logger.error("phrase_synthesis_failed", phrase=phrase[:30], error=str(exc))
+                    yield f"data: {json.dumps({'event': 'error', 'index': idx, 'error': str(exc)})}\n\n"
+                    continue
+
+                if audio is None or len(audio) == 0:
+                    continue
+
+                # Optionally play on robot hardware speaker sequentially if requested
+                if req.play_hardware and hasattr(engine, "player") and engine.player:
+                    try:
+                        await engine.player.play(audio, sr)
+                    except Exception as e:
+                        logger.warning("hardware_playback_failed", error=str(e))
+
+                # Convert float32 numpy array to 16-bit PCM WAV in memory
+                int16_audio = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+                wav_buf = io.BytesIO()
+                with wave.open(wav_buf, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sr)
+                    wf.writeframes(int16_audio.tobytes())
+                base64_wav = base64.b64encode(wav_buf.getvalue()).decode("ascii")
+
+                duration_ms = (len(audio) / sr) * 1000.0
+
+                event_data = {
+                    "event": "phrase",
+                    "index": idx,
+                    "total": total,
+                    "phrase": phrase,
+                    "emotion": detected_emotion,
+                    "pitch": round(float(eff_pitch), 3),
+                    "speed": round(float(eff_speed), 3),
+                    "duration_ms": round(duration_ms, 1),
+                    "audio": base64_wav,
+                }
+                yield f"data: {json.dumps(event_data)}\n\n"
+
+            yield f"data: {json.dumps({'event': 'done', 'total': total})}\n\n"
+
+        return StreamingResponse(
+            _phrase_stream_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
 
     @app.post("/api/transcribe")
     async def transcribe_audio(request: Request):

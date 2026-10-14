@@ -1,67 +1,334 @@
-1. [DONE] Make the TTS more natural and fast
-2. [DONE] Ensure high quality data reaches the STT
-3. [DONE] Make sure the LLM generates the text under 250ms everytime
-4. [DONE] Fix the prompts to make the robot more aware, Context layer: User Entity Ownership & Attribution Directive implemented. Crush/preferences strictly attributed to user.
-5. [DONE] Make sure that all the skills are well documented and can be easily updated: ToolSkillManager implemented with full capabilities, parameters, and few-shots.
-6. [DONE] Tool Router / tool calls, robust Latency: Contextual family routing & fast execution verified.
-7. [DONE] Implement all the tools: Built knowledge.wikipedia, system.calculate, system.hardware, character.execute_action, etc.
-8. [DONE] Avatar movements -> more natural and expressive: Added 10 expressive actions (nod, shake_head, tilt_head, shrug, bow, clap, think, cheer, hands_on_hips, heart_gesture).
-9. [DONE] Get end-of-speech → first response <1s [Achieved: 714ms E2E benchmark, streaming STT chunking reduces turnaround]
-10. [DONE] recoverable tools, LLM must be contextually aware and able to rescue tools
-11. [DONE] Warm up the LLM with a greeting on startup
-12. [DONE] Implement Gemini API
-13. [DONE] Implement OpenAI-compatible custom API mode with prompt caching and live model scanner
+# ==============================================================================
+# 🤖 ROBOT INTELLIGENCE PLATFORM — MASTER TODO & ROADMAP
+# Architecture: Heterogeneous Edge (RTX 3050 4GB VRAM + AMD 680M iGPU + Ryzen 7 6800H)
+# Lead Architect Review: 14 October 2026 | Antigravity AI IDE
+# ==============================================================================
 
-14. [DONE] Voice Barge-in & Full-Duplex Echo Cancellation: Calibrated duplex barge-in with acoustic envelope coupling (decay 0.94, grace period 450ms, 3-frame threshold), speaker bleed tracking, and PipeWire/ALSA gain isolation.
+## 🏁 Completed Milestones & System Features
+
+1. [DONE] Make the TTS more natural and fast: Piper ONNX streaming with eager clause chunking (first chunk in 69-95ms).
+2. [DONE] Ensure high quality data reaches the STT: whisper.cpp on AMD Radeon 680M iGPU via Vulkan with 16kHz mono audio stream.
+3. [DONE] Make sure the LLM generates text under 250ms every time: Invariant canonical tool schema prefix + KV cache pre-warming (warm TTFT 105-180ms).
+4. [DONE] Fix the prompts to make the robot more aware: Context layer User Entity Ownership & Attribution Directive implemented. User preferences strictly attributed.
+5. [DONE] Make sure all skills are well documented and easily updated: ToolSkillManager implemented with full capabilities, parameters, and few-shots.
+6. [DONE] Tool Router / tool calls, robust Latency: Contextual family routing & fast execution verified. FastPathRouter (<4ms) for unambiguous intents.
+7. [DONE] Implement all core tools: Built knowledge.wikipedia, system.calculate, system.hardware, character.execute_action, etc. (61 registered tools).
+8. [DONE] Avatar movements -> more natural and expressive: Added 10 expressive actions (nod, shake_head, tilt_head, shrug, bow, clap, think, cheer, hands_on_hips, heart_gesture) with procedural breathing and 2s cubic-ease-out return blend.
+9. [DONE] Get end-of-speech → first response <1s: Achieved 714ms E2E benchmark; streaming STT chunking and pre-cached acknowledgments reduce turnaround.
+10. [DONE] Recoverable tools: LLM contextually aware and able to rescue tools. Pass 2 text continuation enforced with tool omission.
+11. [DONE] Warm up the LLM with a greeting on startup: Silent background pre-warming primes Slot 0 KV cache on startup and persona switches.
+12. [DONE] Implement Gemini Cloud API: High-capacity multi-modal fallback with 800k context archive.
+13. [DONE] Implement OpenAI-compatible custom API mode with prompt caching and live model scanner.
+14. [DONE] Voice Barge-in & Full-Duplex Echo Cancellation Baseline: Calibrated duplex barge-in with acoustic envelope coupling (decay 0.94, grace period 450ms, 3-frame threshold), speaker bleed tracking, and PipeWire/ALSA gain isolation.
 15. [DONE] Preserve custom API model selection across server restarts (persisted in data/active_openai_model.txt, .env, and browser localStorage).
-16. [DONE] Mobile view top bar decluttering: eliminated element crowding, horizontal overflow, and container shifting on screens <= 768px.
-17. [DONE] Tool execution & text continuation reliability: filtered avatar motion tools in chat mode, capped tool calls to 2/turn, eliminated None/null returns, implemented system.list_tools, and guaranteed second-pass text synthesis.
+16. [DONE] Mobile view top bar decluttering: Eliminated element crowding, horizontal overflow, and container shifting on screens <= 768px.
+17. [DONE] Tool execution & text continuation reliability: Filtered avatar motion tools in chat mode, capped tool calls to 2/turn, eliminated None/null returns, implemented system.list_tools, and guaranteed second-pass text synthesis.
 18. [DONE] Remove IDLE pill from chat dashboard across desktop and mobile views.
 19. [DONE] Connect TTFT, E2E, and Tokens live telemetry in chat mode top bar.
 20. [DONE] Build dynamic Context Layer inspector & local prompt caching debugger at /contextlayer.
-21. [DONE] Custom API image generation integration: RemoteOpenAIImageProvider routes image requests to remote OpenAI-compatible /v1/images/generations to offload local SD compute with automatic local fallback.
-22. [DONE] Dynamic resource allocator: _allocate_generation_budget dynamically scales token budget (160 to 2048 tokens) based on prompt complexity and requested format (e.g. essays, stories, code).
-23. [DONE] Personality database isolation: verified per-personality SQLite schema and Mem0 semantic namespace isolation.
+21. [DONE] Custom API image generation integration: RemoteOpenAIImageProvider routes image requests to remote OpenAI-compatible /v1/images/generations with automatic local SD fallback.
+22. [DONE] Dynamic resource allocator: _allocate_generation_budget dynamically scales token budget (160 to 2048 tokens) based on prompt complexity and requested format.
+23. [DONE] Personality database isolation: Verified per-personality SQLite schema and Mem0 semantic namespace isolation (Cypher, Aria, GLaDOS, Luna).
 24. [DONE] Custom API Free Models Discovery: :free model badge, ⚡ Free Models filter tab in cyberdeck modal, and free tier detection.
-26. [DONE] Linux Mint systemd service configuration for automated boot: created scripts/robot.service unit and scripts/install_service.sh installer.
-27. [DONE] Dedicated debug panel & automated end-to-end testing pipeline: dynamic /contextlayer panel and scripts/test_e2e_pipeline.py non-destructive dry-run diagnostic.
+25. [DONE] Tool Hardening Framework: Implemented @harden_tool_inputs decorator with strict type coercion, boolean int-subclass guarding, parameter aliases, conflict detection, and range validation.
+26. [DONE] Linux Mint systemd service configuration for automated boot: Created scripts/robot.service unit and scripts/install_service.sh installer.
+27. [DONE] Dedicated debug panel & automated end-to-end testing pipeline: Dynamic /contextlayer panel and scripts/test_e2e_pipeline.py non-destructive dry-run diagnostic.
 28. [DONE] Actuarial Death Clock estimation tool: system.death_clock tool combining WHO country baselines, epidemiological lifestyle deltas, and Gemini Cloud generative clinical analysis with 100% test coverage.
-
-## Pending
-- [PENDING] The only things remaining to fix are: Proactive Engine, Tools Reliability, and Context Bloat / Layer Optimization.
-- [PENDING] Local wake word engine using open-source model.
-- [PENDING] 7-day endurance test with continuous memory leak & crash monitoring.
-- [PENDING] Web-hostable free architecture (browser VAD, Groq Whisper STT, Gemini Free LLM, Edge TTS, Cloudflare Workers, Mem0/Supabase, Next.js on Vercel). Deadline: 15th-16th October.
+29. [DONE] Dual-custom API configuration: Independent OpenRouter and AI Credits settings columns, dedicated .env persistence keys (OPENROUTER_* / AICREDITS_*), bracketed tool leakage suppression ([TOOL_CALL: ...]), and network error resilience.
+30. [DONE] Dynamic Sentiment & Prosody Modulation: ProsodyModulator evaluating lexical/syntactic sentiment into 9 emotion categories with Piper pitch (±15%), speed (±10%), and noise scaling.
+31. [DONE] Low-Latency Streaming Chat TTS with Clause Prosody & 3D Avatar Sync: Replicated active avatar streaming speech pipeline for chat "Speak" button. /api/chat/speak/stream yields phrases with clause prosody immediately; client starts playback on phrase 0 (<100ms first audio) and gaplessly queues remaining phrases while syncing 3D avatar facial blendshapes and visor illumination.
 
 ---
-VAD
+
+## 🏛️ End-to-End Pipeline & Tool Architecture
+
+```text
+VAD (Silero tuned 320ms pause)
  ↓
-STT
+STT (Whisper Vulkan on AMD Radeon 680M iGPU)
  ↓
-Context
+Context (7-Layer ContextEngine: System, Profile, Grounding Banner, Memories, History, Schemas)
  ↓
-LLM + Skills
+LLM + Skills (Local Qwen3.5-4B on RTX 3050 4GB / Gemini / Dual Custom API)
  ↓
 Tool Calls / Answer
- ├─ Camera
- ├─ Spotify
- ├─ Time
- ├─ Image
- ├─ Web Search
- ├─ Memory
- ├─ Music Generator
- ├─ Research
- ├─ Screen
- ├─ Calls & Texts
- ├─ Send to Phone
- └─ Web Agent
+ ├─ Camera (perception.what_do_you_see, camera.capture_snapshot) [DONE]
+ ├─ Spotify / Music (music.play, music.control, music.equalizer, music.history) [DONE]
+ ├─ Time & Scheduling (system.time, timer.*, alarm.*, reminder.*, daily_briefing) [DONE]
+ ├─ Image (image.generate, image.cancel via local SD / remote DALL-E) [DONE]
+ ├─ Web Search (web.search, web.scrape_page) [DONE]
+ ├─ Memory (memory.write, memory.search, memory.all, history.search, notes.vault_search) [DONE]
+ ├─ Music Generator (AI generative audio synthesis / procedural sound generator) [PENDING - Phase 5.4]
+ ├─ Research (Deep Research Agent — multi-query web scraping & dossier synthesis) [PENDING - Phase 5.2]
+ ├─ Screen (Desktop OCR & visual window analysis beyond raw capture) [PENDING - Phase 4.2]
+ ├─ Calls & Texts (SMS / voice call integration via Twilio or device bridge) [PENDING - Phase 5.5]
+ ├─ Send to Phone (Push alerts via NTFY topic, Telegram bot, or Pushover) [PENDING - Phase 5.1]
+ └─ Web Agent (Autonomous Playwright headless browser automation for web tasks) [PENDING - Phase 5.3]
  ↓
-Tool-retrieved context → Answer
+Tool-retrieved context → Answer (Pass 2 Speech Synthesis)
  ↓
-TTS / Avatar
+TTS / Avatar (Piper ONNX AVX2 + Three.js WebGL 3D VRM Humanoid Rig)
 
-Debugger + Resource Optimizer
+Debugger + Resource Optimizer (ObservabilityHub + /contextlayer + supervisor.py)
         ↓
-Latency < 2s
+Latency < 2s (Fast-path < 350ms, Standard Voice < 750ms, Tool turns < 1.8s)
         ↓
-Barebone Linux
+Barebone Linux Mint Workstation
+```
+
+---
+
+# 🚀 MASTER ENGINEERING PLAN (Lead Architect Directive)
+
+## Phase 0 — Freeze the Baseline and Establish Release Gates
+**Priority: P0 | First**
+- [ ] Record current Git commit hash (`f50f164`), active branch (`main`), and tag baseline `v1.1-baseline`.
+- [ ] Run full 222-test suite (`.venv/bin/pytest tests/`) and record baseline report.
+- [ ] Run `.venv/bin/python .agents/skills/zero-import-errors/scripts/verify_imports.py` (verify 100% clean across all 95 files).
+- [ ] Capture current empirical P50/P95/P99 latency distributions across voice, fast-path, and tool pipelines.
+- [ ] Record baseline RAM (RSS < 2.5GB), VRAM (RTX 3050 < 3.8GB), CPU and AMD iGPU load during representative conversation.
+- [ ] Audit all 61 registered tools: map each tool to schema, handler, permission level (L0-L6), and error policy.
+- [ ] Document known edge cases and flaky tests in TRACKER.md.
+*Acceptance Gate: Baseline commit, import audit, and benchmarks recorded. Zero unexplained errors.*
+
+---
+
+## Phase 1 — Core Intelligence and Tool Reliability
+**Priority: P0 | Highest Engineering Priority**
+
+### 1.1 Fix the Context Layer
+- [ ] Audit context construction, truncation, and token-budget allocation in `src/robot/core/context.py`.
+- [ ] Verify consistent assembly of persona, history, relevant Mem0 memories, profile sheet, and canonical tool schemas.
+- [ ] Enforce user attribution throughout tool execution and memory operations.
+- [ ] Prevent unrelated or stale semantic memories from polluting active context.
+- [ ] Associate tool results strictly with originating calls; strip leaking control tokens.
+- [ ] Add real-time diagnostics for context component sizes and truncation decisions at `/api/context/inspect`.
+- [ ] Validate prefix cache invariance on llama-server: keep static system prompt and canonical tools stable while dynamically scoping only user turns.
+*Acceptance Criteria: Context inspection shows exact assembled components; 100% cache hit on static prefix; zero context overflows.*
+
+### 1.2 Fix Tool Calls and Planner–Executor Logic
+- [ ] Audit model tool-call parsing across raw JSON and fallback formats in `src/robot/tools/planner.py` and `engine.py`.
+- [ ] Validate tool names and arguments against registered schemas before execution via `PermissionManager`.
+- [ ] Enforce strict type coercion and reject ambiguous or out-of-range values using `@harden_tool_inputs`.
+- [ ] Enforce sequential planner boundaries: max steps (capped at 5), total execution deadlines, and cancellation.
+- [ ] Standardize tool outcomes: `ToolOutcomeStatus.SUCCESS`, `FAILURE`, `DENIED`, `TIMEOUT`, `CANCELLED`.
+- [ ] Enforce timeouts (3.0s cap for network tools) and idempotency guarding to prevent duplicate execution on retries.
+- [ ] Require explicit user confirmation for consequential actions (L3 External, L4 System, L5 Development).
+- [ ] Verify graceful recovery when tools return malformed output or time out.
+*Acceptance Criteria: Invalid arguments never reach handlers; timed-out tools cannot block conversation; planner terminates cleanly.*
+
+### 1.3 Decide on the Two-Way Model Architecture
+- [ ] Define explicit roles for candidate models (Local Qwen3.5-4B vs Cloud Gemini / OpenRouter specialist).
+- [ ] Benchmark both candidates on representative reasoning, tool calling, and conversational tasks.
+- [ ] Compare correctness, latency, VRAM consumption, and fallback behavior.
+- [ ] Document Architecture Decision Record (ADR) in `docs/`: Keep local Qwen3.5-4B as default; route complex tasks conditionally to Cloud API without exceeding 4GB VRAM.
+*Acceptance Criteria: Written ADR; zero permission bypass by second model; controlled fallback on API disconnection.*
+
+---
+
+## Phase 2 — Voice Stability and Natural Interaction
+**Priority: P0 | Complete Before Expensive Background Workloads**
+
+### 2.1 Voice Barge-In and Echo Cancellation Hardening
+- [ ] Trace complete audio path: ALSA/PipeWire mic capture -> EchoGuard RMS subtraction -> Silero VAD -> Piper TTS.
+- [ ] Verify reference playback audio reaches the echo canceller with calibrated acoustic coupling (decay 0.94).
+- [ ] Immediate cancellation: On confirmed user barge-in, abort active audio playback, cancel Piper synthesis, and discard pending LLM tokens within **<200ms**.
+- [ ] Purge sounddevice/ALSA ring buffer immediately on interruption to prevent stale audio bleed.
+- [ ] Calibrate against speaker leakage at 80% volume and background ambient noise.
+*Acceptance Criteria: Robot stops speaking within <200ms of user interruption; zero false interruptions from own speech.*
+
+### 2.2 Local Wake-Word Engine
+- [ ] Integrate local wake-word engine (`openWakeWord` / `microWakeWord`) preceding Silero VAD.
+- [ ] Train/configure lightweight wake models for "Hey Neo", "Hey Luna", "Aria".
+- [ ] Define state machine: `IDLE` -> `WAKE_DETECTED` -> `LISTENING` -> `RESPONDING` -> `STANDBY`.
+- [ ] Implement fallback to standard VAD when wake-word engine is disabled.
+*Acceptance Criteria: Wake-word runs locally (<5% CPU); zero false activations from robot TTS; reliable transition to listening.*
+
+### 2.3 Dynamic Persona Voice and Expression
+- [ ] Map persona YAML configurations (`pitch`, `speed`, `noise_scale`) dynamically in `PiperTTS`.
+- [ ] Dynamic prosody modulation: Adjust pitch (±15%) and speed (±10%) based on response sentiment.
+- [ ] Synchronize VRM facial blendshapes (`Joy`, `Sorrow`, `Surprised`) and procedural arm/head gestures to `_tts_queue` events.
+- [ ] Ensure animation/expression updates never block or introduce jitter into audio output.
+*Acceptance Criteria: Persona voice parameters dynamically applied; expressive blendshapes synced to speech without audio stutter.*
+
+---
+
+## Phase 3 — Memory Precision and Cognitive Intelligence
+**Priority: P1**
+
+### 3.1 Dynamic Memory Precision
+- [ ] Build representative benchmark set of 50 memory retrieval queries.
+- [ ] Calibrate Mem0 cosine similarity threshold to `0.82` to eliminate false fact hallucinations.
+- [ ] Compare precision and recall across candidate thresholds (`0.75`, `0.78`, `0.82`, `0.85`).
+- [ ] Implement asynchronous background conversational profile summarizer updating SQLite `User Profile Sheet`.
+- [ ] Partition durable preferences, temporary context, and inferred facts into distinct schema fields.
+- [ ] Deduplicate contradictory or outdated memories; enforce strict user/persona namespace isolation.
+*Acceptance Criteria: Mem0 threshold justified by benchmark data; profile summarizer runs silently in background; 0% cross-user leakage.*
+
+### 3.2 Context and Memory Observability
+- [ ] Expose memory retrieval latency, candidate score distributions, and selected facts in `/api/context/inspect`.
+- [ ] Log cache-hit ratio, token budget breakdown, and truncation warnings in ObservabilityHub.
+- [ ] Ensure secrets, passwords, and sensitive user data are scrubbed before telemetry logging.
+*Acceptance Criteria: Complete traceability from vector retrieval to LLM prompt assembly without privacy leaks.*
+
+---
+
+## Phase 4 — Vision and Spatial Perception
+**Priority: P1**
+
+### 4.1 Background Perception Worker
+- [ ] Decouple OpenCV YuNet (face) and YOLOv8n (objects) into a dedicated background worker thread/process.
+- [ ] Maintain a bounded frame queue (size=2); drop stale frames to prevent backlog latency.
+- [ ] Publish compact atomic `WorldState` snapshots at a steady 10 FPS.
+- [ ] Ensure visual perception never starves CPU threads allocated to audio playback or STT.
+*Acceptance Criteria: Perception worker runs at 10 FPS; zero frame queue buildup; audio E2E latency unaffected.*
+
+### 4.2 Screen Understanding
+- [ ] Enhance `os.capture_screen` with targeted window/display region cropping.
+- [ ] Integrate lightweight local OCR (e.g. `tesseract` / `rapidocr`) or VLM region inspection.
+- [ ] Return structured results: `{timestamp, window_title, detected_text, bounding_boxes}`.
+- [ ] Enforce explicit user authorization (L4 System) before capturing sensitive windows or desktop screens.
+*Acceptance Criteria: Accurately extracts text from active desktop windows; captures can be paused/disabled; zero auto-persistence of sensitive data.*
+
+### 4.3 Tabletop and Spatial Analysis
+- [ ] Define compact 3D spatial schema for tabletop items: `{object_name, confidence, bounding_box, estimated_distance}`.
+- [ ] Track objects across successive frames with temporal smoothing and expiration for departed items.
+- [ ] Integrate with `perception.inspect_tabletop` tool for conversational scene answering.
+*Acceptance Criteria: Consistent object persistence across frames; clean expiration of moved items; bounded memory footprint.*
+
+---
+
+## Phase 5 — New Pipeline Tools
+**Priority: P1/P2 | Implement Incrementally with Strict Contracts**
+
+### 5.1 Send to Phone — First Integration (Priority: P1)
+- [ ] Define abstract `NotificationProvider` interface (`send_alert`, `send_message`).
+- [ ] Implement NTFY.sh topic provider and Telegram Bot provider with configurable topics/chat IDs.
+- [ ] Store API keys and webhook secrets strictly in `.env` / system keyring (never in source code).
+- [ ] Add message length limits (4096 chars), 5.0s timeout, and rate-limiting (max 5 alerts/min).
+- [ ] Register `phone.send_notification` tool with parameter hardening and user confirmation for high-urgency alerts.
+*Acceptance Criteria: Successful delivery of test alert to phone; rate limiting prevents alert storms; zero credentials leaked.*
+
+### 5.2 Deep Research Agent (Priority: P1)
+- [ ] Implement multi-query planning in `src/robot/tools/builtins/productivity_knowledge.py`.
+- [ ] Execute parallel web searches via DuckDuckGo Lite / Open-Meteo with deduplicated URL filtering.
+- [ ] Fetch and parse main page content with 3.0s timeout and 100KB per-page size limit.
+- [ ] Synthesize structured research dossier: `{summary, key_findings, source_citations, confidence}`.
+- [ ] Enforce strict safety: Treat web content as untrusted data, never instructions to the agent.
+*Acceptance Criteria: Multi-query synthesis produces structured dossier with valid citations; terminates within 15s budget.*
+
+### 5.3 Web Agent (Priority: P1)
+- [ ] Establish `BrowserProvider` abstraction using Playwright headless browser.
+- [ ] Implement safe read-only browsing: navigate URL, capture DOM snapshot, extract readable text, take page screenshot.
+- [ ] Separate read-only actions from form submission / click actions; require explicit L3 confirmation for interactive submissions.
+- [ ] Sandboxed environment: Restrict filesystem, disable arbitrary downloads, isolate browser profiles.
+*Acceptance Criteria: Completes automated navigation and data extraction on dynamic web pages; honors permission gate.*
+
+### 5.4 Music Generator (Priority: P2)
+- [ ] Distinguish playback (`music.play` via Spotify/yt-dlp) from AI generation (`music.generate`).
+- [ ] Implement async music generation backend (MusicGen local ONNX or Suno/Audiocraft API adapter).
+- [ ] Limit generation to 15-30s audio clips; save artifacts to `data/generated_audio/`.
+- [ ] Integrate generated audio into playback queue with progress telemetry.
+*Acceptance Criteria: Valid audio artifact synthesized; does not block interactive voice pipeline.*
+
+### 5.5 Calls and Texts (Priority: P2)
+- [ ] Evaluate Twilio API adapter vs KDE Connect / Android SMS device bridge.
+- [ ] Separate message drafting (`sms.draft`) from sending (`sms.send`).
+- [ ] Require explicit spoken or UI confirmation before dispatching any SMS or making a phone call.
+- [ ] Maintain audit log in SQLite with destination hashing and delivery status.
+*Acceptance Criteria: Test SMS delivered through authorized gateway; unauthorized destinations rejected.*
+
+---
+
+## Phase 6 — Physical Microcontroller Bridge
+**Priority: P2 | Separate Safety Gate**
+- [ ] Define versioned binary/ASCII serial packet protocol (`CMD:MOVE:JOINT:POS:SPEED\n`) over `/dev/ttyUSB0` at 115200 baud.
+- [ ] Implement 20Hz bidirectional heartbeat and command watchdog in `src/robot/motion/serial_bridge.py`.
+- [ ] Enforce firmware-level joint angle limits, acceleration ramping, and motor stall current disconnect.
+- [ ] Implement physical emergency stop (E-Stop) software signal and hardware disconnect hook.
+- [ ] Isolate physical actuation from LLM: LLM proposes high-level action -> planner validates kinematics -> serial bridge checks limits -> microcontroller executes.
+*Acceptance Gate: No unsupervised hardware movement until independent safety interlocks and stall disconnect are 100% verified.*
+
+---
+
+## Phase 7 — Web-Hostable Free Architecture
+**Priority: P0 | Deadline: 15th–16th October**
+*Goal: Minimal, independently deployable web vertical slice isolated from the local edge runtime.*
+
+### 7.1 Architecture Stack
+| Layer | Free Hosted Technology | Role |
+| :--- | :--- | :--- |
+| **Frontend** | Next.js 14 on Vercel | Clean cyberdeck web interface, audio recording & playback |
+| **Browser Audio** | Web Audio API + Browser VAD | Client-side silence detection, 16kHz mono audio chunking |
+| **STT** | Groq Cloud (Whisper-large-v3) | Ultra-fast free cloud transcription (~150ms) |
+| **LLM** | Google Gemini 1.5 Flash / 2.0 Free Tier | Generative reasoning with prompt caching |
+| **TTS** | Edge TTS / Web Speech API | Zero-cost natural voice streaming |
+| **Serverless/API** | Cloudflare Workers / Next.js API Routes | Secure API key proxy, rate limiting, and session routing |
+| **Memory** | Supabase Free PostgreSQL + pgvector / Mem0 | User session persistence and semantic memory |
+
+### 7.2 Implementation Tasks
+- [ ] Initialize Next.js project in dedicated directory `web/` or separate repository.
+- [ ] Build minimal voice chat UI with real-time waveform visualizer and status pill.
+- [ ] Implement server-side proxy routes in Next.js / Cloudflare Workers to protect Groq and Gemini API keys.
+- [ ] Implement Groq Whisper transcription endpoint (`/api/voice/transcribe`).
+- [ ] Implement Gemini streaming chat endpoint with server-sent events (SSE).
+- [ ] Implement Edge TTS audio streaming route (`/api/voice/synthesize`).
+- [ ] Configure Supabase vector store for persistent conversation sessions.
+- [ ] Document deployment, environment variables, free-tier quotas, and rollback steps in `docs/WEB_HOSTED_ARCHITECTURE.md`.
+*Acceptance Criteria (Oct 16): Fully operational web conversation on Vercel without local laptop dependencies; zero leaked secrets.*
+
+---
+
+## Phase 8 — Seven-Day Soak and 1,000-Turn Chaos Testing
+**Priority: P0 | Release Gate**
+- [ ] Build automated 1,000-turn test harness in `scripts/chaos_soak_test.py`.
+- [ ] Exercise full pipeline: short chit-chat, multi-turn reasoning, tool calls, memory retrieval, interruptions, and persona switches.
+- [ ] Fault injection: simulate sudden network drops, slow HTTP responses, killed backend processes, and invalid tool arguments.
+- [ ] Continuous resource tracking: log RSS memory, GPU VRAM, open file descriptors, and CPU temperature over 7 continuous days.
+- [ ] Enforce zero-leak policy: RSS growth < 100MB over 1,000 turns; VRAM remains strictly <= 3.8GB.
+*Acceptance Criteria: 1,000 turns completed; 0 unhandled crashes; memory and latency trends verified stable.*
+
+---
+
+## Phase 9 — Release, Documentation and Backlog Reconciliation
+**Priority: P1**
+- [ ] Reconcile all completed items in `docs/ToDo.txt` and `TRACKER.md` against actual test evidence.
+- [ ] Perform comprehensive docstring and type hint audit (`code-documentation` skill).
+- [ ] Run `.venv/bin/graphify update .` to synchronize knowledge graph.
+- [ ] Produce final V2.0 Performance & Benchmark Report (`docs/BENCHMARK_REPORT.md`).
+- [ ] Tag git release `v2.0-stable`.
+
+---
+
+# 📋 Recommended Execution Order
+
+| Order | Workstream | Priority | Exit Condition |
+| :---: | :--- | :---: | :--- |
+| **1** | Baseline & Release Gates (Phase 0) | **P0** | Reproducible baseline commit, clean imports, 222 passing tests |
+| **2** | Context Layer Optimization (Phase 1.1) | **P0** | Exact token budgeting, invariant prefix hit ratio >95%, zero bloat |
+| **3** | Tool Hardening & Planner Limits (Phase 1.2) | **P0** | Safe bounded execution, structured outcomes, timeout guarding |
+| **4** | Two-Way Model Architecture ADR (Phase 1.3) | **P0** | Documented ADR, controlled cloud fallback without VRAM penalty |
+| **5** | Voice Barge-In & Echo Cancellation (Phase 2.1) | **P0** | Reliable user interruption in <200ms; zero self-echo triggers |
+| **6** | Web-Hosted Free Prototype (Phase 7) | **P0** | Live Vercel voice demo operational by 15-16 October |
+| **7** | Local Wake-Word & Dynamic Prosody (Phase 2.2-2.3) | **P1** | Hands-free local wake detection; expressive prosody & gestures |
+| **8** | Memory Precision & Summarization (Phase 3) | **P1** | Mem0 0.82 calibration; background profile sheet summarizer |
+| **9** | Background Perception Worker & Screen (Phase 4) | **P1** | 10 FPS YuNet/YOLO worker; desktop OCR window analysis |
+| **10**| Send to Phone Tool (Phase 5.1) | **P1** | NTFY / Telegram notification dispatch with rate limiting |
+| **11**| Deep Research Agent (Phase 5.2) | **P1** | Multi-query search synthesis with verified source citations |
+| **12**| Web Agent (Phase 5.3) | **P1** | Headless Playwright automation with L3 permission gates |
+| **13**| Music Generator & Calls/Texts (Phase 5.4-5.5) | **P2** | Generative audio artifact pipeline; authorized SMS dispatch |
+| **14**| Microcontroller Serial Bridge (Phase 6) | **P2** | Hardware heartbeat, firmware limits, and emergency stall disconnect |
+| **15**| 1,000-Turn Chaos & 7-Day Soak Test (Phase 8) | **P0 Gate**| 1,000 turns accounted for; zero memory leaks or unhandled crashes |
+| **16**| Final Documentation & Release (Phase 9) | **P1** | TRACKER.md reconciled, graphify updated, tagged v2.0-stable |
+
+---
+
+# 🎯 Lead Architect Directives to Antigravity
+1. **No broad refactors without a specific failure or measurable benefit.**
+2. **No new features while P0 regressions remain unresolved.**
+3. **No model-generated tool call bypasses Robot Core authorization.**
+4. **No provider integration stores credentials in source control or browser code.**
+5. **No background workload may starve interactive voice processing.**
+6. **No physical actuation before independent safety validation.**
+7. **No completion claims without tests or other observable evidence.**
+8. **Every new capability must have a timeout, failure contract and permission policy.**

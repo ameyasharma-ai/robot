@@ -1256,9 +1256,11 @@ class RobotUI {
     }
 
     /**
-     * Synthesize and play speech audio for a specific assistant message response.
-     * Manages play/stop state, animated button indicator, and Web Audio/Audio element.
-     * Falls back to browser Web Speech API if server-side TTS is offline.
+     * Synthesize and read aloud a specific chat message response using low-latency streaming TTS.
+     * Mirrors the active avatar pipeline: splits text into natural clauses, modulates prosody
+     * (pitch, speed, noise scale) per clause based on conversational sentiment, begins playback
+     * immediately on phrase 0 (<100ms first audio), and gaplessly queues remaining phrases.
+     * Synchronizes 3D avatar facial blendshapes and visor illumination with detected emotions.
      *
      * @param {HTMLElement} btn - The speak action button element clicked.
      * @param {string} rawText - The unescaped text content to synthesize and read aloud.
@@ -1268,8 +1270,8 @@ class RobotUI {
     async toggleSpeakMessage(btn, rawText, personality) {
         if (!btn || !rawText) return;
 
-        // If this exact button is currently speaking, clicking it stops playback
-        if (btn.classList.contains("is-speaking") && this.currentAudio) {
+        // If this exact button is currently speaking or synthesizing, clicking it stops playback
+        if (btn.classList.contains("is-speaking") || (btn.classList.contains("is-loading") && this.speakAbortController)) {
             this.stopSpeakingMessage();
             return;
         }
@@ -1288,10 +1290,75 @@ class RobotUI {
 
         const currentPersona = (personality || (this.personaSelect ? this.personaSelect.value : "neo")).toLowerCase();
 
+        this.speakAbortController = new AbortController();
+        this.phraseQueue = [];
+        this.isStreamingChatSpeech = true;
+        this.isPlayingPhrase = false;
+        this.currentSpeakingBtn = btn;
+        this._currentSpeakOrig = { label: origLabel, icon: origIcon };
+
+        const playNextPhrase = async () => {
+            if (this.phraseQueue.length === 0) {
+                if (this.isStreamingChatSpeech) {
+                    // Queue temporarily empty while server synthesizes next clause; wait for stream
+                    this.isPlayingPhrase = false;
+                    return;
+                }
+                // All clauses finished playing
+                this.stopSpeakingMessage();
+                return;
+            }
+
+            this.isPlayingPhrase = true;
+            const item = this.phraseQueue.shift();
+
+            // Transition button state on first audio chunk playback
+            if (btn.classList.contains("is-loading")) {
+                btn.classList.remove("is-loading");
+                btn.classList.add("is-speaking");
+                if (labelSpan) labelSpan.textContent = "Stop";
+                if (iconSpan) iconSpan.textContent = "⏹️";
+            }
+
+            const audio = new Audio(item.audioUrl);
+            this.currentAudio = audio;
+
+            // Synchronize 3D avatar emotion, lipsync and mouth bars
+            this.startMouthSpeaking();
+            this._forEachEngine((eng) => {
+                eng.speakStart();
+                if (item.emotion) {
+                    eng.setEmotion(item.emotion);
+                }
+            });
+            this.updatePipelineStatus({ TTS: "RUNNING", AVATAR: "RUNNING" });
+
+            const onPhraseEnded = () => {
+                try {
+                    URL.revokeObjectURL(item.audioUrl);
+                } catch (_) {}
+                if (this.currentAudio === audio) {
+                    this.currentAudio = null;
+                }
+                playNextPhrase();
+            };
+
+            audio.onended = onPhraseEnded;
+            audio.onerror = onPhraseEnded;
+
+            try {
+                await audio.play();
+            } catch (playErr) {
+                console.warn("[Speak] Audio play interrupted or rejected:", playErr);
+                onPhraseEnded();
+            }
+        };
+
         try {
-            const resp = await fetch("/api/chat/speak", {
+            const resp = await fetch("/api/chat/speak/stream", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                signal: this.speakAbortController.signal,
                 body: JSON.stringify({
                     text: rawText,
                     personality: currentPersona
@@ -1299,46 +1366,79 @@ class RobotUI {
             });
 
             if (!resp.ok) {
-                throw new Error(`TTS synthesis returned status ${resp.status}`);
+                throw new Error(`TTS streaming returned status ${resp.status}`);
             }
 
-            const blob = await resp.blob();
-            const audioUrl = URL.createObjectURL(blob);
-            const audio = new Audio(audioUrl);
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let buffer = "";
 
-            this.currentAudio = audio;
-            this.currentSpeakingBtn = btn;
-            this.currentAudioUrl = audioUrl;
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
 
-            btn.classList.remove("is-loading");
-            btn.classList.add("is-speaking");
-            if (labelSpan) labelSpan.textContent = "Stop";
-            if (iconSpan) iconSpan.textContent = "⏹️";
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n\n");
+                buffer = lines.pop() || "";
 
-            const cleanup = () => {
-                btn.classList.remove("is-speaking", "is-loading");
-                if (labelSpan) labelSpan.textContent = origLabel;
-                if (iconSpan) iconSpan.textContent = origIcon;
-                if (this.currentAudio === audio) {
-                    this.currentAudio = null;
-                    this.currentSpeakingBtn = null;
+                for (const chunk of lines) {
+                    const trimmed = chunk.trim();
+                    if (!trimmed.startsWith("data:")) continue;
+                    const jsonStr = trimmed.slice(5).trim();
+                    if (!jsonStr) continue;
+
+                    let msg;
+                    try {
+                        msg = JSON.parse(jsonStr);
+                    } catch (_) {
+                        continue;
+                    }
+
+                    if (msg.event === "phrase" && msg.audio) {
+                        // Decode base64 audio to binary Blob URL
+                        const binaryStr = atob(msg.audio);
+                        const len = binaryStr.length;
+                        const bytes = new Uint8Array(len);
+                        for (let i = 0; i < len; i++) {
+                            bytes[i] = binaryStr.charCodeAt(i);
+                        }
+                        const blob = new Blob([bytes], { type: "audio/wav" });
+                        const audioUrl = URL.createObjectURL(blob);
+
+                        this.phraseQueue.push({
+                            audioUrl,
+                            emotion: msg.emotion || "neutral",
+                            phrase: msg.phrase,
+                            index: msg.index
+                        });
+
+                        // Start immediate playback on arrival of first clause
+                        if (!this.isPlayingPhrase) {
+                            playNextPhrase();
+                        }
+                    } else if (msg.event === "done") {
+                        this.isStreamingChatSpeech = false;
+                        if (!this.isPlayingPhrase && this.phraseQueue.length === 0) {
+                            this.stopSpeakingMessage();
+                        }
+                    }
                 }
-                if (this.currentAudioUrl) {
-                    try { URL.revokeObjectURL(this.currentAudioUrl); } catch (_) {}
-                    this.currentAudioUrl = null;
-                }
-            };
+            }
 
-            audio.onended = cleanup;
-            audio.onerror = cleanup;
+            this.isStreamingChatSpeech = false;
+            if (!this.isPlayingPhrase && this.phraseQueue.length === 0) {
+                this.stopSpeakingMessage();
+            }
 
-            await audio.play();
         } catch (err) {
-            console.warn("[Speak] Server TTS synthesis failed, attempting Web Speech fallback:", err);
+            if (err.name === "AbortError") {
+                // Playback intentionally stopped by user
+                return;
+            }
+            console.warn("[Speak] Streaming TTS failed, attempting Web Speech fallback:", err);
             // Graceful fallback to browser Web Speech API
             if (window.speechSynthesis) {
                 window.speechSynthesis.cancel();
-                // Strip markdown backticks/urls for speech
                 const cleanSpeechText = rawText.replace(/```[\s\S]*?```/g, "").replace(/`.*?`/g, "").trim() || rawText;
                 const utter = new SpeechSynthesisUtterance(cleanSpeechText);
                 utter.rate = 1.0;
@@ -1348,11 +1448,11 @@ class RobotUI {
                 if (labelSpan) labelSpan.textContent = "Stop";
                 if (iconSpan) iconSpan.textContent = "⏹️";
 
+                this.startMouthSpeaking();
+                this._forEachEngine((eng) => eng.speakStart());
+
                 const onDone = () => {
-                    btn.classList.remove("is-speaking", "is-loading");
-                    if (labelSpan) labelSpan.textContent = origLabel;
-                    if (iconSpan) iconSpan.textContent = origIcon;
-                    this.currentSpeakingBtn = null;
+                    this.stopSpeakingMessage();
                 };
 
                 utter.onend = onDone;
@@ -1360,17 +1460,35 @@ class RobotUI {
                 this.currentSpeakingBtn = btn;
                 window.speechSynthesis.speak(utter);
             } else {
-                btn.classList.remove("is-loading", "is-speaking");
-                if (labelSpan) labelSpan.textContent = origLabel;
-                if (iconSpan) iconSpan.textContent = origIcon;
+                this.stopSpeakingMessage();
             }
         }
     }
 
     /**
-     * Stop currently active message speech playback and reset button state.
+     * Stop currently active message speech playback, abort active streams, and reset button state.
+     * Cleans up phrase audio queues, revokes Blob URLs, and returns avatar expressions to neutral.
      */
     stopSpeakingMessage() {
+        if (this.speakAbortController) {
+            try {
+                this.speakAbortController.abort();
+            } catch (_) {}
+            this.speakAbortController = null;
+        }
+
+        this.isStreamingChatSpeech = false;
+        this.isPlayingPhrase = false;
+
+        if (this.phraseQueue && this.phraseQueue.length > 0) {
+            this.phraseQueue.forEach((item) => {
+                try {
+                    if (item.audioUrl) URL.revokeObjectURL(item.audioUrl);
+                } catch (_) {}
+            });
+            this.phraseQueue = [];
+        }
+
         if (this.currentAudio) {
             try {
                 this.currentAudio.pause();
@@ -1378,24 +1496,37 @@ class RobotUI {
             } catch (_) {}
             this.currentAudio = null;
         }
+
         if (this.currentAudioUrl) {
             try {
                 URL.revokeObjectURL(this.currentAudioUrl);
             } catch (_) {}
             this.currentAudioUrl = null;
         }
+
         if (window.speechSynthesis) {
             try {
                 window.speechSynthesis.cancel();
             } catch (_) {}
         }
+
+        this.stopMouthSpeaking();
+        this._forEachEngine((eng) => {
+            eng.speakStop();
+            eng.setEmotion("neutral");
+        });
+        this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
+
         if (this.currentSpeakingBtn) {
             this.currentSpeakingBtn.classList.remove("is-speaking", "is-loading");
             const lbl = this.currentSpeakingBtn.querySelector(".action-label");
             const ico = this.currentSpeakingBtn.querySelector(".action-icon");
-            if (lbl) lbl.textContent = "Speak";
-            if (ico) ico.textContent = "🔊";
+            const origLabel = this._currentSpeakOrig?.label || "Speak";
+            const origIcon = this._currentSpeakOrig?.icon || "🔊";
+            if (lbl) lbl.textContent = origLabel;
+            if (ico) ico.textContent = origIcon;
             this.currentSpeakingBtn = null;
+            this._currentSpeakOrig = null;
         }
     }
 

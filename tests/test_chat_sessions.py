@@ -183,7 +183,8 @@ def test_api_chat_endpoints(tmp_db):
     resp = client.get(f"/chat/sessions/{sess_id}")
     assert resp.status_code == 404
 
-    # 6. Test /api/chat/speak synthesis endpoint
+    # 6. Test /api/chat/speak synthesis endpoint (clause-concatenated with prosody)
+    import json
     import numpy as np
     mock_tts = MagicMock()
     mock_tts.synthesize = AsyncMock(return_value=(np.zeros(1600, dtype=np.float32), 16000))
@@ -194,9 +195,42 @@ def test_api_chat_endpoints(tmp_db):
     assert resp.headers["content-type"] == "audio/wav"
     assert len(resp.content) > 44
 
+    # Test multi-clause text
+    resp_multi = client.post("/api/chat/speak", json={"text": "Hello world! How are you doing? I am feeling great."})
+    assert resp_multi.status_code == 200
+    assert resp_multi.headers["content-type"] == "audio/wav"
+
     # Empty text validation error
     resp_empty = client.post("/api/chat/speak", json={"text": "   "})
     assert resp_empty.status_code == 400
+
+    # 7. Test /api/chat/speak/stream SSE streaming endpoint
+    stream_resp = client.post(
+        "/api/chat/speak/stream",
+        json={"text": "Hello world! This is phrase two. And here is phrase three!"},
+    )
+    assert stream_resp.status_code == 200
+    assert "text/event-stream" in stream_resp.headers["content-type"]
+
+    events = []
+    for line in stream_resp.iter_lines():
+        if line.startswith("data: "):
+            payload = json.loads(line[6:])
+            events.append(payload)
+
+    # Verify phrase events received
+    phrase_events = [e for e in events if e.get("event") == "phrase"]
+    done_events = [e for e in events if e.get("event") == "done"]
+
+    assert len(phrase_events) >= 2
+    assert len(done_events) == 1
+    assert "audio" in phrase_events[0]
+    assert "emotion" in phrase_events[0]
+    assert phrase_events[0]["index"] == 0
+
+    # Stream empty text validation error
+    stream_empty = client.post("/api/chat/speak/stream", json={"text": "   "})
+    assert stream_empty.status_code == 400
 
 
 @pytest.mark.asyncio

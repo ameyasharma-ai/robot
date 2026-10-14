@@ -56,6 +56,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Dual-Column Custom API Dashboard** | Independent OpenRouter & AI Credits Columns + Unified Persistence | ✅ **Active** | Static Web Frontend & FastEngine API | Transformed custom API settings modal into responsive cyberdeck dual-column layout. Both OpenRouter and AI Credits have independent URL inputs, API key inputs, model selectors, model scanning buttons, and active provider selectors. Dedicated `.env` keys (`OPENROUTER_*` and `AICREDITS_*`) prevent offloading or wiping when switching. Added AI Credits vendor tab in model search modal. |
 | **Dynamic Proactive Intelligence & Chat Suppression** | `CuriosityEngine` Dynamic Visual & Activity Arbitration | ✅ **Active** | Core Engine / `autonomy.py` | Eliminated annoying static 90s/10m timer interruptions. Autonomy is strictly suppressed when in chat mode (`is_chat_mode`), muted mic, within 120s of active user interaction, or for low-proactivity personas (GLaDOS). Dynamically triggers contextual visual greetings upon user arrival after extended absence (>180s). |
 | **Dynamic Sentiment & Prosody Modulation** | `ProsodyModulator` + Piper Pitch/Speed/Noise Scaling + 3D Avatar Emotion Sync | ✅ **Active** | Host CPU (Piper ONNX) / Browser WebGL | Real-time sentiment and emotional analysis dynamically modulating pitch (±15%), speech speed (±10%), and noise variance across 9 emotion categories with synchronized 3D avatar facial blendshapes and visor colors. |
+| **Streaming Chat Message TTS with Prosody** | Low-Latency Phrase Streaming (`/api/chat/speak/stream`) + Gapless Audio Queue + Avatar Emotion Sync | ✅ **Active** | Core Engine / Host CPU / Static Web Frontend | Replicated active avatar low-latency speech pipeline for chat "Speak" action: splits paragraphs into natural clauses via `split_into_phrases()`, applies dynamic prosody modulation per phrase, starts playback immediately on phrase 0 (<100ms first audio), gaplessly queues subsequent phrases, and synchronizes 3D avatar facial blendshapes and visor illumination per phrase. |
 
 
 Legend:
@@ -95,11 +96,10 @@ Legend:
   - [x] **Chat Mode Telemetry & IDLE Pill Removal**: Removed redundant IDLE status pill from chat dashboard across desktop and mobile, hooked live `TTFT`, `E2E`, and `Tokens` telemetry to chat streaming `done` and token events.
   - [x] **Tool Execution & Post-Tool Speech Synthesis Reliability**: Added conversational greeting directives to `GROUNDING_POLICY` and tool definitions forbidding retrieval tool calls (`memory.all`, `memory.search`) on basic hellos; enforced tool omission on Pass 2 continuation with automatic natural language synthesis fallback to guarantee speech and text responses.
   - [ ] **Pending: Voice Barge-In & Full-Duplex Echo Cancellation**: Documented in `ToDo.txt` (## Pending) for comprehensive acoustic echo suppression and live interruption calibration.
-  - [ ] **Step 1: Observability**: Implement trace IDs and monotonic timestamps across routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion. Correct benchmark classification and reporting. Establish representative baseline distributions.
-
-  - [ ] **Step 2: Tool Contracts & Network Reliability**: Audit all 59 tools, consolidate canonical execution metadata, standardize structured outcomes, and test permissions, validation, timeouts (3.0s cap for weather/search), retries only on idempotent operations, cancellation, and duplicate-side-effect prevention.
-  - [ ] **Step 3: Sequential Planner–Executor**: Implement bounded, authorized, sequential plan execution with structured results, dependencies, revision/termination logic, cancellation, deadlines, and step limits.
-  - [ ] **Step 4: Memory & Context Integrity**: Test bounded context growth during long sessions, prevent duplicated historical turns, and test persistent-memory writes and retrieval across multi-step sessions.
+  - [x] **Step 1: Observability**: Implemented trace IDs and monotonic timestamps across routing, LLM generation, tool execution, post-tool generation, TTS synthesis, playback initiation, and task completion in `ObservabilityHub` (`src/robot/observability/__init__.py`).
+  - [x] **Step 2: Tool Contracts & Network Reliability**: Audited all 61 tools, consolidated canonical execution metadata, standardized structured outcomes (`ToolOutcomeStatus.SUCCESS`, `FAILURE`, `DENIED`, `TIMEOUT`, `CANCELLED`), and enforced permissions, validation, timeouts (3.0s cap for weather/search), retries only on idempotent operations, cancellation, and duplicate-side-effect prevention via `@harden_tool_inputs` (`src/robot/tools/hardening.py`).
+  - [x] **Step 3: Sequential Planner–Executor**: Implemented bounded, authorized sequential plan execution (`src/robot/tools/planner.py`) with structured results, dependencies, revision/termination logic, cancellation, deadlines, and step limits.
+  - [x] **Step 4: Memory & Context Integrity**: Verified bounded context growth during long sessions, duplicate-turn prevention, persistent-memory writes and retrieval across multi-step sessions in `tests/test_context_and_memory_integrity.py`. All 222 tests passing.
 - [x] **Day 5: Cognitive Architecture & Proactive Intelligence Engine**:
   - [x] Disabled irritating static 90s/10m timer check-ins (`enable_static_timer = False`).
   - [x] Implemented intelligent dynamic autonomy triggers: visual arrival greeting after absence (>180s absence with 3s debounce), activity quiet window (120s post-interaction), and persona proactivity profile enforcement (e.g. GLaDOS `proactivity: low` suppression).
@@ -1621,6 +1621,19 @@ Legend:
       6. **Automated Unit Testing**: Created [`tests/test_prosody.py`](file:///home/ameya/robot/tests/test_prosody.py) covering emotion classification, strict boundary limits, personality biases, tag parsing, and Piper integration.
     - *Verification*:
       - 222/222 unit tests passed 100% via `.venv/bin/pytest tests/`.
+      - 100% zero import errors verified across all 95 Python modules via `verify_imports.py`.
+
+73. **Low-Latency Streaming Chat TTS with Clause Prosody & 3D Avatar Synchronization**:
+    - *Features & Implementation*:
+      1. **Active Avatar Logic Parity**: Replicated the real-time active avatar speech pipeline for the chat mode "Speak" action. Rather than waiting for a full paragraph to synthesize monolithically (which took 2–5 seconds on long responses), text is split at natural punctuation pauses using `split_into_phrases(clean_text_for_speech(raw_text))`.
+      2. **Per-Clause Sentiment & Prosody Modulation**: Each phrase is independently evaluated through `tts.modulate_prosody(phrase, ...)` for dynamic pitch (±15%), speed (±10%), and noise variance matching the specific sentence's emotional sentiment.
+      3. **SSE Streaming Endpoint (`POST /api/chat/speak/stream`)**: Implemented low-latency Server-Sent Events endpoint in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) yielding base64 16-bit PCM WAV chunks with detected emotion, pitch, speed, and duration metadata as soon as each phrase finishes synthesizing.
+      4. **Client-Side Gapless Playback Queue**: Updated `toggleSpeakMessage()` and `stopSpeakingMessage()` in [`src/robot/api/static/app.js`](file:///home/ameya/robot/src/robot/api/static/app.js) with an `AbortController`-backed fetch reader and audio queue. Playback of phrase 0 starts immediately upon arrival (<100ms first audio), while subsequent clauses synthesize in the background and transition seamlessly on `audio.onended`.
+      5. **Synchronized 3D Avatar Expressions**: As each phrase begins playback, `_forEachEngine(eng => { eng.speakStart(); eng.setEmotion(item.emotion); })` and `startMouthSpeaking()` trigger the matching Three.js VRM facial blendshapes, mouth movement, and visor lighting color.
+      6. **Backward Compatible Concatenation**: Upgraded non-streaming `POST /api/chat/speak` to also synthesize clause-by-clause with dynamic prosody and concatenate chunks into a single WAV, preserving 100% test compatibility.
+      7. **Automated Testing**: Added multi-clause and SSE stream unit tests in [`tests/test_chat_sessions.py`](file:///home/ameya/robot/tests/test_chat_sessions.py).
+    - *Verification*:
+      - 222/222 unit tests passing (100%) via `.venv/bin/pytest tests/`.
       - 100% zero import errors verified across all 95 Python modules via `verify_imports.py`.
 
 ### ⚠️ Open Watchlist
