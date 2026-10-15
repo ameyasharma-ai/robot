@@ -16,7 +16,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Generator
 
 import numpy as np
 import yaml
@@ -114,6 +114,153 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     cleaned = re.sub(r"\([^)]*\)", "", cleaned).strip()
     return cleaned, action_dict
 
+
+class StreamingThoughtParser:
+    """Parse streaming model tokens for <thought>...</thought> and <think>...</think> tags.
+
+    Handles tokens split across arbitrary streaming chunk boundaries (e.g.
+    ``['<th', 'ought>', ...]``) using a sliding buffer. Yields structured lifecycle
+    events for real-time frontend and speech consumption.
+    """
+
+    OPEN_TAGS: list[str] = ["<thought>", "<think>"]
+    CLOSE_TAGS: list[str] = ["</thought>", "</think>"]
+    MAX_TAG_LEN: int = max(len(t) for t in OPEN_TAGS + CLOSE_TAGS)
+
+    def __init__(self) -> None:
+        """Initialize the streaming tag parser."""
+        self.in_thought: bool = False
+        self.buffer: str = ""
+        self.thought_text: str = ""
+        self.thought_started: bool = False
+
+    def _matches_any_prefix(self, s: str, tags: list[str]) -> bool:
+        """Check if string matches any prefix of tags in list.
+
+        Args:
+            s: Candidate substring.
+            tags: List of target tag strings.
+
+        Returns:
+            True if s is a prefix of any tag.
+        """
+        return any(tag.startswith(s) for tag in tags)
+
+    def feed(self, chunk: str) -> Generator[tuple[str, str], None, None]:
+        """Process an incoming streaming text chunk.
+
+        Args:
+            chunk: Text fragment from the LLM stream.
+
+        Yields:
+            Tuple of (event_type, payload_str) where event_type is one of:
+            - 'thought_started': Signals entrance into a reasoning block.
+            - 'thought': Contains an incremental thought token slice.
+            - 'thought_completed': Carries the completed thought text.
+            - 'token': Regular conversational token slice.
+        """
+        self.buffer += chunk
+
+        while self.buffer:
+            if not self.in_thought:
+                # Check if any open tag is in buffer
+                found_tag = None
+                tag_idx = -1
+                for ot in self.OPEN_TAGS:
+                    idx = self.buffer.find(ot)
+                    if idx != -1 and (tag_idx == -1 or idx < tag_idx):
+                        tag_idx = idx
+                        found_tag = ot
+
+                if found_tag is not None:
+                    pre = self.buffer[:tag_idx]
+                    if pre:
+                        yield ("token", pre)
+                    self.in_thought = True
+                    if not self.thought_started:
+                        self.thought_started = True
+                        yield ("thought_started", "")
+                    self.buffer = self.buffer[tag_idx + len(found_tag):]
+                    continue
+
+                # No full open tag found. Check if the buffer ends with a prefix of an open tag.
+                hold_len = 0
+                for i in range(min(len(self.buffer), self.MAX_TAG_LEN), 0, -1):
+                    suffix = self.buffer[-i:]
+                    if suffix.startswith("<") and self._matches_any_prefix(suffix, self.OPEN_TAGS):
+                        hold_len = i
+                        break
+
+                if hold_len > 0:
+                    emit_len = len(self.buffer) - hold_len
+                    if emit_len > 0:
+                        yield ("token", self.buffer[:emit_len])
+                        self.buffer = self.buffer[emit_len:]
+                    break
+                else:
+                    yield ("token", self.buffer)
+                    self.buffer = ""
+                    break
+
+            else:
+                # In thought mode. Look for close tag
+                found_tag = None
+                tag_idx = -1
+                for ct in self.CLOSE_TAGS:
+                    idx = self.buffer.find(ct)
+                    if idx != -1 and (tag_idx == -1 or idx < tag_idx):
+                        tag_idx = idx
+                        found_tag = ct
+
+                if found_tag is not None:
+                    th_part = self.buffer[:tag_idx]
+                    if th_part:
+                        self.thought_text += th_part
+                        yield ("thought", th_part)
+                    self.in_thought = False
+                    yield ("thought_completed", self.thought_text)
+                    self.buffer = self.buffer[tag_idx + len(found_tag):]
+                    continue
+
+                # No full close tag found. Check if buffer ends with prefix of a close tag.
+                hold_len = 0
+                for i in range(min(len(self.buffer), self.MAX_TAG_LEN), 0, -1):
+                    suffix = self.buffer[-i:]
+                    if suffix.startswith("<") and self._matches_any_prefix(suffix, self.CLOSE_TAGS):
+                        hold_len = i
+                        break
+
+                if hold_len > 0:
+                    emit_len = len(self.buffer) - hold_len
+                    if emit_len > 0:
+                        th_part = self.buffer[:emit_len]
+                        self.thought_text += th_part
+                        yield ("thought", th_part)
+                        self.buffer = self.buffer[emit_len:]
+                    break
+                else:
+                    self.thought_text += self.buffer
+                    yield ("thought", self.buffer)
+                    self.buffer = ""
+                    break
+
+    def finish(self) -> Generator[tuple[str, str], None, None]:
+        """Flush any residual buffer at stream conclusion.
+
+        Yields:
+            Residual (event_type, payload_str) tuples.
+        """
+        if self.buffer:
+            if self.in_thought:
+                self.thought_text += self.buffer
+                yield ("thought", self.buffer)
+                yield ("thought_completed", self.thought_text)
+            else:
+                yield ("token", self.buffer)
+            self.buffer = ""
+        elif self.in_thought:
+            yield ("thought_completed", self.thought_text)
+        self.in_thought = False
 
 
 class RobotEngine:
@@ -213,6 +360,7 @@ class RobotEngine:
         self._last_bot_phrases: list[str] = []
         self.voice_enabled = True
         self.is_chat_mode = False
+        self.thinking_enabled = True
         self._pending_motion: dict | None = None
         self.tool_coordinator: ToolConversationCoordinator | None = None
         self._provider_switch_lock = asyncio.Lock()
@@ -288,8 +436,8 @@ class RobotEngine:
             self.llm = GeminiLLM(
                 api_key=gemini_cfg.get("api_key"),
                 base_url=gemini_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"),
-                model=gemini_cfg.get("model", "gemini-2.0-flash"),
-                fallback_models=gemini_cfg.get("fallback_models", ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.6-flash"]),
+                model=gemini_cfg.get("model", "gemini-3.1-flash-lite"),
+                fallback_models=gemini_cfg.get("fallback_models", ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-3.5-flash"]),
             )
             logger.info("gemini_llm_initialized_on_boot")
         elif self.llm_provider_type in ("openai_compatible", "openai"):
@@ -1344,6 +1492,34 @@ class RobotEngine:
             )
         self.observability.finish_span(context_span, metadata={"msg_count": len(messages), "tokens": estimated_tokens})
 
+        # Inject cognitive reasoning prompt if thinking mode is active
+        if getattr(self, "thinking_enabled", False):
+            thought_prompt = (
+                "\n\n[COGNITIVE REASONING & ACCURACY MANDATE]\n"
+                "Before formulating your direct response or emitting tool calls, conduct your internal step-by-step reasoning inside <thought>...</thought> tags. "
+                "Analyze the user's intent, verify necessary facts/tools, verify entity names and dates, and plan your execution. "
+                "Close the </thought> tag immediately before providing your clean conversational answer or emitting your tool call outside the tags."
+            )
+            if messages and "content" in messages[0]:
+                messages[0]["content"] = str(messages[0]["content"]) + thought_prompt
+
+            if messages and messages[-1].get("role") == "user":
+                last_msg = dict(messages[-1])
+                user_content = last_msg.get("content", "")
+                frontier_directive = (
+                    "\n\n[Cognitive Reasoning Mode Active]: Think step-by-step through user intent, tool needs, and response plan inside <thought>...</thought> tags before answering."
+                )
+                if isinstance(user_content, str):
+                    last_msg["content"] = user_content + frontier_directive
+                elif isinstance(user_content, list):
+                    last_msg["content"] = list(user_content)
+                    for idx, part in enumerate(last_msg["content"]):
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            last_msg["content"][idx] = dict(part)
+                            last_msg["content"][idx]["text"] = part.get("text", "") + frontier_directive
+                            break
+                messages[-1] = last_msg
+
         # ─── Autonomous LLM Tool Invocation ────────────────────────────────
         # Tools are not called deterministically or via simple keyword regex logic.
         # Intelligence is routed through tools only when the LLM actively proposes a tool call.
@@ -1368,6 +1544,7 @@ class RobotEngine:
         timing_ref = None
         t_llm_start = time.perf_counter()
         collected_tool_calls = []
+        voice_thought_parser = StreamingThoughtParser()
 
         llm_span = self.observability.start_span(
             component="LLM",
@@ -1381,7 +1558,7 @@ class RobotEngine:
         tools_schema = self.tool_registry.get_schemas() if getattr(self, "tool_registry", None) else None
 
         try:
-            stream_max_tokens = 1024 if is_gemini else self.config["llm"].get("max_tokens", 300)
+            stream_max_tokens = 4096 if is_gemini else (2048 if getattr(self, "thinking_enabled", False) else self.config["llm"].get("max_tokens", 2048))
             async with self._provider_switch_lock:
                 llm_instance = self.llm
             async for token in llm_instance.stream_chat(
@@ -1405,6 +1582,12 @@ class RobotEngine:
                         logger.warning("tool_call_parse_error", error=str(e))
                     continue
 
+                if token.startswith("__THOUGHT__"):
+                    raw_th = token[len("__THOUGHT__"):].lstrip(":")
+                    if hasattr(self, "events") and self.events:
+                        await self.events.emit("thought", token=raw_th)
+                    continue
+
                 if not ttft_recorded:
                     ttft = (time.perf_counter() - t_llm_start) * 1000
                     self.telemetry.record("LLM_TTFT", ttft)
@@ -1420,19 +1603,54 @@ class RobotEngine:
                         metadata={"ttft_ms": round(ttft, 1)},
                     )
 
-                full_response += token
-                # Only stream phrases to TTS if the model is not emitting inline tool calls
-                if "<tool_call>" not in full_response:
-                    phrase = chunker.feed(token)
-                    if phrase and not interrupt.is_set():
-                        clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
-                        act_to_sync = inline_act or self._pending_motion
-                        self._pending_motion = None
-                        if clean_phrase:
-                            if timing_ref:
-                                timing_ref["t_tts_start"] = time.perf_counter()
-                            await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
-                            timing_ref = None
+                # Filter out thoughts from full_response and TTS speech feed via StreamingThoughtParser
+                for ev_type, ev_val in voice_thought_parser.feed(token):
+                    if ev_type == "thought_started":
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought_started")
+                    elif ev_type == "thought":
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought", token=ev_val)
+                    elif ev_type == "thought_completed":
+                        dur_ms = round((time.perf_counter() - t_llm_start) * 1000, 1)
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought_completed", duration_ms=dur_ms, text=ev_val)
+                    elif ev_type == "token":
+                        full_response += ev_val
+                        # Only stream phrases to TTS if the model is not emitting inline tool calls
+                        if "<tool_call>" not in full_response:
+                            phrase = chunker.feed(ev_val)
+                            if phrase and not interrupt.is_set():
+                                clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
+                                act_to_sync = inline_act or self._pending_motion
+                                self._pending_motion = None
+                                if clean_phrase:
+                                    if timing_ref:
+                                        timing_ref["t_tts_start"] = time.perf_counter()
+                                    await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
+                                    timing_ref = None
+
+            for ev_type, ev_val in voice_thought_parser.finish():
+                if ev_type == "thought":
+                    if hasattr(self, "events") and self.events:
+                        await self.events.emit("thought", token=ev_val)
+                elif ev_type == "thought_completed":
+                    dur_ms = round((time.perf_counter() - t_llm_start) * 1000, 1)
+                    if hasattr(self, "events") and self.events:
+                        await self.events.emit("thought_completed", duration_ms=dur_ms, text=ev_val)
+                elif ev_type == "token":
+                    full_response += ev_val
+                    if "<tool_call>" not in full_response:
+                        phrase = chunker.feed(ev_val)
+                        if phrase and not interrupt.is_set():
+                            clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
+                            act_to_sync = inline_act or self._pending_motion
+                            self._pending_motion = None
+                            if clean_phrase:
+                                if timing_ref:
+                                    timing_ref["t_tts_start"] = time.perf_counter()
+                                await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
+                                timing_ref = None
 
             # Check if model output inline <tool_call> tags or plain syntax e.g. music.play(query="...")
             if not collected_tool_calls:
@@ -1485,6 +1703,11 @@ class RobotEngine:
 
             # If the model autonomously proposed tool calls, coordinate holding conversation and execution
             if collected_tool_calls and not interrupt.is_set():
+                # Enforce sequential boundary: cap at 5 steps per turn
+                if len(collected_tool_calls) > 5:
+                    logger.warning("capping_voice_tool_calls", count=len(collected_tool_calls), cap=5)
+                    collected_tool_calls = collected_tool_calls[:5]
+
                 # Execute any preceding tools in the chain before coordinating the primary/final tool
                 for tc_item in collected_tool_calls[:-1]:
                     if interrupt.is_set():
@@ -1512,6 +1735,8 @@ class RobotEngine:
 
                     # Append this tool call and its execution result into messages for complete context
                     import json as _json
+                    from robot.core.context import strip_control_tokens
+                    raw_content = str(exec_result) if exec_result is not None else "Success"
                     messages.append({
                         "role": "assistant",
                         "content": None,
@@ -1525,7 +1750,7 @@ class RobotEngine:
                         "role": "tool",
                         "name": t_nm,
                         "tool_call_id": tc_id,
-                        "content": str(exec_result) if exec_result is not None else "Success",
+                        "content": strip_control_tokens(raw_content),
                     })
 
                 tc = collected_tool_calls[-1]
@@ -1873,10 +2098,16 @@ class RobotEngine:
     def _allocate_generation_budget(self, text: str, is_cloud: bool = False, has_tools: bool = True) -> int:
         """Dynamically allocate output token budget based on query complexity and requested length.
 
-        Rationale:
-        - Casual greetings/acknowledgments: 120-180 tokens (minimal latency, fast TTFT).
-        - Standard conversational QA & Tool calls: 350-500 tokens.
-        - Long-form explanations, essays, creative writing, stories, code: 800-1200 tokens (up to 2048 for cloud).
+        Ensures generous token headroom so reasoning traces (<thought>) and rich conversational
+        or tool responses are never prematurely truncated mid-sentence by token exhaustion.
+
+        Args:
+            text: Raw user query or prompt.
+            is_cloud: True if processing turn with high-capacity cloud LLM (Gemini / OpenAI).
+            has_tools: True if tool calling schema is attached to the generation context.
+
+        Returns:
+            int: Allocated token generation limit (e.g. 4096-8192 for cloud, 2048-3072 for local).
         """
         clean = (text or "").strip().lower()
         word_count = len(clean.split())
@@ -1888,20 +2119,17 @@ class RobotEngine:
         )
         is_long_form = any(trigger in clean for trigger in long_triggers) or word_count >= 30
 
-        if is_long_form:
-            return 2048 if is_cloud else 1024
-        elif re.match(r"^(?:hi|hello|hey|sup|what's up|how are you|good morning)[!.,?\s]*$", clean):
-            return 160
-        elif has_tools:
-            return 450
+        if is_cloud:
+            return 8192 if is_long_form else 4096
         else:
-            return 350
+            return 3072 if is_long_form else 2048
 
     async def stream_text_chat(
         self,
         text: str,
         session_id: str | None = None,
         personality: str | None = None,
+        thinking: bool | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream conversational text turn with real-time tokens, token speed, tool events, and DB persistence.
 
@@ -1909,6 +2137,7 @@ class RobotEngine:
         - Conversation history is isolated to session_id.
         - Persistent memory (Mem0 + SQLite facts) is shared across all instances.
         - Tool calls are executed and emitted live.
+        - Cognitive thinking and reasoning streams live without speaking thoughts aloud.
         - Saves to SQLite sessions and conversations tables upon completion.
         """
         if not self.llm:
@@ -1995,6 +2224,40 @@ class RobotEngine:
             user_profile=user_profile,
         )
 
+        effective_thinking = self.thinking_enabled if thinking is None else thinking
+        if effective_thinking:
+            if hasattr(self.llm, "enable_thinking"):
+                self.llm.enable_thinking = True
+            thought_prompt = (
+                "\n\n[Cognitive Reasoning Mode Active]:\n"
+                "CRITICAL MANDATORY DIRECTIVE:\n"
+                "You MUST ALWAYS start your output with `<thought>` and conduct your internal step-by-step reasoning inside <thought>...</thought> tags before formulating any response or tool call. "
+                "Analyze: 1. User intent & emotional nuances. 2. Operational tool requirements (if an action like opening an app, scanning Wi-Fi, searching the web, checking battery, or setting timers is commanded, plan to emit the tool call). "
+                "3. Factual verification against provided context & memories. 4. Plan the direct response. "
+                "Close the </thought> tag immediately before providing your clean conversational answer or emitting your tool call outside the tags. "
+                "NEVER omit `<thought>...</thought>`."
+            )
+            if messages and messages[0].get("role") == "system":
+                messages[0] = dict(messages[0])
+                messages[0]["content"] = str(messages[0]["content"]) + thought_prompt
+
+            if messages and messages[-1].get("role") == "user":
+                last_msg = dict(messages[-1])
+                user_content = last_msg.get("content", "")
+                frontier_directive = (
+                    "\n\n[Cognitive Reasoning Mode Active]: Begin your response with <thought> step-by-step cognitive analysis, and close with </thought> before your final answer."
+                )
+                if isinstance(user_content, str):
+                    last_msg["content"] = user_content + frontier_directive
+                elif isinstance(user_content, list):
+                    last_msg["content"] = list(user_content)
+                    for idx, part in enumerate(last_msg["content"]):
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            last_msg["content"][idx] = dict(part)
+                            last_msg["content"][idx]["text"] = part.get("text", "") + frontier_directive
+                            break
+                messages[-1] = last_msg
+
         tools = self.tool_registry.get_schemas() if hasattr(self, "tool_registry") and self.tool_registry else None
         if tools:
             # Chat mode is purely text-based without 3D humanoid avatar canvas;
@@ -2023,6 +2286,11 @@ class RobotEngine:
             "model": active_model_name,
         }
 
+        if effective_thinking:
+            yield {"event": "thought_started"}
+            if hasattr(self, "events") and self.events:
+                await self.events.emit("thought_started")
+
         dynamic_max_tokens = self._allocate_generation_budget(
             text,
             is_cloud=is_gemini or getattr(self, "llm_provider_type", "local") in ("openai_compatible", "openai"),
@@ -2035,6 +2303,11 @@ class RobotEngine:
         full_text = ""
         tools_called = []
         collected_tool_calls = []
+
+        thought_parser = StreamingThoughtParser()
+        thought_text = ""
+        thought_start_time: float | None = None
+        thought_completed_emitted = False
 
         async def _iterate_stream(gen):
             if hasattr(gen, "__aiter__"):
@@ -2074,18 +2347,91 @@ class RobotEngine:
                         pass
                     continue
 
-                token_count += 1
-                full_text += chunk
-                elapsed = max(0.001, time.perf_counter() - t_start - (ttft_ms / 1000.0))
-                tok_per_sec = round(token_count / elapsed, 1)
+                if chunk.startswith("__THOUGHT__"):
+                    raw_th = chunk[len("__THOUGHT__"):].lstrip(":")
+                    if thought_start_time is None:
+                        thought_start_time = time.perf_counter()
+                        yield {"event": "thought_started"}
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought_started")
+                    yield {
+                        "event": "thought",
+                        "token": raw_th,
+                    }
+                    if hasattr(self, "events") and self.events:
+                        await self.events.emit("thought", token=raw_th)
+                    continue
 
-                yield {
-                    "event": "token",
-                    "token": chunk,
-                    "token_index": token_count,
-                    "ttft_ms": round(ttft_ms, 1),
-                    "tok_per_sec": tok_per_sec,
-                }
+                for ev_type, ev_val in thought_parser.feed(chunk):
+                    if ev_type == "thought_started":
+                        if thought_start_time is None:
+                            thought_start_time = time.perf_counter()
+                        yield {"event": "thought_started"}
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought_started")
+                    elif ev_type == "thought":
+                        thought_text += ev_val
+                        if thought_start_time is None:
+                            thought_start_time = time.perf_counter()
+                        yield {"event": "thought", "token": ev_val}
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought", token=ev_val)
+                    elif ev_type == "thought_completed":
+                        thought_text = ev_val or thought_parser.thought_text
+                        dur_ms = round((time.perf_counter() - (thought_start_time or t_start)) * 1000, 1)
+                        thought_completed_emitted = True
+                        yield {"event": "thought_completed", "text": thought_text, "duration_ms": dur_ms}
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought_completed", duration_ms=dur_ms, text=thought_text)
+                    elif ev_type == "token":
+                        token_count += 1
+                        full_text += ev_val
+                        elapsed = max(0.001, time.perf_counter() - t_start - (ttft_ms / 1000.0))
+                        tok_per_sec = round(token_count / elapsed, 1)
+                        yield {
+                            "event": "token",
+                            "token": ev_val,
+                            "token_index": token_count,
+                            "ttft_ms": round(ttft_ms, 1),
+                            "tok_per_sec": tok_per_sec,
+                        }
+
+            # Flush residual parser buffer
+            for ev_type, ev_val in thought_parser.finish():
+                if ev_type == "thought":
+                    thought_text += ev_val
+                    yield {"event": "thought", "token": ev_val}
+                    if hasattr(self, "events") and self.events:
+                        await self.events.emit("thought", token=ev_val)
+                elif ev_type == "thought_completed":
+                    thought_text = ev_val or thought_parser.thought_text
+                    if not thought_completed_emitted:
+                        dur_ms = round((time.perf_counter() - (thought_start_time or t_start)) * 1000, 1)
+                        thought_completed_emitted = True
+                        yield {"event": "thought_completed", "text": thought_text, "duration_ms": dur_ms}
+                        if hasattr(self, "events") and self.events:
+                            await self.events.emit("thought_completed", duration_ms=dur_ms, text=thought_text)
+                elif ev_type == "token":
+                    token_count += 1
+                    full_text += ev_val
+                    elapsed = max(0.001, time.perf_counter() - t_start - (ttft_ms / 1000.0))
+                    tok_per_sec = round(token_count / elapsed, 1)
+                    yield {
+                        "event": "token",
+                        "token": ev_val,
+                        "token_index": token_count,
+                        "ttft_ms": round(ttft_ms, 1),
+                        "tok_per_sec": tok_per_sec,
+                    }
+
+            if thought_parser.thought_text:
+                thought_text = thought_parser.thought_text
+            if thought_text and not thought_completed_emitted:
+                dur_ms = round((time.perf_counter() - (thought_start_time or t_start)) * 1000, 1)
+                thought_completed_emitted = True
+                yield {"event": "thought_completed", "text": thought_text, "duration_ms": dur_ms}
+                if hasattr(self, "events") and self.events:
+                    await self.events.emit("thought_completed", duration_ms=dur_ms, text=thought_text)
 
             # Check for <tool_call> tags in full_text if model produced text-based tool calls
             if not collected_tool_calls and "<tool_call>" in full_text:
@@ -2208,6 +2554,11 @@ class RobotEngine:
                 async for chunk in _iterate_stream(_call_llm_stream(messages, tools=None)):
                     if chunk.startswith("__TOOL_CALL__"):
                         continue
+                    if chunk.startswith("__THOUGHT__"):
+                        raw_th = chunk[len("__THOUGHT__"):].lstrip(":")
+                        thought_text += raw_th
+                        yield {"event": "thought", "token": raw_th}
+                        continue
                     token_count += 1
                     second_pass_text += chunk
                     elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
@@ -2259,12 +2610,15 @@ class RobotEngine:
             gen_time_s = max(0.001, (total_dur_ms - (ttft_ms or 0)) / 1000.0)
             final_speed = round(token_count / gen_time_s, 1)
 
-            # Clean full_text of any raw tool names or bracketed metadata
+            # Clean full_text of any raw tool names, bracketed metadata, and thought tags
             clean_resp = full_text or ""
             clean_resp = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_resp)
             clean_resp = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
             clean_resp = re.sub(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", "", clean_resp, flags=re.MULTILINE)
             clean_resp = re.sub(r"\[\s*(?:motion|action|emotion|character\.)\s*:[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
+            clean_resp = re.sub(r"<(?:thought|think)>.*?</(?:thought|think)>", "", clean_resp, flags=re.DOTALL)
+            clean_resp = re.sub(r"^.*?<\/thought>", "", clean_resp, flags=re.DOTALL)
+            clean_resp = re.sub(r"^.*?<\/think>", "", clean_resp, flags=re.DOTALL)
             full_text = clean_resp.strip()
 
             # Store turn and shared memories in Database safely
@@ -2279,6 +2633,7 @@ class RobotEngine:
                         "provider": getattr(self, "llm_provider_type", "local"),
                         "model": active_model_name,
                         "tools": [t.get("name") for t in tools_called],
+                        "thought": thought_text if thought_text else None,
                     }
                     primary_tool = tools_called[0] if tools_called else None
                     await self.memory.store_turn(
@@ -2299,6 +2654,7 @@ class RobotEngine:
                 "event": "done",
                 "session_id": target_session,
                 "response": full_text,
+                "thought": thought_text if thought_text else None,
                 "ttft_ms": round(ttft_ms or 0, 1),
                 "tok_per_sec": final_speed,
                 "tokens": token_count,

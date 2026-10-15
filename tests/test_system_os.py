@@ -209,3 +209,47 @@ async def test_tool_registration_and_execution(mock_engine: MagicMock) -> None:
         assert res_n["status"] == "success"
         assert res_n["title"] == "Alert"
         assert res_n["message"] == "Task Complete"
+
+
+def test_resolve_application_binary_calendar() -> None:
+    """Verify 'cal' and 'calendar' resolve to gnome-calendar."""
+    with patch("shutil.which") as mock_which:
+        mock_which.side_effect = lambda cmd: "/usr/bin/gnome-calendar" if cmd == "gnome-calendar" else None
+        bin_path, args = resolve_application_binary("cal")
+        assert bin_path == "/usr/bin/gnome-calendar"
+        assert args == []
+
+        bin_path_cal, args_cal = resolve_application_binary("calendar")
+        assert bin_path_cal == "/usr/bin/gnome-calendar"
+        assert args_cal == []
+
+
+@pytest.mark.asyncio
+async def test_app_launch_kwargs_tolerance(mock_engine: MagicMock) -> None:
+    """Verify app_launch tolerates aliases, query/app kwargs, and missing parameters cleanly."""
+    register_system_os_tools(mock_engine)
+    launch_tool = mock_engine.tool_registry.get("os.app_launch")
+    assert launch_tool is not None
+
+    with patch("robot.tools.builtins.system_os.resolve_application_binary", return_value=("/usr/bin/gnome-calendar", [])), \
+         patch("robot.tools.builtins.system_os.launch_detached_process", new_callable=AsyncMock) as mock_launch:
+        mock_launch.return_value = (True, 12345, "Started")
+
+        # Call with app_name directly
+        res = await launch_tool.handler(app_name="cal")
+        assert res["status"] == "success"
+        assert res["app_name"] == "cal"
+        assert res["pid"] == 12345
+
+        # Call with fallback kwarg 'app'
+        res_app = await launch_tool.handler(app="calendar")
+        assert res_app["status"] == "success"
+
+        # Call with fallback kwarg 'query'
+        res_query = await launch_tool.handler(query="cal")
+        assert res_query["status"] == "success"
+
+        # Call with empty arguments returns clean error without crashing
+        res_empty = await launch_tool.handler()
+        assert res_empty["status"] == "error"
+        assert "No application name provided" in res_empty["message"]

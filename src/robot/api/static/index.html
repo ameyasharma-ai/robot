@@ -92,7 +92,23 @@
                     <span class="char-hud-badge" id="charGazeBadge">👁️ GAZE: CAMERA</span>
                     <span class="char-hud-badge" id="charActionBadge">⚡ MOTION: BASE IDLE</span>
                     <span class="char-hud-badge" id="charToolBadge" style="display: none; border-color: var(--primary-cyan); color: #00f2fe;">🛠️ TOOL: IDLE</span>
+                    <span class="char-hud-badge char-hud-thinking" id="charThinkingBadge" style="display: none;"><span class="hud-thinking-dot"></span> 🧠 REASONING...</span>
                 </div>
+            </div>
+
+            <!-- Cybernetic Holographic Neural Reasoning Matrix (Avatar View) -->
+            <div class="avatar-thought-card" id="avatarThoughtCard" style="display: none;">
+                <div class="avatar-thought-header" id="avatarThoughtHeader">
+                    <div class="thought-hdr-left">
+                        <span class="avatar-thought-brain">🧠</span>
+                        <span class="avatar-thought-title" id="avatarThoughtTitle">NEURAL REASONING MATRIX</span>
+                        <span class="avatar-thought-timer" id="avatarThoughtTimer">0.0s</span>
+                    </div>
+                    <div class="thought-hdr-actions">
+                        <button class="btn-thought-card-toggle" id="btnAvatarThoughtToggle" type="button" title="Minimize / Expand thoughts">▾</button>
+                    </div>
+                </div>
+                <div class="avatar-thought-body" id="avatarThoughtBody"></div>
             </div>
 
             <!-- Interactive Speech Bubble -->
@@ -106,6 +122,10 @@
                 <button class="chat-tool-btn voice-toggle-btn active" id="btnVoiceToggle" title="Toggle Voice/Microphone (Active: Bot listens and speaks. Inactive: Text chat only)">
                     <span class="voice-icon" id="voiceToggleIcon">🎙️</span>
                     <span class="voice-label" id="voiceToggleLabel">VOICE ON</span>
+                </button>
+                <button class="chat-tool-btn thinking-toggle-btn active" id="btnAvatarThinkingToggle" type="button" title="Toggle AI Deep Reasoning / Thinking Mode (Active: Deep reasoning enabled)">
+                    <span class="thinking-icon" id="avatarThinkingIcon">🧠</span>
+                    <span class="thinking-label" id="avatarThinkingLabel">THINKING</span>
                 </button>
                 <input type="text" class="chat-input" id="chatInput" placeholder="Type a message (Enter or click send)..." autocomplete="off" />
                 <button type="button" class="chat-send-btn" id="chatSendBtn" title="Send message">
@@ -669,6 +689,10 @@
                                 </svg>
                             </button>
                         </div>
+                        <button class="chat-stat-pill chat-thinking-toggle-btn active" id="btnChatThinkingToggle" type="button" title="Toggle AI Deep Reasoning / Thinking Mode (Local & API models)">
+                            <span class="thinking-glow-icon">🧠</span>
+                            <span id="chatThinkingLabel">THINKING ON</span>
+                        </button>
                         <div class="chat-stat-pill chat-mic-pill" id="chatMicPill" title="Microphone is automatically unloaded/paused in text chat mode">
                             <span class="mic-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px;"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></span>
                             <span id="chatMicLabel">MIC UNLOADED</span>

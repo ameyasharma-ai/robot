@@ -30,6 +30,11 @@ class ChatRequest(BaseModel):
     text: str
     session_id: str | None = None
     personality: str | None = None
+    thinking: bool | None = None
+
+
+class ThinkingModeRequest(BaseModel):
+    enabled: bool
 
 
 class ChatSpeakRequest(BaseModel):
@@ -759,11 +764,14 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         if hasattr(engine, "notify_user_activity"):
             engine.notify_user_activity()
 
+        thinking_flag = req.thinking if req.thinking is not None else getattr(engine, "thinking_enabled", True)
+
         async def _event_generator():
             async for chunk in engine.stream_text_chat(
                 text=req.text,
                 session_id=req.session_id,
                 personality=req.personality,
+                thinking=thinking_flag,
             ):
                 yield f"data: {json.dumps(chunk)}\n\n"
 
@@ -776,6 +784,20 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.get("/api/thinking")
+    async def get_thinking_mode():
+        """Retrieve the active cognitive reasoning/thinking mode state."""
+        is_enabled = getattr(engine, "thinking_enabled", True)
+        return {"status": "ok", "thinking_enabled": is_enabled}
+
+    @app.post("/api/thinking")
+    async def set_thinking_mode(req: ThinkingModeRequest):
+        """Update and broadcast the cognitive reasoning/thinking mode state."""
+        engine.thinking_enabled = bool(req.enabled)
+        if hasattr(engine, "events") and engine.events:
+            await engine.events.emit("thinking_toggled", enabled=engine.thinking_enabled)
+        return {"status": "ok", "thinking_enabled": engine.thinking_enabled}
 
     @app.post("/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
@@ -1562,6 +1584,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "llama_running": llama_running,
                 "prompt_caching_enabled": True if is_openai else llama_running,
             },
+            "diagnostics": getattr(engine.context, "get_last_diagnostics", lambda: {})(),
             "assembled_messages": assembled_messages,
         }
 

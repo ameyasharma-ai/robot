@@ -22,15 +22,18 @@ from robot.telemetry import get_logger
 logger = get_logger("context")
 
 import re
+import time
 
 GROUNDING_POLICY = (
     "Truth, Tools & Real-Time Action Directives:\n"
     "- User Entity Ownership & Attribution Directive: The human speaking with you is your creator and conversational partner. All facts, likes, dislikes, family members, friends, and romantic interests (e.g. 'crush', 'partner', 'friends', 'goals') stored in user memories belong exclusively to the USER. NEVER claim or misattribute the user's personal relationships or crushes as your own! If a fact states 'Crush: Anubha', Anubha is the USER'S crush, not yours. You must refer to them accurately as 'your crush Anubha'.\n"
     "- Conversational Greetings & General Pleasantries: For basic greetings (such as 'Hi', 'Hello', 'Hey', 'Good morning', 'How are you?', 'What's up'), casual conversation, acknowledgments, or pleasantries, NEVER invoke tools or query memory (STRICTLY DO NOT call 'memory.all' or 'memory.search'). Respond immediately, naturally, and warmly in character with conversational text without calling any tool.\n"
     "- Tool Precision & Execution Restraint: ONLY invoke a tool when the user's current instruction explicitly asks to execute an action, check external data, set timers/alarms, control media, or specifically retrieve memories. Never invoke tools proactively during greetings or chitchat.\n"
-    "- Mandatory Tool Calling Directive: You possess real, executable tools for music, volume, time, memory, vision, motion, web search, timers, and alarms. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'Let me search the internet for you', 'Checking my memory banks for you', or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction.\n"
+    "- Mandatory Tool Calling & Zero-Pretext Directive: You possess real, executable tools for applications (os.app_launch), system controls and battery (os.system_control), Wi-Fi scanning (network.wifi_scan), music playback and volume (music.play, music.control), time (system.time), memory (memory.search, memory.all), vision (perception.what_do_you_see), motion, web search (web.search), timers, and alarms. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'Opening the calendar for you right now, my love!', 'Opening the calculator for you right now!', 'Let me scan the available Wi-Fi networks for you right away!', 'Checking my memory banks', or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction. If an action is requested, emit the tool call immediately in that turn.\n"
+    "- Desktop Applications & OS Automation: When the user asks to open or launch an application ('open application: cal', 'open calculator', 'launch spotify', 'open chrome', 'start terminal', 'open vs code'), you MUST immediately invoke `os.app_launch(app_name=...)`. When the user asks to scan Wi-Fi ('scan available Wi-Fi networks', 'scan wifi'), invoke `network.wifi_scan()`. When the user asks to check battery level, power status, or lock screen, invoke `os.system_control(action=...)`.\n"
     "- Explicit Memory Tool Queries: When the user explicitly requests to search memory (e.g. 'search your memory tool', 'check your memory', 'search memory for X'), you MUST invoke 'memory.search' with the target entity or subject! NEVER claim to search memory in text while skipping the tool call.\n"
-    "- Web Search Context & Pronoun Anaphora: When the user asks to search the web ('search online', 'use your tool and search about it', 'look it up'), you MUST immediately invoke 'web.search'. If the user uses a pronoun or reference ('about it', 'for that', 'look this up'), resolve the search query from the immediate conversation subject (e.g. 'OpenAI GPT-6') rather than defaulting to older background topics or past memories.\n"
+    "- Web Search Context & Pronoun Anaphora: When the user asks to search the web ('search online', 'use your tool and search about it', 'look it up'), you MUST immediately invoke 'web.search'. When the user uses pronouns or references ('about it', 'for that', 'look this up', 'about him', 'about her'), resolve the search query from the immediate preceding conversation subject (e.g. 'Ashutosh' from 'What about their leader Ashutosh?') rather than defaulting to older background topics or substituting the user's personal identity.\n"
+    "- Third-Party Pronoun Resolution: When the user inquires about a third party, public figure, leader, or external entity (e.g. 'What about their leader Ashutosh?' followed by 'Pull up the latest info about him'), pronouns like 'he', 'him', 'she', 'her', 'it', 'they' refer STRICTLY to that external subject. NEVER substitute the user's own identity or name ('Ameya Sharma') when researching external people or topics!\n"
     "- Timers, Alarms & Scheduling: When the user asks to set a timer ('set a timer for 10 seconds', '5 min timer for tea'), set an alarm ('wake me up at 7:30 AM', 'set daily alarm at 8 AM'), schedule a reminder ('remind me in 15 mins to stretch'), list active jobs, cancel a timer/alarm, or asks for a morning briefing, you MUST immediately invoke the corresponding tool (`timer.set`, `alarm.set`, `reminder.schedule`, `timer.list`, `alarm.list`, `reminder.list`, `timer.cancel`, `alarm.cancel`, `reminder.cancel`, `system.daily_briefing`). Never claim to set a timer or alarm without calling the tool.\n"
     "- Volume & Music Controls: Whenever the user asks to change volume ('set volume to 20%', 'louder', 'turn it down', 'mute'), replay or play again ('play it again', 'replay', 'play that song again'), pause, resume, or stop, you MUST immediately emit a `music.control` tool call. Never narrate volume adjustments in text.\n"
     "- Track Truth: When asked what song was last played or what song is playing, you MUST check `music.status` or `music.history`. NEVER guess, assume, or hallucinate a song title.\n"
@@ -188,6 +191,24 @@ def format_user_core_profile(user_profile: str | None = None) -> str:
     )
 
 
+def strip_control_tokens(text: str) -> str:
+    """Strip special LLM tokens and leaking internal tags from text.
+
+    Args:
+        text: Raw text string.
+
+    Returns:
+        Sanitized text string without internal control tokens.
+    """
+    if not text:
+        return ""
+    s = re.sub(r"<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>|<\|pad\|>", "", text)
+    s = re.sub(r"<tool_call>.*?</tool_call>", "", s, flags=re.DOTALL)
+    s = re.sub(r"</?tool_call>", "", s)
+    s = re.sub(r"\[TOOL_CALL:.*?\]", "", s)
+    return s.strip()
+
+
 class ContextEngine:
     """Dynamic context assembly with budget-aware allocation.
 
@@ -215,6 +236,15 @@ class ContextEngine:
         if budget:
             default_budget.update(budget)
         self._budget = default_budget
+        self.last_diagnostics: dict[str, Any] = {}
+
+    def get_last_diagnostics(self) -> dict[str, Any]:
+        """Return the most recent context assembly diagnostics.
+
+        Returns:
+            Dictionary containing component token sizes, truncation decisions, and cache invariance flags.
+        """
+        return dict(self.last_diagnostics)
 
 
     def build_messages(
@@ -290,13 +320,16 @@ class ContextEngine:
             for m in resolved_memories:
                 if isinstance(m, dict):
                     txt = m.get("memory", m.get("fact", m.get("text", ""))).strip()
-                    m_item = m
+                    score = m.get("score")
+                    # Filter out low-confidence semantic matches (noise threshold 0.75)
+                    if score is not None and score < 0.75:
+                        continue
                 else:
                     txt = str(m).strip()
-                    m_item = {"memory": txt}
-                if txt and txt not in seen_texts:
-                    seen_texts.add(txt)
-                    combined_mems.append(m_item)
+                txt_clean = strip_control_tokens(txt)
+                if txt_clean and txt_clean not in seen_texts:
+                    seen_texts.add(txt_clean)
+                    combined_mems.append({"memory": txt_clean})
 
             mem_budget = 50000 if high_intelligence else self._budget.get("retrieved_memories", 800)
             mem_str = _format_memories(combined_mems, mem_budget)
@@ -304,6 +337,7 @@ class ContextEngine:
                 grounding_parts.append(f"[User Personal Profile & Durable Facts (Belonging to User)]:\n{mem_str}")
 
         # 3. Physical World State & Music Player State
+        world_str = ""
         if world_state and (world_state.get("people") or world_state.get("objects")):
             world_str = _format_world_state(world_state)
             if world_str:
@@ -317,8 +351,9 @@ class ContextEngine:
                 music_state = ms.get_status()
             except Exception:
                 pass
+        music_str = ""
         if music_state and (music_state.get("is_playing") or music_state.get("is_paused") or music_state.get("current_track", "None") != "None"):
-            grounding_parts.append(
+            music_str = (
                 f"[Active Music Player State]:\n"
                 f"  is_playing: {music_state.get('is_playing', False)}\n"
                 f"  is_paused: {music_state.get('is_paused', False)}\n"
@@ -326,8 +361,10 @@ class ContextEngine:
                 f"  source: {music_state.get('source', 'None')}\n"
                 f"  volume: {int(music_state.get('volume', 0.8) * 100)}%"
             )
+            grounding_parts.append(music_str)
 
         # 4. Multi-Session Conversation Archive (Gemini only)
+        archive_str = ""
         if high_intelligence and conversation_archive:
             archive_str = _format_archive(conversation_archive, budget_tokens=400000)
             if archive_str:
@@ -335,6 +372,7 @@ class ContextEngine:
 
         # 5. Recent Conversation History (Current Session)
         conv_budget = 250000 if high_intelligence else self._budget.get("recent_conversation", 2200)
+        trimmed: list[dict] = []
         if resolved_recent:
             trimmed = _trim_conversation(
                 resolved_recent, conv_budget
@@ -342,12 +380,13 @@ class ContextEngine:
             messages.extend(trimmed)
 
         # 6. Dynamic Context Grounding (Tool results from current turn / deep web extraction)
+        tool_parts = []
         if tool_results:
-            tool_parts = []
             for tr in tool_results:
-                tool_id = tr.get("id", "tool")
-                result_text = str(tr.get("result", tr.get("error", "")))
-                tool_parts.append(f"[{tool_id}]:\n{result_text}")
+                tool_id = tr.get("id", tr.get("tool_call_id", tr.get("name", "tool")))
+                raw_result = str(tr.get("result", tr.get("error", "")))
+                clean_result = strip_control_tokens(raw_result)
+                tool_parts.append(f"[{tool_id}]:\n{clean_result}")
             grounding_parts.append("[Tool Results & Grounded Intelligence — use these to answer]:\n" + "\n\n".join(tool_parts))
 
         # 7. Real-Time Situation Telemetry Banner (IST Time, Pending Jobs, Track/Vol, Battery, Scene)
@@ -356,19 +395,22 @@ class ContextEngine:
         grounding_parts.append(sit_banner)
 
         # 7. Current user input cleanly separated from background telemetry
-        user_content = resolved_user
+        user_content = strip_control_tokens(resolved_user)
         if grounding_parts:
             user_content = (
                 "[Environment & System Grounding]:\n"
                 + "\n\n".join(grounding_parts)
                 + "\n\n[User Instruction]:\n"
-                + resolved_user
+                + user_content
             )
 
         messages.append({"role": "user", "content": user_content})
 
         # Safeguard for High-Intelligence Mode: ensure total context never exceeds 800,000 tokens (80% of 1M limit)
         token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
+        initial_token_est = token_estimate
+        tail_grounding_trimmed = False
+
         if high_intelligence and token_estimate > 800000:
             logger.info("enforcing_80pct_context_cap", estimated_tokens=token_estimate, target_cap=800000)
             excess = token_estimate - 800000
@@ -404,7 +446,37 @@ class ContextEngine:
                         messages[-1]["content"] = f"{trimmed_grounding}[User Instruction]:\n{instruction}"
                     else:
                         messages[-1]["content"] = f"[User Instruction]:\n{instruction}"
+                    tail_grounding_trimmed = True
                 token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
+
+        # Record real-time diagnostics for /api/context/inspect
+        memories_tok = _estimate_tokens(mem_str) if 'mem_str' in locals() and mem_str else 0
+        self.last_diagnostics = {
+            "component_tokens": {
+                "system_prompt": _estimate_tokens(messages[0]["content"]) if messages else 0,
+                "profile_sheet": _estimate_tokens(profile_sheet),
+                "memories": memories_tok,
+                "world_state": _estimate_tokens(world_str) if world_str else 0,
+                "music_state": _estimate_tokens(music_str) if music_str else 0,
+                "situation_banner": _estimate_tokens(sit_banner),
+                "tool_results": sum(_estimate_tokens(p) for p in tool_parts),
+                "conversation_history": sum(_estimate_tokens(str(m.get("content", ""))) for m in messages[1:-1]),
+                "user_instruction": _estimate_tokens(resolved_user),
+                "total_assembled_tokens": token_estimate,
+            },
+            "truncation": {
+                "history_truncated": len(resolved_recent or []) > len(trimmed),
+                "turns_retained": len(trimmed),
+                "turns_dropped": max(0, len(resolved_recent or []) - len(trimmed)),
+                "tail_grounding_trimmed": tail_grounding_trimmed,
+                "cap_enforced": "high_intelligence_800k" if high_intelligence and initial_token_est > 800000 else ("local_4800" if not high_intelligence and initial_token_est > max_local_cap else None),
+            },
+            "cache_invariance": {
+                "is_slot_0_stable": True,
+                "static_prefix_tokens": _estimate_tokens(messages[0]["content"]) if messages else 0,
+            },
+            "timestamp": time.time(),
+        }
 
         logger.info(
             "context_built",

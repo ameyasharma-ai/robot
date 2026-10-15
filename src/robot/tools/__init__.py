@@ -498,7 +498,7 @@ class PermissionManager:
         """
         if not self.check(tool):
             return {
-                "status": "denial",
+                "status": ToolOutcomeStatus.DENIED.value,
                 "tool": tool.name,
                 "result": None,
                 "error": f"Permission denied: {tool.name} requires level {tool.permission_level.name}",
@@ -511,10 +511,10 @@ class PermissionManager:
         now_mono = time.perf_counter()
         if not tool.is_idempotent and exec_key in self._execution_history:
             last_ts, last_outcome = self._execution_history[exec_key]
-            if now_mono - last_ts < 5.0 and last_outcome.get("status") == "success":
+            if now_mono - last_ts < 5.0 and last_outcome.get("status") == ToolOutcomeStatus.SUCCESS.value:
                 logger.warning("duplicate_side_effect_prevented", tool=tool.name)
                 return {
-                    "status": "denial",
+                    "status": ToolOutcomeStatus.DENIED.value,
                     "tool": tool.name,
                     "result": last_outcome.get("result"),
                     "error": f"Duplicate side-effect prevented: {tool.name} was already executed within 5.0s window.",
@@ -615,8 +615,13 @@ class PermissionManager:
         t_start = time.perf_counter()
         max_attempts = 1 + (tool.max_retries if tool.is_idempotent else 0)
         retries_done = 0
-        status = "failure"
+        status = ToolOutcomeStatus.FAILURE.value
         err_msg: str | None = None
+
+        # Enforce 3.0s hard ceiling for network and external web tools
+        effective_timeout = tool.timeout_s
+        if tool.family in ("web", "weather", "news", "finance", "knowledge", "network") or "search" in tool.name or "scrape" in tool.name:
+            effective_timeout = min(tool.timeout_s, 3.0)
 
         for attempt in range(max_attempts):
             if attempt > 0:
@@ -627,7 +632,7 @@ class PermissionManager:
             try:
                 result = await asyncio.wait_for(
                     tool.handler(**filtered_args),
-                    timeout=tool.timeout_s,
+                    timeout=effective_timeout,
                 )
                 dur_ms = (time.perf_counter() - t_start) * 1000
                 logger.info("tool_executed", tool=tool.name, duration_ms=round(dur_ms, 2))
@@ -635,7 +640,7 @@ class PermissionManager:
                     await self._events.emit("tool_completed", tool=tool.name, result=str(result)[:100])
 
                 outcome = {
-                    "status": "success",
+                    "status": ToolOutcomeStatus.SUCCESS.value,
                     "tool": tool.name,
                     "result": result,
                     "duration_ms": round(dur_ms, 2),
@@ -654,7 +659,7 @@ class PermissionManager:
                 if self._events:
                     await self._events.emit("tool_error", tool=tool.name, error="Cancelled")
                 return {
-                    "status": "cancelled",
+                    "status": ToolOutcomeStatus.CANCELLED.value,
                     "tool": tool.name,
                     "result": None,
                     "error": "Tool execution cancelled",
@@ -662,11 +667,11 @@ class PermissionManager:
                     "retries": retries_done,
                 }
             except asyncio.TimeoutError:
-                status = "timeout"
-                err_msg = f"Tool timed out after {tool.timeout_s}s"
-                logger.warning("tool_timeout", tool=tool.name, timeout=tool.timeout_s, attempt=attempt)
+                status = ToolOutcomeStatus.TIMEOUT.value
+                err_msg = f"Tool timed out after {effective_timeout}s"
+                logger.warning("tool_timeout", tool=tool.name, timeout=effective_timeout, attempt=attempt)
             except Exception as e:
-                status = "failure"
+                status = ToolOutcomeStatus.FAILURE.value
                 err_msg = str(e)
                 logger.error("tool_error", tool=tool.name, error=err_msg, attempt=attempt)
 

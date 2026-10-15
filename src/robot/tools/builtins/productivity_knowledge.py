@@ -460,7 +460,7 @@ def register_productivity_knowledge_tools(engine: RobotEngine) -> None:
             handler=_scrape,
             permission_level=PermissionLevel.READ_ONLY,
             family="web",
-            timeout_s=4.0,
+            timeout_s=3.0,
             is_idempotent=True,
             max_retries=1,
         )

@@ -356,7 +356,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=web_search,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="web",
-            timeout_s=7.0,
+            timeout_s=3.0,
             is_idempotent=True,
             max_retries=1,
         )
@@ -580,7 +580,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=wikipedia_lookup,
             permission_level=PermissionLevel.READ_ONLY,
             family="knowledge",
-            timeout_s=6.0,
+            timeout_s=3.0,
         )
     )
 

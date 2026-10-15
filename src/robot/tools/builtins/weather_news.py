@@ -436,7 +436,7 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=weather_forecast,
             permission_level=PermissionLevel.READ_ONLY,
             family="weather",
-            timeout_s=6.0,
+            timeout_s=3.0,
             is_idempotent=True,
             max_retries=1,
         )

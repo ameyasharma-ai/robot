@@ -1,5 +1,5 @@
 {
-  "total_tools": 59,
+  "total_tools": 61,
   "families": {
     "scheduler": 10,
     "calculator": 1,
@@ -18,7 +18,7 @@
     "news": 1,
     "notes": 1,
     "os": 5,
-    "system": 7,
+    "system": 9,
     "personality": 1,
     "terminal": 1,
     "translation": 1,
@@ -28,7 +28,7 @@
   },
   "permission_counts": {
     "HARMLESS_LOCAL": 26,
-    "READ_ONLY": 30,
+    "READ_ONLY": 32,
     "DEVELOPMENT": 2,
     "SYSTEM": 1
   },
@@ -282,7 +282,7 @@
       "name": "finance.quote",
       "family": "finance",
       "permission_level": "READ_ONLY",
-      "timeout_s": 10.0,
+      "timeout_s": 3.0,
       "risk_level": "low",
       "signature_parameters": {
         "symbol": {
@@ -718,7 +718,7 @@
       "name": "network.speedtest",
       "family": "network",
       "permission_level": "READ_ONLY",
-      "timeout_s": 5.0,
+      "timeout_s": 3.0,
       "risk_level": "low",
       "signature_parameters": {
         "kwargs": {
@@ -750,7 +750,7 @@
       "name": "news.headlines",
       "family": "news",
       "permission_level": "READ_ONLY",
-      "timeout_s": 10.0,
+      "timeout_s": 3.0,
       "risk_level": "low",
       "signature_parameters": {
         "category": {
@@ -1227,6 +1227,77 @@
       "has_description": true
     },
     {
+      "name": "system.death_clock",
+      "family": "system",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 7.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "age": {
+          "default": "20",
+          "annotation": "int"
+        },
+        "gender": {
+          "default": "male",
+          "annotation": "str"
+        },
+        "country": {
+          "default": "India",
+          "annotation": "str"
+        },
+        "smoking": {
+          "default": "never",
+          "annotation": "str"
+        },
+        "exercise_days_per_week": {
+          "default": "3",
+          "annotation": "int"
+        },
+        "diet_quality": {
+          "default": "average",
+          "annotation": "str"
+        },
+        "sleep_hours": {
+          "default": "7.5",
+          "annotation": "float"
+        },
+        "stress_level": {
+          "default": "moderate",
+          "annotation": "str"
+        },
+        "alcohol": {
+          "default": "moderate",
+          "annotation": "str"
+        },
+        "bmi": {
+          "default": "None",
+          "annotation": "float | None"
+        },
+        "use_gemini": {
+          "default": "True",
+          "annotation": "bool"
+        },
+        "api_key": {
+          "default": "None",
+          "annotation": "str | None"
+        }
+      },
+      "schema_properties": [
+        "age",
+        "gender",
+        "country",
+        "smoking",
+        "exercise_days_per_week",
+        "diet_quality",
+        "sleep_hours",
+        "stress_level",
+        "alcohol",
+        "bmi"
+      ],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
       "name": "system.hardware",
       "family": "system",
       "permission_level": "READ_ONLY",
@@ -1234,6 +1305,28 @@
       "risk_level": "low",
       "signature_parameters": {},
       "schema_properties": [],
+      "schema_required": [],
+      "has_description": true
+    },
+    {
+      "name": "system.list_tools",
+      "family": "system",
+      "permission_level": "READ_ONLY",
+      "timeout_s": 10.0,
+      "risk_level": "low",
+      "signature_parameters": {
+        "category": {
+          "default": "None",
+          "annotation": "str | None"
+        },
+        "kwargs": {
+          "default": "<REQUIRED>",
+          "annotation": "Any"
+        }
+      },
+      "schema_properties": [
+        "category"
+      ],
       "schema_required": [],
       "has_description": true
     },
@@ -1413,7 +1506,7 @@
       "name": "translation.translate",
       "family": "translation",
       "permission_level": "READ_ONLY",
-      "timeout_s": 8.0,
+      "timeout_s": 3.0,
       "risk_level": "low",
       "signature_parameters": {
         "text": {
@@ -1447,7 +1540,7 @@
       "name": "weather.forecast",
       "family": "weather",
       "permission_level": "READ_ONLY",
-      "timeout_s": 10.0,
+      "timeout_s": 6.0,
       "risk_level": "low",
       "signature_parameters": {
         "location": {
@@ -1469,7 +1562,7 @@
       "name": "web.scrape_page",
       "family": "web",
       "permission_level": "READ_ONLY",
-      "timeout_s": 12.0,
+      "timeout_s": 4.0,
       "risk_level": "low",
       "signature_parameters": {
         "url": {
@@ -1498,7 +1591,7 @@
       "name": "web.search",
       "family": "web",
       "permission_level": "HARMLESS_LOCAL",
-      "timeout_s": 30.0,
+      "timeout_s": 7.0,
       "risk_level": "low",
       "signature_parameters": {
         "query": {
@@ -1532,7 +1625,7 @@
       "name": "wikipedia.lookup",
       "family": "wikipedia",
       "permission_level": "READ_ONLY",
-      "timeout_s": 8.0,
+      "timeout_s": 3.0,
       "risk_level": "low",
       "signature_parameters": {
         "query": {

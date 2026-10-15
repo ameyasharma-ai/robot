@@ -190,7 +190,7 @@ class LlamaServerLLM(LLMProvider):
     async def stream_chat(
         self,
         messages: list[dict[str, Any]],
-        max_tokens: int = 300,
+        max_tokens: int = 2048,
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion tokens from local llama-server with KV cache preservation.
@@ -436,7 +436,7 @@ class GeminiLLM(LLMProvider):
         self,
         api_key: str | None = None,
         base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai",
-        model: str = "gemini-2.0-flash",
+        model: str = "gemini-3.1-flash-lite",
         fallback_models: list[str] | None = None,
     ) -> None:
         import os
@@ -444,8 +444,10 @@ class GeminiLLM(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.fallback_models = fallback_models if fallback_models is not None else [
-            "gemini-1.5-flash",
-            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
         ]
 
         self._client: httpx.AsyncClient | None = None
@@ -464,7 +466,7 @@ class GeminiLLM(LLMProvider):
     async def stream_chat(
         self,
         messages: list[dict],
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[str, None]:
         import time as _time
@@ -564,6 +566,10 @@ class GeminiLLM(LLMProvider):
                                             if fn.get("arguments"):
                                                 tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
                                         continue
+
+                                    reasoning = delta.get("reasoning_content") or delta.get("thought")
+                                    if reasoning:
+                                        yield f"__THOUGHT__{reasoning}"
 
                                     token = delta.get("content", "")
                                     if token:
@@ -669,7 +675,7 @@ class OpenAICompatibleLLM(LLMProvider):
     async def stream_chat(
         self,
         messages: list[dict[str, Any]],
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion tokens from the OpenAI-compatible endpoint.
@@ -801,6 +807,10 @@ class OpenAICompatibleLLM(LLMProvider):
                                     if fn.get("arguments"):
                                         tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
                                 continue
+
+                            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                            if reasoning:
+                                yield f"__THOUGHT__{reasoning}"
 
                             token = delta.get("content", "")
                             if token:

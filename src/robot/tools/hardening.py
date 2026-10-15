@@ -31,15 +31,25 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 
 class ToolOutcomeStatus(str, Enum):
-    """Standardized outcome statuses across all tool invocations."""
+    """Standardized outcome statuses across all tool invocations.
+
+    Standard status values:
+        SUCCESS: Tool executed completely and produced output.
+        FAILURE: Tool handler failed or raised an exception.
+        DENIED: Permission denied or consequential confirmation required.
+        TIMEOUT: Tool execution exceeded allotted time cap.
+        CANCELLED: Tool execution aborted by user or task supervisor.
+    """
 
     SUCCESS = "success"
+    FAILURE = "failure"
+    DENIED = "denial"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
     VALIDATION_ERROR = "validation_error"
     UNSUPPORTED = "unsupported"
-    TIMEOUT = "timeout"
-    PERMISSION_DENIED = "permission_denied"
-    EXECUTION_ERROR = "execution_error"
-    CANCELLED = "cancelled"
+    PERMISSION_DENIED = "denial"
+    EXECUTION_ERROR = "failure"
 
 
 class ToolValidationError(ValueError):
@@ -120,7 +130,7 @@ GLOBAL_APPROVED_ALIASES: dict[str, list[str]] = {
     "time_expression": ["target_time", "time", "when", "time_expr", "target", "at"],
     "message": ["note", "text", "content", "reminder", "task", "msg", "label", "body"],
     "identifier": ["id", "job_id", "timer_id", "alarm_id", "reminder_id", "name", "label", "title"],
-    "app_name": ["app", "name", "application", "program", "command", "target", "app_name_str"],
+    "app_name": ["app", "name", "application", "program", "command", "target", "app_name_str", "query", "input", "arg", "args", "val", "value", "text"],
     "title": ["summary", "header", "topic", "subject", "heading", "name"],
     "text": ["content", "data", "value", "string", "snippet", "body", "code"],
     "location": ["city", "place", "where", "locale", "area", "address", "town", "query"],

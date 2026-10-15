@@ -50,6 +50,8 @@ COMMON_APP_MAP: dict[str, list[str]] = {
     "nautilus": ["nautilus"],
     "calculator": ["gnome-calculator", "kcalc", "galculator", "xcalc"],
     "calc": ["gnome-calculator", "kcalc", "galculator", "xcalc"],
+    "calendar": ["gnome-calendar", "korganizer", "cal"],
+    "cal": ["gnome-calendar", "korganizer", "cal", "gnome-calculator"],
     "settings": ["gnome-control-center", "systemsettings"],
     "text editor": ["gedit", "kate", "mousepad", "xed", "gnome-text-editor"],
     "editor": ["gedit", "kate", "mousepad", "code"],
@@ -387,10 +389,35 @@ def register_system_os_tools(engine: "RobotEngine") -> None:
 
     # 1. os.app_launch
     async def app_launch(app_name: str = "", args: list[str] | str | None = None, **kwargs: Any) -> dict[str, Any]:
-        """Launch a desktop application or utility."""
-        target_app = (app_name or kwargs.get("app") or kwargs.get("name") or kwargs.get("application") or kwargs.get("command") or "").strip()
+        """Launch a desktop application or utility detached from Robot Core.
+
+        Args:
+            app_name: Name or alias of the application to launch (e.g. 'calendar', 'calculator', 'chrome', 'terminal').
+            args: Optional command-line arguments, file paths, or URLs.
+            **kwargs: Extra parameters for robust LLM tool call tolerance.
+
+        Returns:
+            Dictionary containing execution status, process ID, binary path, and user-facing message.
+        """
+        raw_target = (
+            app_name
+            or kwargs.get("app")
+            or kwargs.get("name")
+            or kwargs.get("application")
+            or kwargs.get("command")
+            or kwargs.get("target")
+            or kwargs.get("query")
+            or kwargs.get("input")
+            or kwargs.get("val")
+            or kwargs.get("value")
+            or ""
+        )
+        target_app = str(raw_target).strip()
         if not target_app:
-            return {"status": "error", "message": "No application name provided to launch."}
+            return {
+                "status": "error",
+                "message": "No application name provided to launch. Please specify an application name (e.g. 'calendar', 'calculator', 'chrome', 'terminal').",
+            }
 
         # Parse args if provided as string
         arg_list: list[str] = []

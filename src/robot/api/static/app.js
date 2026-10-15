@@ -65,6 +65,10 @@ class RobotUI {
         this.chatAbortController = null;
         this.chatRecording = false;
 
+        // Cognitive Reasoning & Thinking Mode State
+        const savedThinking = localStorage.getItem("robot_thinking_enabled");
+        this.thinkingEnabled = savedThinking !== null ? (savedThinking === "true") : true;
+
         this.initViewControls();
         this.initPersonalitySelector();
         this.initLlmProviderToggle();
@@ -78,6 +82,7 @@ class RobotUI {
         this.initMemoryDeck();
         this.initPipelineTelemetryDeck();
         this.startPollers();
+        this.fetchThinkingState();
     }
 
     initTextChat() {
@@ -127,6 +132,22 @@ class RobotUI {
             this.updateVoiceUI = updateVoiceUI;
         }
 
+        // Wire Avatar View Thinking Toggle and Holographic Matrix Collapse Header
+        const avatarThinkingBtn = document.getElementById("btnAvatarThinkingToggle");
+        if (avatarThinkingBtn) {
+            avatarThinkingBtn.addEventListener("click", (e) => {
+                e.preventDefault();
+                this.toggleThinkingMode();
+            });
+        }
+        const avatarThoughtHdr = document.getElementById("avatarThoughtHeader");
+        if (avatarThoughtHdr) {
+            avatarThoughtHdr.addEventListener("click", () => {
+                const card = document.getElementById("avatarThoughtCard");
+                if (card) card.classList.toggle("collapsed");
+            });
+        }
+
         if (!input || !btn) return;
 
         let isSubmitting = false;
@@ -159,6 +180,9 @@ class RobotUI {
                     this.setRobotMode("thinking");
                 }
                 this.updatePipelineStatus({ CONTEXT: "RUNNING", LLM: "RUNNING" });
+                if (this.thinkingEnabled) {
+                    this.showAvatarThoughtLive("started");
+                }
             } catch (err) {
                 console.error("UI update failed before fetch:", err);
             }
@@ -170,7 +194,10 @@ class RobotUI {
                 const resp = await fetch("/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ text }),
+                    body: JSON.stringify({ 
+                        text,
+                        thinking: this.thinkingEnabled
+                    }),
                     signal: controller.signal,
                 });
                 clearTimeout(timeoutId);
@@ -182,6 +209,10 @@ class RobotUI {
                 const data = await resp.json();
                 const rawResponse = data.response || data.error || "No response received.";
                 const response = this.cleanHumanText(rawResponse) || rawResponse;
+
+                if (this.thinkingEnabled) {
+                    this.showAvatarThoughtLive("completed", { duration_ms: 1200 });
+                }
 
                 // Show robot response
                 if (this.bubbleTag) {
@@ -288,6 +319,14 @@ class RobotUI {
         this.btnChatSubmit = document.getElementById("btnChatSubmit");
         this.btnChatStopStream = document.getElementById("btnChatStopStream");
         this.chatLiveSpeed = document.getElementById("chatLiveSpeed");
+
+        this.btnChatThinkingToggle = document.getElementById("btnChatThinkingToggle");
+        if (this.btnChatThinkingToggle) {
+            this.btnChatThinkingToggle.addEventListener("click", (e) => {
+                e.preventDefault();
+                this.toggleThinkingMode();
+            });
+        }
 
         if (this.btnChatMicRecord) {
             this.btnChatMicRecord.addEventListener("click", (e) => {
@@ -498,6 +537,190 @@ class RobotUI {
             } else {
                 modelPill.title = `Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to cycle provider.`;
             }
+        }
+    }
+
+    /**
+     * Fetch the engine's current thinking/reasoning state from the server.
+     * Synchronizes local state, localStorage, and both UI buttons.
+     * @returns {Promise<void>}
+     */
+    async fetchThinkingState() {
+        try {
+            const res = await fetch("/api/thinking");
+            if (res.ok) {
+                const data = await res.json();
+                this.thinkingEnabled = Boolean(data.thinking_enabled);
+                localStorage.setItem("robot_thinking_enabled", String(this.thinkingEnabled));
+                this.updateThinkingUI(this.thinkingEnabled);
+            }
+        } catch (e) {
+            console.warn("Failed to fetch thinking state from API:", e);
+        }
+    }
+
+    /**
+     * Toggle AI deep cognitive reasoning mode on or off.
+     * Synchronizes across Chat top bar, Avatar HUD, localStorage, and engine runtime.
+     * @param {boolean} [forcedState] - Optional explicit boolean state.
+     * @returns {Promise<void>}
+     */
+    async toggleThinkingMode(forcedState) {
+        const target = typeof forcedState === "boolean" ? forcedState : !this.thinkingEnabled;
+        this.thinkingEnabled = target;
+        localStorage.setItem("robot_thinking_enabled", String(target));
+        this.updateThinkingUI(target);
+
+        try {
+            const res = await fetch("/api/thinking", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: target }),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                this.thinkingEnabled = Boolean(data.thinking_enabled);
+                this.updateThinkingUI(this.thinkingEnabled);
+                if (typeof this.logEvent === "function") {
+                    this.logEvent("THINKING", `Cognitive thinking & reasoning mode ${this.thinkingEnabled ? "ENABLED" : "DISABLED"}`, "system");
+                }
+            }
+        } catch (err) {
+            console.error("Failed to toggle thinking mode:", err);
+        }
+    }
+
+    /**
+     * Update the visual states of thinking buttons across Chat and Avatar views.
+     * @param {boolean} enabled - Whether thinking mode is active.
+     * @returns {void}
+     */
+    updateThinkingUI(enabled) {
+        // Chat workspace header toggle button
+        const chatToggle = document.getElementById("btnChatThinkingToggle") || this.btnChatThinkingToggle;
+        const chatLabel = document.getElementById("chatThinkingLabel");
+        if (chatToggle) {
+            if (enabled) {
+                chatToggle.classList.add("active");
+                chatToggle.setAttribute("aria-pressed", "true");
+                chatToggle.title = "AI Deep Reasoning is ON. Click to disable thinking mode.";
+                if (chatLabel) chatLabel.textContent = "THINKING ON";
+            } else {
+                chatToggle.classList.remove("active");
+                chatToggle.setAttribute("aria-pressed", "false");
+                chatToggle.title = "AI Deep Reasoning is OFF. Click to enable thinking mode.";
+                if (chatLabel) chatLabel.textContent = "THINKING OFF";
+            }
+        }
+
+        // Avatar input bar toggle button
+        const avatarToggle = document.getElementById("btnAvatarThinkingToggle") || this.btnAvatarThinkingToggle;
+        const avatarLabel = document.getElementById("avatarThinkingLabel");
+        if (avatarToggle) {
+            if (enabled) {
+                avatarToggle.classList.add("active");
+                avatarToggle.setAttribute("aria-pressed", "true");
+                avatarToggle.title = "AI Deep Reasoning is ON. Click to disable thinking mode.";
+                if (avatarLabel) avatarLabel.textContent = "THINKING ON";
+            } else {
+                avatarToggle.classList.remove("active");
+                avatarToggle.setAttribute("aria-pressed", "false");
+                avatarToggle.title = "AI Deep Reasoning is OFF. Click to enable thinking mode.";
+                if (avatarLabel) avatarLabel.textContent = "THINKING OFF";
+            }
+        }
+    }
+
+    /**
+     * Render live holographic neural reasoning matrix in the 3D Avatar viewport.
+     * Handles lifecycle phases: 'started', 'token', 'completed', and 'hide'.
+     * @param {"started" | "token" | "completed" | "hide"} action - Lifecycle event action.
+     * @param {any} [data] - Associated event payload (token string, completion object).
+     * @returns {void}
+     */
+    showAvatarThoughtLive(action, data) {
+        const card = document.getElementById("avatarThoughtCard");
+        const body = document.getElementById("avatarThoughtBody");
+        const timer = document.getElementById("avatarThoughtTimer");
+        const title = document.getElementById("avatarThoughtTitle");
+        const badge = document.getElementById("charThinkingBadge");
+
+        if (action === "started") {
+            if (badge) {
+                badge.style.display = "inline-flex";
+                badge.classList.add("active");
+            }
+            if (card && body) {
+                card.style.display = "block";
+                card.classList.remove("collapsed");
+                body.textContent = "Contemplating context and reasoning strategy...";
+                body.classList.add("thinking-active");
+                if (timer) timer.textContent = "0.0s";
+                if (title) title.textContent = "NEURAL REASONING MATRIX";
+                this._avatarThoughtStartTime = performance.now();
+                if (this._avatarThoughtTimerInterval) clearInterval(this._avatarThoughtTimerInterval);
+                this._avatarThoughtTimerInterval = setInterval(() => {
+                    if (timer && this._avatarThoughtStartTime) {
+                        const elapsed = (performance.now() - this._avatarThoughtStartTime) / 1000;
+                        timer.textContent = `${elapsed.toFixed(1)}s`;
+                    }
+                }, 100);
+            }
+        } else if (action === "token") {
+            if (card && card.style.display === "none") {
+                this.showAvatarThoughtLive("started");
+            }
+            if (body && data) {
+                if (body.classList.contains("thinking-active")) {
+                    body.textContent = "";
+                    body.classList.remove("thinking-active");
+                }
+                body.textContent += data;
+                body.scrollTop = body.scrollHeight;
+            }
+        } else if (action === "completed") {
+            if (this._avatarThoughtTimerInterval) {
+                clearInterval(this._avatarThoughtTimerInterval);
+                this._avatarThoughtTimerInterval = null;
+            }
+            if (data && data.text && data.text.trim()) {
+                if (body) {
+                    body.textContent = data.text;
+                    body.classList.remove("thinking-active");
+                }
+                if (title) {
+                    title.textContent = "COGNITIVE REASONING";
+                }
+            } else if (body && body.classList.contains("thinking-active")) {
+                if (card) card.style.display = "none";
+            }
+            if (timer && data && data.duration_ms) {
+                timer.textContent = `${(data.duration_ms / 1000).toFixed(1)}s`;
+            }
+            if (title && (!data || !data.text)) {
+                title.textContent = "REASONING CONCLUDED";
+            }
+            if (badge) {
+                setTimeout(() => {
+                    if (badge && !this._avatarThoughtTimerInterval) {
+                        badge.style.display = "none";
+                    }
+                }, 2500);
+            }
+            // Auto-collapse the holographic thought matrix after 10s of quiet idle
+            if (this._avatarThoughtHideTimeout) clearTimeout(this._avatarThoughtHideTimeout);
+            this._avatarThoughtHideTimeout = setTimeout(() => {
+                if (card && !this._avatarThoughtTimerInterval) {
+                    card.classList.add("collapsed");
+                }
+            }, 10000);
+        } else if (action === "hide") {
+            if (this._avatarThoughtTimerInterval) {
+                clearInterval(this._avatarThoughtTimerInterval);
+                this._avatarThoughtTimerInterval = null;
+            }
+            if (card) card.style.display = "none";
+            if (badge) badge.style.display = "none";
         }
     }
 
@@ -851,17 +1074,37 @@ class RobotUI {
             timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         }
 
-        // Dynamically bind to the currently selected character so the active companion is reflected consistently
-        const activePersona = (this.personaSelect && this.personaSelect.value)
-            ? this.personaSelect.value
-            : (msg.personality || "neo");
+        // Ensure message's own personality is respected so Luna/Neo/Cypher/etc. are accurately displayed
+        const activePersona = msg.personality
+            ? msg.personality
+            : ((this.personaSelect && this.personaSelect.value) ? this.personaSelect.value : "neo");
         const senderLabel = isUser ? "YOU" : this.formatPersonaName(activePersona);
         const avatarIcon = isUser ? "👤" : "🤖";
         const contentHtml = this.renderChatMarkdown(msg.content);
         let badgeHtml = "";
         let telemHtml = "";
+        let thoughtHtml = "";
 
         if (!isUser) {
+            if (msg.metadata && msg.metadata.thought) {
+                const rawThought = msg.metadata.thought;
+                const durMs = msg.metadata.thought_duration_ms || msg.metadata.duration_ms || 0;
+                const durStr = durMs ? `${(durMs / 1000).toFixed(1)}s` : "";
+                thoughtHtml = `
+                    <div class="chat-thought-card collapsed">
+                        <div class="chat-thought-header">
+                            <div class="chat-thought-left">
+                                <span class="thought-brain-icon">🧠</span>
+                                <span class="thought-title-text">Thought Process</span>
+                                ${durStr ? `<span class="thought-timer-badge">${durStr}</span>` : ""}
+                            </div>
+                            <button class="btn-thought-toggle" type="button" title="Expand thoughts">▾</button>
+                        </div>
+                        <div class="chat-thought-body">${this.escapeHtml(rawThought)}</div>
+                    </div>
+                `;
+            }
+
             const msgProv = (msg.metadata && msg.metadata.provider) ? msg.metadata.provider : this.currentLlmProvider;
             const msgModel = (msg.metadata && msg.metadata.model) ? msg.metadata.model : (msgProv === "openai_compatible" ? this.activeOpenaiModel : null);
             const badgeInfo = this.getChatMsgBadgeInfo(msgProv, msgModel);
@@ -904,6 +1147,7 @@ class RobotUI {
                     ${badgeHtml}
                     <span class="chat-msg-time">${timeStr}</span>
                 </div>
+                ${thoughtHtml}
                 ${toolHtml}
                 <div class="chat-msg-body">${contentHtml}</div>
                 ${actionsHtml}
@@ -911,6 +1155,14 @@ class RobotUI {
             </div>
         `;
         this.chatMessagesContainer.appendChild(row);
+
+        const thoughtHdr = row.querySelector(".chat-thought-header");
+        if (thoughtHdr) {
+            thoughtHdr.addEventListener("click", () => {
+                const card = row.querySelector(".chat-thought-card");
+                if (card) card.classList.toggle("collapsed");
+            });
+        }
 
         if (!isUser && msg.content) {
             const speakBtn = row.querySelector(".btn-msg-speak");
@@ -980,6 +1232,7 @@ class RobotUI {
                     <span class="chat-msg-badge ${badgeInfo.className}">${badgeInfo.icon}${badgeInfo.text}</span>
                     <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                 </div>
+                <div class="chat-thought-container" id="thoughtBox_${streamId}"></div>
                 <div class="chat-tool-container" id="toolBox_${streamId}"></div>
                 <div class="chat-msg-body">
                     <span class="chat-text-stream" id="streamText_${streamId}"></span>
@@ -993,14 +1246,56 @@ class RobotUI {
 
         const textSpan = document.getElementById(`streamText_${streamId}`);
         const cursorSpan = document.getElementById(`streamCursor_${streamId}`);
+        const thoughtBox = document.getElementById(`thoughtBox_${streamId}`);
         const toolBox = document.getElementById(`toolBox_${streamId}`);
         const telemDiv = document.getElementById(`streamTelem_${streamId}`);
 
         this.chatAbortController = new AbortController();
         let streamedRawText = "";
+        let streamedThoughtText = "";
         let tokenCount = 0;
         let streamStartTime = performance.now();
+        let thoughtStartTime = null;
+        let thoughtIntervalId = null;
         let isStreamCompleted = false;
+
+        if (this.thinkingEnabled) {
+            thoughtStartTime = performance.now();
+            if (thoughtBox) {
+                const thoughtCard = document.createElement("div");
+                thoughtCard.className = "chat-thought-card";
+                thoughtCard.id = `thoughtCard_${streamId}`;
+                thoughtCard.innerHTML = `
+                    <div class="chat-thought-header">
+                        <div class="chat-thought-left">
+                            <span class="thought-brain-icon thinking">🧠</span>
+                            <span class="thought-title-text">Thinking...</span>
+                            <span class="thought-timer-badge" id="thoughtTimer_${streamId}">0.0s</span>
+                        </div>
+                        <button class="btn-thought-toggle" type="button" title="Collapse / Expand thoughts">▾</button>
+                    </div>
+                    <div class="chat-thought-body thinking-active" id="thoughtText_${streamId}">Contemplating context, tools, and response strategy...</div>
+                `;
+                const hdr = thoughtCard.querySelector(".chat-thought-header");
+                if (hdr) {
+                    hdr.addEventListener("click", () => {
+                        thoughtCard.classList.toggle("collapsed");
+                    });
+                }
+                thoughtBox.appendChild(thoughtCard);
+            }
+            if (thoughtIntervalId) clearInterval(thoughtIntervalId);
+            thoughtIntervalId = setInterval(() => {
+                const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
+                if (timerEl && thoughtStartTime) {
+                    const el = (performance.now() - thoughtStartTime) / 1000;
+                    timerEl.textContent = `${el.toFixed(1)}s`;
+                }
+            }, 100);
+
+            this.showAvatarThoughtLive("started");
+            this.scrollChatToBottom();
+        }
 
         try {
             const res = await fetch("/chat/stream", {
@@ -1009,7 +1304,8 @@ class RobotUI {
                 body: JSON.stringify({
                     text: text,
                     session_id: this.activeChatSessionId,
-                    personality: this.personaSelect ? this.personaSelect.value : undefined
+                    personality: this.personaSelect ? this.personaSelect.value : undefined,
+                    thinking: this.thinkingEnabled
                 }),
                 signal: this.chatAbortController.signal
             });
@@ -1068,7 +1364,146 @@ class RobotUI {
                             }
                             this.syncChatTopBar();
                         }
+                    } else if (eventType === "thought_started") {
+                        if (!thoughtStartTime) thoughtStartTime = performance.now();
+                        if (thoughtBox && !thoughtBox.querySelector(".chat-thought-card")) {
+                            const thoughtCard = document.createElement("div");
+                            thoughtCard.className = "chat-thought-card";
+                            thoughtCard.id = `thoughtCard_${streamId}`;
+                            thoughtCard.innerHTML = `
+                                <div class="chat-thought-header">
+                                    <div class="chat-thought-left">
+                                        <span class="thought-brain-icon thinking">🧠</span>
+                                        <span class="thought-title-text">Thinking...</span>
+                                        <span class="thought-timer-badge" id="thoughtTimer_${streamId}">0.0s</span>
+                                    </div>
+                                    <button class="btn-thought-toggle" type="button" title="Collapse / Expand thoughts">▾</button>
+                                </div>
+                                <div class="chat-thought-body thinking-active" id="thoughtText_${streamId}">Contemplating context, tools, and response strategy...</div>
+                            `;
+                            const hdr = thoughtCard.querySelector(".chat-thought-header");
+                            if (hdr) {
+                                hdr.addEventListener("click", () => {
+                                    thoughtCard.classList.toggle("collapsed");
+                                });
+                            }
+                            thoughtBox.appendChild(thoughtCard);
+                        }
+                        if (!thoughtIntervalId) {
+                            thoughtIntervalId = setInterval(() => {
+                                const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
+                                if (timerEl && thoughtStartTime) {
+                                    const el = (performance.now() - thoughtStartTime) / 1000;
+                                    timerEl.textContent = `${el.toFixed(1)}s`;
+                                }
+                            }, 100);
+                        }
+
+                        this.showAvatarThoughtLive("started");
+                        this.scrollChatToBottom();
+                    } else if (eventType === "thought") {
+                        if (payload.token) {
+                            streamedThoughtText += payload.token;
+                            let thoughtBody = document.getElementById(`thoughtText_${streamId}`);
+                            if (!thoughtBody && thoughtBox) {
+                                const thoughtCard = document.createElement("div");
+                                thoughtCard.className = "chat-thought-card";
+                                thoughtCard.id = `thoughtCard_${streamId}`;
+                                thoughtCard.innerHTML = `
+                                    <div class="chat-thought-header">
+                                        <div class="chat-thought-left">
+                                            <span class="thought-brain-icon thinking">🧠</span>
+                                            <span class="thought-title-text">Thinking...</span>
+                                            <span class="thought-timer-badge" id="thoughtTimer_${streamId}">0.0s</span>
+                                        </div>
+                                        <button class="btn-thought-toggle" type="button" title="Collapse / Expand thoughts">▾</button>
+                                    </div>
+                                    <div class="chat-thought-body" id="thoughtText_${streamId}"></div>
+                                `;
+                                const hdr = thoughtCard.querySelector(".chat-thought-header");
+                                if (hdr) {
+                                    hdr.addEventListener("click", () => {
+                                        thoughtCard.classList.toggle("collapsed");
+                                    });
+                                }
+                                thoughtBox.appendChild(thoughtCard);
+                                thoughtBody = document.getElementById(`thoughtText_${streamId}`);
+                            }
+                            if (thoughtBody) {
+                                if (thoughtBody.classList.contains("thinking-active")) {
+                                    thoughtBody.classList.remove("thinking-active");
+                                    thoughtBody.textContent = "";
+                                }
+                                thoughtBody.textContent = streamedThoughtText;
+                                thoughtBody.scrollTop = thoughtBody.scrollHeight;
+                            }
+                            this.showAvatarThoughtLive("token", payload.token);
+                            this.scrollChatToBottom();
+                        }
+                    } else if (eventType === "thought_completed") {
+                        if (thoughtIntervalId) {
+                            clearInterval(thoughtIntervalId);
+                            thoughtIntervalId = null;
+                        }
+                        const finalDurSec = payload.duration_ms ? (payload.duration_ms / 1000).toFixed(1) : ((performance.now() - (thoughtStartTime || streamStartTime)) / 1000).toFixed(1);
+                        const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
+                        if (timerEl) {
+                            timerEl.textContent = `${finalDurSec}s`;
+                        }
+                        const bIcon = assistantRow.querySelector(".thought-brain-icon");
+                        if (bIcon) bIcon.classList.remove("thinking");
+
+                        if (payload.text && (!streamedThoughtText || streamedThoughtText.length < payload.text.length)) {
+                            streamedThoughtText = payload.text;
+                        }
+
+                        const thoughtCard = document.getElementById(`thoughtCard_${streamId}`);
+                        const thoughtBody = document.getElementById(`thoughtText_${streamId}`);
+
+                        if (streamedThoughtText && streamedThoughtText.trim().length > 0) {
+                            const words = streamedThoughtText.trim().split(/\s+/).length;
+                            const tTitle = assistantRow.querySelector(".thought-title-text");
+                            if (tTitle) tTitle.textContent = `Thought for ${finalDurSec}s (${words} words)`;
+                            if (thoughtBody) {
+                                thoughtBody.classList.remove("thinking-active");
+                                thoughtBody.innerHTML = this.renderChatMarkdown(streamedThoughtText);
+                            }
+                        } else {
+                            if (thoughtCard) thoughtCard.remove();
+                        }
+
+                        this.showAvatarThoughtLive("completed", {
+                            ...payload,
+                            duration_ms: parseFloat(finalDurSec) * 1000,
+                            text: streamedThoughtText,
+                        });
                     } else if (eventType === "token") {
+                        if (thoughtIntervalId) {
+                            clearInterval(thoughtIntervalId);
+                            thoughtIntervalId = null;
+                            const finalDurSec = ((performance.now() - (thoughtStartTime || streamStartTime)) / 1000).toFixed(1);
+                            const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
+                            if (timerEl) timerEl.textContent = `${finalDurSec}s`;
+                            const bIcon = assistantRow.querySelector(".thought-brain-icon");
+                            if (bIcon) bIcon.classList.remove("thinking");
+
+                            const thoughtCard = document.getElementById(`thoughtCard_${streamId}`);
+                            const thoughtBody = document.getElementById(`thoughtText_${streamId}`);
+
+                            if (streamedThoughtText && streamedThoughtText.trim().length > 0) {
+                                const words = streamedThoughtText.trim().split(/\s+/).length;
+                                const tTitle = assistantRow.querySelector(".thought-title-text");
+                                if (tTitle) tTitle.textContent = `Thought for ${finalDurSec}s (${words} words)`;
+                                if (thoughtBody) {
+                                    thoughtBody.classList.remove("thinking-active");
+                                    thoughtBody.innerHTML = this.renderChatMarkdown(streamedThoughtText);
+                                }
+                                this.showAvatarThoughtLive("completed", { duration_ms: parseFloat(finalDurSec) * 1000, text: streamedThoughtText });
+                            } else {
+                                if (thoughtCard) thoughtCard.remove();
+                                this.showAvatarThoughtLive("hide");
+                            }
+                        }
                         if (payload.token) {
                             streamedRawText += payload.token;
                             tokenCount++;
@@ -1140,6 +1575,32 @@ class RobotUI {
                             this.scrollChatToBottom();
                         }
                     } else if (eventType === "done") {
+                        if (thoughtIntervalId) {
+                            clearInterval(thoughtIntervalId);
+                            thoughtIntervalId = null;
+                            const finalDurSec = ((performance.now() - (thoughtStartTime || streamStartTime)) / 1000).toFixed(1);
+                            const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
+                            if (timerEl) timerEl.textContent = `${finalDurSec}s`;
+                            const bIcon = assistantRow.querySelector(".thought-brain-icon");
+                            if (bIcon) bIcon.classList.remove("thinking");
+
+                            const thoughtCard = document.getElementById(`thoughtCard_${streamId}`);
+                            const thoughtBody = document.getElementById(`thoughtText_${streamId}`);
+
+                            if (streamedThoughtText && streamedThoughtText.trim().length > 0) {
+                                const words = streamedThoughtText.trim().split(/\s+/).length;
+                                const tTitle = assistantRow.querySelector(".thought-title-text");
+                                if (tTitle) tTitle.textContent = `Thought for ${finalDurSec}s (${words} words)`;
+                                if (thoughtBody) {
+                                    thoughtBody.classList.remove("thinking-active");
+                                    thoughtBody.innerHTML = this.renderChatMarkdown(streamedThoughtText);
+                                }
+                                this.showAvatarThoughtLive("completed", { duration_ms: parseFloat(finalDurSec) * 1000, text: streamedThoughtText });
+                            } else {
+                                if (thoughtCard) thoughtCard.remove();
+                                this.showAvatarThoughtLive("hide");
+                            }
+                        }
                         isStreamCompleted = true;
                         if (payload.response !== undefined) {
                             streamedRawText = payload.response;
@@ -1184,6 +1645,10 @@ class RobotUI {
                         }
                         this.loadChatSessions();
                     } else if (eventType === "error") {
+                        if (thoughtIntervalId) {
+                            clearInterval(thoughtIntervalId);
+                            thoughtIntervalId = null;
+                        }
                         if (textSpan) {
                             textSpan.innerHTML += `<div class="chat-stream-error">[Error: ${this.escapeHtml(payload.error || "Unknown stream error")}]</div>`;
                         }
@@ -1197,6 +1662,10 @@ class RobotUI {
                 if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-error">[Error: ${this.escapeHtml(err.message)}]</span>`;
             }
         } finally {
+            if (thoughtIntervalId) {
+                clearInterval(thoughtIntervalId);
+                thoughtIntervalId = null;
+            }
             if (cursorSpan) cursorSpan.remove();
             this.chatStreaming = false;
             this.chatAbortController = null;
@@ -3274,6 +3743,24 @@ class RobotUI {
         if (data.event === "voice_mode_changed" && this.updateVoiceUI) {
             this.voiceEnabled = Boolean(data.voice_enabled);
             this.updateVoiceUI(this.voiceEnabled);
+        }
+
+        if (data.event === "thinking_toggled") {
+            this.thinkingEnabled = Boolean(data.enabled);
+            localStorage.setItem("robot_thinking_enabled", String(this.thinkingEnabled));
+            this.updateThinkingUI(this.thinkingEnabled);
+        }
+
+        if (data.event === "thought_started") {
+            this.showAvatarThoughtLive("started");
+        }
+
+        if (data.event === "thought" && data.token) {
+            this.showAvatarThoughtLive("token", data.token);
+        }
+
+        if (data.event === "thought_completed") {
+            this.showAvatarThoughtLive("completed", data);
         }
 
         if (data.event === "personality_switched" && data.personality) {

@@ -82,13 +82,13 @@ Barebone Linux Mint Workstation
 
 ## Phase 0 — Freeze the Baseline and Establish Release Gates
 **Priority: P0 | First**
-- [ ] Record current Git commit hash (`f50f164`), active branch (`main`), and tag baseline `v1.1-baseline`.
-- [ ] Run full 222-test suite (`.venv/bin/pytest tests/`) and record baseline report.
-- [ ] Run `.venv/bin/python .agents/skills/zero-import-errors/scripts/verify_imports.py` (verify 100% clean across all 95 files).
-- [ ] Capture current empirical P50/P95/P99 latency distributions across voice, fast-path, and tool pipelines.
-- [ ] Record baseline RAM (RSS < 2.5GB), VRAM (RTX 3050 < 3.8GB), CPU and AMD iGPU load during representative conversation.
-- [ ] Audit all 61 registered tools: map each tool to schema, handler, permission level (L0-L6), and error policy.
-- [ ] Document known edge cases and flaky tests in TRACKER.md.
+- [x] Record current Git commit hash (`ccbf143`), active branch (`main`), and tag baseline `v1.1-baseline`.
+- [x] Run full 230-test suite (`.venv/bin/pytest tests/`) and record baseline report (`docs/BASELINE_REPORT.md`).
+- [x] Run `.venv/bin/python .agents/skills/zero-import-errors/scripts/verify_imports.py` (verify 100% clean across all 97 files).
+- [x] Capture current empirical P50/P95/P99 latency distributions across voice, fast-path, and tool pipelines.
+- [x] Record baseline RAM (RSS < 2.5GB), VRAM (RTX 3050 < 3.8GB), CPU and AMD iGPU load during representative conversation.
+- [x] Audit all 61 registered tools: map each tool to schema, handler, permission level (L0-L6), and error policy (`docs/TOOL_AUDIT_REPORT.md`).
+- [x] Document known edge cases and flaky tests in TRACKER.md.
 *Acceptance Gate: Baseline commit, import audit, and benchmarks recorded. Zero unexplained errors.*
 
 ---
@@ -97,31 +97,31 @@ Barebone Linux Mint Workstation
 **Priority: P0 | Highest Engineering Priority**
 
 ### 1.1 Fix the Context Layer
-- [ ] Audit context construction, truncation, and token-budget allocation in `src/robot/core/context.py`.
-- [ ] Verify consistent assembly of persona, history, relevant Mem0 memories, profile sheet, and canonical tool schemas.
-- [ ] Enforce user attribution throughout tool execution and memory operations.
-- [ ] Prevent unrelated or stale semantic memories from polluting active context.
-- [ ] Associate tool results strictly with originating calls; strip leaking control tokens.
-- [ ] Add real-time diagnostics for context component sizes and truncation decisions at `/api/context/inspect`.
-- [ ] Validate prefix cache invariance on llama-server: keep static system prompt and canonical tools stable while dynamically scoping only user turns.
+- [x] Audit context construction, truncation, and token-budget allocation in `src/robot/core/context.py`.
+- [x] Verify consistent assembly of persona, history, relevant Mem0 memories, profile sheet, and canonical tool schemas.
+- [x] Enforce user attribution throughout tool execution and memory operations.
+- [x] Prevent unrelated or stale semantic memories from polluting active context.
+- [x] Associate tool results strictly with originating calls; strip leaking control tokens.
+- [x] Add real-time diagnostics for context component sizes and truncation decisions at `/api/context/inspect`.
+- [x] Validate prefix cache invariance on llama-server: keep static system prompt and canonical tools stable while dynamically scoping only user turns.
 *Acceptance Criteria: Context inspection shows exact assembled components; 100% cache hit on static prefix; zero context overflows.*
 
 ### 1.2 Fix Tool Calls and Planner–Executor Logic
-- [ ] Audit model tool-call parsing across raw JSON and fallback formats in `src/robot/tools/planner.py` and `engine.py`.
-- [ ] Validate tool names and arguments against registered schemas before execution via `PermissionManager`.
-- [ ] Enforce strict type coercion and reject ambiguous or out-of-range values using `@harden_tool_inputs`.
-- [ ] Enforce sequential planner boundaries: max steps (capped at 5), total execution deadlines, and cancellation.
-- [ ] Standardize tool outcomes: `ToolOutcomeStatus.SUCCESS`, `FAILURE`, `DENIED`, `TIMEOUT`, `CANCELLED`.
-- [ ] Enforce timeouts (3.0s cap for network tools) and idempotency guarding to prevent duplicate execution on retries.
-- [ ] Require explicit user confirmation for consequential actions (L3 External, L4 System, L5 Development).
-- [ ] Verify graceful recovery when tools return malformed output or time out.
+- [x] Audit model tool-call parsing across raw JSON and fallback formats in `src/robot/tools/planner.py` and `engine.py`.
+- [x] Validate tool names and arguments against registered schemas before execution via `PermissionManager`.
+- [x] Enforce strict type coercion and reject ambiguous or out-of-range values using `@harden_tool_inputs`.
+- [x] Enforce sequential planner boundaries: max steps (capped at 5), total execution deadlines, and cancellation.
+- [x] Standardize tool outcomes: `ToolOutcomeStatus.SUCCESS`, `FAILURE`, `DENIED`, `TIMEOUT`, `CANCELLED`.
+- [x] Enforce timeouts (3.0s cap for network tools) and idempotency guarding to prevent duplicate execution on retries.
+- [x] Require explicit user confirmation for consequential actions (L3 External, L4 System, L5 Development).
+- [x] Verify graceful recovery when tools return malformed output or time out.
 *Acceptance Criteria: Invalid arguments never reach handlers; timed-out tools cannot block conversation; planner terminates cleanly.*
 
 ### 1.3 Decide on the Two-Way Model Architecture
-- [ ] Define explicit roles for candidate models (Local Qwen3.5-4B vs Cloud Gemini / OpenRouter specialist).
-- [ ] Benchmark both candidates on representative reasoning, tool calling, and conversational tasks.
-- [ ] Compare correctness, latency, VRAM consumption, and fallback behavior.
-- [ ] Document Architecture Decision Record (ADR) in `docs/`: Keep local Qwen3.5-4B as default; route complex tasks conditionally to Cloud API without exceeding 4GB VRAM.
+- [x] Define explicit roles for candidate models (Local Qwen3.5-4B vs Cloud Gemini / OpenRouter specialist).
+- [x] Benchmark both candidates on representative reasoning, tool calling, and conversational tasks.
+- [x] Compare correctness, latency, VRAM consumption, and fallback behavior.
+- [x] Document Architecture Decision Record (ADR) in `docs/`: Keep local Qwen3.5-4B as default; route complex tasks conditionally to Cloud API without exceeding 4GB VRAM (`docs/adr/0001-two-way-model-architecture.md`).
 *Acceptance Criteria: Written ADR; zero permission bypass by second model; controlled fallback on API disconnection.*
 
 ---

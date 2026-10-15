@@ -41,6 +41,7 @@ class PlanStepStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     DENIAL = "denial"
+    DENIED = "denial"
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
     SKIPPED = "skipped"
@@ -215,10 +216,10 @@ class SequentialPlannerExecutor:
             if isinstance(deps, str):
                 deps = [deps]
 
-            # Security audit: check if tool requires consequential confirmation (L4+ SYSTEM or DEVELOPMENT)
+            # Security audit: check if tool requires consequential confirmation (L3+ EXTERNAL, SYSTEM, or DEVELOPMENT)
             t_def = self.registry.get(tool_name)
             requires_confirm = False
-            if t_def and int(getattr(t_def, "permission_level", 0)) >= 4:
+            if t_def and int(getattr(t_def, "permission_level", 0)) >= 3:
                 requires_confirm = True
 
             step = PlanStep(
@@ -296,7 +297,7 @@ class SequentialPlannerExecutor:
         step.result = None
 
         t_def = self.registry.get(new_tool)
-        step.requires_confirmation = bool(t_def and int(getattr(t_def, "permission_level", 0)) >= 4)
+        step.requires_confirmation = bool(t_def and int(getattr(t_def, "permission_level", 0)) >= 3)
         step.confirmed = False
 
         logger.info("step_revised", plan_id=plan.plan_id, step_id=step_id, new_tool=new_tool)
