@@ -61,3 +61,8 @@ graphify-out/
 qdrant_storage/
 .aider*
 .cache
+
+# Web
+web/node_modules/
+web/.next/
+web/out/

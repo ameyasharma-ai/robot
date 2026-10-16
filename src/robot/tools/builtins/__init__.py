@@ -1135,5 +1135,21 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     from robot.tools.builtins.death_clock import register_death_clock_tools
     register_death_clock_tools(engine)
 
+    # --- Mobile Phone Alerts & SMS Communication Tools (Phase 5.1 & 5.5) ---
+    from robot.tools.builtins.communication_phone import register_communication_tools
+    register_communication_tools(engine)
+
+    # --- Deep Research Agent Tools (Phase 5.2) ---
+    from robot.tools.builtins.deep_research import register_deep_research_tools
+    register_deep_research_tools(engine)
+
+    # --- Autonomous Web Browser Agent Tools (Phase 5.3) ---
+    from robot.tools.builtins.web_agent import register_web_agent_tools
+    register_web_agent_tools(engine)
+
+    # --- Generative Procedural Music Synthesis Tools (Phase 5.4) ---
+    from robot.tools.builtins.music import register_music_generator_tools
+    register_music_generator_tools(engine)
+
 
 

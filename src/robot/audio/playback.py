@@ -160,6 +160,13 @@ class AudioPlayer:
                         chunk = chunk.reshape(-1, 1)
 
                     if interrupt.is_set():
+                        logger.info("playback_interrupted_barge_in")
+                        with self._lock:
+                            if self._stream is not None:
+                                try:
+                                    self._stream.abort()
+                                except Exception:
+                                    pass
                         return False
 
                     with self._lock:
@@ -179,7 +186,7 @@ class AudioPlayer:
             self._last_play_time = time.time()
 
     def stop(self) -> None:
-        """Immediately stop playback without crashing underlying ALSA mmap buffers."""
+        """Immediately stop playback and purge sounddevice/ALSA ring buffer on barge-in."""
         self._is_playing = False
         self._current_rms = 0.0
         self._recent_rms.clear()
@@ -188,9 +195,13 @@ class AudioPlayer:
         with self._lock:
             if self._stream is not None:
                 try:
-                    self._stream.stop()
+                    # abort() immediately discards unplayed frames in hardware buffer (<40ms)
+                    self._stream.abort()
                 except Exception:
-                    pass
+                    try:
+                        self._stream.stop()
+                    except Exception:
+                        pass
 
     def close(self) -> None:
         """Release PortAudio resources on shutdown."""

@@ -9,7 +9,7 @@ Exports:
 from robot.perception.camera import CameraCapture
 from robot.perception.engine import PerceptionEngine
 from robot.perception.vlm import LocalVLMGrounding
-from robot.perception.world import DetectedPerson, WorldState
+from robot.perception.world import DetectedObject, DetectedPerson, TabletopItem, WorldState
 
 __all__ = [
     "CameraCapture",
@@ -17,5 +17,7 @@ __all__ = [
     "LocalVLMGrounding",
     "WorldState",
     "DetectedPerson",
+    "DetectedObject",
+    "TabletopItem",
 ]
 

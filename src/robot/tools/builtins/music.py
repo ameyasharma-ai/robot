@@ -4,19 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
+import struct
 import subprocess
 import threading
 import time
 import urllib.parse
+import wave
 import webbrowser
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import yaml
 
 from robot.telemetry import get_logger
+from robot.tools import PermissionLevel, ToolDefinition
+
+if TYPE_CHECKING:
+    from robot.core.engine import RobotEngine
 
 logger = get_logger("tools.music")
 
@@ -74,9 +82,10 @@ class MusicPlayerService:
         return self._is_playing or self._music_active
 
     def list_local_tracks(self) -> list[str]:
-        """Scan local music directory and ~/Music and return list of track names."""
+        """Scan local music directory, generated audio directory, and ~/Music and return list of track names."""
         music_dir = Path(self.config.get("local_music_dir", "data/music"))
-        search_dirs = [music_dir, Path.home() / "Music"]
+        gen_dir = Path("data/generated_audio")
+        search_dirs = [music_dir, gen_dir, Path.home() / "Music"]
         valid_exts = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm", ".opus"}
         tracks = []
         for s_dir in search_dirs:
@@ -142,10 +151,12 @@ class MusicPlayerService:
                 return False
 
     def find_local_track(self, query: str) -> Path | None:
-        """Scan local music directory and ~/Music to find the best match for query."""
+        """Scan local music directory, generated audio directory, and ~/Music to find the best match for query."""
         music_dir = Path(self.config.get("local_music_dir", "data/music"))
         music_dir.mkdir(parents=True, exist_ok=True)
-        search_dirs = [music_dir, Path.home() / "Music"]
+        gen_dir = Path("data/generated_audio")
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        search_dirs = [music_dir, gen_dir, Path.home() / "Music"]
         valid_exts = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm", ".opus"}
 
         found_files: list[Path] = []
@@ -1245,4 +1256,305 @@ class MusicPlayerService:
                 "status": "error",
                 "message": f"Failed to execute EasyEffects command: {str(e)}",
             }
+
+
+class MusicGenerator:
+    """Generative procedural music synthesizer.
+
+    Synthesizes rich multi-layered WAV audio clips (cyberpunk, synthwave, ambient,
+    lofi, cinematic, chiptune, upbeat, calm) across customizable BPM, duration,
+    and scales without blocking the main event loop.
+    """
+
+    SCALES: dict[str, list[float]] = {
+        "cyberpunk": [110.0, 130.81, 146.83, 164.81, 196.0, 220.0, 261.63],
+        "synthwave": [130.81, 146.83, 164.81, 174.61, 196.0, 220.0, 246.94],
+        "ambient": [146.83, 164.81, 174.61, 196.0, 220.0, 246.94, 261.63],
+        "lofi": [130.81, 155.56, 174.61, 196.0, 233.08, 261.63],
+        "cinematic": [98.0, 116.54, 130.81, 146.83, 164.81, 196.0],
+        "chiptune": [261.63, 293.66, 329.63, 392.0, 440.0, 523.25],
+        "upbeat": [130.81, 146.83, 164.81, 196.0, 220.0, 261.63],
+        "calm": [110.0, 130.81, 146.83, 164.81, 220.0],
+    }
+
+    def __init__(self, output_dir: str = "data/generated_audio") -> None:
+        """Initialize the procedural music generator.
+
+        Args:
+            output_dir: Directory where generated WAV artifacts will be stored.
+        """
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def synthesize(
+        self,
+        prompt: str = "cyberpunk neon pulse",
+        style: str = "synthwave",
+        duration_seconds: float = 15.0,
+        bpm: int = 120,
+    ) -> Path:
+        """Synthesize a complete multi-layered audio clip.
+
+        Args:
+            prompt: Text prompt or theme description.
+            style: Genre or musical mood preset.
+            duration_seconds: Length of output audio clip (clamped between 10.0 and 30.0).
+            bpm: Tempo in beats per minute (clamped between 60 and 180).
+
+        Returns:
+            Path to the generated 16-bit PCM WAV audio file.
+
+        Raises:
+            ValueError: If parameters are invalid.
+        """
+        dur = max(10.0, min(30.0, float(duration_seconds)))
+        tempo = max(60, min(180, int(bpm)))
+        clean_style = style.lower().strip() if style else "synthwave"
+        if clean_style not in self.SCALES:
+            clean_style = "synthwave"
+
+        sample_rate = 44100
+        total_samples = int(dur * sample_rate)
+
+        scale = self.SCALES[clean_style]
+        beat_dur = 60.0 / tempo
+        measure_dur = beat_dur * 4.0
+
+        # Layer 1: Bassline (Sawtooth + Sine sub-bass with exponential decay envelope)
+        bass_audio = np.zeros(total_samples, dtype=np.float32)
+        bass_step = beat_dur
+        num_bass_notes = int(np.ceil(dur / bass_step))
+        for i in range(num_bass_notes):
+            n_start = int(i * bass_step * sample_rate)
+            n_end = min(total_samples, int((i + 1) * bass_step * sample_rate))
+            if n_start >= total_samples:
+                break
+            note_len = n_end - n_start
+            note_t = np.linspace(0, note_len / sample_rate, note_len, endpoint=False)
+            freq = scale[(i % len(scale))] * 0.5
+            env = np.exp(-note_t * 2.5)
+            sub = np.sin(2 * np.pi * freq * note_t) * 0.6
+            harm = np.sin(2 * np.pi * freq * 2.0 * note_t) * 0.25
+            bass_audio[n_start:n_end] += (sub + harm) * env * 0.45
+
+        # Layer 2: Arpeggiator / Lead Melody
+        arp_audio = np.zeros(total_samples, dtype=np.float32)
+        step_dur = beat_dur / 2.0
+        num_steps = int(np.ceil(dur / step_dur))
+        for step in range(num_steps):
+            n_start = int(step * step_dur * sample_rate)
+            n_end = min(total_samples, int((step + 1) * step_dur * sample_rate))
+            if n_start >= total_samples:
+                break
+            note_len = n_end - n_start
+            note_t = np.linspace(0, note_len / sample_rate, note_len, endpoint=False)
+            idx = (step * 2 + (step // 4)) % len(scale)
+            freq = scale[idx]
+            if clean_style == "chiptune":
+                sig = np.sign(np.sin(2 * np.pi * freq * note_t)) * 0.2
+            else:
+                vib = 1.0 + 0.015 * np.sin(2 * np.pi * 5.0 * note_t)
+                sig = np.sin(2 * np.pi * freq * vib * note_t) * 0.35
+            env = np.exp(-note_t * 4.0)
+            arp_audio[n_start:n_end] += sig * env
+
+        # Layer 3: Lush Chords / Ambient Pad
+        pad_audio = np.zeros(total_samples, dtype=np.float32)
+        chord_step = measure_dur
+        num_chords = int(np.ceil(dur / chord_step))
+        for c in range(num_chords):
+            n_start = int(c * chord_step * sample_rate)
+            n_end = min(total_samples, int((c + 1) * chord_step * sample_rate))
+            if n_start >= total_samples:
+                break
+            note_len = n_end - n_start
+            note_t = np.linspace(0, note_len / sample_rate, note_len, endpoint=False)
+            root_idx = (c * 2) % len(scale)
+            third_idx = (root_idx + 2) % len(scale)
+            fifth_idx = (root_idx + 4) % len(scale)
+            f1, f2, f3 = scale[root_idx], scale[third_idx], scale[fifth_idx]
+            chord = (
+                np.sin(2 * np.pi * f1 * note_t)
+                + np.sin(2 * np.pi * (f1 * 1.004) * note_t) * 0.5
+                + np.sin(2 * np.pi * f2 * note_t) * 0.7
+                + np.sin(2 * np.pi * f3 * note_t) * 0.7
+            )
+            attack_s = min(0.6, (n_end - n_start) / sample_rate / 3)
+            attack_samples = int(attack_s * sample_rate)
+            pad_env = np.ones(note_len, dtype=np.float32)
+            if attack_samples > 0:
+                pad_env[:attack_samples] = np.linspace(0, 1, attack_samples)
+            decay_samples = int(0.5 * sample_rate)
+            if note_len > decay_samples:
+                pad_env[-decay_samples:] = np.linspace(1, 0, decay_samples)
+            pad_audio[n_start:n_end] += chord * pad_env * 0.22
+
+        # Layer 4: Percussion / Drums (Kick, Snare, Hi-hat)
+        drum_audio = np.zeros(total_samples, dtype=np.float32)
+        num_beats = int(np.ceil(dur / beat_dur))
+        np_rng = np.random.default_rng(seed=abs(hash(prompt)) % (2**31))
+
+        for b in range(num_beats):
+            beat_time = b * beat_dur
+            n_start = int(beat_time * sample_rate)
+            if n_start >= total_samples:
+                break
+
+            beat_in_measure = b % 4
+            is_kick = (beat_in_measure in (0, 2)) or (clean_style in ("synthwave", "cyberpunk", "upbeat"))
+            if is_kick:
+                k_len = min(int(0.25 * sample_rate), total_samples - n_start)
+                k_t = np.linspace(0, 0.25, k_len, endpoint=False)
+                k_freq = 45.0 + 95.0 * np.exp(-k_t * 22.0)
+                phase = 2 * np.pi * np.cumsum(k_freq) / sample_rate
+                k_env = np.exp(-k_t * 14.0)
+                drum_audio[n_start : n_start + k_len] += np.sin(phase) * k_env * 0.65
+
+            if beat_in_measure in (1, 3):
+                s_len = min(int(0.20 * sample_rate), total_samples - n_start)
+                s_t = np.linspace(0, 0.20, s_len, endpoint=False)
+                s_env = np.exp(-s_t * 18.0)
+                noise = np_rng.uniform(-1.0, 1.0, s_len).astype(np.float32)
+                tone = np.sin(2 * np.pi * 180.0 * s_t) * 0.3
+                drum_audio[n_start : n_start + s_len] += (noise * 0.7 + tone) * s_env * 0.35
+
+            offbeat_start = n_start + int(0.5 * beat_dur * sample_rate)
+            if offbeat_start < total_samples:
+                h_len = min(int(0.06 * sample_rate), total_samples - offbeat_start)
+                h_t = np.linspace(0, 0.06, h_len, endpoint=False)
+                h_env = np.exp(-h_t * 40.0)
+                h_noise = np_rng.uniform(-1.0, 1.0, h_len).astype(np.float32)
+                drum_audio[offbeat_start : offbeat_start + h_len] += h_noise * h_env * 0.20
+
+        # Master Stereo Mix
+        left = bass_audio + arp_audio * 0.7 + pad_audio * 0.85 + drum_audio * 0.9
+        right = bass_audio + arp_audio * 0.85 + pad_audio * 0.7 + drum_audio * 0.9
+
+        # Master Limiter with headroom
+        peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))), 1e-4)
+        left = (left / peak) * 0.89
+        right = (right / peak) * 0.89
+
+        # Fade in and Fade out
+        fade_in_len = int(0.2 * sample_rate)
+        fade_out_len = int(0.8 * sample_rate)
+        if total_samples > fade_in_len + fade_out_len:
+            in_curve = np.linspace(0, 1, fade_in_len, dtype=np.float32)
+            out_curve = np.linspace(1, 0, fade_out_len, dtype=np.float32)
+            left[:fade_in_len] *= in_curve
+            right[:fade_in_len] *= in_curve
+            left[-fade_out_len:] *= out_curve
+            right[-fade_out_len:] *= out_curve
+
+        # Convert to 16-bit PCM stereo
+        left_i16 = (np.clip(left, -1.0, 1.0) * 32767).astype(np.int16)
+        right_i16 = (np.clip(right, -1.0, 1.0) * 32767).astype(np.int16)
+        stereo_interleaved = np.empty((total_samples * 2,), dtype=np.int16)
+        stereo_interleaved[0::2] = left_i16
+        stereo_interleaved[1::2] = right_i16
+
+        clean_tag = re.sub(r"[^\w\-]", "_", prompt[:20].lower()).strip("_") or clean_style
+        ts = int(time.time())
+        filename = f"gen_music_{clean_style}_{clean_tag}_{ts}.wav"
+        file_path = self.output_dir / filename
+
+        with wave.open(str(file_path), "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(stereo_interleaved.tobytes())
+
+        logger.info(
+            "music_synthesized_successfully",
+            file=str(file_path),
+            duration_s=dur,
+            bpm=tempo,
+            style=clean_style,
+        )
+        return file_path
+
+
+def register_music_generator_tools(engine: RobotEngine) -> None:
+    """Register music.generate tool with the Robot Core engine.
+
+    Args:
+        engine: RobotEngine instance containing tool_registry.
+    """
+    generator = MusicGenerator()
+    player = MusicPlayerService.get_instance()
+
+    async def generate_music(
+        prompt: str = "cyberpunk neon pulse",
+        style: str = "synthwave",
+        duration_seconds: float = 15.0,
+        bpm: int = 120,
+        auto_play: bool = True,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Synthesize a rich procedural music clip and optionally play it immediately.
+
+        Args:
+            prompt: Text description or theme of music.
+            style: Musical style ('cyberpunk', 'synthwave', 'ambient', 'lofi', 'cinematic', 'chiptune', 'upbeat', 'calm').
+            duration_seconds: Clip duration in seconds (10 to 30).
+            bpm: Tempo in beats per minute (60 to 180).
+            auto_play: Whether to immediately queue and start playback of the generated clip.
+
+        Returns:
+            Dictionary containing audio file metadata and playback status.
+        """
+        p = (prompt or kwargs.get("query") or kwargs.get("theme") or kwargs.get("text") or "cyberpunk synth pulse").strip()
+        st = (style or kwargs.get("genre") or kwargs.get("mood") or "synthwave").strip().lower()
+        d = float(duration_seconds if duration_seconds is not None else kwargs.get("duration", 15.0))
+        b = int(bpm if bpm is not None else kwargs.get("tempo", 120))
+
+        # Run synthesis in background thread to never block voice pipeline
+        file_path = await asyncio.to_thread(
+            generator.synthesize,
+            prompt=p,
+            style=st,
+            duration_seconds=d,
+            bpm=b,
+        )
+
+        play_result = None
+        if auto_play:
+            play_result = await asyncio.to_thread(player.play_local, file_path.stem, wait_speech_engine=engine)
+
+        return {
+            "status": "ok",
+            "file_path": str(file_path),
+            "filename": file_path.name,
+            "style": st,
+            "duration_seconds": d,
+            "bpm": b,
+            "prompt": p,
+            "auto_play": auto_play,
+            "playback": play_result,
+            "message": f"Generated {d:.1f}s {st} music track saved to {file_path.name}"
+            + (" and playback started." if auto_play else "."),
+        }
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="music.generate",
+            description="Synthesize procedural / generative AI music tracks (10 to 30s) across styles (cyberpunk, synthwave, ambient, lofi, cinematic, chiptune, upbeat, calm). Outputs high-fidelity stereo WAV audio, saves to data/generated_audio/, and optionally starts playback immediately.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Theme, description, or mood of the music (e.g. 'synthwave midnight drive')"},
+                    "style": {"type": "string", "description": "Style: 'cyberpunk', 'synthwave', 'ambient', 'lofi', 'cinematic', 'chiptune', 'upbeat', 'calm'", "default": "synthwave"},
+                    "duration_seconds": {"type": "number", "description": "Duration in seconds (between 10.0 and 30.0)", "default": 15.0},
+                    "bpm": {"type": "integer", "description": "Beats per minute (60 to 180)", "default": 120},
+                    "auto_play": {"type": "boolean", "description": "Automatically play the generated track upon completion", "default": True},
+                },
+                "required": ["prompt"],
+            },
+            handler=generate_music,
+            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            family="music",
+            timeout_s=30.0,
+            is_idempotent=False,
+        )
+    )
 

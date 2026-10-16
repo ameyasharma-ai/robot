@@ -192,6 +192,22 @@ class ToolRegistry:
         "health.death_clock": "system.death_clock",
         "life_expectancy": "system.death_clock",
         "longevity": "system.death_clock",
+        "music_generate": "music.generate",
+        "generate_music": "music.generate",
+        "compose_music": "music.generate",
+        "synthesize_music": "music.generate",
+        "send_notification": "phone.send_notification",
+        "send_phone_notification": "phone.send_notification",
+        "phone_notification": "phone.send_notification",
+        "push_notification": "phone.send_notification",
+        "phone_alert": "phone.send_notification",
+        "send_sms": "communication.send_sms",
+        "draft_sms": "communication.draft_sms",
+        "sms": "communication.send_sms",
+        "deep_research": "research.deep_research",
+        "research": "research.deep_research",
+        "browser_agent": "web.browser_agent",
+        "web_agent": "web.browser_agent",
     }
 
     def __init__(self) -> None:
@@ -278,7 +294,8 @@ class ToolRouter:
             "search online", "search web", "search for", "search", "look up", "find online", "browse web",
             "google", "duckduckgo", "latest news", "price of", "release date", "current weather", "weather in",
             "sports score", "stock price", "specs of", "specifications", "deep search", "search deeply",
-            "date of", "when is", "tell me the date", "event", "news on", "look for", "find out", "lookup"
+            "date of", "when is", "tell me the date", "event", "news on", "look for", "find out", "lookup",
+            "browser agent", "web agent", "headless browser", "browse page", "navigate url"
         ],
         "music": [
             "play", "song", "music", "track", "spotify", "soundcloud", "youtube", "ytdlp", "listen to", "put on",
@@ -296,7 +313,8 @@ class ToolRouter:
             "local collection", "local songs", "local files", "downloaded songs", "my collection", "library", "what songs do you have", "what songs are there", "what music do you have",
             "volume", "set volume", "music volume", "turn it up", "turn it down", "louder", "quieter", "mute", "unmute", "audio", "vol",
             "restart", "restart it", "restart the song", "restart song", "restart music",
-            "equalizer", "equaliser", "eq", "preset", "sound profile", "audio profile", "robot preset", "bass boost", "spatial audio", "sub bass", "reverb preset"
+            "equalizer", "equaliser", "eq", "preset", "sound profile", "audio profile", "robot preset", "bass boost", "spatial audio", "sub bass", "reverb preset",
+            "generate music", "make music", "compose music", "create a song", "generate song", "generate a beat", "synthesize music", "synthwave", "lofi beat", "cyberpunk beat"
         ],
         "image": ["generate image", "generate an image", "create image", "create an image", "draw an image", "paint an image", "illustration of", "render image", "generate picture"],
         "motion": ["wave", "raise hand", "kick", "walk", "turn around", "point at", "dance", "gesture", "stop motion", "reset pose", "nod head"],
@@ -345,6 +363,7 @@ class ToolRouter:
         "notes": ["note", "notes", "markdown note", "knowledge vault", "tag note", "search notes", "notes vault", "vault search"],
         "translation": ["translate", "translation", "translate to", "translate text", "translate from"],
         "network": ["wifi", "wi-fi", "wifi scan", "scan wifi", "access points", "speedtest", "network speed", "bandwidth test", "ping", "internet connection"],
+        "communication": ["notification", "notify phone", "send to phone", "alert phone", "push alert", "phone alert", "sms", "text message", "send sms", "send text", "draft sms", "draft text"],
     }
 
     CHAINING_CONJUNCTIONS: list[str] = [

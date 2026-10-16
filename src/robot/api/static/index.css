@@ -1,128 +1,132 @@
-/* Robot Core — Matrix Cyber-Deck Operating System Design System */
+/* Robot Core — Production Cyberdeck & Neural Command OS Design System */
 
 :root {
-    --bg-dark: #020503;
-    --bg-deep: #010302;
-    --bg-card: rgba(4, 15, 8, 0.85);
-    --border-card: rgba(0, 255, 102, 0.2);
-    --border-accent: rgba(0, 255, 102, 0.6);
+    --bg-dark: #07090e;
+    --bg-deep: #030407;
+    --bg-card: rgba(13, 17, 24, 0.82);
+    --bg-card-hover: rgba(22, 28, 40, 0.9);
+    --border-card: rgba(255, 255, 255, 0.08);
+    --border-accent: rgba(0, 242, 254, 0.45);
 
-    /* Matrix Phosphor & Cyberpunk Tones */
-    --matrix-green: #00ff66;
-    --matrix-bright: #39ff14;
-    --matrix-glow: #00e659;
-    --matrix-dark: #003b14;
-    --matrix-emerald: #05d66d;
-    --primary-cyan: #00f2fe;
-    --primary-blue: #00e5ff;
-    --accent-emerald: #00ff66;
-    --accent-amber: #ffcc00;
-    --accent-crimson: #ff1744;
-    --accent-purple: #b5179e;
+    /* Precision Aero & Cyberpunk Tones */
+    --matrix-green: #10b981;
+    --matrix-bright: #34d399;
+    --matrix-glow: #059669;
+    --matrix-dark: #064e3b;
+    --matrix-emerald: #10b981;
+    --primary-cyan: #06b6d4;
+    --primary-blue: #3b82f6;
+    --accent-emerald: #10b981;
+    --accent-amber: #f59e0b;
+    --accent-crimson: #ef4444;
+    --accent-purple: #8b5cf6;
 
-    --text-main: #e0fbe7;
-    --text-muted: #80b58e;
-    --text-dim: #386b46;
+    --text-main: #f3f4f6;
+    --text-muted: #9ca3af;
+    --text-dim: #4b5563;
 
-    --glow-matrix: 0 0 20px rgba(0, 255, 102, 0.45);
-    --glow-cyan: 0 0 20px rgba(0, 242, 254, 0.4);
-    --glow-emerald: 0 0 20px rgba(0, 255, 102, 0.45);
-    --glow-amber: 0 0 20px rgba(255, 204, 0, 0.4);
-    --glow-crimson: 0 0 20px rgba(255, 23, 68, 0.5);
+    --glow-matrix: 0 0 24px rgba(16, 185, 129, 0.22);
+    --glow-cyan: 0 0 24px rgba(6, 182, 212, 0.22);
+    --glow-emerald: 0 0 24px rgba(16, 185, 129, 0.22);
+    --glow-amber: 0 0 24px rgba(245, 158, 11, 0.22);
+    --glow-crimson: 0 0 24px rgba(239, 68, 68, 0.25);
 
-    --font-ui: 'Share Tech Mono', 'Outfit', sans-serif;
+    --font-ui: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
 /* ─── PERSONA DYNAMIC COLOR THEMES ───────────────────────────────────── */
-/* ─── PERSONA DYNAMIC COLOR THEMES ───────────────────────────────────── */
 
-/* 1. CYPHER / NEO — Red Hacker Theme */
+/* 1. CYPHER / NEO — Red Carbon / Aerospace Hacker Theme */
 body[data-theme="neo"], body[data-theme="cypher"] {
-    --matrix-green: #ff1744;
-    --matrix-bright: #ff5252;
-    --matrix-glow: #ff1744;
-    --matrix-dark: #3a000c;
-    --matrix-emerald: #ff2a4b;
-    --primary-cyan: #ff4081;
-    --primary-blue: #ff1744;
-    --accent-emerald: #ff1744;
-    --border-card: rgba(255, 23, 68, 0.28);
-    --border-accent: rgba(255, 23, 68, 0.65);
-    --text-main: #ffe6ea;
-    --text-muted: #ff8095;
-    --text-dim: #8a1426;
-    --bg-dark: #0a0103;
-    --bg-deep: #050001;
-    --bg-card: rgba(26, 4, 10, 0.88);
-    --glow-matrix: 0 0 20px rgba(255, 23, 68, 0.5);
-    --glow-cyan: 0 0 20px rgba(255, 64, 129, 0.45);
+    --matrix-green: #f43f5e;
+    --matrix-bright: #fb7185;
+    --matrix-glow: #e11d48;
+    --matrix-dark: #4c0519;
+    --matrix-emerald: #f43f5e;
+    --primary-cyan: #ec4899;
+    --primary-blue: #f43f5e;
+    --accent-emerald: #f43f5e;
+    --border-card: rgba(244, 63, 94, 0.16);
+    --border-accent: rgba(244, 63, 94, 0.55);
+    --text-main: #fff1f2;
+    --text-muted: #fda4af;
+    --text-dim: #9f1239;
+    --bg-dark: #0a0407;
+    --bg-deep: #050204;
+    --bg-card: rgba(20, 6, 12, 0.85);
+    --bg-card-hover: rgba(30, 10, 18, 0.92);
+    --glow-matrix: 0 0 24px rgba(244, 63, 94, 0.25);
+    --glow-cyan: 0 0 24px rgba(236, 72, 153, 0.25);
 }
 
-/* 2. GLADOS — Aperture Cyberpunk Phosphor Green Theme */
+/* 2. GLADOS — Aperture High-Tech Phosphor Theme */
 body[data-theme="glados"] {
-    --matrix-green: #00ff66;
-    --matrix-bright: #66ff99;
-    --matrix-glow: #00ff66;
-    --matrix-dark: #002910;
-    --matrix-emerald: #00ff66;
-    --primary-cyan: #00ffcc;
-    --primary-blue: #00ff66;
-    --accent-emerald: #00ff66;
-    --border-card: rgba(0, 255, 102, 0.28);
-    --border-accent: rgba(0, 255, 102, 0.65);
-    --text-main: #e6fff0;
-    --text-muted: #80ffb3;
-    --text-dim: #1a804d;
-    --bg-dark: #010e05;
-    --bg-deep: #000702;
-    --bg-card: rgba(4, 28, 12, 0.88);
-    --glow-matrix: 0 0 20px rgba(0, 255, 102, 0.45);
-    --glow-cyan: 0 0 20px rgba(0, 255, 204, 0.45);
+    --matrix-green: #10b981;
+    --matrix-bright: #34d399;
+    --matrix-glow: #059669;
+    --matrix-dark: #064e3b;
+    --matrix-emerald: #10b981;
+    --primary-cyan: #14b8a6;
+    --primary-blue: #06b6d4;
+    --accent-emerald: #10b981;
+    --border-card: rgba(16, 185, 129, 0.16);
+    --border-accent: rgba(16, 185, 129, 0.55);
+    --text-main: #f0fdf4;
+    --text-muted: #86efac;
+    --text-dim: #166534;
+    --bg-dark: #020b06;
+    --bg-deep: #010603;
+    --bg-card: rgba(6, 24, 14, 0.85);
+    --bg-card-hover: rgba(10, 36, 22, 0.92);
+    --glow-matrix: 0 0 24px rgba(16, 185, 129, 0.25);
+    --glow-cyan: 0 0 24px rgba(20, 184, 166, 0.25);
 }
 
-/* 3. LUNA — Cute Hot Pink / Pastel Rose Theme */
+/* 3. LUNA — Rose Gold / Soft Pastel Violet Theme */
 body[data-theme="luna"] {
-    --matrix-green: #ff3399;
-    --matrix-bright: #ff66b2;
-    --matrix-glow: #ff3399;
-    --matrix-dark: #3b0024;
-    --matrix-emerald: #ff4da6;
-    --primary-cyan: #ff80bf;
-    --primary-blue: #ff3399;
-    --accent-emerald: #ff3399;
-    --border-card: rgba(255, 51, 153, 0.28);
-    --border-accent: rgba(255, 51, 153, 0.65);
-    --text-main: #ffe6f5;
-    --text-muted: #ff99d6;
-    --text-dim: #801a59;
-    --bg-dark: #0f020b;
-    --bg-deep: #080106;
-    --bg-card: rgba(28, 6, 20, 0.88);
-    --glow-matrix: 0 0 20px rgba(255, 51, 153, 0.45);
-    --glow-cyan: 0 0 20px rgba(255, 128, 191, 0.45);
+    --matrix-green: #ec4899;
+    --matrix-bright: #f472b6;
+    --matrix-glow: #db2777;
+    --matrix-dark: #500724;
+    --matrix-emerald: #ec4899;
+    --primary-cyan: #f472b6;
+    --primary-blue: #c084fc;
+    --accent-emerald: #ec4899;
+    --border-card: rgba(236, 72, 153, 0.16);
+    --border-accent: rgba(236, 72, 153, 0.55);
+    --text-main: #fdf2f8;
+    --text-muted: #f9a8d4;
+    --text-dim: #9d174d;
+    --bg-dark: #0c0409;
+    --bg-deep: #060205;
+    --bg-card: rgba(24, 8, 18, 0.85);
+    --bg-card-hover: rgba(36, 12, 28, 0.92);
+    --glow-matrix: 0 0 24px rgba(236, 72, 153, 0.25);
+    --glow-cyan: 0 0 24px rgba(192, 132, 252, 0.25);
 }
 
-/* 4. ARIA — Cyberpunk Amethyst Violet Theme */
+/* 4. ARIA — Solar Amber / Deep Topaz Theme */
 body[data-theme="aria"] {
-    --matrix-green: #a855f7;
-    --matrix-bright: #c084fc;
-    --matrix-glow: #a855f7;
-    --matrix-dark: #27004d;
-    --matrix-emerald: #b566ff;
-    --primary-cyan: #e879f9;
-    --primary-blue: #a855f7;
-    --accent-emerald: #a855f7;
-    --border-card: rgba(168, 85, 247, 0.28);
-    --border-accent: rgba(168, 85, 247, 0.65);
-    --text-main: #f5e6ff;
-    --text-muted: #d8b4fe;
-    --text-dim: #5c1d91;
-    --bg-dark: #0b0112;
-    --bg-deep: #050009;
-    --bg-card: rgba(20, 4, 28, 0.88);
-    --glow-matrix: 0 0 20px rgba(168, 85, 247, 0.45);
-    --glow-cyan: 0 0 20px rgba(232, 121, 249, 0.45);
+    --matrix-green: #f59e0b;
+    --matrix-bright: #fbbf24;
+    --matrix-glow: #d97706;
+    --matrix-dark: #451a03;
+    --matrix-emerald: #f59e0b;
+    --primary-cyan: #fb923c;
+    --primary-blue: #f59e0b;
+    --accent-emerald: #f59e0b;
+    --border-card: rgba(245, 158, 11, 0.16);
+    --border-accent: rgba(245, 158, 11, 0.55);
+    --text-main: #fffbeb;
+    --text-muted: #fcd34d;
+    --text-dim: #92400e;
+    --bg-dark: #0a0703;
+    --bg-deep: #050301;
+    --bg-card: rgba(22, 14, 6, 0.85);
+    --bg-card-hover: rgba(34, 22, 10, 0.92);
+    --glow-matrix: 0 0 24px rgba(245, 158, 11, 0.25);
+    --glow-cyan: 0 0 24px rgba(251, 146, 60, 0.25);
 }
 
 
@@ -156,11 +160,11 @@ body {
     flex-direction: column;
     position: relative;
     background-image: 
-        radial-gradient(circle at 15% 15%, rgba(0, 40, 15, 0.6) 0%, transparent 60%),
-        radial-gradient(circle at 85% 85%, rgba(0, 20, 10, 0.8) 0%, transparent 70%),
-        linear-gradient(rgba(0, 255, 102, 0.04) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 255, 102, 0.04) 1px, transparent 1px);
-    background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
+        radial-gradient(circle at 20% 15%, rgba(30, 58, 138, 0.08) 0%, transparent 60%),
+        radial-gradient(circle at 80% 85%, rgba(15, 23, 42, 0.8) 0%, transparent 70%),
+        linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+    background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
 }
 
 /* ─── Ambient Matrix Rain Canvas ───────────────────────────────────── */
@@ -172,14 +176,24 @@ body {
     height: 100vh;
     z-index: 1;
     pointer-events: none;
-    opacity: 0.18;
+    opacity: 0.05;
+    transition: opacity 0.5s ease;
+}
+
+body.mode-chat .matrix-rain-canvas {
+    opacity: 0.02;
+}
+
+body.mode-dual .matrix-rain-canvas {
+    opacity: 0.05;
 }
 
 /* ─── Top Navigation Header ────────────────────────────────────────── */
 .top-nav {
     height: 60px;
-    background: rgba(2, 8, 4, 0.9);
-    backdrop-filter: blur(14px);
+    background: rgba(10, 14, 22, 0.88);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     border-bottom: 1px solid var(--border-card);
     display: flex;
     align-items: center;
@@ -187,7 +201,7 @@ body {
     padding: 0 24px;
     z-index: 50;
     user-select: none;
-    box-shadow: 0 2px 20px rgba(0, 255, 102, 0.08);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
 }
 
 .brand {
@@ -197,50 +211,53 @@ body {
 }
 
 .brand-pulse {
-    width: 10px;
-    height: 10px;
-    background: var(--matrix-green);
+    width: 9px;
+    height: 9px;
+    background: var(--matrix-bright);
     border-radius: 50%;
-    box-shadow: 0 0 12px var(--matrix-green);
-    animation: blinkGlow 1.8s infinite ease-in-out;
+    box-shadow: 0 0 14px var(--matrix-bright);
+    animation: blinkGlow 2s infinite ease-in-out;
 }
 
 .brand-title {
-    font-size: 19px;
+    font-size: 18px;
     font-weight: 800;
-    letter-spacing: 3px;
-    background: linear-gradient(135deg, #ffffff 0%, var(--matrix-bright) 70%, var(--matrix-green) 100%);
+    letter-spacing: 2.5px;
+    background: linear-gradient(135deg, #ffffff 0%, var(--matrix-bright) 65%, var(--matrix-green) 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
-    text-shadow: 0 0 15px rgba(0, 255, 102, 0.35);
+    text-shadow: 0 0 16px rgba(16, 185, 129, 0.25);
 }
 
 .brand-ver {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: var(--matrix-green);
-    background: rgba(0, 255, 102, 0.08);
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid rgba(0, 255, 102, 0.25);
-    letter-spacing: 1px;
+    font-weight: 600;
+    color: var(--matrix-bright);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 2px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--border-card);
+    letter-spacing: 0.8px;
 }
 
 .persona-selector-wrap {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: rgba(3, 14, 7, 0.9);
-    border: 1px solid rgba(0, 255, 102, 0.35);
-    padding: 4px 12px;
-    border-radius: 12px;
-    box-shadow: 0 0 15px rgba(0, 255, 102, 0.15);
-    transition: all 0.25s ease;
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    padding: 5px 14px;
+    border-radius: 20px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .persona-selector-wrap:hover {
-    border-color: var(--matrix-green);
-    box-shadow: 0 0 22px rgba(0, 255, 102, 0.35);
+    border-color: var(--border-accent);
+    box-shadow: var(--glow-matrix);
 }
 
 .persona-icon {
@@ -250,21 +267,21 @@ body {
 .persona-select {
     background: transparent;
     border: none;
-    color: var(--matrix-green);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
+    color: var(--text-main);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
     cursor: pointer;
     outline: none;
     padding-right: 4px;
 }
 
 .persona-select option {
-    background: #020a04;
-    color: #a7f3d0;
-    font-family: var(--font-mono);
-    font-size: 12px;
+    background: #090d14;
+    color: var(--text-main);
+    font-family: var(--font-ui);
+    font-size: 13px;
     padding: 8px;
 }
 
@@ -2817,11 +2834,14 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 .chat-msg-row.user .chat-msg-body,
 .chat-msg-row.msg-user .chat-bubble,
 .chat-msg-row.msg-user .chat-msg-body {
-    background: linear-gradient(135deg, rgba(0, 255, 102, 0.16), rgba(0, 242, 254, 0.10));
-    border: 1px solid rgba(0, 255, 102, 0.35);
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.82), rgba(15, 23, 42, 0.9));
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
     border-top-right-radius: 4px;
     color: var(--text-main);
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     width: fit-content;
     max-width: 100%;
     white-space: pre-wrap;
@@ -2850,11 +2870,14 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 .chat-msg-row.assistant .chat-msg-body,
 .chat-msg-row.msg-assistant .chat-bubble,
 .chat-msg-row.msg-assistant .chat-msg-body {
-    background: rgba(4, 18, 10, 0.88);
-    border: 1px solid rgba(0, 255, 102, 0.22);
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: 14px;
     border-top-left-radius: 4px;
     color: var(--text-main);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
     width: fit-content;
     max-width: 100%;
     word-break: break-word;
@@ -3533,8 +3556,8 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 /* ─── Chat Input Dock (Bottom) ────────────────────────────────────── */
 .chat-input-dock {
     padding: 12px 24px 14px 24px;
-    border-top: 1px solid rgba(0, 255, 102, 0.12);
-    background: rgba(2, 8, 4, 0.95);
+    border-top: 1px solid var(--border-card);
+    background: rgba(7, 9, 14, 0.95);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     display: flex;
@@ -3547,11 +3570,11 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     display: flex;
     flex-direction: column;
     gap: 6px;
-    background: rgba(0, 20, 10, 0.72);
-    border: 1px solid rgba(0, 255, 102, 0.22);
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
     border-radius: 12px;
     padding: 7px 12px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), inset 0 0 12px rgba(0, 255, 102, 0.03);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     overflow: hidden;
 }
 
@@ -3562,7 +3585,7 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     flex-wrap: wrap;
     gap: 6px;
     padding-bottom: 5px;
-    border-bottom: 1px solid rgba(0, 255, 102, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .chat-tools-title {

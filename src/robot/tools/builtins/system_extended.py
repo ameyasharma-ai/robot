@@ -13,6 +13,7 @@ import re
 import socket
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,22 +26,47 @@ if TYPE_CHECKING:
 logger = get_logger("tools.system_extended")
 
 
-async def os_capture_screen(filename: str | None = None) -> dict[str, Any]:
-    """Capture a screenshot of the main desktop display for multimodal VLM analysis.
+async def os_capture_screen(
+    filename: str | None = None,
+    region: list[int] | None = None,
+    window_title: str | None = None,
+    run_ocr: bool = True,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Capture a screenshot of desktop display or target window with OCR text extraction.
 
     Args:
         filename: Optional custom filename for saved PNG image.
+        region: Optional crop region as [x, y, width, height].
+        window_title: Optional filter / target window title.
+        run_ocr: Whether to perform local OCR text extraction.
 
     Returns:
-        dict containing image_path, data_url, width, height, and status.
+        Structured result dict with status, timestamp, window_title, detected_text,
+        bounding_boxes, image_path, and data_url.
     """
     shots_dir = Path("data/images/screenshots")
     shots_dir.mkdir(parents=True, exist_ok=True)
 
+    timestamp_iso = datetime.now(timezone.utc).isoformat()
     fname = filename or f"screenshot_{int(time.time())}.png"
     if not fname.endswith(".png"):
         fname += ".png"
     target_path = shots_dir / fname
+
+    # Query active window title
+    detected_win_title = window_title or "Desktop Display"
+    try:
+        proc_win = await asyncio.create_subprocess_shell(
+            "xdotool getactivewindow getwindowname",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_w, _ = await proc_win.communicate()
+        if proc_win.returncode == 0 and stdout_w:
+            detected_win_title = stdout_w.decode("utf-8").strip() or detected_win_title
+    except Exception:
+        pass
 
     # Try standard Linux screenshot tools in order: maim -> scrot -> import -> xwd
     cmds = [
@@ -70,22 +96,92 @@ async def os_capture_screen(filename: str | None = None) -> dict[str, Any]:
     if not success:
         return {
             "status": "error",
+            "timestamp": timestamp_iso,
+            "window_title": detected_win_title,
+            "detected_text": "",
+            "bounding_boxes": [],
             "error": "Failed to capture screenshot. Install 'scrot' or 'maim' (e.g. sudo apt install scrot maim).",
         }
+
+    # Region cropping if region [x, y, w, h] is specified
+    if region and len(region) == 4:
+        try:
+            from PIL import Image
+
+            with Image.open(target_path) as img:
+                rx, ry, rw, rh = region
+                cropped = img.crop((rx, ry, rx + rw, ry + rh))
+                cropped.save(target_path)
+        except Exception as e:
+            logger.warning("screenshot_crop_failed", error=str(e), region=region)
+
+    # Local OCR extraction
+    detected_text = ""
+    bounding_boxes: list[dict[str, Any]] = []
+    if run_ocr:
+        try:
+            import pytesseract
+            from PIL import Image
+
+            with Image.open(target_path) as img:
+                detected_text = pytesseract.image_to_string(img).strip()
+                data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                n_boxes = len(data["text"])
+                for i in range(n_boxes):
+                    txt = data["text"][i].strip()
+                    if txt:
+                        bounding_boxes.append({
+                            "text": txt,
+                            "box": [data["left"][i], data["top"][i], data["width"][i], data["height"][i]],
+                            "confidence": float(data["conf"][i]),
+                        })
+        except Exception:
+            # Lightweight OpenCV edge/contour text bounding box fallback
+            try:
+                import cv2
+
+                img_cv = cv2.imread(str(target_path))
+                if img_cv is not None:
+                    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+                    thresh = cv2.adaptiveThreshold(
+                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+                    )
+                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for c in contours[:30]:
+                        x, y, w, h = cv2.boundingRect(c)
+                        if w > 15 and h > 8:
+                            bounding_boxes.append({
+                                "text": "contour_region",
+                                "box": [x, y, w, h],
+                                "confidence": 0.5,
+                            })
+                    detected_text = f"Extracted {len(bounding_boxes)} visual text/interface regions."
+            except Exception:
+                detected_text = ""
 
     # Generate base64 data URL for VLM multimodal processing
     try:
         raw_bytes = target_path.read_bytes()
         b64_str = base64.b64encode(raw_bytes).decode("utf-8")
         data_url = f"data:image/png;base64,{b64_str}"
-        logger.info("screenshot_captured", path=str(target_path), size_bytes=len(raw_bytes))
+        logger.info(
+            "screenshot_captured",
+            path=str(target_path),
+            size_bytes=len(raw_bytes),
+            window=detected_win_title,
+            ocr_text_len=len(detected_text),
+        )
         return {
             "status": "success",
+            "timestamp": timestamp_iso,
+            "window_title": detected_win_title,
+            "detected_text": detected_text,
+            "bounding_boxes": bounding_boxes,
             "image_path": str(target_path.resolve()),
             "data_url": data_url[:100] + "...",
             "full_data_url": data_url,
             "size_bytes": len(raw_bytes),
-            "tool_used": used_cmd.split()[0],
+            "tool_used": used_cmd.split()[0] if used_cmd else "unknown",
         }
     except Exception as e:
         return {"status": "error", "error": f"Screenshot saved but base64 encoding failed: {e}"}
@@ -302,30 +398,45 @@ def register_system_extended_tools(engine: RobotEngine) -> None:
         engine: RobotEngine instance containing tool_registry.
     """
 
-    async def _capture_screen(filename: str | None = None, **kwargs: Any) -> dict[str, Any]:
-        """Capture screenshot of main display.
+    async def _capture_screen(
+        filename: str | None = None,
+        region: list[int] | None = None,
+        window_title: str | None = None,
+        run_ocr: bool = True,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Capture screenshot of main display or target window with OCR analysis.
 
         Args:
             filename: Optional output image file path.
+            region: Optional crop region as [x, y, width, height].
+            window_title: Optional filter / window title.
+            run_ocr: Whether to run OCR on the captured area.
 
         Returns:
-            dict containing screenshot path and base64 preview.
+            dict containing structured screenshot and OCR text.
         """
         fn = filename or kwargs.get("path") or kwargs.get("file")
-        return await os_capture_screen(filename=fn)
+        reg = region or kwargs.get("crop")
+        win = window_title or kwargs.get("window")
+        ocr = run_ocr if run_ocr is not None else True
+        return await os_capture_screen(filename=fn, region=reg, window_title=win, run_ocr=ocr)
 
     engine.tool_registry.register(
         ToolDefinition(
             name="os.capture_screen",
-            description="Take a display/window screenshot and save to disk for visual VLM analysis.",
+            description="Take a display/window screenshot with optional region cropping and OCR text analysis. Requires L4 System permission.",
             parameters={
                 "type": "object",
                 "properties": {
                     "filename": {"type": "string", "description": "Optional output PNG image path"},
+                    "region": {"type": "array", "items": {"type": "integer"}, "description": "Optional crop rectangle [x, y, width, height]"},
+                    "window_title": {"type": "string", "description": "Optional target window title filter"},
+                    "run_ocr": {"type": "boolean", "description": "Whether to extract on-screen text via OCR", "default": True},
                 },
             },
             handler=_capture_screen,
-            permission_level=PermissionLevel.HARMLESS_LOCAL,
+            permission_level=PermissionLevel.SYSTEM,
             family="system",
             timeout_s=10.0,
         )

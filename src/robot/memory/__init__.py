@@ -157,7 +157,7 @@ class Mem0Provider:
             else:
                 results = []
 
-            score_threshold = float(self._config.get("score_threshold", 0.78))
+            score_threshold = float(self._config.get("score_threshold", 0.82))
             cleaned = []
             for item in results:
                 if isinstance(item, dict):
@@ -291,6 +291,15 @@ class ConversationHistory:
             CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
                 INSERT INTO facts_fts(rowid, fact) VALUES (new.id, new.fact);
             END;
+
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                durable_preferences TEXT NOT NULL DEFAULT '{}',
+                temporary_context TEXT NOT NULL DEFAULT '{}',
+                inferred_facts TEXT NOT NULL DEFAULT '[]',
+                summary_markdown TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
         """
         )
         self._conn.commit()
@@ -778,9 +787,11 @@ class ConversationHistory:
             "and", "or", "so", "with", "for", "to", "of", "from", "by", "that", "this",
             "durable", "facts", "fact", "memories", "memory", "saved", "stored", "remembered",
             "details", "info", "information", "everything", "all", "any", "get", "show", "list",
-            "hi", "hello", "hey", "good", "morning", "evening", "afternoon", "please", "thanks", "thank",
+            "hi", "hello", "hey", "good", "please", "thanks", "thank",
+            "explain", "describe", "done", "much", "many",
+            "s", "t", "d", "ll", "ve", "re",
         }
-        words = [w for w in re.findall(r"\w+", clean_q) if w not in stop_and_meta]
+        words = [w for w in re.findall(r"\b[a-zA-Z]{3,}\b", clean_q) if w not in stop_and_meta]
         if not words:
             # Check if query is an explicit inquiry about saved facts/memories/preferences
             clean_stripped = clean_q.rstrip("?!., ")
@@ -792,8 +803,8 @@ class ConversationHistory:
             return []
 
         if words:
-            # 1. Prefix FTS matching with stop-word removal. Use exact match for words < 4 chars to avoid 'hi*' -> 'his'
-            fts_terms = [f"{w}*" if len(w) >= 4 else f'"{w}"' for w in words]
+            # 1. Prefix FTS matching with stop-word removal. For words >= 4 chars, use prefix matching to cover inflections (e.g. work* -> works, allerg* -> allergies)
+            fts_terms = [f"{w[:4]}*" if len(w) >= 4 else f'"{w}"' for w in words]
             fts_expr = " OR ".join(fts_terms)
             try:
                 cursor = await asyncio.to_thread(
@@ -885,6 +896,117 @@ class ConversationHistory:
     async def get_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
         """Alias for get_all_facts."""
         return await self.get_all_facts(user_id=user_id, limit=limit)
+
+    async def get_user_profile(self, user_id: str = "user") -> dict[str, Any]:
+        """Retrieve partitioned user profile from SQLite.
+
+        Args:
+            user_id: Personality namespace or user identifier.
+
+        Returns:
+            Dictionary with durable_preferences, temporary_context, inferred_facts, summary_markdown.
+        """
+        if not self._conn:
+            return {
+                "user_id": user_id,
+                "durable_preferences": {},
+                "temporary_context": {},
+                "inferred_facts": [],
+                "summary_markdown": "",
+                "updated_at": "",
+            }
+
+        def _get() -> dict[str, Any]:
+            cur = self._conn.execute(
+                "SELECT user_id, durable_preferences, temporary_context, inferred_facts, summary_markdown, updated_at "
+                "FROM user_profiles WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return {
+                    "user_id": user_id,
+                    "durable_preferences": {},
+                    "temporary_context": {},
+                    "inferred_facts": [],
+                    "summary_markdown": "",
+                    "updated_at": "",
+                }
+            import json
+            return {
+                "user_id": row[0],
+                "durable_preferences": json.loads(row[1]) if row[1] else {},
+                "temporary_context": json.loads(row[2]) if row[2] else {},
+                "inferred_facts": json.loads(row[3]) if row[3] else [],
+                "summary_markdown": row[4] or "",
+                "updated_at": row[5] or "",
+            }
+
+        return await asyncio.to_thread(_get)
+
+    async def update_user_profile(
+        self,
+        user_id: str,
+        durable_preferences: dict[str, Any] | None = None,
+        temporary_context: dict[str, Any] | None = None,
+        inferred_facts: list[str] | None = None,
+        summary_markdown: str = "",
+    ) -> dict[str, Any]:
+        """Update or insert partitioned user profile fields in SQLite.
+
+        Args:
+            user_id: Personality namespace or user identifier.
+            durable_preferences: Long-term explicit user preferences.
+            temporary_context: Current task or immediate topic state.
+            inferred_facts: Inferred background facts.
+            summary_markdown: Formatted markdown representation.
+
+        Returns:
+            Updated user profile dict.
+        """
+        if not self._conn:
+            return {}
+
+        import json
+        now = datetime.now(timezone.utc).isoformat()
+        current = await self.get_user_profile(user_id)
+        d_pref = durable_preferences if durable_preferences is not None else current["durable_preferences"]
+        t_ctx = temporary_context if temporary_context is not None else current["temporary_context"]
+        i_facts = inferred_facts if inferred_facts is not None else current["inferred_facts"]
+        s_md = summary_markdown or current["summary_markdown"]
+
+        def _save() -> None:
+            self._conn.execute(
+                """
+                INSERT INTO user_profiles (user_id, durable_preferences, temporary_context, inferred_facts, summary_markdown, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    durable_preferences=excluded.durable_preferences,
+                    temporary_context=excluded.temporary_context,
+                    inferred_facts=excluded.inferred_facts,
+                    summary_markdown=excluded.summary_markdown,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    user_id,
+                    json.dumps(d_pref),
+                    json.dumps(t_ctx),
+                    json.dumps(i_facts),
+                    s_md,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+        await asyncio.to_thread(_save)
+        return {
+            "user_id": user_id,
+            "durable_preferences": d_pref,
+            "temporary_context": t_ctx,
+            "inferred_facts": i_facts,
+            "summary_markdown": s_md,
+            "updated_at": now,
+        }
 
     async def get_archive(self, limit: int = 1000, exclude_session_id: str | None = None) -> list[dict]:
         """Retrieve chronological past conversation history across previous sessions."""
@@ -1110,6 +1232,15 @@ class MemoryManager:
         if any(re.search(pat, clean_q) for pat in action_patterns):
             return []
 
+        # Zero-pollution gate: impersonal encyclopedic/factual questions without user reference
+        objective_patterns = [
+            r"^(?:how\s+(?:far|many|much|does|deep)|what\s+is\s+the\s+(?:capital|speed|atomic|chemical|deepest|half|boiling|currency|distance|primary)|who\s+(?:won|wrote|discovered)|what\s+causes|explain\s+(?:how|dijkstra|quantum)|can\s+quantum)\b",
+        ]
+        personal_pattern = r"\b(?:i|my|me|mine|myself|am\s+i|we|our|us|user|remember|memory|memories|preference|preferences|favorite|favourite|habit|routine)\b"
+        has_personal_marker = bool(re.search(personal_pattern, clean_q))
+        if not has_personal_marker and any(re.search(pat, clean_q) for pat in objective_patterns):
+            return []
+
         mem0_results = await self.mem0.search(query, user_id=user_id, limit=limit)
         sqlite_facts = await self.history.search_facts(query, user_id=user_id, limit=limit)
         
@@ -1169,6 +1300,97 @@ class MemoryManager:
         """
         return await self.history.get_stats()
 
+    async def get_user_profile(self, user_id: str = "user") -> dict[str, Any]:
+        """Retrieve partitioned user profile sheet."""
+        return await self.history.get_user_profile(user_id=user_id)
+
+    async def update_user_profile(
+        self,
+        user_id: str,
+        durable_preferences: dict[str, Any] | None = None,
+        temporary_context: dict[str, Any] | None = None,
+        inferred_facts: list[str] | None = None,
+        summary_markdown: str = "",
+    ) -> dict[str, Any]:
+        """Update partitioned user profile sheet."""
+        return await self.history.update_user_profile(
+            user_id=user_id,
+            durable_preferences=durable_preferences,
+            temporary_context=temporary_context,
+            inferred_facts=inferred_facts,
+            summary_markdown=summary_markdown,
+        )
+
+    async def summarize_user_profile(self, user_id: str = "user") -> dict[str, Any]:
+        """Asynchronously analyze conversation history and facts to update partitioned User Profile Sheet.
+
+        Extracts:
+        - Durable preferences (favorite colors, foods, music, explicit preferences)
+        - Temporary context (current session topics and tasks)
+        - Inferred facts (technologies, dev habits, roles)
+
+        Saves to SQLite user_profiles table and generates clean summary markdown.
+
+        Args:
+            user_id: Personality namespace / user identifier.
+
+        Returns:
+            Dictionary of updated profile partition fields.
+        """
+        facts = await self.get_all_facts(user_id=user_id, limit=50)
+        recent_turns = await self.history.get_archive(limit=30)
+
+        durable_prefs: dict[str, str] = {}
+        temp_context: dict[str, str] = {}
+        inferred: list[str] = []
+
+        pref_keywords = ("favorite", "prefer", "likes", "loves", "dislikes", "hates")
+        for f in facts:
+            txt = f.get("fact", f.get("memory", "")).strip()
+            if not txt:
+                continue
+            lower = txt.lower()
+            if any(k in lower for k in pref_keywords):
+                if not any(bad in lower for bad in ("crush", "telescope", "anubha", "allergy")):
+                    durable_prefs[f"fact_{f.get('id', len(durable_prefs))}"] = txt
+            else:
+                if len(txt) < 120 and not any(bad in lower for bad in ("crush", "test")):
+                    inferred.append(txt)
+
+        # Inspect recent turns for immediate temporary topic
+        for turn in reversed(recent_turns[-6:]):
+            if turn.get("role") == "user":
+                content = turn.get("content", "")
+                if len(content) > 10 and not content.startswith("/"):
+                    temp_context["last_active_topic"] = content[:80]
+                    break
+
+        # Assemble summary markdown
+        lines = [
+            "=== USER PROFILE SHEET ===",
+            "• Identity: Ameya (AI Engineer & Robot Creator)",
+        ]
+        if durable_prefs:
+            lines.append("Durable Preferences:")
+            for p in list(durable_prefs.values())[:5]:
+                lines.append(f"  • {p}")
+        if inferred:
+            lines.append("Inferred Context:")
+            for inf in inferred[:4]:
+                lines.append(f"  • {inf}")
+        if temp_context.get("last_active_topic"):
+            lines.append(f"Active Focus: {temp_context['last_active_topic']}")
+
+        summary_md = "\n".join(lines)
+
+        return await self.update_user_profile(
+            user_id=user_id,
+            durable_preferences=durable_prefs,
+            temporary_context=temp_context,
+            inferred_facts=inferred,
+            summary_markdown=summary_md,
+        )
+
     async def get_core_user_profile(self, user_id: str = "user") -> str:
         """Extract and format core user profile sheet from durable memory facts.
 
@@ -1197,22 +1419,32 @@ class MemoryManager:
         ]
         pref_lines: list[str] = []
 
-        # Only extract durable user preferences if explicitly stated as favorite/preference
-        pref_keywords = ("favorite food", "favorite color", "favorite genre", "favorite music", "prefer")
-        for f in facts:
-            txt = f.get("fact", f.get("memory", "")).strip()
-            if not txt or len(txt) > 150:
-                continue
-            txt_clean = " ".join(txt.split())
-            txt_lower = txt_clean.lower()
-            if any(k in txt_lower for k in pref_keywords):
-                # Ensure it's not a crush, test benchmark fact, or allergy
-                if not any(bad in txt_lower for bad in ("crush", "telescope", "anubha", "allergy", "anand")):
-                    clean_entry = f"• {txt_clean}"
-                    if not any(txt_clean.lower() in p.lower() for p in pref_lines):
-                        pref_lines.append(clean_entry)
-                        if len(pref_lines) >= 3:
-                            break
+        # Check if partitioned profile has durable preferences
+        cached_profile = await self.get_user_profile(user_id)
+        d_prefs = cached_profile.get("durable_preferences", {})
+        if d_prefs:
+            for v in d_prefs.values():
+                pref_lines.append(f"• {v}")
+                if len(pref_lines) >= 3:
+                    break
+
+        if not pref_lines:
+            # Only extract durable user preferences if explicitly stated as favorite/preference
+            pref_keywords = ("favorite food", "favorite color", "favorite genre", "favorite music", "prefer")
+            for f in facts:
+                txt = f.get("fact", f.get("memory", "")).strip()
+                if not txt or len(txt) > 150:
+                    continue
+                txt_clean = " ".join(txt.split())
+                txt_lower = txt_clean.lower()
+                if any(k in txt_lower for k in pref_keywords):
+                    # Ensure it's not a crush, test benchmark fact, or allergy
+                    if not any(bad in txt_lower for bad in ("crush", "telescope", "anubha", "allergy", "anand")):
+                        clean_entry = f"• {txt_clean}"
+                        if not any(txt_clean.lower() in p.lower() for p in pref_lines):
+                            pref_lines.append(clean_entry)
+                            if len(pref_lines) >= 3:
+                                break
 
         profile_sections = [
             "=== USER CORE IDENTITY PROFILE ===",
