@@ -104,17 +104,63 @@ class AudioPlayer:
                     pass
             return self._stream
 
+    async def play_earcon(
+        self,
+        earcon_type: Any,
+        sample_rate: int = 24000,
+        volume: float = 0.65,
+        interrupt: asyncio.Event | None = None,
+    ) -> bool:
+        """Play a synthesized Apple-grade acoustic earcon chime.
+
+        Args:
+            earcon_type: Target earcon signature to synthesize and play.
+            sample_rate: Audio sampling frequency in Hz (default 24000).
+            volume: Master volume multiplier between 0.0 and 1.0 (default 0.65).
+            interrupt: Optional event to interrupt earcon playback.
+
+        Returns:
+            True if earcon finished playing, False if interrupted.
+        """
+        from robot.audio.earcon import AcousticEarconEngine
+
+        waveform = AcousticEarconEngine.generate(earcon_type, sample_rate=sample_rate, volume=volume)
+        evt = interrupt or asyncio.Event()
+        return await self.play(waveform, sample_rate, evt)
+
     async def play(
         self,
         audio: np.ndarray,
         sample_rate: int,
         interrupt: asyncio.Event,
     ) -> bool:
-        """Play audio with interrupt checking per block.
+        """Play audio with interrupt checking per block, anti-pop fading, and soft limiting.
+
+        Args:
+            audio: 1D or 2D NumPy array containing float32 audio samples.
+            sample_rate: Audio sampling frequency in Hz.
+            interrupt: Event signaling immediate barge-in interrupt.
 
         Returns:
             True if playback completed, False if interrupted.
         """
+        if len(audio) == 0:
+            return True
+
+        # Apple CoreAudio-grade anti-pop: 5ms cosine micro-fade on onset and offset
+        fade_len = min(int(sample_rate * 0.005), len(audio))
+        if fade_len > 0:
+            audio = audio.copy()
+            fade_in = (np.sin(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(np.float32)
+            audio[:fade_len] *= fade_in
+            fade_out = (np.cos(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(np.float32)
+            audio[-fade_len:] *= fade_out
+
+        # CoreAudio-grade soft saturation peak limiter: transparent for |x| <= 0.95, smoothly saturates above
+        peak = float(np.max(np.abs(audio))) if len(audio) > 0 else 0.0
+        if peak > 0.95:
+            audio = (np.tanh(audio / 0.95) * 0.95).astype(np.float32)
+
         block_len = int(sample_rate * self.block_ms / 1000)
 
         # Prepend 25ms silence only if starting fresh from idle (>0.8s gap) to prevent DAC ramp from eating the first syllable

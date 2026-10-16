@@ -193,3 +193,20 @@ def test_apply_pose_multi_joint() -> None:
     assert bridge.joints["elbow_r"].current_deg == 45.0
 
     bridge.stop()
+
+
+def test_minimum_jerk_trajectory_generation() -> None:
+    """Test 5th-order minimum jerk trajectory interpolation guarantees smooth motion."""
+    joint = ServoJointLimit("neck_pan", channel=0, min_deg=-85.0, max_deg=85.0, default_deg=0.0)
+    traj = joint.generate_minimum_jerk_trajectory(target_deg=50.0, steps=20)
+    assert len(traj) == 20
+    assert traj[-1] == 50.0
+    # Values must be monotonic towards target
+    for i in range(len(traj) - 1):
+        assert traj[i] <= traj[i + 1]
+    # Intermediate trajectory must not exceed clamp boundaries
+    assert all(-85.0 <= val <= 85.0 for val in traj)
+    # Test boundary clamping
+    clamped_traj = joint.generate_minimum_jerk_trajectory(target_deg=100.0, steps=10)
+    assert clamped_traj[-1] == 85.0
+

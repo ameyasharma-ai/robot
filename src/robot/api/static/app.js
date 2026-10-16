@@ -541,6 +541,56 @@ class RobotUI {
     }
 
     /**
+     * Display an Apple-grade Dynamic Island notification toast pill.
+     * Interacts with DOM element `#dynamicIsland` using CSS aero spring transitions.
+     *
+     * @param {string} title - Primary headline text to display.
+     * @param {string} subtitle - Secondary descriptive text or status detail.
+     * @param {string} [icon='⚡'] - Visual emoji or symbolic badge.
+     * @param {string} [tone='emerald'] - Color theme accent ('emerald', 'cyan', 'amber', 'rose').
+     * @param {number} [durationMs=3200] - Duration in milliseconds before smooth dismissal.
+     * @returns {void}
+     */
+    showDynamicIsland(title, subtitle, icon = '⚡', tone = 'emerald', durationMs = 3200) {
+        const island = document.getElementById("dynamicIsland");
+        if (!island) return;
+
+        const iconEl = document.getElementById("islandIcon");
+        const titleEl = document.getElementById("islandTitle");
+        const subEl = document.getElementById("islandSubtitle");
+        const dotEl = document.getElementById("islandStatusDot");
+
+        if (iconEl) iconEl.textContent = icon;
+        if (titleEl) titleEl.textContent = title;
+        if (subEl) subEl.textContent = subtitle;
+
+        if (dotEl) {
+            dotEl.className = "island-status-dot";
+            if (tone === "cyan") {
+                dotEl.style.background = "#06b6d4";
+            } else if (tone === "amber") {
+                dotEl.style.background = "#f59e0b";
+            } else if (tone === "rose") {
+                dotEl.style.background = "#ef4444";
+            } else {
+                dotEl.style.background = "#10b981";
+            }
+            dotEl.style.boxShadow = `0 0 8px ${dotEl.style.background}`;
+        }
+
+        island.classList.add("visible");
+
+        if (this._islandTimeout) {
+            clearTimeout(this._islandTimeout);
+        }
+
+        this._islandTimeout = setTimeout(() => {
+            island.classList.remove("visible");
+            this._islandTimeout = null;
+        }, durationMs);
+    }
+
+    /**
      * Fetch the engine's current thinking/reasoning state from the server.
      * Synchronizes local state, localStorage, and both UI buttons.
      * @returns {Promise<void>}
@@ -3738,6 +3788,21 @@ class RobotUI {
             this.currentLlmProvider = data.provider;
             this.updateLlmToggleUi(data.provider, data.mode);
             this.syncChatTopBar();
+            this.showDynamicIsland("AI Provider Active", `Switched to ${(data.provider || 'local').toUpperCase()}`, "⚡", "cyan");
+        }
+
+        if (data.event === "wake_word_detected" || data.wake_word) {
+            const w = data.wake_word || "Voice Wake";
+            this.showDynamicIsland("Wake Word Active", `Listening for "${w}"...`, "⚡", "cyan");
+        }
+
+        if (data.event === "standby") {
+            this.showDynamicIsland("Standby Mode", "Microphone listening paused", "💤", "amber");
+        }
+
+        if (data.event === "scheduler.job_triggered" || data.event === "timer.triggered") {
+            const lbl = (data.job && data.job.label) ? data.job.label : "Timer finished!";
+            this.showDynamicIsland("Timer Alert", lbl, "⏰", "amber", 4500);
         }
 
         if (data.event === "voice_mode_changed" && this.updateVoiceUI) {
@@ -3774,6 +3839,7 @@ class RobotUI {
             this.applyPersonaTheme(chosen);
             const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
             this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
+            this.showDynamicIsland("Persona Active", `Switched to ${disp}`, "👤", "emerald");
         }
 
         if (data.event === "personality_warming" && data.personality) {
@@ -4024,6 +4090,13 @@ class RobotUI {
             const elTotalRuns = document.getElementById("totalToolInvocations");
             if (elTotalRuns) elTotalRuns.textContent = this._toolInvocations;
             this.updatePipelineStatus({ TOOLS: data.event === "tool_completed" ? "COMPLETED" : "ERROR" });
+
+            if (isOk) {
+                const latStr = data.duration_ms ? ` (${Math.round(data.duration_ms)}ms)` : "";
+                this.showDynamicIsland("Tool Succeeded", `${toolNameStr}${latStr}`, "🛠️", "emerald", 2800);
+            } else {
+                this.showDynamicIsland("Tool Failed", `Failed: ${toolNameStr}`, "⚠️", "rose", 3500);
+            }
         }
 
         if (data.metrics) {

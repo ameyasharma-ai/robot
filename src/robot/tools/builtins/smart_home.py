@@ -86,7 +86,7 @@ class HomeAssistantClient:
                 "Content-Type": "application/json",
             }
             try:
-                async with httpx.AsyncClient(headers=headers, timeout=3.5) as client:
+                async with httpx.AsyncClient(headers=headers, timeout=3.0) as client:
                     url = f"{self.base_url}/api/services/{domain}/{service}"
                     resp = await client.post(url, json=data)
                     if resp.status_code in (200, 201):
@@ -141,7 +141,7 @@ class HomeAssistantClient:
         if self.is_configured:
             headers = {"Authorization": f"Bearer {self.access_token}"}
             try:
-                async with httpx.AsyncClient(headers=headers, timeout=3.5) as client:
+                async with httpx.AsyncClient(headers=headers, timeout=3.0) as client:
                     url = f"{self.base_url}/api/states/{entity_id}"
                     resp = await client.get(url)
                     if resp.status_code == 200:
@@ -159,7 +159,7 @@ class HomeAssistantClient:
         if self.is_configured:
             headers = {"Authorization": f"Bearer {self.access_token}"}
             try:
-                async with httpx.AsyncClient(headers=headers, timeout=3.5) as client:
+                async with httpx.AsyncClient(headers=headers, timeout=3.0) as client:
                     url = f"{self.base_url}/api/states"
                     resp = await client.get(url)
                     if resp.status_code == 200:

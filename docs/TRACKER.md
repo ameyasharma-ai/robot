@@ -71,6 +71,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 7: Web-Hostable Free Architecture (V2.0 Web Slice)** | Next.js 14 App Router + Groq Cloud Whisper + Gemini 2.0 Streaming + Edge TTS + Supabase pgvector | ✅ **Active** | Vercel / Cloudflare Edge Runtime | Complete standalone web slice in `web/` isolated from local workstation: Web Audio API 16kHz recorder, live waveform visualizer, Groq Whisper STT proxy (`/api/voice/transcribe`, ~150ms), Gemini 2.0 Flash SSE streaming (`/api/chat/stream`, ~180ms TTFT), Edge TTS streaming (`/api/voice/synthesize`), Supabase pgvector session store (`/api/memory`), and comprehensive guide in `docs/WEB_HOSTED_ARCHITECTURE.md`. |
 | **Phase 8: 1,000-Turn Chaos & Soak Testing Harness** | `scripts/chaos_soak_test.py` + Continuous Resource Leak Tracking | ✅ **Active** | RTX 3050 (4GB) + Ryzen 7 + System | Automated 1,000-turn stress harness with 15% chaos fault injection (timeouts, malformed arguments, kinematic out-of-bounds); verified 100% fault recovery (152/152), 0 unhandled crashes, +0.00 MB RSS memory growth (zero leak), and VRAM stable at 3,163 MB (strictly <= 3.8GB). Report documented in `docs/CHAOS_SOAK_REPORT.md`. |
 | **Phase 9: Production Release & Benchmark Sign-Off** | `v2.0-stable` Git Release + 269 Passing Tests + Zero Import Errors Audit | ✅ **Active** | Complete Platform | 269 / 269 tests passing across all 39 test modules; 102 / 102 files clean with zero import errors (`verify_imports.py`); knowledge graph synchronized via `graphify update .`; final performance report in `docs/BENCHMARK_REPORT.md`; tagged `v2.0-stable`. |
+| **Phase 10: Apple-Grade Engineering, Acoustic Feedback & Hardware Precision** | `AcousticEarconEngine` + CoreAudio Soft Limiter + Dynamic Island HUD + Minimum-Jerk Kinematics | ✅ **Active** | Core Engine / Host Audio / Hardware / Web HUD | Built procedural harmonic earcon synthesis engine (`src/robot/audio/earcon.py`) with 5 tactile crystalline auditory cues (wake, confirm, alert, dismiss, estop); CoreAudio-grade 5ms cosine anti-pop micro-fades and soft saturation limiter in `AudioPlayer`; Apple Dynamic Island notification pill with spring physics in web HUD; 5th-order minimum-jerk trajectory polynomial in `ServoJointLimit`; fixed parenthetical speech truncation bug; capped network tools to 3.0s; leak-free audio playback in Next.js web slice. 277 / 277 tests pass. |
 
 
 Legend:
@@ -139,6 +140,16 @@ Legend:
 - [x] **Day 12: V2 Benchmark Sign-off, Documentation & Production Release**:
   - End-to-end benchmark verification: 269 / 269 tests passing across all 39 test modules; 102 / 102 files clean with zero import errors.
   - Full docstring audit (`code-documentation`), synchronized `TRACKER.md`, updated `ToDo.txt`, generated `docs/BENCHMARK_REPORT.md`, updated knowledge graph via `graphify update .`, and tagged `v2.0-stable`.
+- [x] **Day 13: Phase 10 Apple-Grade Engineering, Acoustic Feedback & Hardware Precision**:
+  - Implemented procedural `AcousticEarconEngine` (`src/robot/audio/earcon.py`) with 5 tactile crystalline harmonic auditory cues (wake detection, confirmation, alert, dismiss, e-stop double-tap) using additive physical overtone synthesis with zero external audio assets.
+  - Hardened `AudioPlayer` with CoreAudio-grade 5ms cosine anti-pop onset/offset micro-fades and soft saturation peak limiting ($\tanh(x/0.95) \cdot 0.95$), preventing speaker driver pops and DAC clipping on real hardware.
+  - Built Apple Dynamic Island luxury notification HUD in `src/robot/api/static/index.html`, `index.css`, and `app.js` with fluid spring physics (`cubic-bezier(0.16, 1, 0.3, 1)`), glassmorphism, and chamfered specular highlights.
+  - Implemented 5th-order minimum-jerk trajectory polynomial ($s(\tau) = 10\tau^3 - 15\tau^4 + 6\tau^5$) on `ServoJointLimit` in `src/robot/motion/serial_bridge.py`, eliminating mechanical jerk and gear stress.
+  - Fixed parenthetical speech truncation bug in `_extract_motion_from_phrase` in `src/robot/core/engine.py`.
+  - Enforced 3.0s hard timeout compliance and defensive error handling across all network tools (`wikipedia_lookup`, `web_scrape_page`, `translation_translate`, `fetch_weather`, `HomeAssistantClient`).
+  - Added object URL revocation and guarded autoplay promise handling in Next.js standalone web slice (`web/app/page.tsx`).
+  - 100% test pass rate: **277 / 277 tests passing** across all 40 test modules; **104 / 104 files clean** with zero import errors (`verify_imports.py`).
+
 
 ### 🏁 Version 1 (V1) Completed Milestones
 - [x] **1. Guarantee LLM TTFT < 500ms** (Strict target < 300ms maintained; continuous single-slot lock, invariant static prompt prefix, and compacted 3-turn history yielding 167–183ms TTFT).

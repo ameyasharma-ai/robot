@@ -159,7 +159,7 @@ async def fetch_weather(location: str = "Pune") -> dict[str, Any]:
     headers = {"User-Agent": "RobotCore/2.0 (Open-Source AI Assistant)"}
 
     try:
-        async with httpx.AsyncClient(headers=headers, timeout=4.0) as client:
+        async with httpx.AsyncClient(headers=headers, timeout=3.0) as client:
             # 1. Geocode location to lat/lon
             geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(clean_loc)}&count=1&language=en&format=json"
             geo_resp = await client.get(geo_url)

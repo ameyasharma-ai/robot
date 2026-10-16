@@ -611,9 +611,16 @@ class TemporalScheduler:
             except Exception as e:
                 logger.warning("failed_to_emit_job_event", error=str(e))
 
-        # 2. Spoken notification if engine voice pipeline is active
+        # 2. Spoken notification and acoustic chime if engine voice pipeline is active
         if self._engine:
             try:
+                # Play tactile Apple-grade acoustic chime alert before announcement
+                if hasattr(self._engine, "player") and self._engine.player:
+                    try:
+                        await self._engine.player.play_earcon("alert", volume=0.75)
+                    except Exception:
+                        pass
+
                 spoken_text = ""
                 if job.job_type == "timer":
                     spoken_text = f"Your timer for {job.label} is done!"

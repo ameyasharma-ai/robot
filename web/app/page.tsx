@@ -246,13 +246,25 @@ export default function CyberdeckWebPage() {
         const audioBlob = await res.blob();
         const url = URL.createObjectURL(audioBlob);
         const audio = new Audio(url);
-        audio.onended = () => setStatus("idle");
-        audio.play();
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          setStatus("idle");
+        };
+        audio.onerror = () => {
+          URL.revokeObjectURL(url);
+          setStatus("idle");
+        };
+        audio.play().catch((err) => {
+          console.warn("Autoplay deferred or blocked by browser policy:", err);
+          URL.revokeObjectURL(url);
+          setStatus("idle");
+        });
       } else {
         // Web Speech API fallback
         if ("speechSynthesis" in window) {
           const utterance = new SpeechSynthesisUtterance(text);
           utterance.onend = () => setStatus("idle");
+          utterance.onerror = () => setStatus("idle");
           window.speechSynthesis.speak(utterance);
         } else {
           setStatus("idle");

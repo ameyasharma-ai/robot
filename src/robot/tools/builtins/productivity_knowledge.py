@@ -42,7 +42,7 @@ async def wikipedia_lookup(query: str, lang: str = "en") -> dict[str, Any]:
         url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{encoded_q}"
         req = urllib.request.Request(url, headers={"User-Agent": "RobotCore/1.0 (Autonomous Assistant)"})
         try:
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 return {
                     "status": "success",
@@ -55,7 +55,7 @@ async def wikipedia_lookup(query: str, lang: str = "en") -> dict[str, Any]:
             # Fallback search API
             search_url = f"https://{lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(clean_q)}&format=json"
             req_s = urllib.request.Request(search_url, headers={"User-Agent": "RobotCore/1.0"})
-            with urllib.request.urlopen(req_s, timeout=6) as resp_s:
+            with urllib.request.urlopen(req_s, timeout=3.0) as resp_s:
                 s_data = json.loads(resp_s.read().decode("utf-8"))
                 results = s_data.get("query", {}).get("search", [])
                 if not results:
@@ -204,7 +204,7 @@ async def translation_translate(
         )
         req = urllib.request.Request(url, headers={"User-Agent": "RobotCore/1.0"})
         try:
-            with urllib.request.urlopen(req, timeout=6) as resp:
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
                 raw_res = json.loads(resp.read().decode("utf-8"))
                 translated_parts = []
                 if raw_res and isinstance(raw_res, list) and raw_res[0]:
@@ -245,39 +245,47 @@ async def web_scrape_page(url: str, max_chars: int = 4000) -> dict[str, Any]:
         clean_url = "https://" + clean_url
 
     def _scrape() -> dict[str, Any]:
-        req = urllib.request.Request(
-            clean_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            },
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+        try:
+            req = urllib.request.Request(
+                clean_url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                },
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
 
-        # Extract title
-        title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-        page_title = title_m.group(1).strip() if title_m else clean_url
+            # Extract title
+            title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+            page_title = title_m.group(1).strip() if title_m else clean_url
 
-        # Strip scripts, styles, navs, headers, footers
-        html = re.sub(r"<(?:script|style|svg|nav|header|footer|iframe)[^>]*>.*?</(?:script|style|svg|nav|header|footer|iframe)>", "", html, flags=re.IGNORECASE | re.DOTALL)
-        # Strip HTML tags
-        text = re.sub(r"<[^>]+>", " ", html)
-        # Unescape HTML entities
-        import html as html_lib
-        text = html_lib.unescape(text)
-        # Collapse whitespace
-        clean_text = re.sub(r"\s+", " ", text).strip()
+            # Strip scripts, styles, navs, headers, footers
+            html = re.sub(r"<(?:script|style|svg|nav|header|footer|iframe)[^>]*>.*?</(?:script|style|svg|nav|header|footer|iframe)>", "", html, flags=re.IGNORECASE | re.DOTALL)
+            # Strip HTML tags
+            text = re.sub(r"<[^>]+>", " ", html)
+            # Unescape HTML entities
+            import html as html_lib
+            text = html_lib.unescape(text)
+            # Collapse whitespace
+            clean_text = re.sub(r"\s+", " ", text).strip()
 
-        if len(clean_text) > max_chars:
-            clean_text = clean_text[:max_chars] + " ... [Content Truncated]"
+            if len(clean_text) > max_chars:
+                clean_text = clean_text[:max_chars] + " ... [Content Truncated]"
 
-        return {
-            "status": "success",
-            "url": clean_url,
-            "title": page_title,
-            "text": clean_text,
-            "length_chars": len(clean_text),
-        }
+            return {
+                "status": "success",
+                "url": clean_url,
+                "title": page_title,
+                "text": clean_text,
+                "length_chars": len(clean_text),
+            }
+        except Exception as e:
+            logger.warning("web_scrape_page_failed", url=clean_url, error=str(e))
+            return {
+                "status": "error",
+                "error": f"Failed to scrape webpage: {e}",
+                "url": clean_url,
+            }
 
     try:
         return await asyncio.to_thread(_scrape)

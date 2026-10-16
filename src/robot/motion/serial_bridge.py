@@ -102,6 +102,44 @@ class ServoJointLimit:
         self.last_update_time = time.time()
         return self.current_deg
 
+    def generate_minimum_jerk_trajectory(
+        self,
+        target_deg: float,
+        duration_s: float = 0.5,
+        steps: int = 25,
+    ) -> list[float]:
+        """Generate an Apple-grade minimum-jerk trajectory polynomial to target.
+
+        Uses the 5th-order minimum jerk formulation:
+            s(tau) = 10*tau^3 - 15*tau^4 + 6*tau^5,  where tau = t / T in [0, 1].
+        Guarantees zero starting and ending velocity and acceleration, preventing
+        mechanical shock, current spikes, and gear tooth chatter.
+
+        Args:
+            target_deg: Desired target position in degrees.
+            duration_s: Movement duration in seconds (default 0.5s).
+            steps: Number of discrete interpolation points (default 25).
+
+        Returns:
+            List of interpolated joint angles in degrees from current position to clamped target.
+        """
+        clamped_target = self.clamp(target_deg)
+        start_deg = self.current_deg
+        delta = clamped_target - start_deg
+
+        if steps <= 1 or abs(delta) < 1e-4:
+            return [clamped_target]
+
+        trajectory: list[float] = []
+        for i in range(1, steps + 1):
+            tau = float(i) / float(steps)
+            poly = 10.0 * (tau**3) - 15.0 * (tau**4) + 6.0 * (tau**5)
+            deg = start_deg + delta * poly
+            trajectory.append(round(deg, 3))
+
+        return trajectory
+
+
 
 class SerialBridge:
     """Hardware serial controller bridge for embodied robotic kinematics."""

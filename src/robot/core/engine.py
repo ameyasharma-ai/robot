@@ -111,7 +111,8 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     cleaned = cleaned.replace("*", "").replace("~", "").replace("`", "")
     # Strip raw tool invocation code e.g. music.play(query="...") or system.calculate(...)
     cleaned = re.sub(r"\b[a-zA-Z_]+\.[a-zA-Z_]+\([^)]*\)", "", cleaned)
-    cleaned = re.sub(r"\([^)]*\)", "", cleaned).strip()
+    # Remove parenthesis characters while preserving spoken words inside
+    cleaned = cleaned.replace("(", "").replace(")", "").strip()
     return cleaned, action_dict
 
 
@@ -1222,6 +1223,11 @@ class RobotEngine:
                                                 print(f"\n⚡ \033[1;32m[WAKE WORD DETECTED]\033[0m Matched '{matched_word}'!")
                                                 await self.state.set_mode(RobotMode.LISTENING)
                                                 await self.events.emit(Events.WAKE_WORD_DETECTED, wake_word=matched_word, text=text)
+                                                if hasattr(self, "player") and self.player:
+                                                    try:
+                                                        asyncio.create_task(self.player.play_earcon("wake_detected", volume=0.55))
+                                                    except Exception:
+                                                        pass
                                                 if remainder:
                                                     print(f"\n💬 \033[1;36m[USER]\033[0m {remainder}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                                     self.telemetry.record("STT_FINAL_LATENCY", stt_ms)
@@ -1236,10 +1242,20 @@ class RobotEngine:
                                             print(f"\n🛑 \033[1;33m[STANDBY REQUESTED]\033[0m {text}")
                                             await self.state.set_mode(RobotMode.STANDBY)
                                             await self.events.emit(Events.STANDBY, reason="user_command")
+                                            if hasattr(self, "player") and self.player:
+                                                try:
+                                                    asyncio.create_task(self.player.play_earcon("dismiss", volume=0.55))
+                                                except Exception:
+                                                    pass
                                             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                                                 self.tool_coordinator.reset()
                                             await self._speech_queue.put(("[Enter standby acknowledge]", end_time))
                                         else:
+                                            if is_wake and hasattr(self, "player") and self.player:
+                                                try:
+                                                    asyncio.create_task(self.player.play_earcon("wake_detected", volume=0.55))
+                                                except Exception:
+                                                    pass
                                             clean_text = remainder if is_wake else text
                                             print(f"\n💬 \033[1;36m[USER]\033[0m {clean_text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                             self.telemetry.record(
