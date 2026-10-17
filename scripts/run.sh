@@ -62,35 +62,58 @@ if [ "$ACTIVE_PROVIDER" = "gemini" ] || [ "$ACTIVE_PROVIDER" = "openai_compatibl
     echo "[LLM] Active provider is $ACTIVE_PROVIDER — local llama-server deferred until swapped."
 else
     if ! curl -s http://127.0.0.1:8080/health > /dev/null 2>&1; then
-        if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ] && [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
-            echo "[LLM] Starting llama-server (100% offload to RTX 3050, FlashAttention)..."
-            MMPROJ_ARG=""
-            NGL=99
-            MULTIMODAL_ENABLED=$(grep -E '^\s*multimodal:\s*true' "$DIR/config/default.yaml" || true)
-            if [ -n "$MULTIMODAL_ENABLED" ] && [ -f "$DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf" ]; then
-                echo "[LLM] Enabling multimodal vision projector ($DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf)..."
-                MMPROJ_ARG="--mmproj $DIR/models/vision/mmproj-Qwen3.5-4B-F16.gguf --mmproj-offload"
-                NGL=28
+        if [ -f "/home/ameya/llama.cpp/build/bin/llama-server" ]; then
+            CONFIG_MODEL_PATH=$("$DIR/.venv/bin/python" -c "from robot.config import load_system_config; cfg=load_system_config('$DIR/config/default.yaml'); print(cfg.get('llm', {}).get('model_path', ''))" 2>/dev/null || true)
+            TARGET_MODEL_PATH=""
+            if [ -n "$CONFIG_MODEL_PATH" ] && [ -f "$DIR/$CONFIG_MODEL_PATH" ]; then
+                TARGET_MODEL_PATH="$DIR/$CONFIG_MODEL_PATH"
+            elif [ -n "$CONFIG_MODEL_PATH" ] && [ -f "$CONFIG_MODEL_PATH" ]; then
+                TARGET_MODEL_PATH="$CONFIG_MODEL_PATH"
+            elif [ -f "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf" ]; then
+                TARGET_MODEL_PATH="/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf"
             fi
 
-            pkill -9 -f "llama-server" 2>/dev/null || true
-            sleep 0.5
+            if [ -z "$TARGET_MODEL_PATH" ] || [ ! -f "$TARGET_MODEL_PATH" ]; then
+                echo "[LLM] Configured model not found ($CONFIG_MODEL_PATH). Run ./scripts/download_models.sh to download."
+            else
+                echo "[LLM] Starting llama-server with model: $TARGET_MODEL_PATH..."
+                MMPROJ_ARG=""
+                NGL=99
+                CONFIG_MULTIMODAL=$("$DIR/.venv/bin/python" -c "from robot.config import load_system_config; cfg=load_system_config('$DIR/config/default.yaml'); print(str(cfg.get('llm', {}).get('multimodal', False)).lower())" 2>/dev/null || true)
+                CONFIG_MMPROJ_PATH=$("$DIR/.venv/bin/python" -c "from robot.config import load_system_config; cfg=load_system_config('$DIR/config/default.yaml'); print(cfg.get('llm', {}).get('mmproj_path', ''))" 2>/dev/null || true)
 
-            /home/ameya/llama.cpp/build/bin/llama-server \
-                -m /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf \
-                $MMPROJ_ARG \
-                -ngl $NGL \
-                -t 8 \
-                -tb 8 \
-                -fa on \
-                -ctk q4_0 \
-                -ctv q4_0 \
-                -c 16384 \
-                -np 1 \
-                -b 4096 \
-                -ub 4096 \
-                --host 127.0.0.1 \
-                --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
+                RESOLVED_MMPROJ=""
+                if [ -n "$CONFIG_MMPROJ_PATH" ] && [ -f "$DIR/$CONFIG_MMPROJ_PATH" ]; then
+                    RESOLVED_MMPROJ="$DIR/$CONFIG_MMPROJ_PATH"
+                elif [ -n "$CONFIG_MMPROJ_PATH" ] && [ -f "$CONFIG_MMPROJ_PATH" ]; then
+                    RESOLVED_MMPROJ="$CONFIG_MMPROJ_PATH"
+                fi
+
+                if [ "$CONFIG_MULTIMODAL" = "true" ] && [ -n "$RESOLVED_MMPROJ" ]; then
+                    echo "[LLM] Enabling multimodal vision projector ($RESOLVED_MMPROJ)..."
+                    MMPROJ_ARG="--mmproj $RESOLVED_MMPROJ --mmproj-offload"
+                    NGL=32
+                fi
+
+                pkill -9 -f "llama-server" 2>/dev/null || true
+                sleep 0.5
+
+                /home/ameya/llama.cpp/build/bin/llama-server \
+                    -m "$TARGET_MODEL_PATH" \
+                    $MMPROJ_ARG \
+                    -ngl $NGL \
+                    -t 8 \
+                    -tb 8 \
+                    -fa on \
+                    -ctk q4_0 \
+                    -ctv q4_0 \
+                    -c 16384 \
+                    -np 1 \
+                    -b 4096 \
+                    -ub 4096 \
+                    --host 127.0.0.1 \
+                    --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
+            fi
 
             echo -n "[LLM] Waiting for llama-server..."
             READY=0

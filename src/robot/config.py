@@ -98,6 +98,12 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
             llm["max_tokens"] = int(os.environ["LLM_MAX_TOKENS"])
         except ValueError:
             pass
+    if "LLM_MODEL_PATH" in os.environ:
+        llm["model_path"] = os.environ["LLM_MODEL_PATH"].strip()
+    if "LLM_MULTIMODAL" in os.environ:
+        llm["multimodal"] = os.environ["LLM_MULTIMODAL"].strip().lower() in ("true", "1", "yes")
+    if "LLM_MMPROJ_PATH" in os.environ:
+        llm["mmproj_path"] = os.environ["LLM_MMPROJ_PATH"].strip()
     if "LLM_ENABLE_THINKING" in os.environ:
         llm["enable_thinking"] = os.environ["LLM_ENABLE_THINKING"].strip().lower() in ("true", "1", "yes")
 

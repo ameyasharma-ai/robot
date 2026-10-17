@@ -540,6 +540,47 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             },
         }
 
+    @app.get("/api/models/local")
+    async def list_local_models() -> dict[str, Any]:
+        """List registered 2B Vision Language Models (VLM) and <4B Uncensored models with download status.
+
+        Returns:
+            dict[str, Any]: Model catalog, default model, and download status.
+        """
+        from robot.config import get_project_root
+        from robot.llm.model_registry import ModelRegistry
+
+        base_dir = get_project_root()
+        models_data = []
+        for m in ModelRegistry.list_models():
+            models_data.append(
+                {
+                    "id": m.id,
+                    "name": m.name,
+                    "category": m.category.value,
+                    "parameters": m.parameters,
+                    "repo_id": m.repo_id,
+                    "filename": m.filename,
+                    "mmproj_filename": m.mmproj_filename,
+                    "is_vision": m.is_vision,
+                    "is_uncensored": m.is_uncensored,
+                    "supports_tools": m.supports_tools,
+                    "recommended_context": m.recommended_context,
+                    "description": m.description,
+                    "is_downloaded": m.is_downloaded(base_dir),
+                    "model_path": str(m.get_model_path(base_dir)),
+                    "mmproj_path": str(m.get_mmproj_path(base_dir)) if m.mmproj_filename else None,
+                }
+            )
+
+        cfg_model = getattr(engine, "config", {}).get("llm", {}).get("model", "qwen2-vl-2b-instruct")
+        return {
+            "default_model": ModelRegistry.DEFAULT_VLM_MODEL_ID,
+            "active_configured_model": cfg_model,
+            "total_models": len(models_data),
+            "models": models_data,
+        }
+
     # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
     @app.get("/spotify/status")
     async def spotify_status():

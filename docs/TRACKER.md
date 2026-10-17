@@ -76,6 +76,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 12: Standby Audio Integrity & Playback Serialization Architecture** | Async Lock Playback Serialization + Trailing DAC Flush Padding + False Barge-In Immunity + Queue Drain Purging | ✅ **Active** | Core Engine / `AudioPlayer` (`playback.py`) / Piper TTS | Resolved critical audio cutoff bug where the parting phrase ("Entering standby mode...") was truncated mid-sentence. Added `asyncio.Lock` serialization in `AudioPlayer` ensuring concurrent earcon chimes and TTS speech never collide or tear down streams; matched procedural earcon sample rate to current/target stream (22050 Hz); added 40ms post-silence hardware DAC flush padding preventing ALSA buffer underrun from eating the final syllable; added `_entering_standby` flag dropping all mic frames during standby transitions to eliminate speaker acoustic bleed from triggering false barge-in; sanitized interrupt events and purged stale queues on standby request. 286 / 286 tests pass. |
 | **Phase 13: Local Whisper Multi-Model Suite & Dynamic STT Architecture** | Multi-Model Local Downloader + Tensor Integrity Verification + Dynamic Configuration & Hot-Restart | ✅ **Active** | AMD Radeon 680M (Vulkan) / Core Engine | Built high-speed multi-threaded downloader with HTTP Range chunking and chunk retry logic; downloaded and validated `tiny.en` (75MB), `base.en` (142MB), `base` (142MB), `small.en` (466MB), `small` (465MB), `medium.en` (1.5GB), `medium` (1.5GB), `large-v3-turbo` (1.6GB), `large-v3` (3.1GB) in `models/stt/`; integrated dynamic model resolution and auto-restart in `scripts/run.sh`; exposed `model` and `model_path` in `config/default.yaml` with env var overrides (`STT_MODEL`, `STT_MODEL_PATH`); 0MB VRAM used on RTX 3050. 286 / 286 tests pass. |
 | **Phase 14: Actuator Safety & Audio Fault Containment Architecture** | Zero-Motion Reconnect Latch + NaN/Inf/Duplicate Rejection + Device Health States (`AudioDeviceState`) + Generation Stale Purging + Bounded Stream Recovery | ✅ **Active** | USB Serial / Microcontroller + Host Audio (PipeWire/ALSA) | Host vs hardware protection boundary map; NaN/Inf/negative speed rejection; duplicate command filtering (0.05° epsilon); stale proposal rejection (>0.5s); post-reconnect zero-motion latching with operator unlatch; explicit device health states (`HEALTHY`, `DEGRADED`, `RECOVERING`, `ERROR`); monotonic generation tracking purging stale speech synthesis on barge-in; bounded stream recovery (max 3 retries); capture/playback fault isolation; non-blocking telemetry metrics. 297 / 297 tests pass. |
+| **Phase 15: 2B Vision Language Models (VLM) & <4B Uncensored Model Architecture** | Model Registry + GGUF Header Validation + Dynamic Pipeline Projector Offload + Parallel Downloader | ✅ **Active** | RTX 3050 (4GB) + AMD 680M / CPU | Curated 12-model catalog (VLM 2B with tool usage & uncensored models <4B); default 2B VLM configured in YAML (`qwen2-vl-2b-instruct` Q4_K_M + `mmproj-f16`); dynamic `llama-server` resolution in `scripts/run.sh` with `--mmproj` and `--mmproj-offload` flags; chunked parallel HTTP range downloader with GGUF header validation; `/api/models/local` discovery endpoint; zero VRAM budget violations (<3.8GB); 306 / 306 tests pass. |
 
 
 Legend:
@@ -1816,6 +1817,26 @@ Legend:
       - Added 5 unit tests in `tests/test_serial_bridge.py` and 6 unit tests in `tests/test_audio_resilience.py`.
       - 297 / 297 tests pass 100% across all 42 test modules in `.venv/bin/pytest tests/`.
       - 106 / 106 Python files verified clean with zero import errors (`verify_imports.py`).
+
+96. **2B Vision Language Models (VLM) & <4B Uncensored Model Suite Integration**:
+    - *Symptoms & Requirements*:
+      1. Pipeline lacked native local multimodal Vision Language Model (VLM) integration with tool calling capabilities around 2B parameters.
+      2. Requirement for a curated catalog of 10+ models spanning 2B VLMs with tool usage and uncensored/abliterated models under 4B parameters.
+      3. Default model (`qwen2-vl-2b-instruct`) needed to be declared in YAML (`config/default.yaml`) and automatically launched with `--mmproj` and `--mmproj-offload` in `scripts/run.sh`.
+      4. Models needed to be easily downloadable with binary GGUF magic byte validation and zero VRAM ceiling violations on the RTX 3050 (4GB).
+    - *Fixes Applied*:
+      1. Built [`src/robot/llm/model_registry.py`](file:///home/ameya/robot/src/robot/llm/model_registry.py) with 12 curated models:
+         - **2B VLM with Tool Calling**: `qwen2-vl-2b-instruct` (Q4_K_M + `mmproj-Qwen2-VL-2B-Instruct-f16.gguf`), `qwen2-vl-2b-instruct-abliterated` (Q4_K_M + `mmproj-fp16.gguf`), `smolvlm-instruct-2b` (2.2B), and `moondream2-vision` (1.8B).
+         - **<4B Uncensored / Abliterated Models**: `qwen2.5-coder-3b-abliterated`, `huihui-qwen3.5-4b-abliterated`, `llama-3.2-3b-uncensored`, `hermes-3-llama-3.2-3b`, `llama-3.2-1b-uncensored`, `smollm2-1.7b-abliterated`, `qwen2.5-0.5b-abliterated`, and `phi-3.5-mini-uncensored`.
+      2. Implemented parallel multi-threaded HTTP Range downloader in [`scripts/download_vlm_and_uncensored_models.py`](file:///home/ameya/robot/scripts/download_vlm_and_uncensored_models.py) and bash wrapper [`scripts/download_models.sh`](file:///home/ameya/robot/scripts/download_models.sh) with automatic GGUF header validation (`0x46554747`).
+      3. Configured default 2B VLM in [`config/default.yaml`](file:///home/ameya/robot/config/default.yaml) and updated [`src/robot/config.py`](file:///home/ameya/robot/src/robot/config.py) to support `LLM_MODEL_PATH`, `LLM_MULTIMODAL`, and `LLM_MMPROJ_PATH`.
+      4. Enhanced [`scripts/run.sh`](file:///home/ameya/robot/scripts/run.sh) to dynamically resolve model paths and enable `--mmproj` and `--mmproj-offload` flags when multimodal is active.
+      5. Added `/api/models/local` catalog discovery endpoint in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py).
+      6. Downloaded and validated `qwen2-vl-2b-instruct` (940MB text + 1.27GB mmproj), `qwen2.5-0.5b-abliterated` (379MB), and `llama-3.2-1b-uncensored` (770MB).
+    - *Verification*:
+      - Added 9 unit tests in `tests/test_vlm_and_uncensored_registry.py`.
+      - 306 / 306 unit tests pass 100% across all 43 test modules.
+      - 108 / 108 Python files verified clean with zero import errors (`verify_imports.py`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

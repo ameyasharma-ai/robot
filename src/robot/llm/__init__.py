@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator
 import httpx
 import requests
 
+from robot.llm.model_registry import ModelCategory, ModelMetadata, ModelRegistry
 from robot.telemetry import get_logger
 
 logger = get_logger("llm")
