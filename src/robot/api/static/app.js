@@ -575,8 +575,12 @@ class RobotUI {
             } else {
                 dotEl.style.background = "#10b981";
             }
-            dotEl.style.boxShadow = `0 0 8px ${dotEl.style.background}`;
+            dotEl.style.boxShadow = `0 0 10px ${dotEl.style.background}`;
         }
+
+        // Apply theme tone glow class to Dynamic Island container
+        island.classList.remove("tone-emerald", "tone-cyan", "tone-amber", "tone-rose");
+        island.classList.add(`tone-${tone}`);
 
         island.classList.add("visible");
 
@@ -3674,7 +3678,7 @@ class RobotUI {
 
         // Reset stage state classes if faceStage exists
         if (this.faceStage) {
-            this.faceStage.classList.remove("state-idle", "state-listening", "state-thinking", "state-speaking");
+            this.faceStage.classList.remove("state-idle", "state-listening", "state-thinking", "state-speaking", "state-standby");
             this.faceStage.classList.add(`state-${normalizedMode}`);
         }
 
@@ -3687,6 +3691,15 @@ class RobotUI {
         if (this.dbgCharState) this.dbgCharState.textContent = normalizedMode.toUpperCase();
 
         switch (normalizedMode) {
+            case "standby":
+                if (this.faceCaption) this.faceCaption.textContent = "STANDBY • WAITING FOR WAKE WORD";
+                this.stopMouthSpeaking();
+                this._forEachEngine((eng) => {
+                    eng.speakStop();
+                    eng.setEmotion("neutral");
+                    eng.lookAt(0, 1.25, 2.5);
+                });
+                break;
             case "listening":
                 if (this.faceCaption) this.faceCaption.textContent = "LISTENING FOR VOICE";
                 this.stopMouthSpeaking();
@@ -3791,13 +3804,20 @@ class RobotUI {
             this.showDynamicIsland("AI Provider Active", `Switched to ${(data.provider || 'local').toUpperCase()}`, "⚡", "cyan");
         }
 
-        if (data.event === "wake_word_detected" || data.wake_word) {
+        if (data.event === "wake_word_detected" || data.wake_word || data.event === "wakeword.detected") {
             const w = data.wake_word || "Voice Wake";
-            this.showDynamicIsland("Wake Word Active", `Listening for "${w}"...`, "⚡", "cyan");
+            this.showDynamicIsland("Wake Word Active", `Listening for "${w}"...`, "⚡", "cyan", 3500);
+            this.setRobotMode("listening");
+            this.logEvent("WAKE", `Wake word detected: ${w}`, "system");
         }
 
-        if (data.event === "standby") {
-            this.showDynamicIsland("Standby Mode", "Microphone listening paused", "💤", "amber");
+        if (data.event === "standby" || data.event === "wakeword.standby" || data.standby || (data.event === "mode_changed" && data.mode === "standby") || (data.event === "mode" && data.mode === "standby")) {
+            const persRaw = (this.personaName && this.personaName.textContent) ? this.personaName.textContent.trim().toLowerCase() : "cypher";
+            const persTitle = persRaw === "neo" ? "Cypher" : (persRaw.charAt(0).toUpperCase() + persRaw.slice(1));
+            const sub = data.text ? `"${data.text}" • Say "Hey ${persTitle}" to resume` : `Listening paused • Say "Hey ${persTitle}" to resume`;
+            this.showDynamicIsland("Standby Mode Active", sub, "💤", "amber", 4500);
+            this.setRobotMode("standby");
+            this.logEvent("STANDBY", `Standby triggered (${data.text || 'user command'})`, "system");
         }
 
         if (data.event === "scheduler.job_triggered" || data.event === "timer.triggered") {
@@ -3917,8 +3937,9 @@ class RobotUI {
                 eng.speakStop();
                 eng.setEmotion("neutral");
             });
-            this.setRobotMode("idle");
-            this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: "IDLE" });
+            const targetMode = data.mode || (this.currentMode === "standby" ? "standby" : "idle");
+            this.setRobotMode(targetMode);
+            this.updatePipelineStatus({ TTS: "COMPLETED", AVATAR: targetMode.toUpperCase() });
         }
 
         if (data.robot_phrase) {

@@ -569,6 +569,8 @@ class RobotEngine:
             try:
                 await self.events.emit("mode", mode=new_mode.value)
                 await self.events.emit("mode_changed", mode=new_mode.value, old_mode=old_mode.value)
+                if new_mode == RobotMode.STANDBY:
+                    await self.events.emit("standby", reason="mode_change", standby=True)
             except Exception:
                 pass
         self.state.subscribe(_on_mode_change)
@@ -1241,7 +1243,18 @@ class RobotEngine:
                                             print(f"\n🛑 \033[1;33m[STANDBY REQUESTED]\033[0m {text}")
                                             self._last_interaction_ts = 0.0
                                             await self.state.set_mode(RobotMode.STANDBY)
-                                            await self.events.emit(Events.STANDBY, reason="user_command")
+                                            await self.events.emit(
+                                                Events.STANDBY,
+                                                reason="user_command",
+                                                standby=True,
+                                                text=text,
+                                            )
+                                            await self.events.emit(
+                                                "standby",
+                                                reason="user_command",
+                                                standby=True,
+                                                text=text,
+                                            )
                                             if hasattr(self, "player") and self.player:
                                                 try:
                                                     asyncio.create_task(self.player.play_earcon("dismiss", volume=0.55))
@@ -1378,7 +1391,18 @@ class RobotEngine:
         ):
             self._last_interaction_ts = 0.0
             await self.state.set_mode(RobotMode.STANDBY)
-            await self.events.emit(Events.STANDBY, reason="user_command")
+            await self.events.emit(
+                Events.STANDBY,
+                reason="user_command",
+                standby=True,
+                text=user_text,
+            )
+            await self.events.emit(
+                "standby",
+                reason="user_command",
+                standby=True,
+                text=user_text,
+            )
             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                 self.tool_coordinator.reset()
             pers_title = (

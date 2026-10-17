@@ -1081,11 +1081,17 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         if hasattr(engine, "state"):
             await engine.state.set_mode(RobotMode.STANDBY)
         if hasattr(engine, "events"):
-            await engine.events.emit(Events.STANDBY, reason="user_command")
+            await engine.events.emit(Events.STANDBY, reason="user_command", standby=True)
+            await engine.events.emit("standby", reason="user_command", standby=True)
         if hasattr(engine, "coordinator") and engine.coordinator:
             engine.coordinator.reset()
 
-        return "Entering standby mode. I will wait for you to say 'Hey Lisa' before listening again."
+        pers_title = (
+            engine.personalities.active.name.title()
+            if hasattr(engine, "personalities") and engine.personalities and engine.personalities.active
+            else "Cypher"
+        )
+        return f"Entering standby mode. I will wait for you to say 'Hey {pers_title}' before listening again."
 
     engine.tool_registry.register(
         ToolDefinition(
