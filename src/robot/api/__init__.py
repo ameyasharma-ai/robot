@@ -76,6 +76,8 @@ class VoiceModeRequest(BaseModel):
 
 class ImageGenRequest(BaseModel):
     prompt: str
+    model: str | None = "default"
+    negative_prompt: str | None = ""
     width: int | None = 512
     height: int | None = 512
     steps: int | None = 4
@@ -1360,9 +1362,22 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             height=req.height,
             steps=req.steps or 4,
             seed=req.seed or -1,
+            model=req.model or "default",
+            negative_prompt=req.negative_prompt or "",
             trace_id=getattr(engine.observability, "current_trace_id", None) if hasattr(engine, "observability") else None,
         )
         return {"status": "queued", "job": job.to_dict()}
+
+    @app.get("/api/images/models")
+    async def list_image_models() -> dict[str, Any]:
+        """List registered FLUX, Stable Diffusion, and Procedural models with cache status."""
+        from robot.image.model_registry import ImageModelRegistry
+        models = [m.to_dict() | {"is_cached": m.is_cached_locally()} for m in ImageModelRegistry.list_models()]
+        return {
+            "default_model": ImageModelRegistry.DEFAULT_GPU_MODEL_ID,
+            "total_models": len(models),
+            "models": models,
+        }
 
     @app.get("/images/jobs")
     async def list_image_jobs(limit: int = 20):

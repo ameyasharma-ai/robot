@@ -175,12 +175,14 @@ observability:
 
 image:
   enabled: true
+  provider: "unified"          # Unified multi-model (FLUX, SDXL, SD 1.5, SD-Turbo, FastProcedural)
+  default_model: "sd-turbo"    # Default GPU real-time model (1-4 steps, 512x512)
+  gpu_offload_heavy: true      # Automatically offload local LLM to API or stop llama-server to free 4GB VRAM
   default_width: 512
   default_height: 512
-  default_steps: 15
+  default_steps: 4
   max_width: 1024
   max_height: 1024
-  max_steps: 30
+  max_steps: 50
   max_concurrent_jobs: 1
   output_dir: "data/images"
-  provider: "fast_procedural"  # Fast local generator + diffusion fallback

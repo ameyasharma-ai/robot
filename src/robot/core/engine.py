@@ -326,6 +326,7 @@ class RobotEngine:
             max_concurrent=img_cfg.get("max_concurrent_jobs", 1),
             default_width=img_cfg.get("default_width", 512),
             default_height=img_cfg.get("default_height", 512),
+            engine=self,
         )
 
         # Connect image service events to observability

@@ -492,6 +492,16 @@
                                 <button class="img-cancel-btn" id="btnCancelImage" disabled>Cancel</button>
                             </div>
                             <div class="image-controls-row">
+                                <label class="img-ctrl-label">Model:
+                                    <select id="imgModelSelect" class="img-select" title="Target Diffusion Model">
+                                        <option value="sd-turbo" selected>⚡ SD-Turbo (4-step GPU)</option>
+                                        <option value="dreamshaper-v8">🎨 DreamShaper 8 (GPU)</option>
+                                        <option value="flux-schnell">💎 FLUX.1 Schnell (12B)</option>
+                                        <option value="sdxl-turbo">🚀 SDXL Turbo</option>
+                                        <option value="small-sd">🌱 Small-SD (CPU/Low VRAM)</option>
+                                        <option value="fast-procedural">⚡ Fast-Procedural</option>
+                                    </select>
+                                </label>
                                 <label class="img-ctrl-label">Size:
                                     <select id="imgResSelect" class="img-select">
                                         <option value="512x512">512×512</option>
@@ -500,7 +510,7 @@
                                     </select>
                                 </label>
                                 <label class="img-ctrl-label">Steps:
-                                    <input type="number" id="imgStepsInput" value="15" min="10" max="30" class="img-steps-input" title="Inference steps" />
+                                    <input type="number" id="imgStepsInput" value="4" min="1" max="50" class="img-steps-input" title="Inference steps" />
                                 </label>
                                 <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
                                     <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>

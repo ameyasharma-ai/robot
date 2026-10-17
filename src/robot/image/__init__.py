@@ -176,26 +176,25 @@ class ImageGenerationService:
         max_concurrent: int = 1,
         default_width: int = 512,
         default_height: int = 512,
+        engine: Any | None = None,
+        provider: ImageProvider | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.max_concurrent = max_concurrent
         self.default_width = default_width
         self.default_height = default_height
+        self.engine = engine
 
-        import os
-        from robot.image.sd_provider import LocalStableDiffusionProvider, RemoteOpenAIImageProvider
-        openai_base = os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").strip()
-        openai_key = os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip()
-        self._fallback_provider: ImageProvider = LocalStableDiffusionProvider(output_dir=str(self.output_dir))
-        if openai_base and openai_key:
-            self.provider: ImageProvider = RemoteOpenAIImageProvider(
-                base_url=openai_base,
-                api_key=openai_key,
-                output_dir=str(self.output_dir),
-            )
+        self._fallback_provider: ImageProvider = FastProceduralImageProvider(output_dir=str(self.output_dir))
+        if provider is not None:
+            self.provider: ImageProvider = provider
         else:
-            self.provider: ImageProvider = self._fallback_provider
+            from robot.image.unified_provider import UnifiedImageProvider
+            self.provider = UnifiedImageProvider(
+                output_dir=str(self.output_dir),
+                engine=self.engine,
+            )
         self._jobs: dict[str, ImageJob] = {}
         self._interrupt_events: dict[str, asyncio.Event] = {}
         self._queue: asyncio.Queue[ImageJob] = asyncio.Queue()
@@ -230,31 +229,33 @@ class ImageGenerationService:
         steps: int = 4,
         seed: int = -1,
         model: str = "default",
+        negative_prompt: str = "",
         trace_id: str | None = None,
     ) -> ImageJob:
         """Validate parameters and enqueue image generation job."""
         # Sanitize and bound parameters
         safe_w = max(128, min(width or self.default_width, 1024))
         safe_h = max(128, min(height or self.default_height, 1024))
-        safe_steps = max(1, min(steps, 30))
+        safe_steps = max(1, min(steps, 50))
         safe_prompt = prompt.strip()[:500]
 
         job = ImageJob(
             trace_id=trace_id,
             prompt=safe_prompt,
+            negative_prompt=negative_prompt.strip()[:500],
             width=safe_w,
             height=safe_h,
             steps=safe_steps,
             seed=seed,
             model=model,
-            provider="fast_procedural",
+            provider=getattr(self.provider, "__class__", type(self.provider)).__name__,
             status=JobStatus.QUEUED,
         )
         self._jobs[job.job_id] = job
         self._interrupt_events[job.job_id] = asyncio.Event()
         self._queue.put_nowait(job)
         asyncio.create_task(self._emit_job_event("image.queued", job))
-        logger.info("image_job_queued", job_id=job.job_id, prompt=safe_prompt[:40])
+        logger.info("image_job_queued", job_id=job.job_id, prompt=safe_prompt[:40], model=model)
         return job
 
     async def cancel_job(self, job_id: str) -> bool:
@@ -320,3 +321,26 @@ class ImageGenerationService:
                 job.completed_at = time.time()
                 await self._emit_job_event("image.failed", job)
                 logger.error("image_job_failed", job_id=job.job_id, error=str(e))
+
+
+from robot.image.gpu_handoff import GpuHandoffState, GpuResourceHandoffManager
+from robot.image.model_registry import ImageModelFamily, ImageModelMetadata, ImageModelRegistry
+from robot.image.prompt_enhancer import ImageGenerationInstruction, ImagePromptEnhancer
+from robot.image.unified_provider import UnifiedImageProvider
+
+__all__ = [
+    "FastProceduralImageProvider",
+    "GpuHandoffState",
+    "GpuResourceHandoffManager",
+    "ImageGenerationInstruction",
+    "ImageGenerationService",
+    "ImageJob",
+    "ImageModelFamily",
+    "ImageModelMetadata",
+    "ImageModelRegistry",
+    "ImagePromptEnhancer",
+    "ImageProvider",
+    "JobStatus",
+    "UnifiedImageProvider",
+]
+

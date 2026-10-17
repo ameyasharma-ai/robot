@@ -993,23 +993,39 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     register_motion_tools(engine)
 
     # --- Image Generation Tools ---
-    async def generate_image(prompt: str = "", width: int = 512, height: int = 512, steps: int = 15, **kwargs) -> dict:
+    async def generate_image(
+        prompt: str = "",
+        model: str = "default",
+        width: int = 512,
+        height: int = 512,
+        steps: int = 4,
+        seed: int = -1,
+        negative_prompt: str = "",
+        **kwargs,
+    ) -> dict:
         if not getattr(engine, "image_service", None):
             return {"error": "Image generation service is not initialized"}
         raw_p = (prompt or kwargs.get("text") or kwargs.get("description") or kwargs.get("query") or kwargs.get("caption") or "").strip()
         if not raw_p:
             return {"error": "No visual prompt provided for image generation."}
-        # Bound steps between 12 and 20 for optimal quality and responsiveness
-        clamped_steps = max(12, min(20, steps)) if steps else 15
+
+        model_id = (model or kwargs.get("model_id") or "default").strip()
+        neg_p = (negative_prompt or kwargs.get("negative") or "").strip()
+        chosen_seed = int(seed) if seed is not None else -1
+        clamped_steps = max(1, min(50, steps)) if steps else 4
+
         span = None
         if getattr(engine, "observability", None):
-            span = engine.observability.start_span("IMAGE", "GENERATE", metadata={"prompt": raw_p})
+            span = engine.observability.start_span("IMAGE", "GENERATE", metadata={"prompt": raw_p, "model": model_id})
 
         job = engine.image_service.submit_job(
             prompt=raw_p,
             width=width,
             height=height,
             steps=clamped_steps,
+            seed=chosen_seed,
+            model=model_id,
+            negative_prompt=neg_p,
             trace_id=getattr(engine.observability, "current_trace_id", None) if getattr(engine, "observability", None) else None,
         )
 
@@ -1019,20 +1035,24 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         return {
             "status": "queued",
             "job_id": job.job_id,
-            "message": f"Image generation started in background for '{raw_p}'. Check dashboard or /images/jobs for status.",
+            "model": model_id,
+            "message": f"Image generation started for '{raw_p}' using model '{model_id}'. The loaded LLM will enhance the visual instruction, offload the GPU if needed, and notify you when ready.",
         }
 
     engine.tool_registry.register(
         ToolDefinition(
             name="image.generate",
-            description="Generate a realistic or stylized image from a prompt asynchronously in the background",
+            description="Generate a realistic, artistic, or stylized image from a prompt using FLUX or Stable Diffusion models with dynamic GPU handoff",
             parameters={
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string", "description": "Visual prompt describing the image to generate"},
-                    "width": {"type": "integer", "description": "Image width in pixels (128-1024)", "default": 512},
-                    "height": {"type": "integer", "description": "Image height in pixels (128-1024)", "default": 512},
-                    "steps": {"type": "integer", "description": "Inference steps (recommended 12-20)", "default": 15},
+                    "prompt": {"type": "string", "description": "Visual concept or description of the image to generate"},
+                    "model": {"type": "string", "description": "Image model (e.g. 'sd-turbo', 'dreamshaper-v8', 'flux-schnell', 'small-sd', 'fast-procedural')", "default": "sd-turbo"},
+                    "width": {"type": "integer", "description": "Image width in pixels (256-1024)", "default": 512},
+                    "height": {"type": "integer", "description": "Image height in pixels (256-1024)", "default": 512},
+                    "steps": {"type": "integer", "description": "Inference steps (1-4 for sd-turbo/flux, 15-25 for sd-1.5/dreamshaper)", "default": 4},
+                    "seed": {"type": "integer", "description": "Random seed for reproducible generation (-1 for random)", "default": -1},
+                    "negative_prompt": {"type": "string", "description": "Flaws or visual elements to avoid in the image", "default": ""},
                 },
                 "required": ["prompt"],
             },

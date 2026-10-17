@@ -4520,12 +4520,18 @@ class RobotUI {
         document.getElementById("activeTraceBadge").textContent = `TRACE: ${trace.trace_id.substring(0,8)}`;
     }
 
+    /**
+     * Initialize Asynchronous Neural Image Studio UI controls, model catalog, and job listeners.
+     * @returns {void}
+     */
     initImageGen() {
         const btnGen = document.getElementById("btnGenImage");
         const btnCancel = document.getElementById("btnCancelImage");
         const input = document.getElementById("imgPromptInput");
         const btnToggle = document.getElementById("btnToggleImageGen");
         const drawer = document.getElementById("cardImageGen");
+        const modelSelect = document.getElementById("imgModelSelect");
+        const stepsInput = document.getElementById("imgStepsInput");
 
         if (btnToggle && drawer) {
             btnToggle.addEventListener("click", (e) => {
@@ -4535,15 +4541,50 @@ class RobotUI {
             });
         }
 
+        // Auto-tune steps and resolution when model selection changes
+        if (modelSelect && stepsInput) {
+            modelSelect.addEventListener("change", () => {
+                const sel = modelSelect.value;
+                if (sel === "sd-turbo" || sel === "sdxl-turbo" || sel === "flux-schnell" || sel === "fast-procedural") {
+                    stepsInput.value = "4";
+                } else if (sel === "dreamshaper-v8" || sel === "sd-1.5") {
+                    stepsInput.value = "20";
+                } else if (sel === "flux-dev") {
+                    stepsInput.value = "24";
+                }
+            });
+
+            // Fetch live model catalog and cached states from backend
+            fetch("/api/images/models")
+                .then(r => r.json())
+                .then(data => {
+                    if (data && data.models) {
+                        data.models.forEach(m => {
+                            const opt = modelSelect.querySelector(`option[value="${m.id}"]`);
+                            if (opt && m.is_cached) {
+                                if (!opt.textContent.includes("✓")) {
+                                    opt.textContent += " ✓ [Cached]";
+                                }
+                            }
+                        });
+                    }
+                })
+                .catch(() => {});
+        }
+
+        /**
+         * Submit an asynchronous text-to-image synthesis job to the unified diffusion pipeline.
+         * @returns {Promise<void>}
+         */
         const submitImage = async () => {
             if (!input) return;
             const prompt = input.value.trim();
             if (!prompt) return;
 
             const resSelect = document.getElementById("imgResSelect");
-            const stepsInput = document.getElementById("imgStepsInput");
             const [width, height] = (resSelect ? resSelect.value : "512x512").split("x").map(Number);
             const steps = stepsInput ? (parseInt(stepsInput.value, 10) || 4) : 4;
+            const targetModel = modelSelect ? modelSelect.value : "sd-turbo";
 
             if (btnGen) {
                 btnGen.disabled = true;
@@ -4556,12 +4597,18 @@ class RobotUI {
                 const res = await fetch("/images/generate", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ prompt: prompt, width: width, height: height, steps: steps })
+                    body: JSON.stringify({
+                        prompt: prompt,
+                        model: targetModel,
+                        width: width,
+                        height: height,
+                        steps: steps
+                    })
                 });
                 const data = await res.json();
                 if (res.ok && !data.error) {
                     input.value = "";
-                    this.logEvent("IMAGE", `Generation job submitted: "${prompt}" (${width}x${height}, ${steps} steps)`, "system");
+                    this.logEvent("IMAGE", `Job queued on ${targetModel}: "${prompt}" (${width}x${height}, ${steps} st)`, "system");
                     try {
                         const pollRes = await fetch("/images/jobs");
                         if (pollRes.ok) {

@@ -77,6 +77,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 13: Local Whisper Multi-Model Suite & Dynamic STT Architecture** | Multi-Model Local Downloader + Tensor Integrity Verification + Dynamic Configuration & Hot-Restart | ✅ **Active** | AMD Radeon 680M (Vulkan) / Core Engine | Built high-speed multi-threaded downloader with HTTP Range chunking and chunk retry logic; downloaded and validated `tiny.en` (75MB), `base.en` (142MB), `base` (142MB), `small.en` (466MB), `small` (465MB), `medium.en` (1.5GB), `medium` (1.5GB), `large-v3-turbo` (1.6GB), `large-v3` (3.1GB) in `models/stt/`; integrated dynamic model resolution and auto-restart in `scripts/run.sh`; exposed `model` and `model_path` in `config/default.yaml` with env var overrides (`STT_MODEL`, `STT_MODEL_PATH`); 0MB VRAM used on RTX 3050. 286 / 286 tests pass. |
 | **Phase 14: Actuator Safety & Audio Fault Containment Architecture** | Zero-Motion Reconnect Latch + NaN/Inf/Duplicate Rejection + Device Health States (`AudioDeviceState`) + Generation Stale Purging + Bounded Stream Recovery | ✅ **Active** | USB Serial / Microcontroller + Host Audio (PipeWire/ALSA) | Host vs hardware protection boundary map; NaN/Inf/negative speed rejection; duplicate command filtering (0.05° epsilon); stale proposal rejection (>0.5s); post-reconnect zero-motion latching with operator unlatch; explicit device health states (`HEALTHY`, `DEGRADED`, `RECOVERING`, `ERROR`); monotonic generation tracking purging stale speech synthesis on barge-in; bounded stream recovery (max 3 retries); capture/playback fault isolation; non-blocking telemetry metrics. 297 / 297 tests pass. |
 | **Phase 15: 2B Vision Language Models (VLM) & <4B Uncensored Model Architecture** | Model Registry + GGUF Header Validation + Dynamic Pipeline Projector Offload + Parallel Downloader | ✅ **Active** | RTX 3050 (4GB) + AMD 680M / CPU | Curated 12-model catalog (VLM 2B with tool usage & uncensored models <4B); default 2B VLM configured in YAML (`qwen2-vl-2b-instruct` Q4_K_M + `mmproj-f16`); dynamic `llama-server` resolution in `scripts/run.sh` with `--mmproj` and `--mmproj-offload` flags; chunked parallel HTTP range downloader with GGUF header validation; `/api/models/local` discovery endpoint; zero VRAM budget violations (<3.8GB); 306 / 306 tests pass. |
+| **Phase 16: Multi-Model Diffusion & Dynamic GPU Handoff Architecture** | `ImageModelRegistry` + `GpuResourceHandoffManager` + `ImagePromptEnhancer` + `UnifiedImageProvider` + Selective Downloader + Dashboard Model Selector | ✅ **Active** | NVIDIA RTX 3050 (4GB CUDA) + Cloud LLM / CPU | 9-model catalog spanning FLUX.1 Schnell/Dev, SD-Turbo, SDXL-Turbo, SD 1.5, DreamShaper 8, and Small-SD; CUDA PyTorch 2.6.0+cu124 acceleration enabled on RTX 3050; dynamic GPU handoff offloading local LLM (llama-server) to Cloud API (Gemini/OpenAI) or halting process to evacuate >3.5GB VRAM during heavy diffusion generation; automated prompt expansion and parameter tuning via active LLM; multi-format downloader script with fp16 variant optimization; spoken completion TTS notification; dashboard model dropdown selector; 315 / 315 tests pass. |
 
 
 Legend:
@@ -154,6 +155,15 @@ Legend:
   - Enforced 3.0s hard timeout compliance and defensive error handling across all network tools (`wikipedia_lookup`, `web_scrape_page`, `translation_translate`, `fetch_weather`, `HomeAssistantClient`).
   - Added object URL revocation and guarded autoplay promise handling in Next.js standalone web slice (`web/app/page.tsx`).
   - 100% test pass rate: **277 / 277 tests passing** across all 40 test modules; **104 / 104 files clean** with zero import errors (`verify_imports.py`).
+- [x] **Day 14: Multi-Model Diffusion Suite (FLUX, SDXL, SD-Turbo) & Dynamic GPU Memory Handoff Architecture**:
+  - Implemented `ImageModelRegistry` (`src/robot/image/model_registry.py`) curating 9 models across FLUX (Schnell/Dev/GGUF), SDXL (Turbo/Lightning), Stable Diffusion (SD-Turbo, SD 1.5, DreamShaper 8, Small-SD), and Fast-Procedural.
+  - Upgraded PyTorch virtual environment to `torch-2.6.0+cu124` unlocking native CUDA acceleration on NVIDIA GeForce RTX 3050 Laptop GPU (3,678 MB free VRAM).
+  - Implemented `ImagePromptEnhancer` (`src/robot/image/prompt_enhancer.py`) synthesizing structured visual prompts, negative prompts, seed, steps, and guidance scale through the loaded LLM (Local or API) with deterministic fallback.
+  - Implemented `GpuResourceHandoffManager` (`src/robot/image/gpu_handoff.py`) safely evacuating the local LLM (`llama-server`) to Cloud API (Gemini/OpenAI) or halting the process, flushing PyTorch CUDA cache, loading the diffusion pipeline, generating the image, restoring the LLM, and generating a spoken notification.
+  - Implemented `UnifiedImageProvider` (`src/robot/image/unified_provider.py`) with fp16 precision, attention slicing, and VAE tiling.
+  - Built selective model downloader in `scripts/download_image_models.py` and `scripts/download_image_models.sh`.
+  - Added `/api/images/models` catalog discovery endpoint and interactive Model Selector dropdown in the Cyber-Studio Deck Image Studio dashboard.
+  - 100% test pass rate: **315 / 315 tests passing** across all 44 test modules; **113 / 113 Python files clean** with zero import errors (`verify_imports.py`).
 
 
 ### 🏁 Version 1 (V1) Completed Milestones
@@ -1837,6 +1847,31 @@ Legend:
       - Added 9 unit tests in `tests/test_vlm_and_uncensored_registry.py`.
       - 306 / 306 unit tests pass 100% across all 43 test modules.
       - 108 / 108 Python files verified clean with zero import errors (`verify_imports.py`).
+
+97. **Multi-Model Diffusion Suite (FLUX, SDXL, SD-Turbo) & Dynamic GPU Memory Handoff Pipeline**:
+    - *Symptoms & Requirements*:
+      1. Image generation was previously limited to a single CPU-based fallback model (`small-sd`) without GPU acceleration or support for modern state-of-the-art models like FLUX or SD-Turbo.
+      2. The NVIDIA RTX 3050 Laptop GPU (4GB VRAM) was continuously occupied by `llama-server` (2.2GB - 3.4GB), leaving insufficient VRAM (<800MB) to load heavy diffusion models without causing CUDA Out Of Memory (OOM) fatal crashes.
+      3. User required an automated pipeline: visual prompt synthesized by whatever LLM is loaded (local or API) -> GPU cleared -> image model loaded -> instruction executed (prompt, seed, steps, guidance) -> image rendered in dashboard -> LLM notifies the user.
+    - *Fixes Applied*:
+      1. **CUDA Acceleration Upgrade**:
+         - Upgraded PyTorch from CPU wheel to `torch-2.6.0+cu124`, `torchvision-0.21.0+cu124`, and `torchaudio-2.6.0+cu124`, verifying CUDA device 0 (`NVIDIA GeForce RTX 3050 Laptop GPU`) with 3,678 MB free VRAM.
+      2. **Model Registry & Catalog (`model_registry.py`)**:
+         - Curated 9 models across FLUX (Schnell/Dev/GGUF), SDXL (Turbo/Lightning), SD (SD-Turbo, SD 1.5, DreamShaper 8, Small-SD), and Procedural families with metadata (`is_heavy`, `vram_mb_required`, `recommended_steps`, `default_guidance_scale`, and local caching detection).
+      3. **Active LLM Instruction Synthesizer (`prompt_enhancer.py`)**:
+         - Synthesizes optimal visual descriptions, camera perspective, lighting, seed, and resolution via the active LLM (`engine.llm.stream()`) with JSON parsing and deterministic fallback.
+      4. **Dynamic GPU Handoff Manager (`gpu_handoff.py`)**:
+         - Automated VRAM management: when a heavy model is requested, offloads local LLM to Gemini or OpenAI-compatible API if keys exist, or halts `llama-server` via `LlamaServerManager.stop()`, runs `gc.collect()` and `torch.cuda.empty_cache()` (freeing >3.5GB VRAM), executes generation, re-attaches local LLM, and dispatches a spoken completion notification via the active LLM.
+      5. **Unified Multi-Model Provider (`unified_provider.py`)**:
+         - Unifies AutoPipeline, FluxPipeline, StableDiffusionPipeline, and Procedural engines with fp16 precision, attention slicing, and VAE tiling.
+      6. **Selective Downloader Script (`scripts/download_image_models.py` & `.sh`)**:
+         - Multi-threaded downloader with `--default`, `--sd`, `--flux`, `--model <id>`, downloading strictly fp16 variants (~2.4GB total for SD-Turbo) to optimize disk and network usage.
+      7. **Dashboard UI Integration (`index.html` & `app.js`)**:
+         - Added dynamic Model Selector dropdown in the Cyber-Studio Deck Image Studio with live cached status checks (`/api/images/models`) and automatic inference step calibration.
+    - *Verification*:
+      - Added 9 unit tests in `tests/test_image_gpu_handoff_and_models.py`.
+      - 315 / 315 unit tests pass 100% across all 44 test modules in `.venv/bin/pytest tests/`.
+      - 113 / 113 Python files verified clean with zero import errors (`verify_imports.py`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
