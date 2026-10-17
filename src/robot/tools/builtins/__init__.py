@@ -1075,14 +1075,24 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
     # --- Standby & Voice Control Tools ---
     async def stop_listening(**kwargs) -> str:
         """Put the robot into standby mode waiting for the wake word."""
+        import asyncio
         from robot.core.state import RobotMode
         from robot.core.events import Events
 
+        if hasattr(engine, "_entering_standby"):
+            engine._entering_standby = True
+        if hasattr(engine, "_last_interaction_ts"):
+            engine._last_interaction_ts = 0.0
         if hasattr(engine, "state"):
             await engine.state.set_mode(RobotMode.STANDBY)
         if hasattr(engine, "events"):
             await engine.events.emit(Events.STANDBY, reason="user_command", standby=True)
             await engine.events.emit("standby", reason="user_command", standby=True)
+        if hasattr(engine, "player") and engine.player:
+            try:
+                asyncio.create_task(engine.player.play_earcon("dismiss", volume=0.55))
+            except Exception:
+                pass
         if hasattr(engine, "coordinator") and engine.coordinator:
             engine.coordinator.reset()
 

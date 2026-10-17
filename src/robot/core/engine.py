@@ -358,6 +358,7 @@ class RobotEngine:
         self._audio_queue: asyncio.Queue[tuple[Any, ...] | None] = asyncio.Queue(maxsize=16)
         self._is_speaking = False
         self._speech_ended_ts = 0.0
+        self._entering_standby = False
         self._last_bot_phrases: list[str] = []
         self.voice_enabled = True
         self.is_chat_mode = False
@@ -1099,6 +1100,17 @@ class RobotEngine:
 
             clean_chunk, rms = self.capture.process_frame(frame)
 
+            # When entering standby or speaking standby farewell, remain completely deaf to mic audio
+            # so speaker bleed cannot falsely trigger barge-in and truncate the robot's goodbye message
+            if getattr(self, "_entering_standby", False) or self.state.state.mode == RobotMode.STANDBY:
+                if self._is_speaking or self.player.is_playing:
+                    is_speaking = False
+                    audio_buffer = []
+                    silence_frames = 0
+                    barge_in_consecutive = 0
+                    was_barge_in = False
+                    continue
+
             # When the robot is speaking, if barge-in is disabled, stay completely deaf to all input
             if self._is_speaking or self.player.is_playing:
                 if not barge_in_enabled:
@@ -1242,6 +1254,30 @@ class RobotEngine:
                                         if is_standby:
                                             print(f"\n🛑 \033[1;33m[STANDBY REQUESTED]\033[0m {text}")
                                             self._last_interaction_ts = 0.0
+                                            self._entering_standby = True
+
+                                            # Immediately interrupt any prior speech or background generation
+                                            self._interrupt_event.set()
+                                            if hasattr(self, "player") and self.player:
+                                                self.player.stop()
+
+                                            # Purge stale queue items so the parting acknowledgment takes priority
+                                            while not self._speech_queue.empty():
+                                                try:
+                                                    self._speech_queue.get_nowait()
+                                                except (asyncio.QueueEmpty, ValueError):
+                                                    break
+                                            while not self._tts_queue.empty():
+                                                try:
+                                                    self._tts_queue.get_nowait()
+                                                except (asyncio.QueueEmpty, ValueError):
+                                                    break
+                                            while not self._audio_queue.empty():
+                                                try:
+                                                    self._audio_queue.get_nowait()
+                                                except (asyncio.QueueEmpty, ValueError):
+                                                    break
+
                                             await self.state.set_mode(RobotMode.STANDBY)
                                             await self.events.emit(
                                                 Events.STANDBY,
@@ -1371,7 +1407,8 @@ class RobotEngine:
                 else "Cypher"
             )
             ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
-            await self._tts_queue.put((ack, interrupt, None))
+            standby_interrupt = asyncio.Event()
+            await self._tts_queue.put((ack, standby_interrupt, None))
             await self._tts_queue.put(None)
             return ack
         if user_text.startswith("[Proactive check-in]: "):
@@ -1390,6 +1427,22 @@ class RobotEngine:
             and self.wakeword.is_standby_command(user_text)
         ):
             self._last_interaction_ts = 0.0
+            self._entering_standby = True
+            self._interrupt_event.set()
+            if hasattr(self, "player") and self.player:
+                self.player.stop()
+
+            while not self._tts_queue.empty():
+                try:
+                    self._tts_queue.get_nowait()
+                except (asyncio.QueueEmpty, ValueError):
+                    break
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except (asyncio.QueueEmpty, ValueError):
+                    break
+
             await self.state.set_mode(RobotMode.STANDBY)
             await self.events.emit(
                 Events.STANDBY,
@@ -1403,6 +1456,11 @@ class RobotEngine:
                 standby=True,
                 text=user_text,
             )
+            if hasattr(self, "player") and self.player:
+                try:
+                    asyncio.create_task(self.player.play_earcon("dismiss", volume=0.55))
+                except Exception:
+                    pass
             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                 self.tool_coordinator.reset()
             pers_title = (
@@ -1411,7 +1469,8 @@ class RobotEngine:
                 else "Cypher"
             )
             ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
-            await self._tts_queue.put((ack, interrupt, None))
+            standby_interrupt = asyncio.Event()
+            await self._tts_queue.put((ack, standby_interrupt, None))
             await self._tts_queue.put(None)
             return ack
 
@@ -2010,8 +2069,15 @@ class RobotEngine:
             if item is None:
                 self._is_speaking = False
                 self._speech_ended_ts = time.time()
-                if self.state.state.mode != RobotMode.STANDBY:
-                    self._last_interaction_ts = time.time()
+                was_standby_transition = getattr(self, "_entering_standby", False)
+                self._entering_standby = False
+
+                if was_standby_transition or self.state.state.mode == RobotMode.STANDBY:
+                    await self.state.set_mode(RobotMode.STANDBY)
+                    await self.events.emit("robot_speech_ended", mode=RobotMode.STANDBY.value)
+                    continue
+
+                self._last_interaction_ts = time.time()
                 # If an interruption occurred and switched state to LISTENING or STANDBY, don't clobber it to IDLE
                 if self.state.state.mode not in (RobotMode.LISTENING, RobotMode.STANDBY):
                     await self.state.set_mode(RobotMode.IDLE)
@@ -2031,7 +2097,8 @@ class RobotEngine:
             if self._speech_started_ts == 0.0 or (time.time() - self._speech_ended_ts) > 1.0:
                 self._speech_started_ts = time.time()
 
-            await self.state.set_mode(RobotMode.SPEAKING)
+            if not getattr(self, "_entering_standby", False) and self.state.state.mode != RobotMode.STANDBY:
+                await self.state.set_mode(RobotMode.SPEAKING)
             await self.events.emit("robot_phrase", robot_phrase=phrase, emotion=emotion)
 
             if timing_ref:
@@ -2093,9 +2160,13 @@ class RobotEngine:
                         self._tts_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                if self.state.state.mode != RobotMode.LISTENING:
+                if getattr(self, "_entering_standby", False) or self.state.state.mode == RobotMode.STANDBY:
+                    self._entering_standby = False
+                    await self.state.set_mode(RobotMode.STANDBY)
+                    await self.events.emit("robot_speech_ended", mode=RobotMode.STANDBY.value)
+                elif self.state.state.mode != RobotMode.LISTENING:
                     await self.state.set_mode(RobotMode.IDLE)
-                await self.events.emit("robot_speech_ended", mode="idle")
+                    await self.events.emit("robot_speech_ended", mode="idle")
 
     # ─── Echo Filter ─────────────────────────────────────────────────────
 

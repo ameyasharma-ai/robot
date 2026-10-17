@@ -36,10 +36,25 @@ class AudioPlayer:
         self._duck_target: float = 1.0
         self._duck_rate: float = 0.15
         self._lock = threading.Lock()
+        self._playback_lock: asyncio.Lock | None = None
         # Rolling buffer of recent block RMS values (covers ~320ms acoustic travel & hardware DAC ring buffer)
         self._recent_rms: deque[float] = deque(maxlen=8)
         self._energy_callbacks: list = []
         self._last_play_time: float = 0.0
+
+    @property
+    def playback_lock(self) -> asyncio.Lock:
+        """Return the asyncio.Lock used to serialize audio playback streams.
+
+        Guarantees that earcon chimes and speech synthesis phrases never concurrently
+        clobber the underlying PortAudio ALSA output stream or race during sample-rate shifts.
+
+        Returns:
+            asyncio.Lock instance bound to the active event loop.
+        """
+        if self._playback_lock is None:
+            self._playback_lock = asyncio.Lock()
+        return self._playback_lock
 
     def duck(self, target_volume: float = 1.0, rate: float = 0.12) -> None:
         """Disabled: speech plays at full volume unattenuated."""
@@ -95,19 +110,28 @@ class AudioPlayer:
                     self._stream.write(lead_in)
                 except Exception:
                     pass
-            elif self._stream.stopped:
+            elif self._stream.stopped or not getattr(self._stream, "active", True):
                 try:
                     self._stream.start()
                     lead_in = np.zeros(int(sample_rate * 0.04), dtype=np.float32).reshape(-1, 1)
                     self._stream.write(lead_in)
                 except Exception:
-                    pass
+                    # Cleanly close and recreate if stream failed to restart from abort
+                    try:
+                        self._stream.close()
+                    except Exception:
+                        pass
+                    self._stream = sd.OutputStream(
+                        samplerate=sample_rate, channels=1, dtype="float32", latency=0.08
+                    )
+                    self._stream.start()
+                    self._stream_sr = sample_rate
             return self._stream
 
     async def play_earcon(
         self,
         earcon_type: Any,
-        sample_rate: int = 24000,
+        sample_rate: int | None = None,
         volume: float = 0.65,
         interrupt: asyncio.Event | None = None,
     ) -> bool:
@@ -115,7 +139,7 @@ class AudioPlayer:
 
         Args:
             earcon_type: Target earcon signature to synthesize and play.
-            sample_rate: Audio sampling frequency in Hz (default 24000).
+            sample_rate: Audio sampling frequency in Hz (defaults to current stream rate or 22050).
             volume: Master volume multiplier between 0.0 and 1.0 (default 0.65).
             interrupt: Optional event to interrupt earcon playback.
 
@@ -124,9 +148,10 @@ class AudioPlayer:
         """
         from robot.audio.earcon import AcousticEarconEngine
 
-        waveform = AcousticEarconEngine.generate(earcon_type, sample_rate=sample_rate, volume=volume)
+        sr = sample_rate or self._stream_sr or 22050
+        waveform = AcousticEarconEngine.generate(earcon_type, sample_rate=sr, volume=volume)
         evt = interrupt or asyncio.Event()
-        return await self.play(waveform, sample_rate, evt)
+        return await self.play(waveform, sr, evt)
 
     async def play(
         self,
@@ -135,6 +160,9 @@ class AudioPlayer:
         interrupt: asyncio.Event,
     ) -> bool:
         """Play audio with interrupt checking per block, anti-pop fading, and soft limiting.
+
+        Guarantees serial playback through the instance's asynchronous playback lock so
+        earcons, wake cues, and speech synthesis phrases never clobber each other's stream.
 
         Args:
             audio: 1D or 2D NumPy array containing float32 audio samples.
@@ -147,89 +175,100 @@ class AudioPlayer:
         if len(audio) == 0:
             return True
 
-        # Apple CoreAudio-grade anti-pop: 5ms cosine micro-fade on onset and offset
-        fade_len = min(int(sample_rate * 0.005), len(audio))
-        if fade_len > 0:
-            audio = audio.copy()
-            fade_in = (np.sin(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(np.float32)
-            audio[:fade_len] *= fade_in
-            fade_out = (np.cos(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(np.float32)
-            audio[-fade_len:] *= fade_out
+        if interrupt.is_set():
+            return False
 
-        # CoreAudio-grade soft saturation peak limiter: transparent for |x| <= 0.95, smoothly saturates above
-        peak = float(np.max(np.abs(audio))) if len(audio) > 0 else 0.0
-        if peak > 0.95:
-            audio = (np.tanh(audio / 0.95) * 0.95).astype(np.float32)
+        async with self.playback_lock:
+            if interrupt.is_set():
+                return False
 
-        block_len = int(sample_rate * self.block_ms / 1000)
+            # Apple CoreAudio-grade anti-pop: 5ms cosine micro-fade on onset and offset
+            fade_len = min(int(sample_rate * 0.005), len(audio))
+            if fade_len > 0:
+                audio = audio.copy()
+                fade_in = (np.sin(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(np.float32)
+                audio[:fade_len] *= fade_in
+                fade_out = (np.cos(np.linspace(0, np.pi / 2, fade_len)) ** 2).astype(np.float32)
+                audio[-fade_len:] *= fade_out
 
-        # Prepend 25ms silence only if starting fresh from idle (>0.8s gap) to prevent DAC ramp from eating the first syllable
-        is_fresh_start = (time.time() - self._last_play_time) > 0.8 or not self._stream or getattr(self._stream, "stopped", True)
-        if is_fresh_start:
-            pre_silence = np.zeros(int(sample_rate * 0.025), dtype=np.float32)
-            audio = np.concatenate([pre_silence, audio])
+            # CoreAudio-grade soft saturation peak limiter: transparent for |x| <= 0.95, smoothly saturates above
+            peak = float(np.max(np.abs(audio))) if len(audio) > 0 else 0.0
+            if peak > 0.95:
+                audio = (np.tanh(audio / 0.95) * 0.95).astype(np.float32)
 
-        self._is_playing = True
-        self._duck_target = 1.0
-        self._volume = 1.0
+            block_len = int(sample_rate * self.block_ms / 1000)
 
-        try:
-            self._ensure_stream(sample_rate)
+            # Prepend 25ms silence only if starting fresh from idle (>0.8s gap) to prevent DAC ramp from eating the first syllable
+            is_fresh_start = (time.time() - self._last_play_time) > 0.8 or not self._stream or getattr(self._stream, "stopped", True)
+            if is_fresh_start:
+                pre_silence = np.zeros(int(sample_rate * 0.025), dtype=np.float32)
+                audio = np.concatenate([pre_silence, audio])
 
-            def _play_blocking() -> bool:
-                for idx in range(0, len(audio), block_len):
-                    if interrupt.is_set():
-                        logger.info("playback_interrupted")
-                        return False
+            # Append 40ms silence so PortAudio latency buffer / ALSA DAC flushes the final word completely
+            post_silence = np.zeros(int(sample_rate * 0.04), dtype=np.float32)
+            audio = np.concatenate([audio, post_silence])
 
-                    chunk = audio[idx : idx + block_len]
-                    # Smoothly adjust volume towards target (ducking fade-out/in)
-                    if abs(self._volume - self._duck_target) > 0.01:
-                        if self._volume > self._duck_target:
-                            self._volume = max(self._duck_target, self._volume - self._duck_rate)
+            self._is_playing = True
+            self._duck_target = 1.0
+            self._volume = 1.0
+
+            try:
+                self._ensure_stream(sample_rate)
+
+                def _play_blocking() -> bool:
+                    for idx in range(0, len(audio), block_len):
+                        if interrupt.is_set():
+                            logger.info("playback_interrupted")
+                            return False
+
+                        chunk = audio[idx : idx + block_len]
+                        # Smoothly adjust volume towards target (ducking fade-out/in)
+                        if abs(self._volume - self._duck_target) > 0.01:
+                            if self._volume > self._duck_target:
+                                self._volume = max(self._duck_target, self._volume - self._duck_rate)
+                            else:
+                                self._volume = min(self._duck_target, self._volume + self._duck_rate)
                         else:
-                            self._volume = min(self._duck_target, self._volume + self._duck_rate)
-                    else:
-                        self._volume = self._duck_target
+                            self._volume = self._duck_target
 
-                    chunk = (chunk * self._volume).astype(np.float32)
+                        chunk = (chunk * self._volume).astype(np.float32)
 
-                    block_rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
-                    self._current_rms = block_rms
-                    self._recent_rms.append(block_rms)
-                    for cb in self._energy_callbacks:
-                        try:
-                            cb(block_rms)
-                        except Exception:
-                            pass
-                    if chunk.ndim == 1:
-                        chunk = chunk.reshape(-1, 1)
-
-                    if interrupt.is_set():
-                        logger.info("playback_interrupted_barge_in")
-                        with self._lock:
-                            if self._stream is not None:
-                                try:
-                                    self._stream.abort()
-                                except Exception:
-                                    pass
-                        return False
-
-                    with self._lock:
-                        if self._stream is not None and not interrupt.is_set():
+                        block_rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
+                        self._current_rms = block_rms
+                        self._recent_rms.append(block_rms)
+                        for cb in self._energy_callbacks:
                             try:
-                                self._stream.write(chunk)
-                            except Exception as e:
-                                logger.debug("stream_write_error", error=str(e))
-                                return False
-                return True
+                                cb(block_rms)
+                            except Exception:
+                                pass
+                        if chunk.ndim == 1:
+                            chunk = chunk.reshape(-1, 1)
 
-            return await asyncio.to_thread(_play_blocking)
-        finally:
-            self._is_playing = False
-            self._current_rms = 0.0
-            self._recent_rms.clear()
-            self._last_play_time = time.time()
+                        if interrupt.is_set():
+                            logger.info("playback_interrupted_barge_in")
+                            with self._lock:
+                                if self._stream is not None:
+                                    try:
+                                        self._stream.abort()
+                                    except Exception:
+                                        pass
+                            return False
+
+                        with self._lock:
+                            if self._stream is not None and not interrupt.is_set():
+                                try:
+                                    self._stream.write(chunk)
+                                except Exception as e:
+                                    logger.debug("stream_write_error", error=str(e))
+                                    return False
+                    return True
+
+                return await asyncio.to_thread(_play_blocking)
+            finally:
+                self._is_playing = False
+                self._current_rms = 0.0
+                self._recent_rms.clear()
+                self._last_play_time = time.time()
 
     def stop(self) -> None:
         """Immediately stop playback and purge sounddevice/ALSA ring buffer on barge-in."""
