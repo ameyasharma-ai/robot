@@ -210,3 +210,133 @@ def test_minimum_jerk_trajectory_generation() -> None:
     clamped_traj = joint.generate_minimum_jerk_trajectory(target_deg=100.0, steps=10)
     assert clamped_traj[-1] == 85.0
 
+
+def test_protection_boundary_map() -> None:
+    """Verify structured boundary mapping between host-side and hardware-side protections."""
+    boundary_map = SerialBridge.get_protection_boundary_map()
+    assert "host_enforced" in boundary_map
+    assert "hardware_enforced" in boundary_map
+    assert any("clamping" in p.lower() for p in boundary_map["host_enforced"])
+    assert any("minimum-jerk" in p.lower() for p in boundary_map["host_enforced"])
+    assert any("nan" in p.lower() for p in boundary_map["host_enforced"])
+    assert any("duplicate" in p.lower() for p in boundary_map["host_enforced"])
+    assert any("latching" in p.lower() for p in boundary_map["host_enforced"])
+    assert any("watchdog" in p.lower() for p in boundary_map["hardware_enforced"])
+    assert any("stall" in p.lower() for p in boundary_map["hardware_enforced"])
+
+
+def test_nan_inf_malformed_command_rejection() -> None:
+    """Verify NaN, Inf, non-numeric angles, and invalid speeds are rejected before dispatch."""
+    bridge = SerialBridge(enable_emulation_fallback=True)
+    bridge.start()
+
+    # 1. NaN in kinematics proposal
+    ok_nan, _, reason_nan = bridge.validate_kinematics_proposal(
+        action_name="look_nan",
+        target_angles={"neck_pan": float("nan")},
+    )
+    assert ok_nan is False
+    assert "NaN/Inf" in reason_nan
+
+    # 2. Inf in kinematics proposal
+    ok_inf, _, reason_inf = bridge.validate_kinematics_proposal(
+        action_name="look_inf",
+        target_angles={"neck_pan": float("inf")},
+    )
+    assert ok_inf is False
+    assert "NaN/Inf" in reason_inf
+
+    # 3. Invalid speed in kinematics proposal
+    ok_sp, _, reason_sp = bridge.validate_kinematics_proposal(
+        action_name="look_fast",
+        target_angles={"neck_pan": 10.0},
+        speeds={"neck_pan": -50.0},
+    )
+    assert ok_sp is False
+    assert "speed" in reason_sp.lower()
+
+    # 4. Direct set_joint_angle with NaN / Inf / non-numeric
+    assert bridge.set_joint_angle("neck_pan", float("nan")) is False
+    assert bridge.set_joint_angle("neck_pan", float("inf")) is False
+    assert bridge.set_joint_angle("neck_pan", 10.0, speed_deg_s=-10.0) is False
+    assert bridge.set_joint_angle("neck_pan", 10.0, speed_deg_s=float("nan")) is False
+
+    bridge.stop()
+
+
+def test_duplicate_filtering_and_sequence_tracking() -> None:
+    """Verify redundant commands within tolerance are filtered to avoid bus saturation."""
+    bridge = SerialBridge(enable_emulation_fallback=True)
+    bridge.start()
+
+    init_seq = bridge.command_seq
+
+    # Send first command
+    assert bridge.set_joint_angle("neck_pan", 20.0) is True
+    assert bridge.command_seq == init_seq + 1
+
+    # Send duplicate within tolerance (0.05 deg epsilon)
+    assert bridge.set_joint_angle("neck_pan", 20.02) is True
+    assert bridge.command_seq == init_seq + 1  # Sequence NOT incremented for filtered duplicate
+
+    # Send significant new position
+    assert bridge.set_joint_angle("neck_pan", 25.0) is True
+    assert bridge.command_seq == init_seq + 2
+
+    bridge.stop()
+
+
+def test_stale_command_rejection() -> None:
+    """Verify out-of-order or stale proposals (>0.5s old) are dropped."""
+    bridge = SerialBridge(enable_emulation_fallback=True)
+    bridge.start()
+
+    stale_timestamp = time.time() - 1.5  # 1.5s old proposal
+
+    # Stale proposal in validate_kinematics_proposal
+    ok, _, reason = bridge.validate_kinematics_proposal(
+        action_name="stale_wave",
+        target_angles={"neck_pan": 10.0},
+        command_time=stale_timestamp,
+    )
+    assert ok is False
+    assert "Stale" in reason
+
+    # Stale direct set_joint_angle
+    assert bridge.set_joint_angle("neck_pan", 10.0, command_time=stale_timestamp) is False
+
+    # Fresh proposal succeeds
+    fresh_timestamp = time.time()
+    assert bridge.set_joint_angle("neck_pan", 10.0, command_time=fresh_timestamp) is True
+
+    bridge.stop()
+
+
+def test_post_reconnect_zero_motion_latching() -> None:
+    """Verify reconnection latches motion to prevent accidental resume until unlatched."""
+    bridge = SerialBridge(enable_emulation_fallback=True)
+    bridge.start()
+    assert bridge.is_motion_latched is False
+
+    # Initial movement works
+    assert bridge.set_joint_angle("neck_pan", 15.0) is True
+
+    # Simulate disconnect and reconnect
+    bridge._is_connected = False
+    bridge._connect()
+
+    # Motion must now be latched
+    assert bridge.is_motion_latched is True
+
+    # Subsequent movement commands must be rejected
+    assert bridge.set_joint_angle("neck_pan", 30.0) is False
+
+    # Explicit safe homing unlatches the bridge
+    bridge.park_servos()
+    assert bridge.is_motion_latched is False
+
+    # Movement is safely restored
+    assert bridge.set_joint_angle("neck_pan", 30.0) is True
+
+    bridge.stop()
+

@@ -196,17 +196,71 @@ elif [ -f "/home/ameya/whisper.cpp/build/bin/whisper-server" ]; then
 fi
 
 WHISPER_MODEL=""
-if [ -f "/home/ameya/whisper.cpp/models/ggml-tiny.en.bin" ]; then
-    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-tiny.en.bin"
-elif [ -f "/home/ameya/whisper.cpp/models/ggml-base.bin" ]; then
-    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-base.bin"
-elif [ -f "/home/ameya/whisper.cpp/models/ggml-small.bin" ]; then
-    WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-small.bin"
+# Dynamically resolve STT model and path from config/default.yaml
+CONFIG_STT_MODEL=""
+CONFIG_STT_PATH=""
+if [ -x "$DIR/.venv/bin/python" ]; then
+    eval "$($DIR/.venv/bin/python -c '
+import yaml
+try:
+    with open("config/default.yaml") as f:
+        cfg = yaml.safe_load(f) or {}
+    stt = cfg.get("stt", {})
+    m = str(stt.get("model", "")).strip()
+    mp = str(stt.get("model_path", "")).strip()
+    print(f"CONFIG_STT_MODEL=\"{m}\"")
+    print(f"CONFIG_STT_PATH=\"{mp}\"")
+except Exception:
+    pass
+' 2>/dev/null || true)"
+fi
+
+# 1. Check explicit model_path if set in config
+if [ -n "$CONFIG_STT_PATH" ]; then
+    if [ -f "$DIR/$CONFIG_STT_PATH" ]; then
+        WHISPER_MODEL="$DIR/$CONFIG_STT_PATH"
+    elif [ -f "$CONFIG_STT_PATH" ]; then
+        WHISPER_MODEL="$CONFIG_STT_PATH"
+    fi
+fi
+
+# 2. Check model name specified in config
+if [ -z "$WHISPER_MODEL" ] && [ -n "$CONFIG_STT_MODEL" ]; then
+    if [ -f "$DIR/models/stt/ggml-${CONFIG_STT_MODEL}.bin" ]; then
+        WHISPER_MODEL="$DIR/models/stt/ggml-${CONFIG_STT_MODEL}.bin"
+    elif [ -f "/home/ameya/whisper.cpp/models/ggml-${CONFIG_STT_MODEL}.bin" ]; then
+        WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-${CONFIG_STT_MODEL}.bin"
+    fi
+fi
+
+# 3. Fallback discovery if configured model not found on disk
+if [ -z "$WHISPER_MODEL" ]; then
+    for candidate in small.en base.en small base tiny.en medium.en large-v3-turbo; do
+        if [ -f "$DIR/models/stt/ggml-${candidate}.bin" ]; then
+            WHISPER_MODEL="$DIR/models/stt/ggml-${candidate}.bin"
+            break
+        elif [ -f "/home/ameya/whisper.cpp/models/ggml-${candidate}.bin" ]; then
+            WHISPER_MODEL="/home/ameya/whisper.cpp/models/ggml-${candidate}.bin"
+            break
+        fi
+    done
+fi
+
+if curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
+    # Check if currently running process is already using the target model
+    CURRENT_RUNNING_MODEL=$(ps aux | grep "[w]hisper-server" | grep -o "\-m [^ ]*" | head -n 1 | cut -d' ' -f2 || true)
+    if [ -n "$CURRENT_RUNNING_MODEL" ] && [ "$CURRENT_RUNNING_MODEL" != "$WHISPER_MODEL" ]; then
+        echo "[STT] whisper-server is running with '$CURRENT_RUNNING_MODEL', restarting with configured model '$WHISPER_MODEL'..."
+        pkill -9 -f "whisper-server" 2>/dev/null || true
+        sleep 0.5
+    else
+        echo "[STT] whisper-server is already active with target model: $CURRENT_RUNNING_MODEL"
+    fi
 fi
 
 if ! curl -s http://127.0.0.1:8081/ > /dev/null 2>&1; then
     if [ -n "$WHISPER_BIN" ] && [ -n "$WHISPER_MODEL" ]; then
-        echo "[STT] Starting whisper-server with $WHISPER_MODEL (8 threads, no fallbacks, no timestamps)..."
+        echo "[STT] Starting whisper-server with $WHISPER_MODEL (AMD Radeon 680M Vulkan, 8 threads, no fallbacks, no timestamps)..."
         "$WHISPER_BIN" \
             -m "$WHISPER_MODEL" \
             -dev 0 \

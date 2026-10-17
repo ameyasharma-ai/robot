@@ -193,6 +193,55 @@ class SerialBridge:
         self._stall_threshold_ma: float = 1200.0  # Milli-amps stall current protection
         self._last_telemetry: dict[str, Any] = {}
 
+        # Work package A safety enhancements
+        self._command_seq: int = 0
+        self._last_command_time: dict[str, float] = {}
+        self._last_command_angle: dict[str, float] = {}
+        self._motion_latched: bool = False
+        self._has_connected_once: bool = False
+        self.duplicate_tolerance_deg: float = 0.05
+        self.max_command_age_s: float = 0.5
+
+    @classmethod
+    def get_protection_boundary_map(cls) -> dict[str, list[str]]:
+        """Return a structured map distinguishing host-enforced from hardware-enforced protections.
+
+        Returns:
+            dict[str, list[str]]: Categorized breakdown of safety mechanisms.
+        """
+        return {
+            "host_enforced": [
+                "Kinematic joint boundary clamping (min_deg / max_deg)",
+                "5th-order minimum-jerk trajectory polynomial shaping (zero start/end acceleration)",
+                "Malformed command rejection (NaN, Inf, non-numeric, negative speeds)",
+                "Duplicate command filtering to prevent bus saturation (0.05 deg epsilon)",
+                "Command freshness sequence & timestamp validation (max_command_age_s=0.5)",
+                "Post-reconnect zero-motion latching (prevents replay of stale in-flight commands)",
+                "Software E-Stop state machine & kinematics proposal gating",
+            ],
+            "hardware_enforced": [
+                "20Hz bidirectional heartbeat watchdog (<500ms deadline triggers firm motor stop)",
+                "Motor stall-current hardware threshold (>1200mA triggers emergency torque disconnect)",
+                "Hardware E-Stop relay disconnect hook (trips physical power supply)",
+                "Hardware safe state upon serial disconnect or loss of host process",
+            ],
+        }
+
+    @property
+    def command_seq(self) -> int:
+        """Return current monotonic command sequence identifier."""
+        return self._command_seq
+
+    @property
+    def is_motion_latched(self) -> bool:
+        """Return True if motion is currently latched post-reconnect to prevent stale resume."""
+        return self._motion_latched
+
+    def unlatch_motion(self) -> None:
+        """Explicitly release post-reconnect motion latch after operator confirmation."""
+        self._motion_latched = False
+        logger.info("motion_unlatched_after_reconnect")
+
     @property
     def is_connected(self) -> bool:
         """Return True if real physical serial connection is active."""
@@ -266,13 +315,28 @@ class SerialBridge:
         return None
 
     def _connect(self) -> bool:
-        """Attempt to open physical serial port connection."""
+        """Attempt to open physical serial port connection.
+
+        Enforces post-reconnection zero-motion latching: if this connection is a re-attachment
+        after initial boot or a prior disconnect, motion is automatically latched until explicit
+        operator homing or unlatching is confirmed.
+
+        Returns:
+            bool: True if connection (or emulation fallback) was established.
+        """
+        is_reconnect = self._has_connected_once
         target_port = self.port or self._find_available_port()
 
         if not target_port:
             if self.enable_emulation:
                 self._is_emulated = True
                 self._is_connected = True
+                if is_reconnect:
+                    self._motion_latched = True
+                    self._last_command_angle.clear()
+                    self._last_command_time.clear()
+                    logger.warning("serial_reconnected_emulated_motion_latched_awaiting_safe_homing")
+                self._has_connected_once = True
                 logger.info("serial_hardware_not_found_emulation_active")
                 return True
             return False
@@ -291,6 +355,12 @@ class SerialBridge:
                 self._is_connected = True
                 self._is_emulated = False
                 self._last_heartbeat_ack = time.time()
+                if is_reconnect:
+                    self._motion_latched = True
+                    self._last_command_angle.clear()
+                    self._last_command_time.clear()
+                    logger.warning("serial_reconnected_hardware_motion_latched_awaiting_safe_homing")
+                self._has_connected_once = True
             logger.info("serial_hardware_connected_successfully", port=target_port, baudrate=self.baudrate)
             return True
         except Exception as e:
@@ -298,6 +368,12 @@ class SerialBridge:
             if self.enable_emulation:
                 self._is_emulated = True
                 self._is_connected = True
+                if is_reconnect:
+                    self._motion_latched = True
+                    self._last_command_angle.clear()
+                    self._last_command_time.clear()
+                    logger.warning("serial_reconnected_emulated_motion_latched_awaiting_safe_homing")
+                self._has_connected_once = True
             return False
 
     def _reconnect_worker(self) -> None:
@@ -451,13 +527,17 @@ class SerialBridge:
         action_name: str,
         target_angles: dict[str, float],
         speeds: dict[str, float] | None = None,
+        command_time: float | None = None,
     ) -> tuple[bool, dict[str, float], str]:
         """Isolate physical actuation from LLM proposals and validate kinematic boundaries.
+
+        Rejects malformed, NaN, infinite, non-numeric, or stale proposals.
 
         Args:
             action_name: High-level action name (e.g. 'wave', 'nod', 'look_at').
             target_angles: Dictionary of joint names mapping to proposed angles in degrees.
             speeds: Optional dictionary of joint movement speeds.
+            command_time: Optional timestamp of proposal generation for freshness validation.
 
         Returns:
             Tuple of (is_valid, validated_angles, explanation_str).
@@ -465,18 +545,28 @@ class SerialBridge:
         if self._e_stop:
             return False, {}, f"Rejected: Physical emergency stop (E-Stop) is currently active ({action_name})."
 
+        now = time.time()
+        if command_time is not None and (now - command_time > self.max_command_age_s):
+            age_ms = (now - command_time) * 1000.0
+            return False, {}, f"Rejected: Stale kinematics proposal for '{action_name}' ({age_ms:.1f}ms > {self.max_command_age_s * 1000}ms limit)."
+
         validated: dict[str, float] = {}
         for j_name, angle in target_angles.items():
             if j_name not in self.joints:
                 return False, {}, f"Rejected: Unknown joint '{j_name}' proposed in {action_name}."
 
+            if not isinstance(angle, (int, float)) or math.isnan(angle) or math.isinf(angle):
+                return False, {}, f"Rejected: Malformed or NaN/Inf angle '{angle}' proposed for joint '{j_name}'."
+
             joint = self.joints[j_name]
-            clamped = joint.clamp(angle)
+            clamped = joint.clamp(float(angle))
             validated[j_name] = clamped
 
             # Check velocity constraints if speed provided
             if speeds and j_name in speeds:
-                s = float(speeds[j_name])
+                s = speeds[j_name]
+                if not isinstance(s, (int, float)) or math.isnan(s) or math.isinf(s) or s <= 0.0:
+                    return False, {}, f"Rejected: Invalid non-positive or NaN/Inf speed '{s}' for joint '{j_name}'."
                 if s > joint.max_velocity_deg_s:
                     speeds[j_name] = joint.max_velocity_deg_s
 
@@ -487,19 +577,41 @@ class SerialBridge:
         joint_name: str,
         angle_deg: float,
         speed_deg_s: float = 100.0,
+        command_time: float | None = None,
     ) -> bool:
         """Move a specific joint to a designated angle within mechanical bounds.
+
+        Guards against post-reconnection motion resume, malformed NaN/Inf angles,
+        invalid speeds, stale sequence proposals, and serial bus saturation from duplicates.
 
         Args:
             joint_name: Name of joint (e.g. 'neck_pan', 'neck_tilt').
             angle_deg: Target angle in degrees.
             speed_deg_s: Movement speed limit in degrees/sec.
+            command_time: Optional timestamp of proposal generation for freshness check.
 
         Returns:
-            True if position command was successfully dispatched or emulated.
+            True if position command was successfully dispatched, filtered as duplicate, or emulated.
         """
         if self._e_stop:
             logger.warning("joint_move_rejected_estop_active", joint=joint_name)
+            return False
+
+        if self._motion_latched:
+            logger.warning("joint_move_rejected_post_reconnect_latched", joint=joint_name)
+            return False
+
+        if not isinstance(angle_deg, (int, float)) or math.isnan(angle_deg) or math.isinf(angle_deg):
+            logger.warning("joint_move_rejected_malformed_angle", joint=joint_name, angle=angle_deg)
+            return False
+
+        if not isinstance(speed_deg_s, (int, float)) or math.isnan(speed_deg_s) or math.isinf(speed_deg_s) or speed_deg_s <= 0.0:
+            logger.warning("joint_move_rejected_invalid_speed", joint=joint_name, speed=speed_deg_s)
+            return False
+
+        now = time.time()
+        if command_time is not None and (now - command_time > self.max_command_age_s):
+            logger.warning("joint_move_rejected_stale_command", joint=joint_name, age_s=now - command_time)
             return False
 
         if joint_name not in self.joints:
@@ -507,7 +619,17 @@ class SerialBridge:
             return False
 
         joint = self.joints[joint_name]
-        clamped_deg = joint.clamp(angle_deg)
+        clamped_deg = joint.clamp(float(angle_deg))
+
+        # Bus saturation protection: filter redundant duplicate commands within tolerance epsilon
+        last_angle = self._last_command_angle.get(joint_name)
+        if last_angle is not None and abs(clamped_deg - last_angle) <= self.duplicate_tolerance_deg:
+            logger.debug("duplicate_joint_command_filtered", joint=joint_name, angle=clamped_deg)
+            return True
+
+        self._command_seq += 1
+        self._last_command_angle[joint_name] = clamped_deg
+        self._last_command_time[joint_name] = now
         joint.target_deg = clamped_deg
         joint.current_deg = clamped_deg
 
@@ -539,17 +661,19 @@ class SerialBridge:
         self,
         pose: dict[str, float],
         speeds: dict[str, float] | None = None,
+        command_time: float | None = None,
     ) -> bool:
         """Apply a multi-joint pose after kinematics validation.
 
         Args:
             pose: Joint angles mapping in degrees.
             speeds: Optional joint speed limits.
+            command_time: Optional proposal generation timestamp.
 
         Returns:
             True if all joints were updated successfully.
         """
-        valid, safe_pose, reason = self.validate_kinematics_proposal("apply_pose", pose, speeds)
+        valid, safe_pose, reason = self.validate_kinematics_proposal("apply_pose", pose, speeds, command_time=command_time)
         if not valid:
             logger.warning("apply_pose_rejected", reason=reason)
             return False
@@ -557,12 +681,13 @@ class SerialBridge:
         all_ok = True
         for j_name, angle in safe_pose.items():
             sp = speeds.get(j_name, 100.0) if speeds else 100.0
-            if not self.set_joint_angle(j_name, angle, sp):
+            if not self.set_joint_angle(j_name, angle, sp, command_time=command_time):
                 all_ok = False
         return all_ok
 
     def park_servos(self) -> None:
-        """Smoothly return all physical servos to their resting zero positions."""
+        """Smoothly return all physical servos to their resting zero positions and unlatch motion."""
+        self.unlatch_motion()
         for name, joint in self.joints.items():
             self.set_joint_angle(name, joint.default_deg)
 

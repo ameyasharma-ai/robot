@@ -13,9 +13,23 @@ import sounddevice as sd
 warnings.filterwarnings("ignore", category=DeprecationWarning, message=r".*Setting the shape on a NumPy array.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="sounddevice")
 
+from dataclasses import dataclass
+
+from robot.audio.playback import AudioDeviceState
 from robot.telemetry import get_logger
 
 logger = get_logger("audio.capture")
+
+
+@dataclass
+class AudioCaptureMetrics:
+    """Non-blocking telemetry metrics for audio input subsystem."""
+
+    frames_captured: int = 0
+    overflows: int = 0
+    dropouts: int = 0
+    errors: int = 0
+    sample_rate_mismatches: int = 0
 
 
 class AudioCapture:
@@ -23,6 +37,7 @@ class AudioCapture:
 
     Feeds raw float32 frames into an asyncio queue for the VAD pipeline.
     Maintains a pre-roll buffer so speech onset isn't lost.
+    Tracks explicit hardware health states and capture metrics.
     """
 
     def __init__(
@@ -40,13 +55,29 @@ class AudioCapture:
         self._stream: sd.InputStream | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
+        # Work Package B resilience enhancements
+        self._state: AudioDeviceState = AudioDeviceState.HEALTHY
+        self._metrics: AudioCaptureMetrics = AudioCaptureMetrics()
+        self._recovery_attempts: int = 0
+        self._max_recovery_attempts: int = 3
+
+    @property
+    def state(self) -> AudioDeviceState:
+        """Return the current capture device health state."""
+        return self._state
+
+    @property
+    def metrics(self) -> AudioCaptureMetrics:
+        """Return operational capture telemetry metrics."""
+        return self._metrics
+
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
         """sounddevice callback — runs in audio thread."""
         if self._loop and self._queue:
             self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.copy())
 
     def _open_stream(self) -> None:
-        """Open and start sounddevice InputStream."""
+        """Open and start sounddevice InputStream with bounded resilience."""
         rates_to_try = [self.sample_rate]
         try:
             dev_info = sd.query_devices(sd.default.device[0], "input")
@@ -75,14 +106,23 @@ class AudioCapture:
                         msg="Using device native rate with software resample",
                     )
                     self._actual_rate = rate
+                    self._metrics.sample_rate_mismatches += 1
                 else:
                     self._actual_rate = self.sample_rate
+
+                self._recovery_attempts = 0
+                self._state = AudioDeviceState.HEALTHY
                 break
             except Exception as e:
                 last_error = e
+                self._recovery_attempts += 1
+                self._metrics.errors += 1
+                self._state = AudioDeviceState.RECOVERING
                 logger.warning("capture_rate_failed", rate=rate, error=str(e))
                 continue
         else:
+            self._state = AudioDeviceState.DEGRADED
+            self._metrics.errors += 1
             raise RuntimeError(
                 f"Could not open audio input at any sample rate. "
                 f"Last error: {last_error}. "
@@ -119,6 +159,13 @@ class AudioCapture:
         need_resample = actual_rate != self.sample_rate
 
         def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
+            if status:
+                if getattr(status, "input_overflow", False):
+                    self._metrics.overflows += 1
+                if getattr(status, "input_underflow", False):
+                    self._metrics.dropouts += 1
+            self._metrics.frames_captured += 1
+
             if self._loop and self._queue:
                 data = indata.copy()
                 if need_resample:
@@ -164,12 +211,17 @@ class AudioCapture:
                 self._open_stream()
                 logger.info("capture_stream_resumed", sample_rate=getattr(self, "_actual_rate", self.sample_rate))
             except Exception as e:
+                self._state = AudioDeviceState.DEGRADED
+                self._metrics.errors += 1
                 logger.warning("capture_stream_resume_error", error=str(e))
         elif self._stream.stopped:
             try:
                 self._stream.start()
+                self._state = AudioDeviceState.HEALTHY
                 logger.info("capture_stream_restarted")
             except Exception as e:
+                self._state = AudioDeviceState.DEGRADED
+                self._metrics.errors += 1
                 logger.debug("capture_stream_restart_error", error=str(e))
 
     @property

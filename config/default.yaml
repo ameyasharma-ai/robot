@@ -31,6 +31,8 @@ llm:
 stt:
   provider: whisper-server
   url: "http://127.0.0.1:8081/inference"
+  model: "medium.en" # Active STT Model: tiny.en (75MB), base.en (142MB), base (142MB), small.en (466MB), small (465MB), medium.en (1.5GB), medium (1.5GB), large-v3-turbo (1.6GB), large-v3 (3.0GB)
+  model_path: "models/stt/ggml-medium.en.bin"
   language: "en"
   temperature: 0.0
   chunk_seconds: 0.8

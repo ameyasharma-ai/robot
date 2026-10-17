@@ -160,6 +160,10 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
     stt = config.setdefault("stt", {})
     if "WHISPER_SERVER_URL" in os.environ:
         stt["url"] = os.environ["WHISPER_SERVER_URL"].strip()
+    if "STT_MODEL" in os.environ:
+        stt["model"] = os.environ["STT_MODEL"].strip()
+    if "STT_MODEL_PATH" in os.environ:
+        stt["model_path"] = os.environ["STT_MODEL_PATH"].strip()
 
     # ─── TTS Overrides ──────────────────────────────────────────────────────────
     tts = config.setdefault("tts", {})
