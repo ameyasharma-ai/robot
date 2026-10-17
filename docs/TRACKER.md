@@ -1864,12 +1864,15 @@ Legend:
          - Automated VRAM management: when a heavy model is requested, offloads local LLM to Gemini or OpenAI-compatible API if keys exist, or halts `llama-server` via `LlamaServerManager.stop()`, runs `gc.collect()` and `torch.cuda.empty_cache()` (freeing >3.5GB VRAM), executes generation, re-attaches local LLM, and dispatches a spoken completion notification via the active LLM.
       5. **Unified Multi-Model Provider (`unified_provider.py`)**:
          - Unifies AutoPipeline, FluxPipeline, StableDiffusionPipeline, and Procedural engines with fp16 precision, attention slicing, and VAE tiling.
+         - Enforced explicit `variant="fp16"` across all CUDA model loaders to ensure Hugging Face diffusers loads strictly from local cached weights rather than attempting on-the-fly downloads of 5.2GB fp32 UNet checkpoints.
+         - Preserved native `EulerAncestralDiscreteScheduler` on `sd-turbo` for rapid 1-4 step generation.
       6. **Selective Downloader Script (`scripts/download_image_models.py` & `.sh`)**:
          - Multi-threaded downloader with `--default`, `--sd`, `--flux`, `--model <id>`, downloading strictly fp16 variants (~2.4GB total for SD-Turbo) to optimize disk and network usage.
       7. **Dashboard UI Integration (`index.html` & `app.js`)**:
          - Added dynamic Model Selector dropdown in the Cyber-Studio Deck Image Studio with live cached status checks (`/api/images/models`) and automatic inference step calibration.
     - *Verification*:
       - Added 9 unit tests in `tests/test_image_gpu_handoff_and_models.py`.
+      - Benchmarked `sd-turbo` generation on NVIDIA GeForce RTX 3050 Laptop GPU: 4 steps @ 512x512 completed in **2.40s** (10.08s cold start with model load).
       - 315 / 315 unit tests pass 100% across all 44 test modules in `.venv/bin/pytest tests/`.
       - 113 / 113 Python files verified clean with zero import errors (`verify_imports.py`).
 

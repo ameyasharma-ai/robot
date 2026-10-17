@@ -117,8 +117,12 @@ class GpuResourceHandoffManager:
 
             # If local LLM is active on GPU, offload to Cloud API or stop llama-server
             if self._previous_llm_provider == "local":
-                has_gemini = bool(os.getenv("GEMINI_API_KEY", "").strip())
-                has_openai = bool(os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip())
+                cfg = getattr(self.engine, "config", {}) or {}
+                llm_cfg = cfg.get("llm", {}) if isinstance(cfg, dict) else {}
+                gemini_key = os.getenv("GEMINI_API_KEY", "") or llm_cfg.get("gemini", {}).get("api_key", "")
+                openai_key = os.getenv("OPENAI_COMPATIBLE_API_KEY", "") or llm_cfg.get("openai_compatible", {}).get("api_key", "")
+                has_gemini = bool(str(gemini_key).strip())
+                has_openai = bool(str(openai_key).strip())
 
                 if has_gemini and hasattr(self.engine, "switch_llm_provider"):
                     logger.info("offloading_local_llm_to_gemini_api")

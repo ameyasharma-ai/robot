@@ -316,11 +316,13 @@ class UnifiedImageProvider(ImageProvider):
         pipe = AutoPipelineForText2Image.from_pretrained(
             meta.repo_id,
             torch_dtype=torch_dtype,
+            variant="fp16" if device_str == "cuda" else None,
             safety_checker=None,
             requires_safety_checker=False,
         )
         try:
-            pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, steps_offset=1)
+            if meta.id != "sd-turbo":
+                pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, steps_offset=1)
         except Exception:
             pass
 
