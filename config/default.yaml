@@ -57,6 +57,26 @@ audio:
   playback_block_ms: 50
   echo_guard_s: 0.35 
   barge_in_cooldown_s: 0.35
+  wake_word:
+    enabled: true
+    require_wake_word: true
+    follow_up_timeout_s: 12.0
+    cooldown_s: 0.0
+    confidence_threshold: 0.50
+    wake_words:
+      - "hey neo"
+      - "neo"
+      - "hey cypher"
+      - "cypher"
+      - "hey luna"
+      - "luna"
+      - "hey aria"
+      - "aria"
+      - "hey glados"
+      - "glados"
+      - "hey robot"
+      - "robot"
+      - "wake up"
 
 expression:
   lighting:

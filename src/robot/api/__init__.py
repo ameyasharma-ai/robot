@@ -181,6 +181,8 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             pers = engine.personalities.get(name)
             if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
                 engine.tts.set_active_voice(pers.voice_model)
+            if hasattr(engine, "wakeword") and engine.wakeword:
+                engine.wakeword.set_active_persona(name)
             await engine.events.emit("personality_switched", personality=name)
             await engine.events.emit("personality_warming", personality=name)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):

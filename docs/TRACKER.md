@@ -72,6 +72,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 8: 1,000-Turn Chaos & Soak Testing Harness** | `scripts/chaos_soak_test.py` + Continuous Resource Leak Tracking | ✅ **Active** | RTX 3050 (4GB) + Ryzen 7 + System | Automated 1,000-turn stress harness with 15% chaos fault injection (timeouts, malformed arguments, kinematic out-of-bounds); verified 100% fault recovery (152/152), 0 unhandled crashes, +0.00 MB RSS memory growth (zero leak), and VRAM stable at 3,163 MB (strictly <= 3.8GB). Report documented in `docs/CHAOS_SOAK_REPORT.md`. |
 | **Phase 9: Production Release & Benchmark Sign-Off** | `v2.0-stable` Git Release + 269 Passing Tests + Zero Import Errors Audit | ✅ **Active** | Complete Platform | 269 / 269 tests passing across all 39 test modules; 102 / 102 files clean with zero import errors (`verify_imports.py`); knowledge graph synchronized via `graphify update .`; final performance report in `docs/BENCHMARK_REPORT.md`; tagged `v2.0-stable`. |
 | **Phase 10: Apple-Grade Engineering, Acoustic Feedback & Hardware Precision** | `AcousticEarconEngine` + CoreAudio Soft Limiter + Dynamic Island HUD + Minimum-Jerk Kinematics | ✅ **Active** | Core Engine / Host Audio / Hardware / Web HUD | Built procedural harmonic earcon synthesis engine (`src/robot/audio/earcon.py`) with 5 tactile crystalline auditory cues (wake, confirm, alert, dismiss, estop); CoreAudio-grade 5ms cosine anti-pop micro-fades and soft saturation limiter in `AudioPlayer`; Apple Dynamic Island notification pill with spring physics in web HUD; 5th-order minimum-jerk trajectory polynomial in `ServoJointLimit`; fixed parenthetical speech truncation bug; capped network tools to 3.0s; leak-free audio playback in Next.js web slice. 277 / 277 tests pass. |
+| **Phase 11: Apple-Grade Wake-Word Gating & Conversational Follow-Up Architecture** | Strict Wake-Word Gating + Ambient Speech Suppression + Conversational Follow-Up Turn Window (12s) + Persona-Aware Wake Words & Standby | ✅ **Active** | Core Engine / Host Audio / `WakeWordDetector` | Resolved critical issue where bot listened and processed all ambient room chatter. Eliminated premature `LISTENING` mode overwriting in `engine._run_voice_pipeline`; enforced strict wake-word gating (`is_wake` required from `IDLE` and `STANDBY`); built 12s active conversational follow-up window post-response allowing natural multi-turn dialogue without repetitive wake words; added mid-sentence ambient single-word rejection ("robot", "neo", "luna", "aria") while supporting prefix triggers, conversational fillers ("um, hey neo"), and direct suffix address ("What time is it, Cypher?"); integrated dynamic persona wake words (`neo`, `cypher`, `luna`, `aria`, `glados`) and dynamic standby acknowledgments. 282 / 282 tests pass. |
 
 
 Legend:
@@ -1735,6 +1736,40 @@ Legend:
       - Python unit verification confirmed generous budgets (4096 cloud / 2048 local) for greetings and QA.
       - 230/230 unit tests passed 100% via `.venv/bin/pytest tests/`.
       - 100% zero import errors verified across all 96 Python modules via `verify_imports.py`.
+
+36. **Wake Word Gating Failure & Continuous Ambient Room Eavesdropping**:
+    - *Symptoms*:
+      - Robot listened to and processed everything spoken in the room without requiring a wake word ("Hey Cypher", "Neo", etc.).
+      - Any ambient room chatter, coughing, or background conversation caused the bot to activate and generate unexpected voice responses.
+      - Saying "Go to sleep" or "Standby" only caused a momentary pause; the next sentence immediately woke the bot back up.
+    - *Root Causes*:
+      1. Line 1166 in `_run_voice_pipeline` (`src/robot/core/engine.py`) unconditionally called `await self.state.set_mode(RobotMode.LISTENING)` the moment microphone VAD energy was detected, before any STT transcription or wake word verification took place.
+      2. Because `mode` was clobbered to `RobotMode.LISTENING` on every sound, the branch `if current_mode == RobotMode.STANDBY:` at line 1221 was never entered.
+      3. In the non-standby branch (lines 1253–1266), `clean_text = remainder if is_wake else text` unconditionally pushed `clean_text` into `self._speech_queue` even when `is_wake` was `False`, sending all ambient room speech directly to the LLM and TTS.
+      4. `_tts_player_loop` clobbered `RobotMode.STANDBY` back to `RobotMode.IDLE` upon finishing speech playback, breaking standby state persistence.
+      5. `WakeWordDetector` regex in `is_wake_word` used an unanchored exact word match (`\b{phrase}\b`), causing single words like "robot", "luna", "aria", or "neo" spoken anywhere in random conversation (e.g. "I saw a robot vacuum") to trigger wake word activation.
+      6. `WakeWordDetector` lacked active persona configuration, defaulting to obsolete "lisa" triggers rather than "cypher", "neo", "luna", "aria", or "glados".
+      7. The architecture lacked an active conversational follow-up turn window (`follow_up_timeout_s = 12.0`), forcing an unnatural binary choice between open-mic eavesdropping and repeating the wake word every single sentence.
+    - *Fixes Applied*:
+      1. **Guarded Microphone Buffering**: Removed premature `state.set_mode(RobotMode.LISTENING)` during silent capture buffering. Kept `RobotMode.STANDBY` and `RobotMode.IDLE` preserved until transcription confirms `is_wake` is `True`.
+      2. **Strict Wake-Word Gating & Follow-Up Window**: Rewrote `_run_voice_pipeline` speech routing:
+         - When in `STANDBY` or `IDLE` outside follow-up window, speech without a wake word is strictly ignored (`[WAKE WORD REQUIRED IGNORED]`), with telemetry spans cleanly cancelled (`SpanStatus.CANCELLED`).
+         - When a wake word is detected, `_last_interaction_ts` is set, `wake_detected` earcon plays, and command is queued.
+         - Follow-up turns within 12 seconds post-response (`in_follow_up = now - _last_interaction_ts < 12.0s`) are seamlessly accepted without repeating the wake word (`[USER (FOLLOW-UP)]`).
+      3. **Standby State Machine Hardening**:
+         - Standby commands ("stop listening", "go to sleep", "standby", "be quiet", "shut up", "mute mic", "stop cypher") immediately reset `_last_interaction_ts = 0.0`, play `dismiss` earcon, and enter `RobotMode.STANDBY`.
+         - Updated `_tts_player_loop` to never clobber `RobotMode.STANDBY` back to `IDLE` when finishing playback.
+      4. **Robust Wake-Word Regex**:
+         - Anchored prefix matching with conversational filler tolerance (`^(?:um|uh|so|well|please|yo|ok)?[\s,:\.\?!]*\b{phrase}\b`).
+         - Added trailing direct-address suffix matching (`[\s,]+\b{phrase}\b[\s\.\?!]*$`, e.g. "What time is it, Cypher?").
+         - Rejected single-word name matches in the middle of ambient sentences ("robot", "neo", "luna", "aria").
+      5. **Dynamic Persona Wake Words & Acknowledgment**:
+         - Mapped persona names (`neo`, `cypher`, `luna`, `aria`, `glados`) dynamically via `set_active_persona()` in `setup()` and `/personality/{name}` API.
+         - Standby acknowledgment dynamically speaks: *"Entering standby mode. Say 'Hey Cypher' whenever you need me."*
+    - *Verification*:
+      - Added 5 new unit and integration test cases in `tests/test_wakeword.py` covering ambient single-word rejection, suffix address, conversational fillers, standby phrases, and engine follow-up window state machine.
+      - 282 / 282 tests pass 100% across all 40 test suites in `.venv/bin/pytest tests/`.
+      - 104 / 104 Python files verified clean with zero import errors (`verify_imports.py`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

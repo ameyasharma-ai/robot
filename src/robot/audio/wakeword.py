@@ -169,21 +169,35 @@ class WakeWordDetector:
                 logger.warning("wakeword_callback_error", error=str(e))
 
     def set_active_persona(self, persona: str) -> None:
-        """Update active wake phrases to match the currently selected personality.
+        """Update active wake phrases and standby commands for the selected personality.
 
         Args:
-            persona: Name of the persona (e.g. 'neo', 'luna', 'aria', 'glados').
+            persona: Name of the persona (e.g. 'neo', 'cypher', 'luna', 'aria', 'glados').
         """
         key = persona.lower().strip()
-        custom = self.PERSONA_WAKE_MAP.get(key)
-        if custom:
-            # Place specific persona wake words first, followed by general robot words
-            combined = list(custom)
-            for w in self.DEFAULT_WAKE_WORDS:
-                if w not in combined:
-                    combined.append(w)
-            self.wake_words = combined
-            logger.info("wakeword_persona_configured", persona=persona, wake_words=combined)
+        custom = self.PERSONA_WAKE_MAP.get(
+            key, [f"hey {key}", key, f"wake up {key}", "wake up", f"hi {key}"]
+        )
+        combined = list(custom)
+        # Always include universal robot wake words
+        for w in ["hey robot", "robot", "wake up", "hey lisa", "lisa"]:
+            if w not in combined:
+                combined.append(w)
+        self.wake_words = combined
+
+        # Dynamically add persona-specific standby phrases
+        persona_standbys = [
+            f"stop {key}",
+            f"quiet {key}",
+            f"sleep {key}",
+        ]
+        if key in ("neo", "cypher"):
+            persona_standbys.extend(["stop cypher", "stop neo"])
+        for p in persona_standbys:
+            if p not in self.standby_phrases:
+                self.standby_phrases.insert(0, p)
+
+        logger.info("wakeword_persona_configured", persona=persona, wake_words=combined)
 
     def detect_energy_prefilter(
         self, chunk: np.ndarray, threshold: float = 0.005
@@ -204,7 +218,10 @@ class WakeWordDetector:
         return rms >= threshold
 
     def is_wake_word(self, text: str) -> tuple[bool, str | None, str]:
-        """Check if a transcribed phrase begins with or contains a wake word.
+        """Check if a transcribed phrase begins with or addresses the robot by a wake word.
+
+        Supports prefix triggers, conversational fillers, trailing direct-address triggers,
+        and multi-word invocation phrases while rejecting ambient mention of single words.
 
         Args:
             text: Transcribed user speech.
@@ -222,45 +239,60 @@ class WakeWordDetector:
             # If wake word engine is disabled, pass speech directly
             return True, None, text.strip()
 
-        now = time.time()
-        if (now - self._last_wake_time) < self.cooldown_s:
-            # During cooldown, do not re-trigger wake word
-            return False, None, text
-
         cleaned = text.strip()
         lower = cleaned.lower()
 
-        # Check for multi-word phrases first (e.g. "hey neo", "wake up")
+        # Sort phrases longest first so "hey cypher" matches before "cypher"
         sorted_phrases = sorted(self.wake_words, key=lambda x: len(x), reverse=True)
 
+        # 1. Prefix match: start of utterance (with optional conversational fillers)
         for phrase in sorted_phrases:
-            pattern_start = (
-                rf"^(?:hey|hi|hello|ok|yo)?\s*\b{re.escape(phrase)}\b[\s,:\.\?!]*"
+            pattern_prefix = (
+                rf"^(?:um|uh|so|well|please|yo|ok|okay)?[\s,:\.\?!]*(?:hey|hi|hello|ok|okay|yo)?[\s,:\.\?!]*\b{re.escape(phrase)}\b[\s,:\.\?!]*"
             )
-            m_start = re.search(pattern_start, lower)
+            m_start = re.search(pattern_prefix, lower)
             if m_start:
                 remainder = cleaned[m_start.end() :].strip()
                 remainder = re.sub(r"^[\s,:\.\?!]+", "", remainder).strip()
-                self._last_wake_time = now
+                self._last_wake_time = time.time()
                 self.transition_to(
                     WakeWordState.WAKE_DETECTED, reason=f"matched '{phrase}'"
                 )
                 logger.info("wakeword_detected", phrase=phrase, remainder=remainder)
                 return True, phrase, remainder
 
-            pattern_exact = rf"\b{re.escape(phrase)}\b"
-            m_exact = re.search(pattern_exact, lower)
-            if m_exact:
-                remainder = (
-                    cleaned[: m_exact.start()] + " " + cleaned[m_exact.end() :]
-                ).strip()
-                remainder = re.sub(r"^[\s,:\.\?!]+", "", remainder).strip()
-                self._last_wake_time = now
+        # 2. Suffix address match: robot addressed at the end of sentence (e.g. "What time is it, Neo?")
+        for phrase in sorted_phrases:
+            if phrase in ("wake up", "wake up lisa", "wake up neo", "wake up cypher"):
+                continue
+            pattern_suffix = rf"[\s,]+(?:hey|hi|hello)?\s*\b{re.escape(phrase)}\b[\s\.\?!]*$"
+            m_suffix = re.search(pattern_suffix, lower)
+            if m_suffix:
+                remainder = cleaned[: m_suffix.start()].strip()
+                remainder = re.sub(r"[\s,:\.\?!]+$", "", remainder).strip()
+                self._last_wake_time = time.time()
                 self.transition_to(
-                    WakeWordState.WAKE_DETECTED, reason=f"matched '{phrase}'"
+                    WakeWordState.WAKE_DETECTED, reason=f"suffix matched '{phrase}'"
                 )
-                logger.info("wakeword_detected", phrase=phrase, remainder=remainder)
+                logger.info("wakeword_detected_suffix", phrase=phrase, remainder=remainder)
                 return True, phrase, remainder
+
+        # 3. Multi-word phrases inside the sentence (e.g. "hey neo", "wake up", "hey cypher")
+        for phrase in sorted_phrases:
+            if " " in phrase:
+                pattern_multi = rf"\b{re.escape(phrase)}\b"
+                m_multi = re.search(pattern_multi, lower)
+                if m_multi:
+                    remainder = (
+                        cleaned[: m_multi.start()] + " " + cleaned[m_multi.end() :]
+                    ).strip()
+                    remainder = re.sub(r"\s+", " ", remainder).strip()
+                    self._last_wake_time = time.time()
+                    self.transition_to(
+                        WakeWordState.WAKE_DETECTED, reason=f"multi-word matched '{phrase}'"
+                    )
+                    logger.info("wakeword_detected_multi", phrase=phrase, remainder=remainder)
+                    return True, phrase, remainder
 
         return False, None, text
 
@@ -292,6 +324,9 @@ class WakeWordDetector:
             return True
         if re.search(r"\b(?:go\s+to)\s+sleep\b", lower):
             self.transition_to(WakeWordState.STANDBY, reason="regex_go_to_sleep")
+            return True
+        if re.search(r"\b(?:be\s+quiet|shut\s+up|silence|mute\s+(?:mic|microphone))\b", lower):
+            self.transition_to(WakeWordState.STANDBY, reason="regex_quiet")
             return True
 
         return False

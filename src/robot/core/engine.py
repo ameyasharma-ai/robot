@@ -366,14 +366,21 @@ class RobotEngine:
         self.tool_coordinator: ToolConversationCoordinator | None = None
         self._provider_switch_lock = asyncio.Lock()
 
-        # Wake-Word & Proactive Autonomy
+        # Wake-Word & Conversational Follow-Up Turn Gating
         audio_cfg = self.config.get("audio", {})
+        wake_cfg = audio_cfg.get("wake_word", {})
+        wake_enabled = wake_cfg.get("enabled", True)
+        self.require_wake_word: bool = wake_cfg.get("require_wake_word", True)
+        self.follow_up_timeout_s: float = float(wake_cfg.get("follow_up_timeout_s", 12.0))
+        self._last_interaction_ts: float = 0.0
+
+        configured_wake_words = wake_cfg.get("wake_words") or audio_cfg.get("wake_words")
         self.wakeword = WakeWordDetector(
-            wake_words=audio_cfg.get(
-                "wake_words",
-                ["hey lisa", "lisa", "hey robot", "wake up lisa", "wake up", "hi lisa"],
-            ),
+            wake_words=configured_wake_words,
             sample_rate=audio_cfg.get("sample_rate", 16000),
+            confidence_threshold=wake_cfg.get("confidence_threshold", 0.5),
+            cooldown_s=wake_cfg.get("cooldown_s", 0.0),
+            enabled=wake_enabled,
         )
         autonomy_cfg = self.config.get("autonomy", {})
         self.curiosity = CuriosityEngine(
@@ -477,6 +484,8 @@ class RobotEngine:
         pers = self.personalities.active
         if pers and getattr(pers, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
             self.tts.set_active_voice(pers.voice_model)
+        if hasattr(self, "wakeword") and self.wakeword:
+            self.wakeword.set_active_persona(default_personality)
 
         # Audio subsystem
         audio_cfg = self.config.get("audio", {})
@@ -1163,7 +1172,12 @@ class RobotEngine:
                         audio_buffer = list(pre_roll)
                         self.streaming_stt.start()
                         self.streaming_stt.feed_frame(pre_roll)
-                        await self.state.set_mode(RobotMode.LISTENING)
+                        if self.state.state.mode != RobotMode.STANDBY:
+                            in_follow_up = (
+                                (time.time() - self._last_interaction_ts) < self.follow_up_timeout_s
+                            )
+                            if in_follow_up or not self.require_wake_word or not self.wakeword.enabled:
+                                await self.state.set_mode(RobotMode.LISTENING)
 
                 if is_speaking:
                     audio_buffer.extend(frame.flatten().tolist())
@@ -1217,29 +1231,15 @@ class RobotEngine:
                                         current_mode = self.state.state.mode
                                         is_wake, matched_word, remainder = self.wakeword.is_wake_word(text)
                                         is_standby = self.wakeword.is_standby_command(text)
+                                        now_ts = time.time()
+                                        in_follow_up = (
+                                            (now_ts - self._last_interaction_ts) < self.follow_up_timeout_s
+                                            and current_mode != RobotMode.STANDBY
+                                        )
 
-                                        if current_mode == RobotMode.STANDBY:
-                                            if is_wake:
-                                                print(f"\n⚡ \033[1;32m[WAKE WORD DETECTED]\033[0m Matched '{matched_word}'!")
-                                                await self.state.set_mode(RobotMode.LISTENING)
-                                                await self.events.emit(Events.WAKE_WORD_DETECTED, wake_word=matched_word, text=text)
-                                                if hasattr(self, "player") and self.player:
-                                                    try:
-                                                        asyncio.create_task(self.player.play_earcon("wake_detected", volume=0.55))
-                                                    except Exception:
-                                                        pass
-                                                if remainder:
-                                                    print(f"\n💬 \033[1;36m[USER]\033[0m {remainder}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
-                                                    self.telemetry.record("STT_FINAL_LATENCY", stt_ms)
-                                                    await self.events.emit("user_text", user_text=remainder, stt_ms=stt_ms)
-                                                    await self._speech_queue.put((remainder, end_time))
-                                                else:
-                                                    await self._speech_queue.put(("[Wake word acknowledge]", end_time))
-                                            else:
-                                                print(f"💤 \033[90m[STANDBY IGNORED]\033[0m {text}")
-                                                self.observability.finish_trace(status=SpanStatus.CANCELLED)
-                                        elif is_standby:
+                                        if is_standby:
                                             print(f"\n🛑 \033[1;33m[STANDBY REQUESTED]\033[0m {text}")
+                                            self._last_interaction_ts = 0.0
                                             await self.state.set_mode(RobotMode.STANDBY)
                                             await self.events.emit(Events.STANDBY, reason="user_command")
                                             if hasattr(self, "player") and self.player:
@@ -1250,20 +1250,41 @@ class RobotEngine:
                                             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                                                 self.tool_coordinator.reset()
                                             await self._speech_queue.put(("[Enter standby acknowledge]", end_time))
-                                        else:
-                                            if is_wake and hasattr(self, "player") and self.player:
+                                        elif is_wake:
+                                            print(f"\n⚡ \033[1;32m[WAKE WORD DETECTED]\033[0m Matched '{matched_word}'!")
+                                            self._last_interaction_ts = time.time()
+                                            await self.state.set_mode(RobotMode.LISTENING)
+                                            await self.events.emit(Events.WAKE_WORD_DETECTED, wake_word=matched_word, text=text)
+                                            if hasattr(self, "player") and self.player:
                                                 try:
                                                     asyncio.create_task(self.player.play_earcon("wake_detected", volume=0.55))
                                                 except Exception:
                                                     pass
-                                            clean_text = remainder if is_wake else text
-                                            print(f"\n💬 \033[1;36m[USER]\033[0m {clean_text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
+                                            if remainder:
+                                                print(f"\n💬 \033[1;36m[USER]\033[0m {remainder}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
+                                                self.telemetry.record("STT_FINAL_LATENCY", stt_ms)
+                                                await self.events.emit("user_text", user_text=remainder, stt_ms=stt_ms)
+                                                await self._speech_queue.put((remainder, end_time))
+                                            else:
+                                                print(f"\n💬 \033[1;36m[USER]\033[0m [Wake word only: '{matched_word}']")
+                                                await self._speech_queue.put(("[Wake word acknowledge]", end_time))
+                                        elif current_mode == RobotMode.STANDBY:
+                                            print(f"💤 \033[90m[STANDBY IGNORED]\033[0m {text}")
+                                            self.observability.finish_trace(status=SpanStatus.CANCELLED)
+                                        elif in_follow_up or (not self.require_wake_word or not self.wakeword.enabled):
+                                            self._last_interaction_ts = time.time()
+                                            await self.state.set_mode(RobotMode.LISTENING)
+                                            label = "[USER (FOLLOW-UP)]" if in_follow_up else "[USER]"
+                                            print(f"\n💬 \033[1;36m{label}\033[0m {text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                             self.telemetry.record(
                                                 "STT_FINAL_LATENCY",
                                                 stt_ms,
                                             )
-                                            await self.events.emit("user_text", user_text=clean_text, stt_ms=stt_ms)
-                                            await self._speech_queue.put((clean_text, end_time))
+                                            await self.events.emit("user_text", user_text=text, stt_ms=stt_ms)
+                                            await self._speech_queue.put((text, end_time))
+                                        else:
+                                            print(f"💤 \033[90m[WAKE WORD REQUIRED IGNORED]\033[0m {text}")
+                                            self.observability.finish_trace(status=SpanStatus.CANCELLED)
                                     else:
                                         print(f"🔇 \033[90m[ECHO FILTERED]\033[0m {text}")
                                         self.observability.finish_trace(status=SpanStatus.CANCELLED)
@@ -1328,10 +1349,17 @@ class RobotEngine:
         if user_text == "[Wake word acknowledge]":
             ack = "I'm listening."
             await self._tts_queue.put((ack, interrupt, None))
+            await self._tts_queue.put(None)
             return ack
         if user_text == "[Enter standby acknowledge]":
-            ack = "Entering standby mode. Say 'Hey Lisa' whenever you need me."
+            pers_title = (
+                self.personalities.active.name.title()
+                if hasattr(self, "personalities") and self.personalities and self.personalities.active
+                else "Cypher"
+            )
+            ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
             await self._tts_queue.put((ack, interrupt, None))
+            await self._tts_queue.put(None)
             return ack
         if user_text.startswith("[Proactive check-in]: "):
             proactive_line = user_text[len("[Proactive check-in]: ") :].strip()
@@ -1348,12 +1376,19 @@ class RobotEngine:
             and self.wakeword
             and self.wakeword.is_standby_command(user_text)
         ):
+            self._last_interaction_ts = 0.0
             await self.state.set_mode(RobotMode.STANDBY)
             await self.events.emit(Events.STANDBY, reason="user_command")
             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                 self.tool_coordinator.reset()
-            ack = "Entering standby mode. Say 'Hey Lisa' whenever you need me."
+            pers_title = (
+                self.personalities.active.name.title()
+                if hasattr(self, "personalities") and self.personalities and self.personalities.active
+                else "Cypher"
+            )
+            ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
             await self._tts_queue.put((ack, interrupt, None))
+            await self._tts_queue.put(None)
             return ack
 
         # Check deterministic Fast-Path Router for sub-millisecond local utility commands (<50ms)
@@ -1951,10 +1986,12 @@ class RobotEngine:
             if item is None:
                 self._is_speaking = False
                 self._speech_ended_ts = time.time()
-                # If an interruption occurred and switched state to LISTENING, don't clobber it to IDLE
-                if self.state.state.mode != RobotMode.LISTENING:
+                if self.state.state.mode != RobotMode.STANDBY:
+                    self._last_interaction_ts = time.time()
+                # If an interruption occurred and switched state to LISTENING or STANDBY, don't clobber it to IDLE
+                if self.state.state.mode not in (RobotMode.LISTENING, RobotMode.STANDBY):
                     await self.state.set_mode(RobotMode.IDLE)
-                await self.events.emit("robot_speech_ended", mode="idle")
+                await self.events.emit("robot_speech_ended", mode=self.state.state.mode.value)
                 continue
 
             if len(item) >= 8:
@@ -2174,6 +2211,8 @@ class RobotEngine:
                 pers_obj = self.personalities.get(personality)
                 if pers_obj and getattr(pers_obj, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
                     self.tts.set_active_voice(pers_obj.voice_model)
+                if hasattr(self, "wakeword") and self.wakeword:
+                    self.wakeword.set_active_persona(personality)
 
         active_pers_name = self.state.state.active_personality
         active_pers = self.personalities.active
