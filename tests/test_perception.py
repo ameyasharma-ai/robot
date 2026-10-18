@@ -236,3 +236,37 @@ async def test_os_capture_screen_with_ocr():
     assert tool_def is not None
     assert tool_def.permission_level == PermissionLevel.SYSTEM
 
+
+def test_perception_get_latest_scene():
+    """Verify PerceptionEngine.get_latest_scene extracts scene snapshot from WorldState."""
+    from robot.perception.world import DetectedObject, DetectedPerson
+
+    pe = PerceptionEngine(camera=None)
+    pe.world_state.people = [
+        DetectedPerson(
+            id="person_0",
+            position="center",
+            distance_estimate="near",
+            confidence=0.91,
+            looking_at_robot=True,
+            bbox=[100, 100, 200, 200],
+        )
+    ]
+    pe.world_state.objects = [
+        DetectedObject(
+            label="cup",
+            confidence=0.88,
+            bbox=[150, 160, 40, 50],
+            position="left",
+        )
+    ]
+    scene = pe.get_latest_scene()
+    assert scene["num_faces"] == 1
+    assert len(scene["people"]) == 1
+    assert scene["people"][0]["id"] == "person_0"
+    assert len(scene["objects"]) == 1
+    assert scene["objects"][0]["label"] == "cup"
+    assert "motion" in scene
+    assert "lighting" in scene
+
+

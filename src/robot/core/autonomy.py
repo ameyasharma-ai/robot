@@ -192,7 +192,17 @@ class CuriosityEngine:
         if not hasattr(self.engine, "perception") or self.engine.perception is None:
             return False
 
-        scene = self.engine.perception.get_latest_scene()
+        if hasattr(self.engine.perception, "get_latest_scene") and callable(self.engine.perception.get_latest_scene):
+            scene = self.engine.perception.get_latest_scene()
+        elif hasattr(self.engine.perception, "world_state"):
+            ws = self.engine.perception.world_state
+            scene = {
+                "num_faces": len(getattr(ws, "people", [])),
+                "objects": [{"label": getattr(o, "label", "")} for o in getattr(ws, "objects", [])],
+            }
+        else:
+            return False
+
         has_human = scene.get("num_faces", 0) > 0 or any(
             obj.get("label") == "person" for obj in scene.get("objects", [])
         )

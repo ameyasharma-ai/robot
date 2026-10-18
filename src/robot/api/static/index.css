@@ -7967,7 +7967,8 @@ button:active, .view-btn:active, .action-btn:active, .send-btn:active {
 
 /* ─── Chat View Model Pickers ─────────────────────────────────────────────── */
 .chat-local-controls,
-.chat-whisper-controls {
+.chat-whisper-controls,
+.chat-tts-controls {
     display: inline-flex;
     align-items: center;
 }
@@ -7992,6 +7993,17 @@ button:active, .view-btn:active, .action-btn:active, .send-btn:active {
     border-color: #10b981 !important;
     background: rgba(16, 185, 129, 0.15) !important;
     box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.chat-tts-btn {
+    border-color: rgba(244, 63, 94, 0.4) !important;
+    color: #fb7185 !important;
+}
+
+.chat-tts-btn:hover {
+    border-color: #f43f5e !important;
+    background: rgba(244, 63, 94, 0.15) !important;
+    box-shadow: 0 0 10px rgba(244, 63, 94, 0.3);
 }
 
 /* ─── Audio Deck: Whisper STT Engine Card ─────────────────────────────────── */

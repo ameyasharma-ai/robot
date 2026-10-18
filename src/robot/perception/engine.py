@@ -462,3 +462,42 @@ class PerceptionEngine:
             "motion": self.world_state.motion,
             "timestamp": time.time(),
         }
+
+    def get_latest_scene(self) -> dict[str, Any]:
+        """Provide a structured snapshot of the most recently perceived scene.
+
+        Aggregates detected faces, people count, YOLO visual objects, tabletop items,
+        scene lighting, and motion state from current WorldState.
+
+        Returns:
+            dict[str, Any]: Scene snapshot dictionary containing num_faces,
+                people, objects, tabletop_items, motion, lighting, and scene.
+        """
+        objects = [
+            {
+                "label": obj.label,
+                "confidence": round(obj.confidence, 2),
+                "position": obj.position,
+            }
+            for obj in self.world_state.objects
+        ]
+        people = [
+            {
+                "id": p.id,
+                "confidence": round(p.confidence, 2),
+                "position": p.position,
+                "distance": p.distance_estimate,
+            }
+            for p in self.world_state.people
+        ]
+        return {
+            "num_faces": len(self.world_state.people),
+            "people": people,
+            "objects": objects,
+            "tabletop_items": [item.to_dict() for item in self.world_state.tabletop_items],
+            "motion": self.world_state.motion,
+            "lighting": self.world_state.lighting,
+            "scene": self.world_state.scene,
+            "timestamp": self.world_state.updated_at,
+        }
+

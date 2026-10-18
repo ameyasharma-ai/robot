@@ -1116,11 +1116,19 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
         if hasattr(engine, "coordinator") and engine.coordinator:
             engine.coordinator.reset()
 
-        pers_title = (
-            engine.personalities.active.name.title()
+        active_pers = getattr(getattr(engine, "state", None), "state", None)
+        key = getattr(active_pers, "active_personality", None) or (
+            engine.personalities.active.name
             if hasattr(engine, "personalities") and engine.personalities and engine.personalities.active
-            else "Cypher"
+            else "neo"
         )
+        clean_key = (key or "neo").lower()
+        if clean_key in ("neo", "cypher"):
+            pers_title = "Cypher"
+        elif clean_key == "glados":
+            pers_title = "GLaDOS"
+        else:
+            pers_title = clean_key.title()
         return f"Entering standby mode. I will wait for you to say 'Hey {pers_title}' before listening again."
 
     engine.tool_registry.register(

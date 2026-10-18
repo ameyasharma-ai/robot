@@ -1953,6 +1953,29 @@ Legend:
       - 329 / 329 unit tests pass 100% across all 46 test modules (`.venv/bin/pytest tests/`).
       - 118 / 118 Python files verified clean with zero import errors (`verify_imports.py`).
 
+100. **Autonomy Perception Engine Loop Fix, Dynamic Standby Character Naming & Chat Dashboard TTS/STT Synchronization**:
+    - *Symptoms & Requirements*:
+      1. Background autonomy worker logged repeated errors: `[error] autonomy_loop_error error="'PerceptionEngine' object has no attribute 'get_latest_scene'"`.
+      2. Saying "stop listening" popped an Apple Dynamic Island toast reading `Say "Hey Cypher" to resume` even when a different personality (Luna, Aria, or GLaDOS) was loaded.
+      3. The chat-only dashboard view (`body.mode-chat`) needed styled controls and active state synchronization for both Whisper STT and Kokoro/Piper TTS options, including speech playback prioritization in `/api/chat/speak/stream`.
+    - *Fixes Applied*:
+      1. **Perception Engine Scene Export (`src/robot/perception/engine.py` & `src/robot/core/autonomy.py`)**:
+         - Implemented `get_latest_scene()` on `PerceptionEngine` extracting `num_faces`, `people`, `objects`, `tabletop_items`, `motion`, `lighting`, and `scene` from `world_state`.
+         - Added defensive attribute checking in `autonomy.py` falling back to `world_state` if `get_latest_scene` is absent.
+         - Added unit test in `tests/test_perception.py` verifying scene structure.
+      2. **Dynamic Standby Character Naming (`engine.py`, `builtins/__init__.py`, `app.js`)**:
+         - Added `_get_active_persona_display_name()` to `RobotEngine` resolving active personality key and title (`neo` -> `Cypher`, `luna` -> `Luna`, `aria` -> `Aria`, `glados` -> `GLaDOS`).
+         - Included `persona` and `persona_name` in both `Events.STANDBY` and `"standby"` WebSocket events.
+         - Updated `system.stop_listening` builtin tool to dynamically resolve the loaded character name.
+         - Added `getActivePersonaTitle()` to `App` in `app.js` and updated the Dynamic Island standby handler to display the loaded character name (e.g., `Say "Hey Luna" to resume`).
+      3. **Chat Only Dashboard TTS & STT Controls (`index.css`, `app.js`, `api/__init__.py`)**:
+         - Styled `.chat-tts-controls` and `.chat-tts-btn` in `index.css` with rose/magenta glow matching `.chat-whisper-btn`.
+         - Updated `syncChatTopBar()` in `app.js` to synchronize `chatWhisperPickerLabel` and `chatTtsPickerLabel` whenever switching to chat mode or changing models.
+         - Updated `/api/chat/speak` and `/api/chat/speak/stream` in `src/robot/api/__init__.py` to prioritize `tts.get_active_voice()`, ensuring read-aloud speech in chat view respects the user's active engine (Kokoro / Piper) and voice.
+    - *Verification*:
+      - Verified `tests/test_perception.py`, `tests/test_autonomy.py`, and full test suite: **330 / 330 tests passing (100%)**.
+      - Verified zero import errors across 118 files with `verify_imports.py`.
+
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.

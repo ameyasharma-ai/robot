@@ -23,7 +23,7 @@ class RobotUI {
         this.statusPill = document.getElementById("globalStatusPill");
         this.statusText = document.getElementById("globalStatusText");
         this.personaSelect = document.getElementById("personaSelect");
-        this.personaName = document.getElementById("personaName");
+        this.personaName = document.getElementById("chatPersonaLabel") || document.getElementById("personaName");
         this.bubbleTag = document.getElementById("bubbleTag");
         this.bubbleContent = document.getElementById("bubbleContent");
         this.terminalFeed = document.getElementById("terminalFeed");
@@ -495,7 +495,34 @@ class RobotUI {
     }
 
     /**
-     * Synchronize the chat interface top bar indicators (persona label, theme, active model pill).
+     * Resolve the formatted display title of the currently loaded character/persona.
+     * Checks dropdown selector, chat persona label, or active persona property.
+     * @returns {string} Formatted title ('Cypher', 'Luna', 'Aria', 'GLaDOS', or 'Robot').
+     */
+    getActivePersonaTitle() {
+        if (this.personaSelect && this.personaSelect.value) {
+            const val = this.personaSelect.value.toLowerCase().trim();
+            if (val === "neo" || val === "cypher") return "Cypher";
+            if (val === "glados") return "GLaDOS";
+            return val.charAt(0).toUpperCase() + val.slice(1);
+        }
+        if (this.chatPersonaLabel && this.chatPersonaLabel.textContent) {
+            const txt = this.chatPersonaLabel.textContent.trim().toLowerCase();
+            if (txt === "neo" || txt === "cypher") return "Cypher";
+            if (txt === "glados") return "GLaDOS";
+            return txt.charAt(0).toUpperCase() + txt.slice(1);
+        }
+        if (this.activePersona) {
+            const p = this.activePersona.toLowerCase().trim();
+            if (p === "neo" || p === "cypher") return "Cypher";
+            if (p === "glados") return "GLaDOS";
+            return p.charAt(0).toUpperCase() + p.slice(1);
+        }
+        return "Robot";
+    }
+
+    /**
+     * Synchronize the chat interface top bar indicators (persona label, theme, active model pill, STT and TTS pickers).
      * @returns {void}
      */
     syncChatTopBar() {
@@ -509,6 +536,16 @@ class RobotUI {
         const modelIcon = modelPill ? modelPill.querySelector(".model-icon") : null;
         const chatOpenaiControls = document.getElementById("chatOpenaiControls");
         const chatOpenaiSelect = document.getElementById("chatOpenaiModelSelect");
+
+        const chatWhisperLabel = document.getElementById("chatWhisperPickerLabel");
+        if (chatWhisperLabel && this.activeSttModelId) {
+            chatWhisperLabel.textContent = `Whisper: ${this.activeSttModelId}`;
+        }
+        const chatTtsLabel = document.getElementById("chatTtsPickerLabel");
+        if (chatTtsLabel) {
+            const activeVoiceClean = this.activeTtsVoice ? this.activeTtsVoice.replace(".onnx", "").replace("en-us-", "").replace("models/tts/", "") : "af_heart";
+            chatTtsLabel.textContent = `TTS: ${activeVoiceClean}`;
+        }
 
         const prov = this.currentLlmProvider || "local";
         const isGemini = prov === "gemini";
@@ -3859,8 +3896,14 @@ class RobotUI {
         }
 
         if (data.event === "standby" || data.event === "wakeword.standby" || data.standby || (data.event === "mode_changed" && data.mode === "standby") || (data.event === "mode" && data.mode === "standby")) {
-            const persRaw = (this.personaName && this.personaName.textContent) ? this.personaName.textContent.trim().toLowerCase() : "cypher";
-            const persTitle = persRaw === "neo" ? "Cypher" : (persRaw.charAt(0).toUpperCase() + persRaw.slice(1));
+            let persTitle = data.persona_name;
+            if (!persTitle && data.persona) {
+                const p = String(data.persona).toLowerCase().trim();
+                persTitle = (p === "neo" || p === "cypher") ? "Cypher" : (p === "glados" ? "GLaDOS" : p.charAt(0).toUpperCase() + p.slice(1));
+            }
+            if (!persTitle) {
+                persTitle = this.getActivePersonaTitle();
+            }
             const sub = data.text ? `"${data.text}" • Say "Hey ${persTitle}" to resume` : `Listening paused • Say "Hey ${persTitle}" to resume`;
             this.showDynamicIsland("Standby Mode Active", sub, "💤", "amber", 4500);
             this.setRobotMode("standby");

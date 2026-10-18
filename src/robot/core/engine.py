@@ -1387,6 +1387,28 @@ class RobotEngine:
             if self.state.state.mode != RobotMode.STANDBY:
                 await self.state.set_mode(RobotMode.IDLE)
 
+    def _get_active_persona_display_name(self) -> tuple[str, str]:
+        """Resolve active personality key and formatted display title.
+
+        Returns:
+            tuple[str, str]: (personality_key, display_title), e.g. ('neo', 'Cypher'),
+                ('luna', 'Luna'), ('aria', 'Aria'), ('glados', 'GLaDOS').
+        """
+        active_key = None
+        if hasattr(self, "state") and hasattr(self.state, "state") and getattr(self.state.state, "active_personality", None):
+            active_key = self.state.state.active_personality
+        elif hasattr(self, "personalities") and self.personalities and self.personalities.active:
+            active_key = self.personalities.active.name
+
+        clean_key = (active_key or "neo").lower()
+        if clean_key in ("neo", "cypher"):
+            title = "Cypher"
+        elif clean_key == "glados":
+            title = "GLaDOS"
+        else:
+            title = clean_key.title()
+        return clean_key, title
+
     async def _stream_response(
         self,
         user_text: str,
@@ -1406,11 +1428,7 @@ class RobotEngine:
             await self._tts_queue.put(None)
             return ack
         if user_text == "[Enter standby acknowledge]":
-            pers_title = (
-                self.personalities.active.name.title()
-                if hasattr(self, "personalities") and self.personalities and self.personalities.active
-                else "Cypher"
-            )
+            _, pers_title = self._get_active_persona_display_name()
             ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
             standby_interrupt = asyncio.Event()
             await self._tts_queue.put((ack, standby_interrupt, None))
@@ -1448,18 +1466,23 @@ class RobotEngine:
                 except (asyncio.QueueEmpty, ValueError):
                     break
 
+            active_key, pers_title = self._get_active_persona_display_name()
             await self.state.set_mode(RobotMode.STANDBY)
             await self.events.emit(
                 Events.STANDBY,
                 reason="user_command",
                 standby=True,
                 text=user_text,
+                persona=active_key,
+                persona_name=pers_title,
             )
             await self.events.emit(
                 "standby",
                 reason="user_command",
                 standby=True,
                 text=user_text,
+                persona=active_key,
+                persona_name=pers_title,
             )
             if hasattr(self, "player") and self.player:
                 try:
@@ -1468,11 +1491,6 @@ class RobotEngine:
                     pass
             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                 self.tool_coordinator.reset()
-            pers_title = (
-                self.personalities.active.name.title()
-                if hasattr(self, "personalities") and self.personalities and self.personalities.active
-                else "Cypher"
-            )
             ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
             standby_interrupt = asyncio.Event()
             await self._tts_queue.put((ack, standby_interrupt, None))

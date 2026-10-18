@@ -1176,7 +1176,11 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         pers_name = req.personality or getattr(engine.state.state, "active_personality", "neo")
         pers = engine.personalities.get(pers_name) if hasattr(engine, "personalities") and engine.personalities else None
 
-        voice_model = req.voice_model or (getattr(pers, "voice_model", None) if pers else None)
+        active_tts_voice = None
+        if hasattr(tts, "get_active_voice") and callable(tts.get_active_voice):
+            active_tts_voice = tts.get_active_voice()
+
+        voice_model = req.voice_model or active_tts_voice or (getattr(pers, "voice_model", None) if pers else None)
         speed = req.speed
         pitch = req.pitch
         noise_scale: float | None = None
@@ -1315,7 +1319,11 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         pers_name = req.personality or getattr(engine.state.state, "active_personality", "neo")
         pers = engine.personalities.get(pers_name) if hasattr(engine, "personalities") and engine.personalities else None
 
-        base_voice_model = req.voice_model or (getattr(pers, "voice_model", None) if pers else None)
+        active_tts_voice = None
+        if hasattr(tts, "get_active_voice") and callable(tts.get_active_voice):
+            active_tts_voice = tts.get_active_voice()
+
+        base_voice_model = req.voice_model or active_tts_voice or (getattr(pers, "voice_model", None) if pers else None)
         base_speed = req.speed
         base_pitch = req.pitch
         base_noise_scale: float | None = None
