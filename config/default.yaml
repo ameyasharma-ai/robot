@@ -34,8 +34,8 @@ llm:
 stt:
   provider: whisper-server
   url: http://127.0.0.1:8081/inference
-  model: /home/ameya/whisper.cpp/models/ggml-tiny.en
-  model_path: /home/ameya/whisper.cpp/models/ggml-tiny.en.bin
+  model: /home/ameya/whisper.cpp/models/ggml-small.en
+  model_path: /home/ameya/whisper.cpp/models/ggml-small.en.bin
   language: en
   temperature: 0.0
   chunk_seconds: 0.8

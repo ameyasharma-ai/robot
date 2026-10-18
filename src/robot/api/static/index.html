@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;600;700;800&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=5.1">
+    <link rel="stylesheet" href="/static/index.css?v=5.2">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -25,90 +25,115 @@
 
     <!-- Top Navigation Header -->
     <header class="top-nav">
-        <div class="brand">
-            <span class="brand-pulse"></span>
-            <span class="brand-title">ROBOT CORE</span>
-            <span class="brand-ver">v2.0-PROD</span>
+        <!-- ZONE 1: BRAND & IDENTITY -->
+        <div class="nav-zone nav-zone-left">
+            <div class="brand">
+                <span class="brand-pulse"></span>
+                <span class="brand-title">ROBOT CORE</span>
+                <span class="brand-ver">v2.0-PROD</span>
+            </div>
+            <div class="nav-divider"></div>
+            <div class="persona-selector-wrap" id="personaSelectorWrap">
+                <span class="persona-icon">👤</span>
+                <label for="personaSelect" class="sr-only">Personality</label>
+                <select class="persona-select" id="personaSelect" title="Switch AI Personality">
+                    <option value="neo">CYPHER</option>
+                    <option value="luna">LUNA</option>
+                    <option value="aria">ARIA</option>
+                    <option value="glados">GLADOS</option>
+                </select>
+                <span class="persona-caret">▾</span>
+            </div>
         </div>
-        <div class="persona-selector-wrap" id="personaSelectorWrap">
-            <span class="persona-icon">👤</span>
-            <label for="personaSelect" class="sr-only">Personality</label>
-            <select class="persona-select" id="personaSelect" title="Switch AI Personality">
-                <option value="neo">CYPHER (Matrix Hacker Girl)</option>
-                <option value="luna">LUNA (Devoted Girlfriend)</option>
-                <option value="aria">ARIA (Empathetic / Warm)</option>
-                <option value="glados">GLADOS (Sarcastic / Clinical)</option>
-            </select>
-        </div>
-        <div class="llm-provider-wrap" id="llmProviderWrap">
-            <button class="llm-toggle-btn local-mode" id="btnLlmToggle" title="Toggle AI Provider: Local (RTX 3050, 16K Context) ⮀ Cloud Gemini (High-Intelligence, 1M Context)">
-                <span class="llm-toggle-icon" id="llmToggleIcon">⚡</span>
-                <div class="llm-toggle-info">
-                    <span class="llm-toggle-label" id="llmToggleLabel">LOCAL (RTX 3050)</span>
-                    <span class="llm-toggle-sub" id="llmToggleSub">LOW LATENCY • 16K</span>
+
+        <!-- ZONE 2: ENGINE & MODEL SUITE -->
+        <div class="nav-zone nav-zone-center">
+            <div class="llm-provider-wrap" id="llmProviderWrap">
+                <button class="llm-toggle-btn local-mode" id="btnLlmToggle" title="Toggle AI Provider: Local (RTX 3050, 16K Context) ⮀ Cloud Gemini (High-Intelligence, 1M Context)">
+                    <span class="llm-toggle-icon" id="llmToggleIcon">⚡</span>
+                    <div class="llm-toggle-info">
+                        <span class="llm-toggle-label" id="llmToggleLabel">LOCAL (RTX 3050)</span>
+                        <span class="llm-toggle-sub" id="llmToggleSub">LOW LATENCY • 16K</span>
+                    </div>
+                    <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
+                </button>
+                <!-- Top Nav Local Model Picker Trigger -->
+                <div class="top-nav-local-controls" id="topNavLocalControls">
+                    <button class="top-nav-model-picker-btn local-picker-btn" id="btnTopNavLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
+                        <span class="model-picker-icon">⚡</span>
+                        <span class="model-picker-label" id="topNavLocalPickerLabel">Qwen 3.5 4B</span>
+                        <span class="model-picker-caret">▾</span>
+                    </button>
                 </div>
-                <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
-            </button>
-            <!-- Top Nav Local Model Picker Trigger -->
-            <div class="top-nav-local-controls" id="topNavLocalControls">
-                <button class="top-nav-model-picker-btn local-picker-btn" id="btnTopNavLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
-                    <span class="model-picker-icon">⚡</span>
-                    <span class="model-picker-label" id="topNavLocalPickerLabel">Qwen 3.5 4B</span>
-                    <span class="model-picker-caret">▾</span>
-                </button>
+                <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
+                <div class="top-nav-openai-controls" id="topNavOpenaiControls" style="display: none;">
+                    <button class="top-nav-model-picker-btn" id="btnTopNavModelPicker" type="button" title="Search and select OpenAI-compatible model (400+ available)">
+                        <span class="model-picker-icon">🔍</span>
+                        <span class="model-picker-label" id="topNavModelPickerLabel">Search Model...</span>
+                        <span class="model-picker-caret">▾</span>
+                    </button>
+                    <button class="top-nav-sub-btn" id="btnTopNavOpenaiConfig" type="button" title="Configure API Endpoint & Key">
+                        ⚙️
+                    </button>
+                </div>
+                <!-- Top Nav Whisper STT Model Picker Trigger -->
+                <div class="top-nav-whisper-controls" id="topNavWhisperControls">
+                    <button class="top-nav-stt-picker-btn" id="btnTopNavSttPicker" type="button" title="Switch Whisper STT Model (AMD Radeon 680M Vulkan)">
+                        <span class="stt-picker-icon">🎙️</span>
+                        <span class="stt-picker-label" id="topNavSttPickerLabel">base.en</span>
+                        <span class="stt-vulkan-badge">VULKAN</span>
+                        <span class="model-picker-caret">▾</span>
+                    </button>
+                </div>
+                <!-- Top Nav Text-to-Speech (TTS) Picker Trigger -->
+                <div class="top-nav-tts-controls" id="topNavTtsControls">
+                    <button class="top-nav-tts-picker-btn" id="btnTopNavTtsPicker" type="button" title="Switch TTS Voice & Engine (Kokoro Neural / Piper ONNX)">
+                        <span class="tts-picker-icon">🔊</span>
+                        <span class="tts-picker-label" id="topNavTtsPickerLabel">KOKORO: af_heart</span>
+                        <span class="tts-engine-badge" id="topNavTtsBadge">24kHz</span>
+                        <span class="model-picker-caret">▾</span>
+                    </button>
+                </div>
             </div>
-            <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
-            <div class="top-nav-openai-controls" id="topNavOpenaiControls" style="display: none;">
-                <button class="top-nav-model-picker-btn" id="btnTopNavModelPicker" type="button" title="Search and select OpenAI-compatible model (400+ available)">
-                    <span class="model-picker-icon">🔍</span>
-                    <span class="model-picker-label" id="topNavModelPickerLabel">Search Model...</span>
-                    <span class="model-picker-caret">▾</span>
-                </button>
-                <button class="top-nav-sub-btn" id="btnTopNavOpenaiConfig" type="button" title="Configure API Endpoint & Key">
-                    ⚙️
-                </button>
-            </div>
-            <!-- Top Nav Whisper STT Model Picker Trigger -->
-            <div class="top-nav-whisper-controls" id="topNavWhisperControls">
-                <button class="top-nav-stt-picker-btn" id="btnTopNavSttPicker" type="button" title="Switch Whisper STT Model (AMD Radeon 680M Vulkan)">
-                    <span class="stt-picker-icon">🎙️</span>
-                    <span class="stt-picker-label" id="topNavSttPickerLabel">base.en</span>
-                    <span class="stt-vulkan-badge">VULKAN</span>
-                    <span class="model-picker-caret">▾</span>
-                </button>
-            </div>
-            <!-- Top Nav Text-to-Speech (TTS) Picker Trigger -->
-            <div class="top-nav-tts-controls" id="topNavTtsControls">
-                <button class="top-nav-tts-picker-btn" id="btnTopNavTtsPicker" type="button" title="Switch TTS Voice & Engine (Kokoro Neural / Piper ONNX)">
-                    <span class="tts-picker-icon">🔊</span>
-                    <span class="tts-picker-label" id="topNavTtsPickerLabel">KOKORO: af_heart</span>
-                    <span class="tts-engine-badge" id="topNavTtsBadge">24kHz</span>
-                    <span class="model-picker-caret">▾</span>
-                </button>
-            </div>
-        </div>
-        <div class="header-center">
+
+            <div class="nav-divider nav-divider-dim"></div>
+
             <div class="status-pill status-idle" id="globalStatusPill">
                 <span class="status-indicator"></span>
                 <span class="status-text" id="globalStatusText">IDLE</span>
             </div>
-            <div class="telemetry-pill">
-                <span class="lbl">TTFT:</span> <span class="val" id="hudTtft">-- ms</span>
-            </div>
-            <div class="telemetry-pill">
-                <span class="lbl">E2E:</span> <span class="val" id="hudE2e">-- ms</span>
-            </div>
-            <div class="telemetry-pill">
-                <span class="lbl">TOKENS:</span> <span class="val" id="hudTokens">--</span>
-            </div>
         </div>
-        <div class="nav-controls">
-            <button class="stop-btn" id="btnStopExecution" title="Stop LLM Generation & Speech">🛑 STOP</button>
-            <div class="view-switcher">
-                <button class="view-btn active" id="btnViewDual" title="Dual Mode (Avatar + Dev HUD)">DUAL</button>
-                <button class="view-btn" id="btnViewChat" title="ChatGPT-Like AI Workspace (Mic Unloaded / Real-Time Streaming)">💬 CHAT</button>
+
+        <!-- ZONE 3: TELEMETRY & VIEW CONTROLS -->
+        <div class="nav-zone nav-zone-right">
+            <!-- Unified Sleek Telemetry Pod -->
+            <div class="telemetry-pod" id="headerTelemetryPod">
+                <div class="telemetry-item">
+                    <span class="telem-label">TTFT</span>
+                    <span class="telem-val" id="hudTtft">-- ms</span>
+                </div>
+                <span class="telem-sep">•</span>
+                <div class="telemetry-item">
+                    <span class="telem-label">E2E</span>
+                    <span class="telem-val" id="hudE2e">-- ms</span>
+                </div>
+                <span class="telem-sep">•</span>
+                <div class="telemetry-item">
+                    <span class="telem-label">TOK</span>
+                    <span class="telem-val" id="hudTokens">--</span>
+                </div>
             </div>
-            <button class="fullscreen-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶</button>
+
+            <div class="nav-divider"></div>
+
+            <div class="nav-controls">
+                <button class="stop-btn" id="btnStopExecution" title="Stop LLM Generation & Speech">🛑 STOP</button>
+                <div class="view-switcher">
+                    <button class="view-btn active" id="btnViewDual" title="Dual Mode (Avatar + Dev HUD)">DUAL</button>
+                    <button class="view-btn" id="btnViewChat" title="ChatGPT-Like AI Workspace (Mic Unloaded / Real-Time Streaming)">💬 CHAT</button>
+                </div>
+                <button class="fullscreen-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶</button>
+            </div>
         </div>
     </header>
 
@@ -1364,6 +1389,6 @@
     <script src="/static/character/AnimationSystem.js?v=4.0"></script>
     <script src="/static/character/GazeSystem.js?v=4.0"></script>
     <script src="/static/character/CharacterEngine.js?v=4.0"></script>
-    <script src="/static/app.js?v=5.1"></script>
+    <script src="/static/app.js?v=5.2"></script>
 </body>
 </html>

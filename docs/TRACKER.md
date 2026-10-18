@@ -1976,6 +1976,32 @@ Legend:
       - Verified `tests/test_perception.py`, `tests/test_autonomy.py`, and full test suite: **330 / 330 tests passing (100%)**.
       - Verified zero import errors across 118 files with `verify_imports.py`.
 
+101. **Top Navigation Bar 3-Zone Cyber-Aero Overhaul & De-Cluttering**:
+    - *Symptoms & Requirements*:
+      1. User reported the top bar was "so ugly and close", suffering from extreme horizontal crowding, colliding flex elements, and mismatched component heights (26px, 28px, 34px, 42px).
+      2. Mismatched border radii (20px pills vs 6px boxes) and verbose persona options (`LUNA (Devoted Girlfriend)`) inflated the dropdown width past 260px.
+      3. Three separate telemetry pills (`TTFT`, `E2E`, `TOKENS`) consumed ~280px horizontally with uncontained gaps.
+    - *Fixes Applied*:
+      1. **Three-Zone Semantic Navigation Structure (`index.html` & `index.css`)**:
+         - Re-architected `<header class="top-nav">` into 3 balanced flex zones with sleek `.nav-divider` dividers:
+           - **Zone 1 (Brand & Identity)**: Brand title + pulse indicator + version badge + compact persona select.
+           - **Zone 2 (Engine & Model Suite)**: Unified AI engine suite (`#llmProviderWrap` containing LLM provider toggle, local/openai model picker, Whisper STT picker, and Kokoro/Piper TTS picker) paired with a compact status indicator pill (`● IDLE`).
+           - **Zone 3 (Telemetry & Operations)**: Unified `.telemetry-pod` (`TTFT • E2E • TOK`) + `🛑 STOP` execution button + `DUAL | CHAT` segmented switcher + `⛶` fullscreen toggle.
+      2. **Strict Component Standardization (32px Height & 8px Border-Radius)**:
+         - Standardized all buttons, dropdowns, telemetry pods, status pills, and switches across `.top-nav` to an exact **32px height** and **8px border-radius**.
+         - Replaced the bulky 110px status oval with a balanced 82px status badge matching the cockpit instrumentation.
+         - Shortened persona select labels in both `index.html` and `app.js` (`CYPHER`, `LUNA`, `ARIA`, `GLADOS`) while preserving their internal option values (`neo`, `luna`, `aria`, `glados`).
+         - Added custom `.persona-caret` and styled `.persona-select` with `appearance: none`.
+      3. **Unified Telemetry Pod**:
+         - Replaced the three separate bulky pills with a single, sleek `.telemetry-pod` container (`#headerTelemetryPod`) preserving `#hudTtft`, `#hudE2e`, and `#hudTokens` DOM IDs without breaking JS updates.
+         - Added responsive hiding under `@media (max-width: 992px)` and `@media (max-width: 768px)`.
+      4. **Cache Busting**:
+         - Incremented `index.css?v=5.2` and `app.js?v=5.2` query versions in `index.html`.
+    - *Verification*:
+      - Verified server rendering via `curl http://127.0.0.1:8888/`.
+      - Verified zero import errors across 118 files with `verify_imports.py`.
+      - Verified 100% unit test suite: **330 / 330 tests passing**.
+
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:
    - *Symptom*: Hardware serial bridge is in emulation mode when physical USB microcontrollers are unattached.

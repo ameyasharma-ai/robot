@@ -2685,11 +2685,7 @@ class RobotUI {
                     data.personalities.forEach((p) => {
                         const opt = document.createElement("option");
                         opt.value = p;
-                        const label = p === "neo" ? "CYPHER (Matrix Hacker Girl)"
-                                    : p === "luna" ? "LUNA (Devoted Girlfriend)"
-                                    : p === "aria" ? "ARIA (Empathetic / Warm)"
-                                    : p === "glados" ? "GLADOS (Sarcastic / Clinical)"
-                                    : p.toUpperCase();
+                        const label = this.formatPersonaName(p);
                         opt.textContent = label;
                         this.personaSelect.appendChild(opt);
                     });
