@@ -18,11 +18,12 @@ env/
 .vscode/
 *.swp
 *.swo
+*.bak
 *~
 
 # Models (large binary files)
 *.gguf
-models/
+/models/
 models/tts/*.onnx
 models/stt/*.bin
 models/llm/

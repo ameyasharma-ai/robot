@@ -2507,7 +2507,7 @@ class RobotUI {
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
             this.characterEngine = new CharacterEngine(this.characterContainer, {
                 variant: "animated",
-                modelUrl: "/static/models/avatar.glb",
+                modelUrl: "/static/models/avatar.glb?v=6.0-pbr",
             });
             this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 
@@ -5269,33 +5269,92 @@ class RobotUI {
     }
 
     /**
-     * Initialize Local LLM Model switcher modal, top nav trigger, and chat pill.
-     * Allows hot-swapping local GGUF models on the RTX 3050 CUDA GPU.
+     * Initialize Local LLM Model switcher modal, HuggingFace Hub search, and background downloader.
+     * Allows hot-swapping local GGUF models on the RTX 3050 CUDA GPU and downloading new models from HuggingFace.
      * @returns {Promise<void>}
      */
     async initLocalLlmModelControls() {
         const topNavPicker = document.getElementById("btnTopNavLocalPicker");
         const topNavLabel = document.getElementById("topNavLocalPickerLabel");
+        const btnTopNavHfHub = document.getElementById("btnTopNavHfHub");
         const chatPicker = document.getElementById("btnChatLocalPicker");
         const chatLabel = document.getElementById("chatLocalPickerLabel");
+        const btnChatHfHub = document.getElementById("btnChatHfHub");
         const modal = document.getElementById("localModelModal");
         const btnClose = document.getElementById("btnCloseLocalModelModal");
         const btnCancel = document.getElementById("btnCancelLocalModelModal");
-        const cardsGrid = document.getElementById("localModelCardsGrid");
         const modalHint = document.getElementById("localModelModalHint");
+
+        // Tab Navigation Elements
+        const tabBtnInstalled = document.getElementById("tabBtnLocalInstalled");
+        const tabBtnHfHub = document.getElementById("tabBtnLocalHfHub");
+        const tabContentInstalled = document.getElementById("tabContentLocalInstalled");
+        const tabContentHfHub = document.getElementById("tabContentLocalHfHub");
+        const btnGoToHfHub = document.getElementById("btnGoToHfHub");
+        const installedCountBadge = document.getElementById("localInstalledCountBadge");
+        const hfActiveDownloadsBadge = document.getElementById("hfActiveDownloadsBadge");
+        const hfActiveDownloadsCount = document.getElementById("hfActiveDownloadsCount");
+
+        // Installed Tab Elements
+        const cardsGrid = document.getElementById("localModelCardsGrid");
+
+        // HuggingFace Hub Tab Elements
+        const hfSearchInput = document.getElementById("hfSearchInput");
+        const btnHfSearchClear = document.getElementById("btnHfSearchClear");
+        const btnHfSearchSubmit = document.getElementById("btnHfSearchSubmit");
+        const hfPresetChips = document.querySelectorAll(".hf-preset-chip");
+        const hfDownloadsPanel = document.getElementById("hfDownloadsPanel");
+        const hfDownloadsList = document.getElementById("hfDownloadsList");
+        const hfDownloadsStatusSub = document.getElementById("hfDownloadsStatusSub");
+        const hfResultsStatus = document.getElementById("hfResultsStatus");
+        const hfSearchResultsGrid = document.getElementById("hfSearchResultsGrid");
 
         this.activeLocalModelId = "qwen3.5-4b";
         this.localModelsList = [];
+        this.activeHfDownloads = [];
+        this.hfDownloadPollInterval = null;
+        this.completedHfDownloadIds = new Set();
+
+        /**
+         * Switch between Installed Models tab and HuggingFace Hub tab.
+         * @param {"installed" | "hf"} tabId - Target tab identifier.
+         * @returns {void}
+         */
+        this.switchLocalModelModalTab = (tabId) => {
+            if (tabId === "hf") {
+                if (tabBtnInstalled) tabBtnInstalled.classList.remove("active");
+                if (tabBtnHfHub) tabBtnHfHub.classList.add("active");
+                if (tabContentInstalled) tabContentInstalled.style.display = "none";
+                if (tabContentHfHub) tabContentHfHub.style.display = "block";
+                if (hfSearchInput && !hfSearchInput.value) {
+                    // Trigger popular search automatically on first visit
+                    this.searchHuggingFace("instruct");
+                }
+            } else {
+                if (tabBtnHfHub) tabBtnHfHub.classList.remove("active");
+                if (tabBtnInstalled) tabBtnInstalled.classList.add("active");
+                if (tabContentHfHub) tabContentHfHub.style.display = "none";
+                if (tabContentInstalled) tabContentInstalled.style.display = "block";
+                this.refreshLocalModels();
+            }
+        };
+
+        if (tabBtnInstalled) tabBtnInstalled.addEventListener("click", () => this.switchLocalModelModalTab("installed"));
+        if (tabBtnHfHub) tabBtnHfHub.addEventListener("click", () => this.switchLocalModelModalTab("hf"));
+        if (btnGoToHfHub) btnGoToHfHub.addEventListener("click", () => this.switchLocalModelModalTab("hf"));
 
         /**
          * Open Local Model Modal and render current cards.
+         * @param {"installed" | "hf"} [initialTab="installed"] - Initial tab to activate.
          * @returns {Promise<void>}
          */
-        this.openLocalModelModal = async () => {
+        this.openLocalModelModal = async (initialTab = "installed") => {
             if (!modal) return;
             modal.style.display = "flex";
             modal.classList.add("open");
+            this.switchLocalModelModalTab(initialTab);
             await this.refreshLocalModels();
+            await this.pollHfDownloads();
         };
 
         /**
@@ -5308,8 +5367,10 @@ class RobotUI {
             modal.classList.remove("open");
         };
 
-        if (topNavPicker) topNavPicker.addEventListener("click", () => this.openLocalModelModal());
-        if (chatPicker) chatPicker.addEventListener("click", () => this.openLocalModelModal());
+        if (topNavPicker) topNavPicker.addEventListener("click", () => this.openLocalModelModal("installed"));
+        if (btnTopNavHfHub) btnTopNavHfHub.addEventListener("click", () => this.openLocalModelModal("hf"));
+        if (chatPicker) chatPicker.addEventListener("click", () => this.openLocalModelModal("installed"));
+        if (btnChatHfHub) btnChatHfHub.addEventListener("click", () => this.openLocalModelModal("hf"));
         if (btnClose) btnClose.addEventListener("click", () => this.closeLocalModelModal());
         if (btnCancel) btnCancel.addEventListener("click", () => this.closeLocalModelModal());
         if (modal) {
@@ -5323,7 +5384,6 @@ class RobotUI {
          * @returns {Promise<void>}
          */
         this.refreshLocalModels = async () => {
-            if (!cardsGrid) return;
             try {
                 const res = await fetch("/api/llm/models");
                 if (!res.ok) return;
@@ -5332,6 +5392,9 @@ class RobotUI {
                 if (data.active_local_model) {
                     this.activeLocalModelId = data.active_local_model;
                     this.updateLocalModelDisplays(this.activeLocalModelId);
+                }
+                if (installedCountBadge) {
+                    installedCountBadge.textContent = this.localModelsList.length.toString();
                 }
                 this.renderLocalModelCards();
             } catch (err) {
@@ -5352,7 +5415,7 @@ class RobotUI {
                 card.className = `model-profile-card ${isActive ? "active" : ""}`;
                 
                 const badgeText = m.is_vision ? "VISION VLM" : (m.is_uncensored ? "UNCENSORED" : "INSTRUCT");
-                const vramEst = m.parameters === "4B" ? "~3.4 GB" : (m.parameters === "2B" ? "~2.3 GB" : (m.parameters === "0.5B" ? "~0.8 GB" : "~1.2 GB"));
+                const vramEst = m.parameters === "4B" ? "~3.4 GB" : (m.parameters === "2B" ? "~2.3 GB" : (m.parameters === "0.5B" ? "~0.8 GB" : (m.parameters === "1B" || m.parameters === "1.2B" || m.parameters === "1.5B" ? "~1.2 GB" : "~2.8 GB")));
 
                 card.innerHTML = `
                     <div class="model-card-header">
@@ -5430,8 +5493,436 @@ class RobotUI {
             }
         };
 
-        // Fetch initial local model status
+        // ─── HuggingFace Hub Search & Downloader Logic ───────────────────────
+
+        /**
+         * Search HuggingFace Hub for GGUF models and display results.
+         * @param {string} query - Search term.
+         * @returns {Promise<void>}
+         */
+        this.searchHuggingFace = async (query) => {
+            if (!hfSearchResultsGrid) return;
+            const cleanQuery = (query || "").trim();
+            if (hfResultsStatus) {
+                hfResultsStatus.innerHTML = `<span>⚡ Querying HuggingFace Hub for "<strong>${cleanQuery || "popular"}</strong>" GGUFs...</span>`;
+            }
+
+            try {
+                const res = await fetch(`/api/llm/hf/search?q=${encodeURIComponent(cleanQuery)}&limit=24`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                const models = data.models || [];
+
+                if (models.length === 0) {
+                    if (hfResultsStatus) {
+                        hfResultsStatus.innerHTML = `<span>No GGUF models found on HuggingFace Hub matching "<strong>${cleanQuery}</strong>".</span>`;
+                    }
+                    hfSearchResultsGrid.innerHTML = "";
+                    return;
+                }
+
+                if (hfResultsStatus) {
+                    hfResultsStatus.innerHTML = `<span>Found <strong>${models.length}</strong> GGUF repositories matching "${cleanQuery || "popular"}". Select a quantization below to download directly to <code>models/llm/</code>:</span>`;
+                }
+                this.renderHfModelCards(models);
+            } catch (err) {
+                if (hfResultsStatus) {
+                    hfResultsStatus.innerHTML = `<span style="color: #ef4444;">Error searching HuggingFace Hub: ${err.message}</span>`;
+                }
+            }
+        };
+
+        /**
+         * Render HuggingFace repository search result cards with quantization selectors.
+         * @param {Array<object>} models - Array of model metadata objects.
+         * @returns {void}
+         */
+        this.renderHfModelCards = (models) => {
+            if (!hfSearchResultsGrid) return;
+            hfSearchResultsGrid.innerHTML = "";
+
+            models.forEach(m => {
+                const card = document.createElement("div");
+                card.className = "hf-model-card";
+                card.dataset.repoId = m.repo_id;
+
+                const downloadsFmt = m.downloads >= 1000 ? `${(m.downloads / 1000).toFixed(1)}k` : m.downloads;
+                const likesFmt = m.likes >= 1000 ? `${(m.likes / 1000).toFixed(1)}k` : m.likes;
+
+                let badgeHtml = "";
+                if (m.is_vision) badgeHtml += '<span class="hf-badge badge-vision">VISION VLM</span>';
+                if (m.is_uncensored) badgeHtml += '<span class="hf-badge badge-uncensored">UNCENSORED</span>';
+                if (m.parameters && m.parameters !== "Unknown") badgeHtml += `<span class="hf-badge">${m.parameters}</span>`;
+                badgeHtml += '<span class="hf-badge">GGUF</span>';
+
+                card.innerHTML = `
+                    <div class="hf-card-header">
+                        <div class="hf-card-title-group">
+                            <span class="hf-card-repo-title">${m.name || m.repo_id}</span>
+                            <span class="hf-card-author">${m.author || m.repo_id.split('/')[0]}</span>
+                        </div>
+                        <div class="hf-card-badges">${badgeHtml}</div>
+                    </div>
+                    <div class="hf-card-meta">
+                        <span>⬇ ${downloadsFmt} downloads</span>
+                        <span>♥ ${likesFmt}</span>
+                        <span>ID: ${m.repo_id}</span>
+                    </div>
+                    <div class="hf-file-picker-section">
+                        <div class="hf-file-picker-label">
+                            <span>QUANTIZATION / GGUF FILE:</span>
+                            <span class="hf-loading-files-label" id="hfLoading_${m.repo_id.replace(/[^a-zA-Z0-9]/g, '_')}">⏳ Loading files...</span>
+                        </div>
+                        <select class="hf-quant-select" id="hfSelect_${m.repo_id.replace(/[^a-zA-Z0-9]/g, '_')}" disabled>
+                            <option value="">Inspecting repository files...</option>
+                        </select>
+                        <div class="hf-file-meta-row" id="hfMetaRow_${m.repo_id.replace(/[^a-zA-Z0-9]/g, '_')}">
+                            <span class="hf-size-info">—</span>
+                            <span class="hf-vram-pill">—</span>
+                        </div>
+                    </div>
+                    <div class="hf-card-footer">
+                        <button class="btn-hf-download" id="hfBtnDl_${m.repo_id.replace(/[^a-zA-Z0-9]/g, '_')}" type="button" disabled>
+                            <span>⬇</span> <span>DOWNLOAD GGUF</span>
+                        </button>
+                    </div>
+                `;
+
+                hfSearchResultsGrid.appendChild(card);
+
+                // Asynchronously fetch repository files for this model card
+                this.loadHfModelCardFiles(m);
+            });
+        };
+
+        /**
+         * Fetch GGUF files for a model card and populate its quantization dropdown.
+         * @param {object} modelMeta - Model metadata object.
+         * @returns {Promise<void>}
+         */
+        this.loadHfModelCardFiles = async (modelMeta) => {
+            const safeId = modelMeta.repo_id.replace(/[^a-zA-Z0-9]/g, "_");
+            const selectEl = document.getElementById(`hfSelect_${safeId}`);
+            const btnEl = document.getElementById(`hfBtnDl_${safeId}`);
+            const loadingLabel = document.getElementById(`hfLoading_${safeId}`);
+            const metaRow = document.getElementById(`hfMetaRow_${safeId}`);
+
+            try {
+                const res = await fetch(`/api/llm/hf/files?repo_id=${encodeURIComponent(modelMeta.repo_id)}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                const files = (data.files || []).filter(f => !f.is_mmproj);
+
+                if (loadingLabel) loadingLabel.style.display = "none";
+                if (!selectEl || !btnEl) return;
+
+                if (files.length === 0) {
+                    selectEl.innerHTML = '<option value="">No standalone GGUF files in main branch</option>';
+                    return;
+                }
+
+                selectEl.innerHTML = "";
+                files.forEach(f => {
+                    const opt = document.createElement("option");
+                    opt.value = f.filename;
+                    opt.dataset.size = f.size_bytes;
+                    opt.dataset.sizeFormatted = f.size_formatted;
+                    opt.dataset.isDownloaded = f.is_downloaded ? "true" : "false";
+                    opt.dataset.fitsVram = f.fits_vram ? "true" : "false";
+                    opt.dataset.isRecommended = f.is_recommended ? "true" : "false";
+
+                    const recTag = f.is_recommended ? "★ RECOMMENDED" : "";
+                    const dlTag = f.is_downloaded ? "✓ (INSTALLED)" : "";
+                    opt.textContent = `${f.filename} [${f.size_formatted}] ${recTag} ${dlTag}`.trim();
+                    selectEl.appendChild(opt);
+                });
+
+                selectEl.disabled = false;
+                btnEl.disabled = false;
+
+                /**
+                 * Update button state and size indicator when selected quantization changes.
+                 */
+                const updateSelectionState = () => {
+                    const selectedOpt = selectEl.options[selectEl.selectedIndex];
+                    if (!selectedOpt) return;
+
+                    const isDownloaded = selectedOpt.dataset.isDownloaded === "true";
+                    const fitsVram = selectedOpt.dataset.fitsVram === "true";
+                    const sizeFmt = selectedOpt.dataset.sizeFormatted || "—";
+
+                    if (metaRow) {
+                        metaRow.innerHTML = `
+                            <span class="hf-size-info">Size: <strong>${sizeFmt}</strong></span>
+                            <span class="${fitsVram ? "hf-vram-ok" : "hf-vram-warn"}">
+                                ${fitsVram ? "✓ Fits in RTX 3050 (4GB VRAM)" : "⚠️ High VRAM: Uses partial CPU offload"}
+                            </span>
+                        `;
+                    }
+
+                    if (isDownloaded) {
+                        btnEl.className = "btn-hf-download is-installed";
+                        btnEl.innerHTML = '<span>⚡</span> <span>ACTIVATE / LOAD MODEL</span>';
+                        btnEl.onclick = () => {
+                            // Find matching model ID
+                            const stem = selectedOpt.value.replace(/\.gguf$/i, "");
+                            this.switchLocalModel(stem);
+                        };
+                    } else {
+                        btnEl.className = "btn-hf-download";
+                        btnEl.innerHTML = `<span>⬇</span> <span>DOWNLOAD (${sizeFmt})</span>`;
+                        btnEl.onclick = () => {
+                            this.startHfDownload(
+                                modelMeta.repo_id,
+                                selectedOpt.value,
+                                modelMeta.name,
+                                modelMeta.parameters,
+                                modelMeta.is_vision
+                            );
+                        };
+                    }
+                };
+
+                selectEl.addEventListener("change", updateSelectionState);
+                updateSelectionState();
+
+            } catch (err) {
+                if (loadingLabel) {
+                    loadingLabel.textContent = `Error: ${err.message}`;
+                    loadingLabel.style.color = "#ef4444";
+                }
+            }
+        };
+
+        /**
+         * Start background download of a HuggingFace GGUF model.
+         * @param {string} repoId - Model repository ID.
+         * @param {string} filename - Target GGUF filename.
+         * @param {string} [name] - Model display title.
+         * @param {string} [parameters] - Parameter count.
+         * @param {boolean} [isVision=false] - Vision support flag.
+         * @returns {Promise<void>}
+         */
+        this.startHfDownload = async (repoId, filename, name, parameters, isVision = false) => {
+            this.showDynamicIsland("HuggingFace Download", `Starting download of ${filename}...`, "⬇", "cyan", 4000);
+            this.logEvent("HF_HUB", `Enqueuing download for ${filename} from ${repoId}...`, "system");
+
+            try {
+                const res = await fetch("/api/llm/hf/download", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        repo_id: repoId,
+                        filename: filename,
+                        name: name,
+                        parameters: parameters,
+                        is_vision: isVision,
+                    }),
+                });
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.showDynamicIsland("Downloading GGUF", `Streaming ${filename} to models/llm/...`, "⚡", "cyan", 3000);
+                    await this.pollHfDownloads();
+                    // Scroll to top of tab to show active downloads
+                    if (tabContentHfHub) tabContentHfHub.scrollTop = 0;
+                } else {
+                    this.showDynamicIsland("Download Error", data.message || "Failed to start download.", "✕", "rose", 4000);
+                    this.logEvent("ERROR", `HuggingFace download failed: ${data.message}`, "error");
+                }
+            } catch (err) {
+                this.showDynamicIsland("Network Error", err.message, "✕", "rose", 4000);
+            }
+        };
+
+        /**
+         * Cancel an in-progress HuggingFace download task.
+         * @param {string} downloadId - Download task ID.
+         * @returns {Promise<void>}
+         */
+        this.cancelHfDownload = async (downloadId) => {
+            try {
+                const res = await fetch("/api/llm/hf/cancel", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ download_id: downloadId }),
+                });
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.showDynamicIsland("Download Cancelled", "Download task stopped.", "✕", "amber", 3000);
+                    await this.pollHfDownloads();
+                }
+            } catch (err) {
+                console.error("Failed to cancel download:", err);
+            }
+        };
+
+        /**
+         * Poll active and completed downloads from the backend.
+         * @returns {Promise<void>}
+         */
+        this.pollHfDownloads = async () => {
+            try {
+                const res = await fetch("/api/llm/hf/downloads");
+                if (!res.ok) return;
+                const data = await res.json();
+                const downloads = data.downloads || [];
+                this.activeHfDownloads = downloads;
+
+                const activeCount = downloads.filter(d => d.status === "downloading" || d.status === "verifying" || d.status === "queued").length;
+
+                // Update active downloads pill in modal strip
+                if (hfActiveDownloadsBadge && hfActiveDownloadsCount) {
+                    if (activeCount > 0) {
+                        hfActiveDownloadsBadge.style.display = "inline-flex";
+                        hfActiveDownloadsCount.textContent = activeCount.toString();
+                    } else {
+                        hfActiveDownloadsBadge.style.display = "none";
+                    }
+                }
+
+                // Check for newly completed downloads to trigger auto-registration notification & refresh
+                downloads.forEach(d => {
+                    if (d.status === "completed" && !this.completedHfDownloadIds.has(d.download_id)) {
+                        this.completedHfDownloadIds.add(d.download_id);
+                        this.showDynamicIsland("Model Ready!", `✓ ${d.name} saved and registered locally!`, "🎉", "cyan", 5000);
+                        this.logEvent("HF_HUB", `✓ Model ${d.name} (${d.filename}) successfully registered locally in models/llm/!`, "success");
+                        this.refreshLocalModels();
+                    }
+                });
+
+                this.renderHfDownloads(downloads);
+
+                // Manage polling interval: poll every 700ms while active, otherwise every 5s
+                if (activeCount > 0) {
+                    if (!this.hfDownloadPollInterval) {
+                        this.hfDownloadPollInterval = setInterval(() => this.pollHfDownloads(), 750);
+                    }
+                } else {
+                    if (this.hfDownloadPollInterval) {
+                        clearInterval(this.hfDownloadPollInterval);
+                        this.hfDownloadPollInterval = null;
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to poll HuggingFace downloads:", err);
+            }
+        };
+
+        /**
+         * Render active and historical download cards inside the downloads drawer.
+         * @param {Array<object>} downloads - Array of download tasks.
+         * @returns {void}
+         */
+        this.renderHfDownloads = (downloads) => {
+            if (!hfDownloadsPanel || !hfDownloadsList) return;
+
+            if (downloads.length === 0) {
+                hfDownloadsPanel.style.display = "none";
+                return;
+            }
+
+            hfDownloadsPanel.style.display = "block";
+            hfDownloadsList.innerHTML = "";
+
+            downloads.forEach(d => {
+                const card = document.createElement("div");
+                card.className = "hf-download-card";
+
+                const isDownloading = d.status === "downloading";
+                const isCompleted = d.status === "completed";
+                const isVerifying = d.status === "verifying";
+                const isFailed = d.status === "failed";
+
+                const etaFmt = d.eta_seconds > 60
+                    ? `~${Math.round(d.eta_seconds / 60)}m ${(Math.round(d.eta_seconds % 60))}s`
+                    : `~${Math.round(d.eta_seconds)}s`;
+
+                card.innerHTML = `
+                    <div class="hf-dl-card-top">
+                        <div class="hf-dl-info">
+                            <span class="hf-dl-name">${d.name || d.filename}</span>
+                            <span class="hf-dl-file">${d.filename} • ${d.repo_id}</span>
+                        </div>
+                        <span class="hf-dl-badge status-${d.status}">${d.status}</span>
+                    </div>
+                    <div class="hf-dl-progress-wrap">
+                        <div class="hf-progress-track">
+                            <div class="hf-progress-fill" style="width: ${d.percent || 0}%;"></div>
+                        </div>
+                        <div class="hf-dl-metrics">
+                            <span><strong>${d.downloaded_formatted}</strong> / ${d.total_formatted} (${d.percent}%)</span>
+                            ${isDownloading ? `<span>⚡ ${d.speed_mb_s} MB/s • ${etaFmt} remaining</span>` : ""}
+                            ${isVerifying ? `<span>🔍 Verifying GGUF header & registering...</span>` : ""}
+                            ${isCompleted ? `<span style="color: #34d399;">✓ Saved to models/llm/ & registered</span>` : ""}
+                            ${isFailed ? `<span style="color: #f87171;">✕ ${d.error || "Download error"}</span>` : ""}
+                        </div>
+                    </div>
+                    <div class="hf-dl-actions">
+                        ${isDownloading ? `<button class="btn-hf-cancel" type="button" data-id="${d.download_id}">✕ Cancel</button>` : ""}
+                        ${isCompleted ? `<button class="btn-hf-activate" type="button" data-model="${d.registered_model_id || d.filename}">⚡ LOAD & ACTIVATE NOW</button>` : ""}
+                    </div>
+                `;
+
+                // Bind Cancel button
+                const btnCancelDl = card.querySelector(".btn-hf-cancel");
+                if (btnCancelDl) {
+                    btnCancelDl.addEventListener("click", () => this.cancelHfDownload(d.download_id));
+                }
+
+                // Bind Activate button
+                const btnActivateDl = card.querySelector(".btn-hf-activate");
+                if (btnActivateDl) {
+                    btnActivateDl.addEventListener("click", () => {
+                        const targetId = btnActivateDl.dataset.model;
+                        this.switchLocalModel(targetId);
+                    });
+                }
+
+                hfDownloadsList.appendChild(card);
+            });
+        };
+
+        // Bind Search Input & Submit
+        if (btnHfSearchSubmit && hfSearchInput) {
+            btnHfSearchSubmit.addEventListener("click", () => {
+                this.searchHuggingFace(hfSearchInput.value);
+            });
+            hfSearchInput.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") {
+                    this.searchHuggingFace(hfSearchInput.value);
+                }
+            });
+            hfSearchInput.addEventListener("input", () => {
+                if (btnHfSearchClear) {
+                    btnHfSearchClear.style.display = hfSearchInput.value ? "block" : "none";
+                }
+            });
+        }
+
+        if (btnHfSearchClear && hfSearchInput) {
+            btnHfSearchClear.addEventListener("click", () => {
+                hfSearchInput.value = "";
+                btnHfSearchClear.style.display = "none";
+                hfSearchInput.focus();
+                this.searchHuggingFace("instruct");
+            });
+        }
+
+        // Bind Preset Chips
+        hfPresetChips.forEach(chip => {
+            chip.addEventListener("click", () => {
+                const query = chip.dataset.query || chip.textContent.trim();
+                if (hfSearchInput) {
+                    hfSearchInput.value = query;
+                    if (btnHfSearchClear) btnHfSearchClear.style.display = "block";
+                }
+                this.searchHuggingFace(query);
+            });
+        });
+
+        // Fetch initial local model status and check for any background downloads
         await this.refreshLocalModels();
+        await this.pollHfDownloads();
     }
 
     /**

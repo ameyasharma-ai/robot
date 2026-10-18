@@ -672,6 +672,128 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             "llama_running": LlamaServerManager.is_running(),
         }
 
+    # ─── HuggingFace Hub LLM Search & Downloader Endpoints ──────────────────
+    @app.get("/api/llm/hf/search")
+    async def search_huggingface_models(
+        q: str = Query("", description="Search term for HuggingFace models"),
+        limit: int = Query(20, ge=1, le=50, description="Max results"),
+    ) -> dict[str, Any]:
+        """Search HuggingFace Hub for GGUF models.
+
+        Args:
+            q: Search query string.
+            limit: Maximum items to return.
+
+        Returns:
+            dict[str, Any]: Search results and metadata.
+        """
+        from robot.llm.hf_downloader import HuggingFaceHubService
+        results = await HuggingFaceHubService.search_models(query=q, limit=limit)
+        return {
+            "status": "ok",
+            "query": q,
+            "total": len(results),
+            "models": results,
+        }
+
+    @app.get("/api/llm/hf/files")
+    async def list_huggingface_model_files(
+        repo_id: str = Query(..., description="Repository ID (e.g. bartowski/Qwen2.5-Coder-3B-Instruct-GGUF)"),
+    ) -> dict[str, Any]:
+        """Retrieve available GGUF files and quantization options for a model repository.
+
+        Args:
+            repo_id: HuggingFace repository identifier.
+
+        Returns:
+            dict[str, Any]: List of GGUF files with byte sizes and download statuses.
+        """
+        from robot.config import get_project_root
+        from robot.llm.hf_downloader import HuggingFaceHubService
+        base_dir = get_project_root()
+        files = await HuggingFaceHubService.get_model_files(repo_id=repo_id, base_dir=base_dir)
+        return {
+            "status": "ok",
+            "repo_id": repo_id,
+            "total": len(files),
+            "files": files,
+        }
+
+    @app.post("/api/llm/hf/download")
+    async def download_huggingface_model(
+        req: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        """Start asynchronous background download of a HuggingFace GGUF model.
+
+        Args:
+            req: Request body containing repo_id, filename, name, parameters, is_vision.
+
+        Returns:
+            dict[str, Any]: Created download task specification and tracking ID.
+        """
+        repo_id = req.get("repo_id")
+        filename = req.get("filename")
+        if not repo_id or not filename:
+            return {"status": "error", "message": "Missing required 'repo_id' or 'filename'."}
+
+        from robot.config import get_project_root
+        from robot.llm.hf_downloader import HuggingFaceDownloadManager
+
+        base_dir = get_project_root()
+        mgr = HuggingFaceDownloadManager.get_instance(base_dir=base_dir)
+        task = mgr.start_download(
+            repo_id=repo_id,
+            filename=filename,
+            name=req.get("name"),
+            parameters=req.get("parameters"),
+            is_vision=bool(req.get("is_vision", False)),
+            mmproj_filename=req.get("mmproj_filename"),
+        )
+        return {"status": "ok", "task": task.to_dict()}
+
+    @app.get("/api/llm/hf/downloads")
+    async def get_huggingface_downloads() -> dict[str, Any]:
+        """Get list of active and recent HuggingFace model download tasks.
+
+        Returns:
+            dict[str, Any]: List of all download tasks and their progress metrics.
+        """
+        from robot.config import get_project_root
+        from robot.llm.hf_downloader import HuggingFaceDownloadManager
+
+        base_dir = get_project_root()
+        mgr = HuggingFaceDownloadManager.get_instance(base_dir=base_dir)
+        tasks = mgr.get_all_tasks()
+        return {
+            "status": "ok",
+            "total": len(tasks),
+            "downloads": tasks,
+        }
+
+    @app.post("/api/llm/hf/cancel")
+    async def cancel_huggingface_download(
+        req: dict[str, Any] = Body(...),
+    ) -> dict[str, Any]:
+        """Cancel an in-progress HuggingFace model download task.
+
+        Args:
+            req: Request body containing download_id.
+
+        Returns:
+            dict[str, Any]: Operation status and cancellation flag.
+        """
+        download_id = req.get("download_id")
+        if not download_id:
+            return {"status": "error", "message": "Missing 'download_id'."}
+
+        from robot.config import get_project_root
+        from robot.llm.hf_downloader import HuggingFaceDownloadManager
+
+        base_dir = get_project_root()
+        mgr = HuggingFaceDownloadManager.get_instance(base_dir=base_dir)
+        ok = await mgr.cancel_download(download_id)
+        return {"status": "ok", "cancelled": ok}
+
     # ─── Speech-to-Text (Whisper) Endpoints ─────────────────────────────────
     @app.get("/api/stt/status")
     async def get_stt_status() -> dict[str, Any]:
@@ -1790,12 +1912,29 @@ def create_app(engine: "RobotEngine") -> FastAPI:
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+        class NoCacheStaticFiles(StaticFiles):
+            """StaticFiles handler that appends no-cache headers to ensure instant live asset updates."""
+
+            async def get_response(self, path: str, scope):
+                response = await super().get_response(path, scope)
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+                return response
+
+        app.mount("/static", NoCacheStaticFiles(directory=str(static_dir)), name="static")
 
         @app.get("/")
         async def index():
             """Serve the integrated Digital Face & Dev Console UI."""
-            return FileResponse(str(static_dir / "index.html"))
+            return FileResponse(
+                str(static_dir / "index.html"),
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
 
         @app.get("/contextlayer")
         @app.get("/inspect")

@@ -34,8 +34,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Instant Spoken Acknowledgment**| TTS queue injection before search | ✅ **Active** | Core Engine | Speaks *"Searching..."* or *"Checking the web..."* before HTTP query. |
 | **System Time Tool** | `system.time` built-in tool | ✅ **Active** | Local OS Clock | Returns exact local time, date, weekday, timezone in <1ms without web. |
 | **Personality Switching** | Neo, Aria, GLaDOS YAML definitions | ✅ **Active** | Core Engine | Hot-swappable via tool or UI without server restart. |
-| **Mem0 Persistent Memory** | Mem0 + Qdrant + FastEmbed | ✅ **Active** | Local ONNX (CPU) | Uses `BAAI/bge-small-en-v1.5` (384-dim); no 501 llama-server error. |
-| **3D Avatar & Web HUD** | Three.js + VRM Humanoid Rig | ✅ **Active** | AMD Radeon 680M (Browser) | 60 FPS WebGL2 rendering, procedural breathing, blinking, and gaze. |
+| **Realistic 3D Humanoid Avatar & Web HUD** | Three.js WebGL2 + PBR MeshPhysicalMaterial + Cinematic 3-Point Lighting | ✅ **Active** | AMD Radeon 680M (Browser) | 60 FPS WebGL2 rendering, photorealistic human textures, hazel iris & dynamic catchlights, tailored wardrobe, 8-layer procedural motions, Look-At IK, and lip-sync. |
 | **Physical Serial Motion** | `robot.motion.serial_bridge` | 🟡 **Emulated** | USB Serial / Microcontroller | Mock fallback active when physical hardware disconnected. |
 | **Real-Time Observability** | `ObservabilityHub` (WebSockets) | ✅ **Active** | Core Engine | Live latency metrics, span hierarchy, pipeline flow visualization in HUD. |
 | **Async Image Generation** | `ImageGenerationService` (Local SD) | ✅ **Active** | AMD Ryzen 7 6800H + Radeon 680M | Multi-core thread-optimized AVX-512/AVX2 + attention slicing; RTX 3050 isolated. |
@@ -80,6 +79,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 16: Multi-Model Diffusion & Dynamic GPU Handoff Architecture** | `ImageModelRegistry` + `GpuResourceHandoffManager` + `ImagePromptEnhancer` + `UnifiedImageProvider` + FLUX NF4 4-Bit Offloading + Selective Downloader + Dashboard Model Selector | ✅ **Active** | NVIDIA RTX 3050 (4GB CUDA) + Host RAM / Cloud LLM | 9-model catalog spanning FLUX.1 Schnell NF4 4-bit (`magespace/FLUX.1-schnell-bnb-nf4` with sequential CPU-GPU offload & VAE slicing/tiling), SD-Turbo, SDXL-Turbo, SD 1.5, DreamShaper 8, and Small-SD; CUDA PyTorch 2.6.0+cu124 acceleration on RTX 3050; dynamic GPU handoff offloading local LLM (llama-server) to Cloud API (Gemini/OpenAI) to evacuate >3.5GB VRAM during heavy diffusion; automated prompt expansion; 330 / 330 tests pass. |
 | **Phase 17: Dashboard LLM & Whisper STT Model Hot-Swapping Architecture** | `WhisperServerManager` + `LlamaServerManager` + Unified REST APIs + Web Dashboard Top Nav, Audio Deck & Chat Modals | ✅ **Active** | AMD Radeon 680M (Vulkan) + RTX 3050 (4GB CUDA) | Curated 9-model Whisper catalog (`tiny.en` to `large-v3`) offloaded via Vulkan (0MB RTX VRAM); live `whisper-server` process hot-swapping (<1.0s); local GGUF hot-swapping (`qwen3.5-4b`, `qwen2-vl-2b-instruct` with mmproj, uncensored models); REST endpoints (`/api/stt/status`, `/api/stt/models`, `/api/stt/switch`, `/api/llm/models`, `/api/models/local/switch`); frontend controls in Top Nav (`#btnTopNavLocalPicker`, `#btnTopNavSttPicker`), Dev Audio Deck (`#sttPresetChips`), Chat top bar (`#btnChatLocalPicker`, `#btnChatWhisperPicker`), and cyberdeck modals; 323 / 323 tests pass. |
 | **Phase 18: Kokoro Neural TTS, Multi-Engine Coordinator & Dashboard Voice Controls** | `KokoroTTS` + `TTSManager` + Multi-Engine Hot-Swapping + 61 Voice Neural Catalog + REST APIs + Audio Deck & Modal UI | ✅ **Active** | CPU / AVX2 (0 MB VRAM) | Kokoro-82M ONNX Runtime with 54 voices (`af_heart`, `bf_emma`, `am_adam`, `bm_george`, etc.) and Piper ONNX with 7 models (Ryan, Alan British, Lessac, Amy, Bryce, Kathleen, HFC); sample-rate agile `AudioPlayer` (24kHz / 22.05kHz); in-memory phrase cache & linear pitch modulation; multi-engine coordinator hot-swapping engines and voices with persistence in `data/active_tts_engine.txt`, `data/active_tts_voice.txt`, and `config/default.yaml`; REST APIs (`/api/tts/status`, `/api/tts/voices`, `/api/tts/switch`, `/api/tts/test`); Cyberdeck dashboard controls with Top Nav picker (`#btnTopNavTtsPicker`), Dev Audio Deck card (`#ttsDeckCard` with 10 preset chips), Chat bar controls, and 61-voice modal (`#ttsModelModal`) with live in-browser audio previews; 329 / 329 tests pass. |
+| **Phase 19: HuggingFace Hub LLM Search, Streaming Downloader & Dynamic Auto-Registration Architecture** | `HuggingFaceHubService` + `HuggingFaceDownloadManager` + Dynamic `ModelRegistry` + Dashboard Dual-Tab Modal | ✅ **Active** | Host CPU / Network + RTX 3050 (4GB CUDA) | Live search of HuggingFace Hub GGUF repositories (`/api/llm/hf/search`); quantization file tree inspection (`/api/llm/hf/files`); non-blocking background streaming chunked downloader (`/api/llm/hf/download`, `/api/llm/hf/downloads`, `/api/llm/hf/cancel`) with HTTP Range resume, rolling EWMA speed/ETA telemetry, and binary GGUF magic header validation; dynamic `ModelRegistry` persistence (`models/llm/registry.json`) and auto-discovery of local `.gguf` files; dual-tab cyberdeck dashboard modal with live animated progress bars, Top Nav trigger (`#btnTopNavHfHub`), Chat bar trigger (`#btnChatHfHub`), preset chips, and 1-click model activation hot-swapping to RTX 3050; 337 / 337 tests pass. |
 
 
 Legend:
@@ -2063,6 +2063,113 @@ Legend:
        - Live generation test succeeded: rendered `data/images/img_test_flux_integration_1792347970.png` (439 KB) in 33.0s.
        - `verify_imports.py`: 118 / 118 files clean (100%).
        - Full test suite: 330 / 330 tests passing (100%).
+
+104. **Complete Realistic 3D Humanoid Avatar Overhaul & Kinematic Helper Bone Synchronization**:
+     - *Symptoms*:
+       1. Avatar had an anime / cartoon appearance due to `KHR_materials_unlit` and `VRMC_materials_mtoon` forcing Three.js to render all meshes as unlit 2D cel-shaded flat stickers without specular highlights, shadow depth, or lighting.
+       2. Cartoon white crescent highlight stickers (`EyeHighlight_00_EYE`) floated on the irises, and face textures had flat monochrome anime tones with no anatomical depth.
+       3. Upper arm flesh and t-shirt sleeves protruded as horizontal boxy "wings" behind her shoulders whenever arms swung or hung in base idle.
+     - *Root Causes*:
+       1. Three.js `GLTFLoader` instantiated `MeshBasicMaterial` for all 13 materials due to `KHR_materials_unlit`, ignoring scene directional lights, ambient occlusion, and normal maps (`Body_00_nml`, `Hair_00_nml`, `HairBack_00_nml`).
+       2. In VRM 1.0, secondary aim/roll helper bones (`J_Aim_L_Shoulder`, `J_Roll_L_UpperArm`, `J_Aim_L_TopsUpperArm`, `J_Sec_L_TopsUpperArmInside`, `J_Sec_L_TopsUpperArmOutside` and right counterparts) deform the shoulder/sleeve meshes via `VRMC_node_constraint`. Because Three.js does not evaluate VRM constraints, these 10 helper bones stayed frozen in the T-pose when `J_Bip_L_UpperArm` rotated down, twisting the mesh into horizontal wing artifacts.
+     - *Fixes Applied*:
+       1. **Photorealistic PBR Materials Upgrade (`src/robot/api/static/character/CharacterLoader.js`)**:
+          - Added `_upgradeMaterialsToRealisticPBR(scene)`: intercepts all loaded meshes and replaces unlit basic materials with `THREE.MeshPhysicalMaterial` and `THREE.MeshStandardMaterial`.
+          - Skin: `roughness: 0.54`, `clearcoat: 0.08`, `clearcoatRoughness: 0.35`, micro-roughness and normal mapping.
+          - Eyes: `MeshPhysicalMaterial` with `roughness: 0.03`, `clearcoat: 1.0`, `ior: 1.336` (cornea refraction index), creating life-like dynamic specular catchlights from scene lights.
+          - Hidden cartoon stickers: set `visible: false` on `EyeHighlight_00_EYE` and cartoon outline meshes.
+          - Hair: `MeshStandardMaterial` (`roughness: 0.40`, `metalness: 0.12`) with anisotropic normal mapping (`Hair_00_nml`).
+          - Wardrobe: tailored dark charcoal micro-weave suiting (`roughness: 0.82`, `metalness: 0.04`).
+       2. **Photorealistic Human Textures Suite (`src/robot/api/static/models/avatar.glb`)**:
+          - Synthesized and embedded realistic 1024x1024 PBR textures:
+            * `realistic_face_diffuse.png`: natural warm peach-beige complexion, subtle cheek rosiness, anatomical nose bridge shading, and precision-aligned lip vermilion (`Y = 770-780`, `X = 470-553`).
+            * `realistic_iris.png`: multi-frequency radial hazel/amber stroma fibers, golden collarette, dark limbal ring, and pupil.
+            * `realistic_eyewhite.png`: natural ivory sclera with upper eyelid ambient occlusion shadow.
+            * `realistic_hair.png`: dark chocolate multi-tonal brunette with longitudinal highlight variation.
+            * `realistic_tops.png` & `realistic_bottoms.png`: fine wool twill weave tailored dark chic wardrobe.
+       3. **Kinematic Helper Bone Synchronization (`src/robot/api/static/character/CharacterRig.js` & `AnimationSystem.js`)**:
+          - Registered all 10 VRM helper bones in `CharacterRig.ALIASES` (`leftAimShoulder`, `leftRollArm`, `leftSleeveAim`, `leftSleeveInside`, `leftSleeveOutside` and right counterparts).
+          - Updated `_syncSecondarySleeves()` to apply the upperArm delta rotation from rest pose to all 10 helper bones, completely eliminating the shoulder skin wing and sleeve boxiness bugs.
+       4. **Cinematic 3-Point Portrait Studio Lighting (`src/robot/api/static/character/CharacterEngine.js`)**:
+          - Implemented warm 3800K directional softbox key light (`0xfff2e6`, intensity 1.35) at 45°, cool 6000K dimensional fill light (`0xd0e2f5`, intensity 0.65), warm hair rim light (`0xffe4cc`, intensity 0.85), soft ground bounce (`0xebe2d8`, intensity 0.25), and a smoked glass obsidian pedestal with refined champagne accent rings.
+       5. **100% Motion & IK Preservation**:
+          - Preserved all 21 humanoid rig bones, 57 facial blendshapes (mouth visemes, blinks, emotions), OpenCV face gaze look-at IK, and all 13 semantic actions (`wave`, `raiseHand`, `point`, `nod`, `shakeHead`, `tiltHead`, `shrug`, `bow`, `clap`, `think`, `cheer`, `handsOnHips`, `heartGesture`).
+     - *Verification*:
+       - Headless Chrome DevTools Protocol verified 21 / 21 mapped rig bones, 10 / 10 active PBR materials, and 60 FPS rendering.
+       - Tested all 13 semantic actions, Look-At IK (`0.45, 1.35`), speech lipsync (`speaking: true`), and emotional states (`happy`, `love`, `neutral`) with zero errors.
+       - Captured high-resolution verification screenshots (`avatar_final_body.png`, `avatar_final_face.png`).
+       - `verify_imports.py`: 118 / 118 files clean (100%).
+       - `pytest tests/`: 330 / 330 unit tests passing (100%).
+
+105. **HuggingFace Hub LLM Search, Chunked Download & Dynamic Model Registration Integration**:
+     - *Symptoms*:
+       1. Dashboard model selector was limited to a static hardcoded catalog of local GGUF models.
+       2. Users could not search HuggingFace Hub directly from the dashboard to discover new GGUF models (e.g. Qwen2.5-Coder, Llama-3.2, DeepSeek-R1, SmolLM2).
+       3. Any model downloaded externally required manual CLI scripting, terminal restarts, and manual configuration edits to appear in the dashboard menus.
+     - *Root Causes*:
+       1. `ModelRegistry` catalog was static and had no dynamic registration or disk persistence (`models/llm/registry.json`).
+       2. No asynchronous background download manager existed in the backend to stream large GGUF binaries (>1GB) with resume support, live progress reporting, and cancellation.
+       3. Web dashboard had no UI components or tabs for searching HuggingFace Hub repositories or displaying download progress.
+     - *Fixes Applied*:
+       1. **Dynamic Model Registry & Local File Discovery (`src/robot/llm/model_registry.py`)**:
+          - Added `COMMUNITY_HUGGINGFACE` category and `to_dict()` / `from_dict()` methods to `ModelMetadata`.
+          - Added `register_model()`, `unregister_model()`, and `load_custom_models()` persisting to `models/llm/registry.json`.
+          - Implemented `scan_and_register_local_files()` automatically discovering, validating (GGUF magic header `0x46554747`), and registering any `.gguf` placed in `models/llm/`.
+          - Enhanced `ModelRegistry.get()` with normalized slug and filename fallbacks.
+       2. **HuggingFace Hub Service & Download Manager (`src/robot/llm/hf_downloader.py`)**:
+          - Implemented `HuggingFaceHubService.search_models()` querying HuggingFace Hub API with parameter count extraction, vision tags, and uncensored detection.
+          - Implemented `HuggingFaceHubService.get_model_files()` inspecting repository file trees (`/tree/main`), parsing quantization types (`Q4_K_M`, `Q5_K_M`, `Q8_0`, `IQ3_M`, `FP16`), and flagging recommended quantizations for the RTX 3050 (4GB VRAM).
+          - Implemented `HuggingFaceDownloadManager` singleton managing background streaming downloads with HTTP Range byte-level resume, rolling EWMA speed and ETA calculation, cancellability (`_cancel_event`), GGUF header validation, and automatic registration into `ModelRegistry`.
+       3. **REST API Endpoints (`src/robot/api/__init__.py`)**:
+          - Exposed `GET /api/llm/hf/search`: proxy queries to HuggingFace Hub.
+          - Exposed `GET /api/llm/hf/files`: retrieve available GGUF files and sizes for a repo.
+          - Exposed `POST /api/llm/hf/download`: enqueue background download task.
+          - Exposed `GET /api/llm/hf/downloads`: list active and historical download tasks.
+          - Exposed `POST /api/llm/hf/cancel`: cancel in-progress download task.
+       4. **Web Dashboard Dual-Tab Modal & Real-Time Progress Drawer (`index.html`, `index.css`, `app.js`)**:
+          - Upgraded `#localModelModal` into a cyberdeck dual-tab hub:
+            * **Tab 1: Installed & Registered Models**: Visual grid of all local GGUF models with active badge, VRAM estimate, context length, and instant switch button.
+            * **Tab 2: HuggingFace Hub**: Search input bar, preset chips (Qwen 2.5 Coder, Llama 3.2, DeepSeek R1, Vision VLM, Uncensored 3B, SmolLM2, Phi 3.5), model cards with author/likes/downloads, and interactive quantization selector dropdown.
+          - Added animated striped progress bar with live metrics (downloaded/total MB, MB/s speed, ETA countdown) and cancel button.
+          - Integrated auto-registration: upon download completion, the model is saved to `models/llm/`, registered in `ModelRegistry`, and immediately appears in the local model menu and pickers (`#btnTopNavLocalPicker`, `#btnChatLocalPicker`) with an instant `⚡ LOAD & ACTIVATE NOW` button.
+          - Added top nav (`#btnTopNavHfHub`) and chat bar (`#btnChatHfHub`) quick-launch triggers.
+     - *Verification*:
+       - Unit tests in `tests/test_hf_downloader.py`: 7 / 7 passing.
+       - Full test suite: 337 / 337 passing across all 41 test files (100%).
+       - Automated browser CDP testing verified UI tabs, search results, quantization dropdown, and live progress bar with screenshot artifacts (`hf_ui_installed_models_tab.png`, `hf_ui_search_results.png`, `hf_ui_downloading_progress.png`).
+       - `verify_imports.py`: 120 / 120 files clean (100%).
+
+77. **Avatar Wardrobe, Photorealistic Textures, PBR Normal Maps & Zero-Cache Browser Loading**:
+     - *Symptoms*: User reported seeing no change in the avatar ("Not even in her clothes?") despite previous material upgrade work.
+     - *Root Causes*:
+       1. **Aggressive Browser Caching**: `avatar.glb` was loaded via `/static/models/avatar.glb` without any cache-busting query parameter. In `index.html`, character scripts remained pinned to `?v=4.0`, and FastAPI's default `StaticFiles` emitted standard caching headers without forcing revalidation, causing Chrome to reuse disk-cached assets.
+       2. **Flawed Texture Synthesis & Corrupted Assets**: The earlier clothing synthesis produced near-black noise textures (mean RGB 31, 33, 37 for tops, RGB 23, 25, 29 for bottoms) which rendered as flat, featureless black voids with zero visible seams, buttons, or lapels. The shoes texture had also collapsed into a 1x512 degenerate slice.
+       3. **Persona Emissive Stage Bleed**: In [`src/robot/api/static/character/CharacterEngine.js`](file:///home/ameya/robot/src/robot/api/static/character/CharacterEngine.js), `setPersonaTheme("luna")` traversed all scene meshes with `material.emissive`, turning the entire stage disc and avatar materials hot pink (0xff3399).
+     - *Fixes Applied*:
+       1. **High-Contrast Designer Wardrobe & Lifelike Features**:
+          - *Tops (`1024x2048`)*: Handcrafted tailored Midnight Navy / Royal Sapphire Designer Blazer featuring a crisp Ivory Silk inner camisole in the V-neck, satin notch lapels with gold edge piping, 3D embossed metallic gold buttons, a chest welt pocket with folded ivory pocket square, waist flap pockets, and fine wool twill micro-weave.
+          - *Tops Normal Map (`realistic_tops_nml.png`)*: High-resolution Sobel-derived surface normal map bringing out lapel edges, button relief, and seam stitching under directional lighting.
+          - *Bottoms (`1024x1024`)*: Tailored Dark Slate Trousers with visible pocket welts and gold accent buttons in the visible torso region, side-seam gold topstitching, front leg crease lines, folded tailored cuffs, a Cognac leather belt, and a polished metallic gold buckle.
+          - *Shoes (`512x512`)*: Burnished Cognac Leather Designer Ankle Boots with contrast stitching, dark stacked leather welt sole, and polished gold eyelets.
+          - *Face, Eyes & Hair*: Warm peachy-golden human skin tone, natural rosy petal-pink lip gradient with vertical micro-creases and center hydration gloss, delicate nose bridge contouring, soft cheek blush, rich hazel-amber irises with radial stromal fibers and dark limbal rings, natural ivory vascularized sclera, and dimensional brunette hair with caramel highlights.
+       2. **GLTF Binary Re-packing (`pack_realistic_glb.py`)**: Replaced BufferViews 879–897 in `src/robot/api/static/models/avatar.glb` with the new high-resolution textures, maintaining strict 4-byte buffer alignment and validating all 19 image slots and 3 skinned meshes.
+       3. **Material Upgrades in `CharacterLoader.js`**: Enhanced `_upgradeMaterialsToRealisticPBR()` to differentiate tops, bottoms, shoes, skin, eyes, hair, and lashes. Bound `realistic_tops_nml.png` and `realistic_bottoms_nml.png` normal maps, set leather specular sheen on boots, and eliminated floating cartoon highlight stickers.
+       4. **Lighting & Stage Pedestal Isolation in `CharacterEngine.js`**: Isolated persona emissive color updates strictly to named `pedestalAccentRing` meshes, preventing avatar materials and the smoked glass stage disc from being tinted.
+       5. **Zero-Cache Static Architecture**: Added `NoCacheStaticFiles` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) enforcing `Cache-Control: no-cache, no-store, must-revalidate` on all `/static/` routes. Updated all `<link>` and `<script>` tags in `index.html` to `?v=6.0-pbr`, and updated `modelUrl` to `/static/models/avatar.glb?v=6.0-pbr` in `app.js` and `CharacterEngine.js`.
+       6. **Automated Window Reload**: Dispatched synthetic F5 reload events to the active Chrome window via Xlib, immediately presenting the updated avatar on the user's screen.
+     - *Verification*:
+       - Unit tests in `tests/`: 337 / 337 passing across 41 test files (100%).
+       - Code integrity: `verify_imports.py` verified 120 / 120 files with zero import or syntax errors.
+       - Visual confirmation: Headless Chrome CDP screenshots (`avatar_realistic_full.png`, `avatar_realistic_body.png`, `avatar_realistic_face.png`) confirmed the high-contrast designer wardrobe, crisp gold hardware, cognac boots, obsidian pedestal, and realistic facial aesthetics.
+
+78. **Unified Image Provider Diffusion `torch_dtype` Precision Definition Fix**:
+     - *Symptoms*: User requested image generation (`dreamshaper-v8` / SD 1.5), and the background synthesis failed with `diffusion_inference_failed_falling_back_to_procedural error="name 'torch_dtype' is not defined"`, triggering fallback to procedural canvas.
+     - *Root Cause*: In [`src/robot/image/unified_provider.py`](file:///home/ameya/robot/src/robot/image/unified_provider.py#L211), `torch_dtype` was referenced in `job.device` and passed to `self._build_pipeline(meta, device_str, torch_dtype)` without having been assigned in the local function scope after `device_str = "cuda" if use_cuda else "cpu"`.
+     - *Fix Applied*: Defined `torch_dtype = torch.float16 if device_str == "cuda" else torch.float32` immediately following device determination. This guarantees that RTX 3050 CUDA operations instantiate Diffusers pipelines in FP16 precision, strictly honoring the 4GB VRAM budget.
+     - *Verification*:
+       - `tests/test_image.py` & `tests/test_image_gpu_handoff_and_models.py`: 16 / 16 passing.
+       - Full test suite: 337 / 337 passing across all 41 test files (100%).
+       - Code integrity: `verify_imports.py` verified 120 / 120 files clean (100%).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

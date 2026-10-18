@@ -178,17 +178,42 @@ class AnimationSystem {
     }
 
     /**
-     * Synchronize secondary clothing and sleeve aim bones with the upper arms.
+     * Synchronize all secondary clothing, sleeve aim bones, and upper arm roll/aim helper bones.
+     * Architectural Rationale:
+     * - In VRM 1.0, J_Roll_L_UpperArm and J_Aim_L_Shoulder deform the shoulder and upper arm flesh.
+     * - J_Aim_L_TopsUpperArm, J_Sec_L_TopsUpperArmInside, and J_Sec_L_TopsUpperArmOutside deform the sleeve cloth.
+     * - Multiplying their rest poses by the delta rotation of upperArm eliminates sleeve boxiness and skin wing artifacts.
      */
     _syncSecondarySleeves() {
         const rig = this.rig;
         if (!rig) return;
         const leftArm = rig.getBone("leftUpperArm");
         const rightArm = rig.getBone("rightUpperArm");
-        const leftSleeve = rig.getBone("leftSleeveAim");
-        const rightSleeve = rig.getBone("rightSleeveAim");
-        if (leftSleeve && leftArm) leftSleeve.quaternion.copy(leftArm.quaternion);
-        if (rightSleeve && rightArm) rightSleeve.quaternion.copy(rightArm.quaternion);
+
+        const leftHelperKeys = ["leftAimShoulder", "leftRollArm", "leftSleeveAim", "leftSleeveInside", "leftSleeveOutside"];
+        const rightHelperKeys = ["rightAimShoulder", "rightRollArm", "rightSleeveAim", "rightSleeveInside", "rightSleeveOutside"];
+
+        if (leftArm && rig.initialRotations["leftUpperArm"]) {
+            const deltaL = rig.initialRotations["leftUpperArm"].clone().invert().multiply(leftArm.quaternion);
+            for (const key of leftHelperKeys) {
+                const bone = rig.getBone(key);
+                const initQ = rig.initialRotations[key];
+                if (bone && initQ) {
+                    bone.quaternion.copy(initQ).multiply(deltaL);
+                }
+            }
+        }
+
+        if (rightArm && rig.initialRotations["rightUpperArm"]) {
+            const deltaR = rig.initialRotations["rightUpperArm"].clone().invert().multiply(rightArm.quaternion);
+            for (const key of rightHelperKeys) {
+                const bone = rig.getBone(key);
+                const initQ = rig.initialRotations[key];
+                if (bone && initQ) {
+                    bone.quaternion.copy(initQ).multiply(deltaR);
+                }
+            }
+        }
     }
 
     _updateLocomotion(delta) {

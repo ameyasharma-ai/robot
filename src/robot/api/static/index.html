@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;600;700;800&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=5.2">
+    <link rel="stylesheet" href="/static/index.css?v=6.0-pbr">
 </head>
 <body class="mode-dual">
     <!-- Matrix Digital Rain Ambient Canvas -->
@@ -63,6 +63,9 @@
                         <span class="model-picker-icon">⚡</span>
                         <span class="model-picker-label" id="topNavLocalPickerLabel">Qwen 3.5 4B</span>
                         <span class="model-picker-caret">▾</span>
+                    </button>
+                    <button class="top-nav-sub-btn" id="btnTopNavHfHub" type="button" title="Search & Download LLMs from HuggingFace Hub">
+                        🤗
                     </button>
                 </div>
                 <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
@@ -820,6 +823,10 @@
                                 <span id="chatLocalPickerLabel">Qwen 3.5 4B</span>
                                 <span class="chat-select-arrow">▾</span>
                             </button>
+                            <button class="chat-stat-pill chat-local-model-btn chat-hf-btn" id="btnChatHfHub" type="button" title="Search & Download HuggingFace LLMs">
+                                <span class="model-icon">🤗</span>
+                                <span>HF HUB</span>
+                            </button>
                         </div>
                         <!-- OpenAI-Compatible Model Selector in Chat Mode -->
                         <div class="chat-openai-controls" id="chatOpenaiControls" style="display: none;">
@@ -1263,27 +1270,108 @@
         </div>
     </div>
 
-    <!-- Local LLM Model Selector Modal -->
+    <!-- Local LLM Model Selector Modal with HuggingFace Hub Search & Downloader -->
     <div class="cyber-modal-backdrop" id="localModelModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide">
+        <div class="cyber-modal cyber-modal-wide local-model-cyber-modal">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
                 <div class="modal-title">
                     <span class="modal-icon">⚡</span>
-                    <span>LOCAL LLM MODEL SELECTOR (RTX 3050 CUDA)</span>
+                    <span>LOCAL LLM MANAGER & HUGGINGFACE HUB (RTX 3050 CUDA)</span>
                 </div>
                 <button class="modal-close-btn" id="btnCloseLocalModelModal" title="Close (Esc)">✕</button>
             </div>
             <div class="modal-device-strip">
                 <span class="device-pill">GPU: NVIDIA GeForce RTX 3050 (4GB VRAM, CUDA sm_86)</span>
                 <span class="engine-pill">Engine: llama-server (FlashAttention, 16K Context)</span>
+                <span class="hf-status-pill" id="hfActiveDownloadsBadge" style="display: none;">
+                    <span class="pulse-dot">●</span> <span id="hfActiveDownloadsCount">0</span> DOWNLOADING
+                </span>
             </div>
-            <div class="modal-body" style="max-height: 60vh; overflow-y: auto; padding: 16px;">
+
+            <!-- Modal Tab Navigation -->
+            <div class="local-modal-tab-bar">
+                <button class="local-modal-tab-btn active" id="tabBtnLocalInstalled" type="button">
+                    <span class="tab-icon">⚡</span>
+                    <span>INSTALLED & REGISTERED MODELS</span>
+                    <span class="tab-badge" id="localInstalledCountBadge">0</span>
+                </button>
+                <button class="local-modal-tab-btn" id="tabBtnLocalHfHub" type="button">
+                    <span class="tab-icon">🤗</span>
+                    <span>HUGGINGFACE HUB SEARCH & DOWNLOAD</span>
+                    <span class="tab-neon-badge">HUB</span>
+                </button>
+            </div>
+
+            <!-- Tab 1: Installed & Registered Local Models -->
+            <div class="modal-body local-tab-content" id="tabContentLocalInstalled" style="max-height: 60vh; overflow-y: auto; padding: 16px;">
+                <div class="installed-banner">
+                    <div class="banner-text">
+                        <span class="banner-icon">⚡</span>
+                        <span>Models below are saved in <code>models/llm/</code>, registered for 0-latency edge serving, and ready for hot-swapping on RTX 3050.</span>
+                    </div>
+                    <button class="cyber-btn btn-secondary hf-switch-tab-btn" id="btnGoToHfHub" type="button">
+                        🤗 Search HuggingFace Hub →
+                    </button>
+                </div>
                 <div class="model-cards-grid" id="localModelCardsGrid">
                     <!-- Populated dynamically via /api/llm/models -->
                 </div>
             </div>
+
+            <!-- Tab 2: HuggingFace Hub Search & Downloader -->
+            <div class="modal-body local-tab-content" id="tabContentLocalHfHub" style="display: none; max-height: 60vh; overflow-y: auto; padding: 16px;">
+                <!-- HuggingFace Search Bar -->
+                <div class="hf-search-bar-wrap">
+                    <div class="hf-search-input-group">
+                        <span class="hf-search-icon">🔍</span>
+                        <input
+                            type="text"
+                            id="hfSearchInput"
+                            class="hf-search-input"
+                            placeholder="Search HuggingFace Hub for GGUFs (e.g. Qwen2.5-Coder, Llama-3.2, DeepSeek-R1, Mistral, SmolLM2)..."
+                            autocomplete="off"
+                        />
+                        <button class="hf-search-clear-btn" id="btnHfSearchClear" type="button" title="Clear search" style="display: none;">✕</button>
+                    </div>
+                    <button class="cyber-btn btn-primary hf-search-submit-btn" id="btnHfSearchSubmit" type="button">
+                        SEARCH HUB
+                    </button>
+                </div>
+
+                <!-- Quick Presets -->
+                <div class="hf-preset-chips-wrap">
+                    <span class="hf-preset-label">POPULAR:</span>
+                    <button class="hf-preset-chip" type="button" data-query="qwen2.5-coder">⚡ Qwen 2.5 Coder</button>
+                    <button class="hf-preset-chip" type="button" data-query="llama-3.2">🦙 Llama 3.2</button>
+                    <button class="hf-preset-chip" type="button" data-query="deepseek-r1">🧠 DeepSeek R1</button>
+                    <button class="hf-preset-chip" type="button" data-query="qwen2-vl">👁️ Qwen2-VL Vision</button>
+                    <button class="hf-preset-chip" type="button" data-query="uncensored">🔓 Uncensored 3B</button>
+                    <button class="hf-preset-chip" type="button" data-query="smollm2">⚡ SmolLM2</button>
+                    <button class="hf-preset-chip" type="button" data-query="phi-3.5">🔬 Phi 3.5 Mini</button>
+                </div>
+
+                <!-- Active / Recent Downloads Drawer -->
+                <div class="hf-downloads-panel" id="hfDownloadsPanel" style="display: none;">
+                    <div class="hf-downloads-header">
+                        <span class="downloads-header-title">⚡ ACTIVE / RECENT DOWNLOADS</span>
+                        <span class="downloads-header-sub" id="hfDownloadsStatusSub">Syncing to models/llm/</span>
+                    </div>
+                    <div class="hf-downloads-list" id="hfDownloadsList">
+                        <!-- Populated dynamically via /api/llm/hf/downloads -->
+                    </div>
+                </div>
+
+                <!-- Search Results Status & Results Grid -->
+                <div class="hf-results-status" id="hfResultsStatus">
+                    Enter a model name or click a preset above to search GGUF models on HuggingFace Hub.
+                </div>
+                <div class="hf-models-grid" id="hfSearchResultsGrid">
+                    <!-- Populated dynamically via /api/llm/hf/search -->
+                </div>
+            </div>
+
             <div class="modal-footer">
                 <span class="footer-hint" id="localModelModalHint">Hot-swapping pre-warms slot cache and updates active model.</span>
                 <button class="cyber-btn btn-secondary" id="btnCancelLocalModelModal" type="button">Close</button>
@@ -1382,13 +1470,13 @@
     </div>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
-    <script src="/static/three.min.js?v=4.0"></script>
-    <script src="/static/GLTFLoader.js?v=4.0"></script>
-    <script src="/static/character/CharacterRig.js?v=4.0"></script>
-    <script src="/static/character/CharacterLoader.js?v=4.0"></script>
-    <script src="/static/character/AnimationSystem.js?v=4.0"></script>
-    <script src="/static/character/GazeSystem.js?v=4.0"></script>
-    <script src="/static/character/CharacterEngine.js?v=4.0"></script>
-    <script src="/static/app.js?v=5.2"></script>
+    <script src="/static/three.min.js?v=6.0-pbr"></script>
+    <script src="/static/GLTFLoader.js?v=6.0-pbr"></script>
+    <script src="/static/character/CharacterRig.js?v=6.0-pbr"></script>
+    <script src="/static/character/CharacterLoader.js?v=6.0-pbr"></script>
+    <script src="/static/character/AnimationSystem.js?v=6.0-pbr"></script>
+    <script src="/static/character/GazeSystem.js?v=6.0-pbr"></script>
+    <script src="/static/character/CharacterEngine.js?v=6.0-pbr"></script>
+    <script src="/static/app.js?v=6.0-pbr"></script>
 </body>
 </html>

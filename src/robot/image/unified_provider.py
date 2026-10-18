@@ -197,6 +197,7 @@ class UnifiedImageProvider(ImageProvider):
         # Allocate to CUDA if available and free VRAM exceeds model threshold
         use_cuda = cuda_ok and (meta.is_heavy or free_mb >= meta.vram_mb_required)
         device_str = "cuda" if use_cuda else "cpu"
+        torch_dtype = torch.float16 if device_str == "cuda" else torch.float32
         # ─── High-Efficiency GGUF Path via stable-diffusion.cpp ───────────────
         sd_cli = Path("/home/ameya/stable-diffusion.cpp/build/bin/sd-cli")
         flux_dir = Path("models/image/flux")

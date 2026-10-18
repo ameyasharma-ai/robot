@@ -22,7 +22,7 @@ class CharacterEngine {
         this.facialSystem = null;
 
         // Options
-        this.modelUrl = options.modelUrl || "/static/models/avatar.glb";
+        this.modelUrl = options.modelUrl || "/static/models/avatar.glb?v=6.0-pbr";
         this.variant = options.variant || "animated"; // "animated" | "realistic"
 
         // Diagnostics
@@ -152,75 +152,88 @@ class CharacterEngine {
             ring.position.set(0, 0.002, 0);
             this.scene.add(ring);
         } else {
-            // ─── Animated Cyber Lighting (original) ───────────────────────────
-            // Soft ambient rim illumination
-            const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+            // ─── Cinematic Realistic Portrait Studio Lighting ───────────────────
+            // Warm Ambient Base (simulates soft studio bounce)
+            const ambient = new THREE.AmbientLight(0xfff5eb, 0.65);
             this.scene.add(ambient);
 
-            // Key light (Cyan tinted futuristic rim)
-            const keyLight = new THREE.DirectionalLight(0x00f2fe, 1.1);
-            keyLight.position.set(2, 4, 3);
+            // Key Light: Warm 3800K directional softbox at 45° upper-right
+            // Renders rich natural skin tones and creates crisp, life-like eye catchlights
+            const keyLight = new THREE.DirectionalLight(0xfff2e6, 1.35);
+            keyLight.position.set(2.2, 3.8, 3.0);
             keyLight.castShadow = true;
             keyLight.shadow.mapSize.width = 1024;
             keyLight.shadow.mapSize.height = 1024;
-            keyLight.shadow.bias = -0.001;
+            keyLight.shadow.bias = -0.0008;
             this.scene.add(keyLight);
 
-            // Fill light (Deep blue/violet)
-            const fillLight = new THREE.DirectionalLight(0x9d4edd, 0.7);
-            fillLight.position.set(-2, 2, 2);
+            // Fill Light: Soft cool daylight (6000K) from left
+            // Adds dimensionality and fills shadows with natural cool tones
+            const fillLight = new THREE.DirectionalLight(0xd0e2f5, 0.65);
+            fillLight.position.set(-2.2, 2.5, 2.2);
             this.scene.add(fillLight);
 
-            // Sleek cybernetic multi-tier holographic pedestal
+            // Rim / Hair Light: Warm backlight separating hair and shoulders from dark backdrop
+            const rimLight = new THREE.DirectionalLight(0xffe4cc, 0.85);
+            rimLight.position.set(0.0, 3.5, -2.5);
+            this.scene.add(rimLight);
+
+            // Ground Bounce: Soft warm floor bounce softening chin/neck shadows
+            const groundBounce = new THREE.PointLight(0xebe2d8, 0.25, 5);
+            groundBounce.position.set(0, -0.4, 1.2);
+            this.scene.add(groundBounce);
+
+            // ─── Sleek Minimalist Obsidian & Smoked Glass Pedestal ─────────────
+            // Core Platform
             const pedestalBaseGeo = new THREE.CylinderGeometry(0.62, 0.65, 0.035, 48);
             const pedestalBaseMat = new THREE.MeshStandardMaterial({
-                color: 0x050811,
-                roughness: 0.35,
+                color: 0x0c0e14,
+                roughness: 0.25,
                 metalness: 0.85,
-                emissive: 0x00f2fe,
-                emissiveIntensity: 0.08,
             });
             const pedestalBase = new THREE.Mesh(pedestalBaseGeo, pedestalBaseMat);
             pedestalBase.position.set(0, -0.018, 0);
             pedestalBase.receiveShadow = true;
             this.scene.add(pedestalBase);
 
-            // Core platform stage
+            // Smoked Glass Stage Disc
             const coreGeo = new THREE.CylinderGeometry(0.55, 0.58, 0.025, 48);
-            const coreMat = new THREE.MeshStandardMaterial({
-                color: 0x091224,
-                roughness: 0.2,
-                metalness: 0.9,
-                emissive: 0x0080ff,
-                emissiveIntensity: 0.15,
+            const coreMat = new THREE.MeshPhysicalMaterial({
+                color: 0x141824,
+                roughness: 0.15,
+                metalness: 0.7,
+                clearcoat: 0.8,
+                clearcoatRoughness: 0.1,
             });
             const coreMesh = new THREE.Mesh(coreGeo, coreMat);
             coreMesh.position.set(0, 0.005, 0);
             coreMesh.receiveShadow = true;
             this.scene.add(coreMesh);
 
-            // Outer glowing cyber ring
-            const outerRingGeo = new THREE.TorusGeometry(0.63, 0.009, 16, 64);
+            // Elegant Thin Luminous Accent Ring (Warm Rose Gold / Champagne)
+            const outerRingGeo = new THREE.TorusGeometry(0.63, 0.005, 16, 64);
             const outerRingMat = new THREE.MeshStandardMaterial({
-                color: 0x00f2fe,
-                emissive: 0x00f2fe,
-                emissiveIntensity: 0.85,
+                color: 0xf5d0b0,
+                emissive: 0xf5d0b0,
+                emissiveIntensity: 0.45,
                 roughness: 0.1,
             });
             const outerRing = new THREE.Mesh(outerRingGeo, outerRingMat);
+            outerRing.name = "pedestalAccentRing";
             outerRing.rotation.x = Math.PI / 2;
             outerRing.position.set(0, 0.002, 0);
             this.scene.add(outerRing);
 
-            // Inner glowing focus ring
-            const innerRingGeo = new THREE.TorusGeometry(0.53, 0.006, 16, 64);
+            // Inner Accent Ring
+            const innerRingGeo = new THREE.TorusGeometry(0.53, 0.003, 16, 64);
             const innerRingMat = new THREE.MeshStandardMaterial({
-                color: 0x00f5a0,
-                emissive: 0x00f5a0,
-                emissiveIntensity: 0.9,
+                color: 0xe8b59b,
+                emissive: 0xe8b59b,
+                emissiveIntensity: 0.35,
                 roughness: 0.1,
             });
             const innerRing = new THREE.Mesh(innerRingGeo, innerRingMat);
+            innerRing.name = "pedestalAccentRing";
             innerRing.rotation.x = Math.PI / 2;
             innerRing.position.set(0, 0.018, 0);
             this.scene.add(innerRing);
@@ -340,18 +353,23 @@ class CharacterEngine {
         };
         const t = themes[persona] || themes.neo;
 
-        if (!this.scene) return;
-
         this.scene.traverse((child) => {
             if (child.isDirectionalLight) {
-                if (child.position.x > 0) {
-                    child.color.setHex(t.keyLight);
+                // Keep key light warm natural portrait light (x > 0, z > 0)
+                if (child.position.x > 0 && child.position.z > 0) {
+                    child.color.setHex(0xfff2e6);
+                } else if (child.position.z < 0) {
+                    // Rim light behind character carries the persona theme edge halo
+                    child.color.setHex(t.ring);
                 } else {
-                    child.color.setHex(t.fillLight);
+                    // Soft fill light
+                    child.color.setHex(0xd0e2f5);
                 }
             }
-            if (child.isMesh && child.material && child.material.emissive) {
-                child.material.emissive.setHex(t.ring);
+            if (child.isMesh && (child.name === "pedestalAccentRing" || child.name === "characterEyesVisor")) {
+                if (child.material && child.material.emissive) {
+                    child.material.emissive.setHex(t.ring);
+                }
             }
         });
     }

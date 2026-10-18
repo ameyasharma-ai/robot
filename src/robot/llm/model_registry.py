@@ -6,7 +6,9 @@ GGUF binary validation, and local path resolution for multi-model serving.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -20,6 +22,7 @@ class ModelCategory(str, Enum):
     VLM_UNCENSORED = "vlm_uncensored"
     UNCENSORED_UNDER_4B = "uncensored_under_4b"
     STANDARD_TEXT = "standard_text"
+    COMMUNITY_HUGGINGFACE = "community_huggingface"
 
 
 @dataclass
@@ -84,6 +87,58 @@ class ModelMetadata:
                 return False
 
         return True
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert metadata to JSON-serializable dictionary.
+
+        Returns:
+            dict[str, Any]: Model metadata serialized dictionary.
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "category": self.category.value if isinstance(self.category, ModelCategory) else str(self.category),
+            "parameters": self.parameters,
+            "repo_id": self.repo_id,
+            "filename": self.filename,
+            "mmproj_filename": self.mmproj_filename,
+            "is_vision": self.is_vision,
+            "is_uncensored": self.is_uncensored,
+            "supports_tools": self.supports_tools,
+            "recommended_context": self.recommended_context,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ModelMetadata:
+        """Construct ModelMetadata from dictionary representation.
+
+        Args:
+            data: Serialized model metadata.
+
+        Returns:
+            ModelMetadata: Hydrated dataclass instance.
+        """
+        cat_raw = data.get("category", "community_huggingface")
+        try:
+            category = ModelCategory(cat_raw)
+        except ValueError:
+            category = ModelCategory.COMMUNITY_HUGGINGFACE
+
+        return cls(
+            id=str(data["id"]),
+            name=str(data["name"]),
+            category=category,
+            parameters=str(data.get("parameters", "Unknown")),
+            repo_id=str(data.get("repo_id", "")),
+            filename=str(data["filename"]),
+            mmproj_filename=data.get("mmproj_filename"),
+            is_vision=bool(data.get("is_vision", False)),
+            is_uncensored=bool(data.get("is_uncensored", False)),
+            supports_tools=bool(data.get("supports_tools", True)),
+            recommended_context=int(data.get("recommended_context", 16384)),
+            description=str(data.get("description", "")),
+        )
 
 
 class ModelRegistry:
@@ -265,17 +320,206 @@ class ModelRegistry:
         ),
     }
 
+    _initialized: bool = False
+    _custom_models: dict[str, ModelMetadata] = {}
+
     @classmethod
-    def get(cls, model_id: str) -> ModelMetadata | None:
-        """Retrieve model metadata by identifier.
+    def ensure_initialized(cls, base_dir: Path | None = None) -> None:
+        """Ensure custom models from disk and local files are loaded into CATALOG.
 
         Args:
-            model_id: Unique model identifier key.
+            base_dir: Optional base project root directory.
+        """
+        if cls._initialized:
+            return
+        cls.load_custom_models(base_dir)
+        cls.scan_and_register_local_files(base_dir)
+        cls._initialized = True
+
+    @classmethod
+    def register_model(
+        cls,
+        metadata: ModelMetadata,
+        persist: bool = True,
+        base_dir: Path | None = None,
+    ) -> None:
+        """Register a new model dynamically into CATALOG and optionally persist to disk.
+
+        Args:
+            metadata: ModelMetadata instance to register.
+            persist: Whether to save to models/llm/registry.json.
+            base_dir: Optional base project root directory.
+        """
+        cls.CATALOG[metadata.id] = metadata
+        cls._custom_models[metadata.id] = metadata
+
+        if persist:
+            cls._save_custom_registry(base_dir)
+
+    @classmethod
+    def unregister_model(
+        cls,
+        model_id: str,
+        persist: bool = True,
+        base_dir: Path | None = None,
+    ) -> bool:
+        """Remove a model from the custom catalog.
+
+        Args:
+            model_id: Identifier of model to unregister.
+            persist: Whether to persist removal to disk.
+            base_dir: Optional base project root directory.
+
+        Returns:
+            bool: True if model was removed, False otherwise.
+        """
+        key = model_id.lower().strip()
+        removed = False
+        if key in cls._custom_models:
+            del cls._custom_models[key]
+            removed = True
+        if key in cls.CATALOG:
+            del cls.CATALOG[key]
+            removed = True
+
+        if removed and persist:
+            cls._save_custom_registry(base_dir)
+        return removed
+
+    @classmethod
+    def load_custom_models(cls, base_dir: Path | None = None) -> list[ModelMetadata]:
+        """Load persisted custom models from models/llm/registry.json into CATALOG.
+
+        Args:
+            base_dir: Optional base project root directory.
+
+        Returns:
+            list[ModelMetadata]: Loaded custom models.
+        """
+        root = base_dir or Path.cwd()
+        reg_file = root / "models" / "llm" / "registry.json"
+        if not reg_file.exists():
+            return []
+
+        loaded: list[ModelMetadata] = []
+        try:
+            with open(reg_file, "r", encoding="utf-8") as f:
+                raw_data = json.load(f)
+                items = raw_data if isinstance(raw_data, list) else raw_data.get("models", [])
+                for item in items:
+                    try:
+                        meta = ModelMetadata.from_dict(item)
+                        cls.CATALOG[meta.id] = meta
+                        cls._custom_models[meta.id] = meta
+                        loaded.append(meta)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return loaded
+
+    @classmethod
+    def _save_custom_registry(cls, base_dir: Path | None = None) -> None:
+        """Save registered custom models to models/llm/registry.json.
+
+        Args:
+            base_dir: Optional base project root directory.
+        """
+        root = base_dir or Path.cwd()
+        reg_dir = root / "models" / "llm"
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        reg_file = reg_dir / "registry.json"
+
+        data = [m.to_dict() for m in cls._custom_models.values()]
+        tmp_file = reg_file.with_suffix(".tmp")
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            tmp_file.replace(reg_file)
+        except Exception:
+            if tmp_file.exists():
+                tmp_file.unlink(missing_ok=True)
+
+    @classmethod
+    def scan_and_register_local_files(cls, base_dir: Path | None = None) -> list[ModelMetadata]:
+        """Scan models/llm/ directory for existing GGUF files and register any unregistered models.
+
+        Args:
+            base_dir: Optional base project root directory.
+
+        Returns:
+            list[ModelMetadata]: Newly discovered and registered models.
+        """
+        root = base_dir or Path.cwd()
+        llm_dir = root / "models" / "llm"
+        if not llm_dir.exists():
+            return []
+
+        # Map existing filenames in CATALOG
+        existing_filenames = {m.filename for m in cls.CATALOG.values()}
+        new_models: list[ModelMetadata] = []
+
+        for p in llm_dir.glob("*.gguf"):
+            if p.name in existing_filenames or p.stat().st_size < 1_000_000:
+                continue
+
+            if not cls.verify_gguf_header(p):
+                continue
+
+            stem = p.stem
+            model_id = re.sub(r"[^a-zA-Z0-9]+", "_", stem).lower().strip("_")
+
+            # Extract parameter hint (e.g. 1.5B, 3B, 7B, 0.5B, etc.)
+            param_match = re.search(r"(\d+(?:\.\d+)?[bB])", stem)
+            params = param_match.group(1).upper() if param_match else "Custom"
+
+            is_vision = any(x in stem.lower() for x in ["vl", "vision", "moondream", "smolvlm"])
+            is_uncensored = any(x in stem.lower() for x in ["uncensored", "abliterated", "sft"])
+
+            # Formulate readable name
+            clean_name = stem.replace("-", " ").replace("_", " ").title()
+
+            meta = ModelMetadata(
+                id=model_id,
+                name=clean_name,
+                category=ModelCategory.COMMUNITY_HUGGINGFACE,
+                parameters=params,
+                repo_id="local/discovered",
+                filename=p.name,
+                mmproj_filename=None,
+                is_vision=is_vision,
+                is_uncensored=is_uncensored,
+                supports_tools=True,
+                recommended_context=16384,
+                description=f"Auto-discovered local GGUF model ({params}) for RTX 3050 CUDA.",
+            )
+            cls.register_model(meta, persist=True, base_dir=base_dir)
+            existing_filenames.add(p.name)
+            new_models.append(meta)
+
+        return new_models
+
+    @classmethod
+    def get(cls, model_id: str) -> ModelMetadata | None:
+        """Retrieve model metadata by identifier, normalized key, or filename.
+
+        Args:
+            model_id: Unique model identifier or filename.
 
         Returns:
             ModelMetadata | None: Matched model metadata or None if unknown.
         """
-        return cls.CATALOG.get(model_id.lower().strip())
+        cls.ensure_initialized()
+        key = model_id.lower().strip()
+        if key in cls.CATALOG:
+            return cls.CATALOG[key]
+        normalized = re.sub(r"[^a-zA-Z0-9]+", "_", key).strip("_")
+        if normalized in cls.CATALOG:
+            return cls.CATALOG[normalized]
+        for m in cls.CATALOG.values():
+            if m.filename.lower() in (key, f"{key}.gguf"):
+                return m
+        return None
 
     @classmethod
     def list_models(cls, category: ModelCategory | None = None) -> list[ModelMetadata]:
@@ -287,6 +531,7 @@ class ModelRegistry:
         Returns:
             list[ModelMetadata]: Registered model specifications.
         """
+        cls.ensure_initialized()
         if category is None:
             return list(cls.CATALOG.values())
         return [m for m in cls.CATALOG.values() if m.category == category]
@@ -298,6 +543,7 @@ class ModelRegistry:
         Returns:
             list[ModelMetadata]: Models supporting vision capabilities around 2B size.
         """
+        cls.ensure_initialized()
         return [m for m in cls.CATALOG.values() if m.is_vision]
 
     @classmethod
@@ -307,6 +553,7 @@ class ModelRegistry:
         Returns:
             list[ModelMetadata]: Models marked as uncensored.
         """
+        cls.ensure_initialized()
         return [m for m in cls.CATALOG.values() if m.is_uncensored]
 
     @classmethod
@@ -316,6 +563,7 @@ class ModelRegistry:
         Returns:
             ModelMetadata: Default model specification (Qwen2-VL 2B Instruct).
         """
+        cls.ensure_initialized()
         return cls.CATALOG[cls.DEFAULT_VLM_MODEL_ID]
 
     @classmethod
@@ -355,6 +603,7 @@ class ModelRegistry:
         Raises:
             KeyError: If the model_id is not found in the registry.
         """
+        cls.ensure_initialized(base_dir)
         meta = cls.get(model_id)
         if meta is None:
             raise KeyError(f"Unknown model identifier: '{model_id}'")
