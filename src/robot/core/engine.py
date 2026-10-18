@@ -480,13 +480,18 @@ class RobotEngine:
         self.memory = MemoryManager(mem_cfg, history_path)
         await self.memory.initialize()
 
-        # Personalities
+        # Personalities & Isolated Memory Databases
         self.personalities.load_all()
         default_personality = self.personalities.get_persisted_active(
             self.config.get("personality", {}).get("default", "neo")
         )
         self.personalities.set_active(default_personality)
         self.state.state.active_personality = default_personality
+        # Ensure active personality has its isolated database provisioned and connected
+        isolated_db = self.personalities.ensure_isolated_database(default_personality)
+        if hasattr(self, "memory") and self.memory:
+            await self.memory.switch_persona_database(isolated_db)
+
         pers = self.personalities.active
         if pers and getattr(pers, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
             self.tts.set_active_voice(pers.voice_model)
@@ -1386,6 +1391,126 @@ class RobotEngine:
 
             if self.state.state.mode != RobotMode.STANDBY:
                 await self.state.set_mode(RobotMode.IDLE)
+
+    async def switch_personality(self, personality: str) -> dict[str, Any]:
+        """Switch active personality, hot-swap memory to its isolated database, and apply default models.
+
+        Architectural Rationale:
+        - Absolute memory isolation: each persona owns a completely isolated SQLite database
+          at data/memory/personas/{persona_id}/conversations.db.
+        - Per-persona model presets: hot-swaps active LLM (local GGUF or Gemini), TTS engine & voice,
+          Whisper STT model, and default Image generation pipeline based on the persona's YAML configuration.
+        - Emits 'personality_switched' and 'personality_warming' events to keep frontend UI and
+          background warmers synchronized.
+
+        Args:
+            personality: Name or alias of the personality to switch to (e.g. 'neo', 'luna', 'aria').
+
+        Returns:
+            dict[str, Any]: Status dictionary detailing active persona, isolated db path, and applied models.
+
+        Raises:
+            ValueError: If personality is not found in the personality manager.
+        """
+        if not self.personalities.get(personality):
+            self.personalities.load_all()
+        if not self.personalities.get(personality):
+            raise ValueError(f"Personality '{personality}' not found. Available: {self.personalities.list_personalities()}")
+
+        self.personalities.set_active(personality)
+        active_name = self.personalities.active_name
+        self.state.state.active_personality = active_name
+        pers = self.personalities.active
+
+        # 1. Hot-swap memory archive to persona's isolated database
+        isolated_db = self.personalities.ensure_isolated_database(active_name)
+        if hasattr(self, "memory") and self.memory:
+            await self.memory.switch_persona_database(isolated_db)
+
+        # 2. Update wakeword persona if enabled
+        if hasattr(self, "wakeword") and self.wakeword:
+            try:
+                self.wakeword.set_active_persona(active_name)
+            except Exception as e:
+                logger.debug("wakeword_persona_update_error", error=str(e))
+
+        # 3. Hot-swap per-persona model defaults
+        applied_models: dict[str, Any] = {}
+        if pers and pers.default_models:
+            # A. Default LLM
+            llm_target = pers.default_models.get("llm")
+            if llm_target:
+                try:
+                    if llm_target.startswith("gemini"):
+                        self.llm_provider_type = "gemini"
+                        applied_models["llm"] = llm_target
+                    elif llm_target in ("openai", "custom"):
+                        self.llm_provider_type = "openai_compatible"
+                        applied_models["llm"] = llm_target
+                    else:
+                        self.llm_provider_type = "local"
+                        from robot.llm import LlamaServerManager
+                        await LlamaServerManager.switch_model(llm_target, engine=self)
+                        applied_models["llm"] = llm_target
+                except Exception as e:
+                    logger.warning("llm_default_switch_failed", model=llm_target, error=str(e))
+
+            # B. Default TTS Engine & Voice
+            tts_voice = pers.default_models.get("tts_voice") or pers.voice_model
+            tts_engine = pers.default_models.get("tts_engine")
+            if tts_voice or tts_engine:
+                try:
+                    from robot.tts import TTSManager
+                    tts = getattr(self, "tts", None)
+                    if isinstance(tts, TTSManager):
+                        res = tts.switch_engine(tts_engine or "kokoro", voice=tts_voice)
+                        applied_models["tts"] = res
+                    elif hasattr(self.tts, "set_active_voice") and tts_voice:
+                        self.tts.set_active_voice(tts_voice)
+                        applied_models["tts"] = {"voice": tts_voice}
+                except Exception as e:
+                    logger.warning("tts_default_switch_failed", error=str(e))
+
+            # C. Default Whisper STT Model
+            stt_target = pers.default_models.get("stt")
+            if stt_target:
+                try:
+                    from robot.stt import WhisperServerManager
+                    await WhisperServerManager.switch_model(stt_target, engine=self)
+                    applied_models["stt"] = stt_target
+                except Exception as e:
+                    logger.warning("stt_default_switch_failed", model=stt_target, error=str(e))
+
+            # D. Default Image Model
+            img_target = pers.default_models.get("image")
+            if img_target:
+                self.default_image_model = img_target
+                applied_models["image"] = img_target
+
+            # E. Thinking Mode
+            if "thinking_mode" in pers.default_models:
+                self.thinking_mode = bool(pers.default_models["thinking_mode"])
+                applied_models["thinking_mode"] = self.thinking_mode
+
+        # 4. Emit events
+        if hasattr(self, "events") and self.events:
+            await self.events.emit("personality_switched", personality=active_name, models=applied_models)
+            await self.events.emit("personality_warming", personality=active_name)
+
+        if hasattr(self, "warm_up_llm") and callable(getattr(self, "warm_up_llm")):
+            coro = self.warm_up_llm(active_name)
+            if asyncio.iscoroutine(coro):
+                asyncio.create_task(coro)
+
+        disp_title = pers.display_name if pers else active_name.title()
+        return {
+            "status": "switched",
+            "personality": active_name,
+            "display_name": disp_title,
+            "isolated_db": str(isolated_db),
+            "default_models": pers.default_models if pers else {},
+            "applied_models": applied_models,
+        }
 
     def _get_active_persona_display_name(self) -> tuple[str, str]:
         """Resolve active personality key and formatted display title.
@@ -2324,13 +2449,7 @@ class RobotEngine:
         # Switch personality if specified
         if personality and personality in self.personalities.list_personalities():
             if personality != self.state.state.active_personality:
-                self.personalities.set_active(personality)
-                self.state.state.active_personality = personality
-                pers_obj = self.personalities.get(personality)
-                if pers_obj and getattr(pers_obj, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
-                    self.tts.set_active_voice(pers_obj.voice_model)
-                if hasattr(self, "wakeword") and self.wakeword:
-                    self.wakeword.set_active_persona(personality)
+                await self.switch_personality(personality)
 
         active_pers_name = self.state.state.active_personality
         active_pers = self.personalities.active

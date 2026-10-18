@@ -44,6 +44,7 @@
                 </select>
                 <span class="persona-caret">▾</span>
             </div>
+            <button class="persona-manage-btn" id="btnOpenPersonaModal" type="button" title="Manage AI Personas, Isolated Databases & Model Defaults">⚙️ Vault</button>
         </div>
 
         <!-- ZONE 2: ENGINE & MODEL SUITE -->
@@ -1469,14 +1470,160 @@
         </div>
     </div>
 
+    <!-- AI Persona Architect, Vault & Isolated Database Modal -->
+    <div class="cyber-modal-backdrop" id="personaModal" style="display: none;">
+        <div class="cyber-modal cyber-modal-wide persona-modal-container">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🎭</span>
+                    <span>AI PERSONA VAULT & ISOLATED DATABASES</span>
+                </div>
+                <div class="header-right-meta">
+                    <span class="persona-active-badge-top" id="personaModalActiveBadge">ACTIVE: CYPHER</span>
+                    <button class="modal-close-btn" id="btnClosePersonaModal" title="Close (Esc)">✕</button>
+                </div>
+            </div>
+
+            <!-- Tab Switcher Navigation -->
+            <div class="persona-nav-tabs">
+                <button class="persona-tab-btn active" id="tabPersonaList" type="button">
+                    <span class="tab-icon">👥</span> All Personas (<span id="personaTotalCount">4</span>)
+                </button>
+                <button class="persona-tab-btn" id="tabPersonaCreate" type="button">
+                    <span class="tab-icon">➕</span> Create New Persona
+                </button>
+            </div>
+
+            <div class="modal-body persona-modal-body">
+                <!-- PANEL 1: LIST ALL PERSONAS -->
+                <div class="persona-panel" id="panelPersonaList">
+                    <div class="persona-cards-grid" id="personaCardsGrid">
+                        <!-- Populated dynamically via /api/personas -->
+                    </div>
+                </div>
+
+                <!-- PANEL 2: CREATE / EDIT PERSONA FORM -->
+                <div class="persona-panel" id="panelPersonaCreate" style="display: none;">
+                    <form id="formCreatePersona" class="persona-form-grid">
+                        <div class="persona-form-col">
+                            <h4 class="form-section-title">Identity & Character Definition</h4>
+                            <div class="form-field-row">
+                                <label for="personaInputId">Persona ID (Slug) *</label>
+                                <input type="text" id="personaInputId" class="cyber-input" placeholder="e.g. ruby, jarvis, kit" required pattern="[a-zA-Z0-9_\-]+" />
+                                <span class="field-hint">Alphanumeric identifier used for database directory: <code>data/memory/personas/{id}/</code></span>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaInputDisplayName">Display Name *</label>
+                                <input type="text" id="personaInputDisplayName" class="cyber-input" placeholder="e.g. Ruby, Jarvis" required />
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaInputColor">Theme Accent Color</label>
+                                <div class="color-picker-wrap">
+                                    <input type="color" id="personaInputColor" value="#ff3366" class="cyber-color-picker" />
+                                    <span class="color-preview-code" id="colorPreviewCode">#ff3366</span>
+                                </div>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaInputDesc">Short Description</label>
+                                <input type="text" id="personaInputDesc" class="cyber-input" placeholder="e.g. Playful cybersecurity companion" />
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaInputPrompt">System Prompt *</label>
+                                <textarea id="personaInputPrompt" class="cyber-textarea" rows="6" placeholder="You are Ruby, an affectionate and witty AI assistant..." required></textarea>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaInputStyle">Speaking Style & Vocabulary</label>
+                                <input type="text" id="personaInputStyle" class="cyber-input" placeholder="e.g. witty, playful, expressive, affectionate" />
+                            </div>
+                        </div>
+
+                        <div class="persona-form-col">
+                            <h4 class="form-section-title">Default Model Presets</h4>
+                            <div class="form-field-row">
+                                <label for="personaSelectLlm">Default LLM Model</label>
+                                <select id="personaSelectLlm" class="cyber-select">
+                                    <option value="qwen3.5-4b">Qwen 3.5 4B (Instruct) [RTX 3050 GPU]</option>
+                                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite [Cloud API • 1M Context]</option>
+                                    <option value="gemini-2.0-flash">Gemini 2.0 Flash [Cloud API]</option>
+                                    <option value="gemini-1.5-flash">Gemini 1.5 Flash [Cloud API]</option>
+                                </select>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaSelectTtsEngine">Default TTS Engine</label>
+                                <select id="personaSelectTtsEngine" class="cyber-select">
+                                    <option value="kokoro" selected>Kokoro Neural (24kHz Studio Quality • 54 Voices)</option>
+                                    <option value="piper">Piper ONNX (Ultra Low Latency &lt;20ms TTFT)</option>
+                                </select>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaSelectTtsVoice">Default TTS Voice</label>
+                                <select id="personaSelectTtsVoice" class="cyber-select">
+                                    <!-- Populated dynamically with Kokoro & Piper voices -->
+                                </select>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaSelectStt">Default Whisper STT Model</label>
+                                <select id="personaSelectStt" class="cyber-select">
+                                    <option value="tiny.en">tiny.en (75 MB • Ultra Fast)</option>
+                                    <option value="base.en" selected>base.en (142 MB • Balanced Default)</option>
+                                    <option value="small.en">small.en (466 MB • High Accuracy)</option>
+                                    <option value="large-v3-turbo">large-v3-turbo (1.6 GB • SOTA Turbo)</option>
+                                </select>
+                            </div>
+                            <div class="form-field-row">
+                                <label for="personaSelectImage">Default Image Generation Model</label>
+                                <select id="personaSelectImage" class="cyber-select">
+                                    <option value="dreamshaper-v8" selected>DreamShaper v8 (SD 1.5 Photorealism)</option>
+                                    <option value="flux-schnell">FLUX.1 Schnell (4-step Next-Gen)</option>
+                                    <option value="sd-1.5">Stable Diffusion 1.5 Base</option>
+                                </select>
+                            </div>
+                            <div class="form-field-row checkbox-row">
+                                <label class="cyber-checkbox-label">
+                                    <input type="checkbox" id="personaInputThinking" />
+                                    <span>Enable Deep Thinking Mode by default</span>
+                                </label>
+                            </div>
+
+                            <div class="isolated-db-callout">
+                                <span class="callout-icon">🔒</span>
+                                <div class="callout-body">
+                                    <div class="callout-title">Automated Isolated Database Provisioning</div>
+                                    <div class="callout-text">
+                                        Creating this persona automatically provisions an isolated SQLite database schema at
+                                        <code>data/memory/personas/{id}/conversations.db</code>.
+                                        Chats, FTS indexes, facts, and sessions are completely private and never leak across personas.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-action-row">
+                            <span class="form-status-msg" id="personaFormStatusMsg"></span>
+                            <button type="button" class="cyber-btn btn-secondary" id="btnCancelPersonaForm">Cancel</button>
+                            <button type="submit" class="cyber-btn btn-primary" id="btnSubmitPersonaForm">✨ Provision Persona & Database</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <span class="footer-hint">Switching a persona hot-swaps to its isolated database and applies all configured model defaults in real time.</span>
+                <button class="cyber-btn btn-secondary" id="btnFooterClosePersonaModal" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
-    <script src="/static/three.min.js?v=6.0-pbr"></script>
-    <script src="/static/GLTFLoader.js?v=6.0-pbr"></script>
-    <script src="/static/character/CharacterRig.js?v=6.0-pbr"></script>
-    <script src="/static/character/CharacterLoader.js?v=6.0-pbr"></script>
-    <script src="/static/character/AnimationSystem.js?v=6.0-pbr"></script>
-    <script src="/static/character/GazeSystem.js?v=6.0-pbr"></script>
-    <script src="/static/character/CharacterEngine.js?v=6.0-pbr"></script>
-    <script src="/static/app.js?v=6.0-pbr"></script>
+    <script src="/static/three.min.js?v=7.0-cute"></script>
+    <script src="/static/GLTFLoader.js?v=7.0-cute"></script>
+    <script src="/static/character/CharacterRig.js?v=7.0-cute"></script>
+    <script src="/static/character/CharacterLoader.js?v=7.0-cute"></script>
+    <script src="/static/character/AnimationSystem.js?v=7.0-cute"></script>
+    <script src="/static/character/GazeSystem.js?v=7.0-cute"></script>
+    <script src="/static/character/CharacterEngine.js?v=7.0-cute"></script>
+    <script src="/static/app.js?v=7.0-cute"></script>
 </body>
 </html>

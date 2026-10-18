@@ -47,7 +47,17 @@ behavior:
   humor: playful
   formality: casual
 
-voice_model: en-us-kathleen-low
+display_name: Aria
+avatar_color: "#aa77ff"
+default_models:
+  llm: "qwen3.5-4b"
+  tts_engine: "kokoro"
+  tts_voice: "af_bella"
+  stt: "base.en"
+  image: "dreamshaper-v8"
+  thinking_mode: false
+
+voice_model: af_bella
 tts_settings:
   speed: 1.08
   pitch: 1.06

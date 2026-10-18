@@ -51,6 +51,16 @@ behavior:
   humor: dry-playful
   formality: casual-rebellious
 
+display_name: Cypher
+avatar_color: "#00ffcc"
+default_models:
+  llm: "qwen3.5-4b"
+  tts_engine: "piper"
+  tts_voice: "en-us-amy-medium"
+  stt: "base.en"
+  image: "dreamshaper-v8"
+  thinking_mode: true
+
 voice_model: en-us-amy-medium
 tts_settings:
   speed: 1.12

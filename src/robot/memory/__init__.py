@@ -1061,6 +1061,24 @@ class MemoryManager:
         await self.mem0.initialize()
         logger.info("memory_manager_initialized")
 
+    async def switch_persona_database(self, db_path: str | Path) -> None:
+        """Hot-swap the active SQLite database to an isolated persona database asynchronously.
+
+        Args:
+            db_path: Filesystem path to the target persona's SQLite database.
+        """
+        target = Path(db_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if hasattr(self, "history") and self.history and self.history._conn:
+            try:
+                self.history._conn.close()
+                self.history._conn = None
+            except Exception as e:
+                logger.debug("history_close_error", error=str(e))
+        self.history = ConversationHistory(str(target))
+        await self.history.initialize()
+        logger.info("switched_persona_database", path=str(target))
+
     async def store_turn(
         self,
         session_id: str,

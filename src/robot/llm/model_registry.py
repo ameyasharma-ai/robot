@@ -544,7 +544,7 @@ class ModelRegistry:
             list[ModelMetadata]: Models supporting vision capabilities around 2B size.
         """
         cls.ensure_initialized()
-        return [m for m in cls.CATALOG.values() if m.is_vision]
+        return [m for m in cls.CATALOG.values() if m.category == ModelCategory.VLM_2B or (m.is_vision and m.parameters in ("2B", "2.2B"))]
 
     @classmethod
     def list_uncensored_models(cls) -> list[ModelMetadata]:

@@ -71,6 +71,7 @@ class RobotUI {
 
         this.initViewControls();
         this.initPersonalitySelector();
+        this.initPersonaManager();
         this.initLlmProviderToggle();
         this.initLocalLlmModelControls();
         this.initSttModelControls();
@@ -2507,7 +2508,7 @@ class RobotUI {
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
             this.characterEngine = new CharacterEngine(this.characterContainer, {
                 variant: "animated",
-                modelUrl: "/static/models/avatar.glb?v=6.0-pbr",
+                modelUrl: "/static/models/avatar.glb?v=7.0-cute",
             });
             this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 
@@ -2677,27 +2678,28 @@ class RobotUI {
 
         // Fetch available personalities and current active
         try {
-            const res = await fetch("/personalities");
+            const res = await fetch("/api/personas");
             if (res.ok) {
                 const data = await res.json();
-                if (data.personalities && Array.isArray(data.personalities)) {
+                const personas = data.personas || [];
+                if (personas.length > 0) {
                     this.personaSelect.innerHTML = "";
-                    data.personalities.forEach((p) => {
+                    personas.forEach((p) => {
                         const opt = document.createElement("option");
-                        opt.value = p;
-                        const label = this.formatPersonaName(p);
-                        opt.textContent = label;
+                        opt.value = p.id;
+                        opt.textContent = (p.display_name || p.id).toUpperCase();
                         this.personaSelect.appendChild(opt);
                     });
                 }
                 const savedPersona = localStorage.getItem("robot_active_personality");
-                if (savedPersona && savedPersona !== data.active && data.personalities && data.personalities.includes(savedPersona)) {
-                    await fetch(`/personality/${savedPersona}`, { method: "POST" });
+                if (savedPersona && savedPersona !== data.active && personas.some(p => p.id === savedPersona)) {
+                    await fetch(`/api/personas/${savedPersona}/activate`, { method: "POST" });
                     data.active = savedPersona;
                 }
                 if (data.active) {
                     this.personaSelect.value = data.active;
-                    const activeDisplay = data.active === "neo" ? "CYPHER" : data.active.toUpperCase();
+                    const activeP = personas.find(p => p.id === data.active);
+                    const activeDisplay = activeP ? activeP.display_name.toUpperCase() : (data.active === "neo" ? "CYPHER" : data.active.toUpperCase());
                     if (this.personaName) this.personaName.textContent = activeDisplay;
                     this.applyPersonaTheme(data.active);
                 }
@@ -2741,6 +2743,363 @@ class RobotUI {
         const engine = this.characterEngine || window.characterEngine;
         if (engine && typeof engine.setPersonaTheme === "function") {
             engine.setPersonaTheme(theme);
+        }
+    }
+
+    /**
+     * Refresh the top-navigation persona selector dropdown with the latest available personas.
+     * @returns {Promise<void>}
+     */
+    async refreshPersonaSelector() {
+        if (!this.personaSelect) return;
+        try {
+            const res = await fetch("/api/personas");
+            if (!res.ok) return;
+            const data = await res.json();
+            const personas = data.personas || [];
+            const activeKey = data.active || "neo";
+
+            this.personaSelect.innerHTML = "";
+            personas.forEach((p) => {
+                const opt = document.createElement("option");
+                opt.value = p.id;
+                opt.textContent = (p.display_name || p.id).toUpperCase();
+                this.personaSelect.appendChild(opt);
+            });
+            this.personaSelect.value = activeKey;
+        } catch (e) {}
+    }
+
+    /**
+     * Initialize the AI Persona Vault & Isolated Database Manager modal,
+     * handling card rendering, isolated database statistics, per-persona default model presets,
+     * new persona creation with automated DB provisioning, and persona deletion.
+     * @returns {void}
+     */
+    initPersonaManager() {
+        const btnOpen = document.getElementById("btnOpenPersonaModal");
+        const modal = document.getElementById("personaModal");
+        const btnClose = document.getElementById("btnClosePersonaModal");
+        const btnFooterClose = document.getElementById("btnFooterClosePersonaModal");
+        const tabList = document.getElementById("tabPersonaList");
+        const tabCreate = document.getElementById("tabPersonaCreate");
+        const panelList = document.getElementById("panelPersonaList");
+        const panelCreate = document.getElementById("panelPersonaCreate");
+        const cardsGrid = document.getElementById("personaCardsGrid");
+        const formCreate = document.getElementById("formCreatePersona");
+        const ttsEngineSelect = document.getElementById("personaSelectTtsEngine");
+        const ttsVoiceSelect = document.getElementById("personaSelectTtsVoice");
+        const colorInput = document.getElementById("personaInputColor");
+        const colorCode = document.getElementById("colorPreviewCode");
+        const statusMsg = document.getElementById("personaFormStatusMsg");
+        const btnCancel = document.getElementById("btnCancelPersonaForm");
+        const totalCount = document.getElementById("personaTotalCount");
+        const activeBadge = document.getElementById("personaModalActiveBadge");
+
+        if (!btnOpen || !modal) return;
+
+        // Populate voice dropdown based on engine
+        const updateTtsVoices = (engine) => {
+            if (!ttsVoiceSelect) return;
+            ttsVoiceSelect.innerHTML = "";
+            if (engine === "kokoro") {
+                const kokoroVoices = [
+                    { id: "af_heart", label: "Heart (af_heart - Warm, Affectionate)" },
+                    { id: "af_bella", label: "Bella (af_bella - Energetic, Cheerful)" },
+                    { id: "af_nicole", label: "Nicole (af_nicole - Clear, Articulate)" },
+                    { id: "af_sky", label: "Sky (af_sky - Melodic, Soft)" },
+                    { id: "af_sarah", label: "Sarah (af_sarah - Professional)" },
+                    { id: "am_adam", label: "Adam (am_adam - Warm, Confident)" },
+                    { id: "am_echo", label: "Echo (am_echo - Resonant, Tech)" },
+                    { id: "am_michael", label: "Michael (am_michael - Calm, Smooth)" },
+                    { id: "bf_emma", label: "Emma (bf_emma - British Female)" },
+                    { id: "bm_george", label: "George (bm_george - British Male)" },
+                ];
+                kokoroVoices.forEach((v) => {
+                    const opt = document.createElement("option");
+                    opt.value = v.id;
+                    opt.textContent = v.label;
+                    ttsVoiceSelect.appendChild(opt);
+                });
+            } else {
+                const piperVoices = [
+                    { id: "en-us-amy-medium", label: "Amy Medium (Piper en-US)" },
+                    { id: "en_US-lessac-medium", label: "Lessac Medium (Piper en-US)" },
+                    { id: "en-us-kathleen-low", label: "Kathleen Low (Piper en-US)" },
+                    { id: "en-us-hfc_female-medium", label: "HFC Female (Piper en-US)" },
+                    { id: "en-us-libritts-high", label: "LibriTTS High (Piper en-US)" },
+                ];
+                piperVoices.forEach((v) => {
+                    const opt = document.createElement("option");
+                    opt.value = v.id;
+                    opt.textContent = v.label;
+                    ttsVoiceSelect.appendChild(opt);
+                });
+            }
+        };
+
+        if (ttsEngineSelect) {
+            ttsEngineSelect.addEventListener("change", (e) => {
+                updateTtsVoices(e.target.value);
+            });
+            updateTtsVoices(ttsEngineSelect.value || "kokoro");
+        }
+
+        if (colorInput && colorCode) {
+            colorInput.addEventListener("input", (e) => {
+                colorCode.textContent = e.target.value;
+            });
+        }
+
+        // Format byte sizes for isolated databases
+        const formatBytes = (bytes) => {
+            if (!bytes || bytes === 0) return "0 B";
+            const k = 1024;
+            const sizes = ["B", "KB", "MB", "GB"];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+        };
+
+        // Render personas
+        const renderPersonas = async () => {
+            if (!cardsGrid) return;
+            try {
+                const res = await fetch("/api/personas");
+                if (!res.ok) throw new Error("Failed to load personas");
+                const data = await res.json();
+                const personas = data.personas || [];
+                const activeKey = data.active || "neo";
+
+                if (totalCount) totalCount.textContent = personas.length;
+                if (activeBadge) {
+                    const activeP = personas.find(p => p.id === activeKey);
+                    activeBadge.textContent = `ACTIVE: ${(activeP ? activeP.display_name : activeKey).toUpperCase()}`;
+                }
+
+                cardsGrid.innerHTML = "";
+                personas.forEach((p) => {
+                    const card = document.createElement("div");
+                    card.className = `persona-card ${p.is_active ? "is-active" : ""}`;
+                    const defModels = p.default_models || {};
+                    const avatarColor = p.avatar_color || "#00ffcc";
+                    const initial = (p.display_name || p.id).charAt(0).toUpperCase();
+
+                    card.innerHTML = `
+                        <div class="persona-card-header">
+                            <div class="persona-card-title-group">
+                                <div class="persona-card-avatar" style="background: ${avatarColor}22; border-color: ${avatarColor}; color: ${avatarColor};">
+                                    ${initial}
+                                </div>
+                                <div>
+                                    <div class="persona-card-name">${this.escapeHtml(p.display_name || p.id)}</div>
+                                    <div class="persona-card-id">ID: @${this.escapeHtml(p.id)}</div>
+                                </div>
+                            </div>
+                            ${p.is_active ? '<span class="persona-card-badge badge-active">ACTIVE</span>' : ''}
+                        </div>
+                        <div class="persona-card-desc">${this.escapeHtml(p.description || "No description provided.")}</div>
+                        <div class="persona-db-box">
+                            <div class="persona-db-path" title="${this.escapeHtml(p.database_path || '')}">
+                                📁 ${this.escapeHtml(p.database_path || 'data/memory/personas/' + p.id + '/conversations.db')}
+                            </div>
+                            <div class="persona-db-stats">
+                                <span class="persona-db-stat-item">Size: <span class="persona-db-stat-val">${formatBytes(p.size_bytes)}</span></span>
+                                <span class="persona-db-stat-item">Turns: <span class="persona-db-stat-val">${p.turns || 0}</span></span>
+                                <span class="persona-db-stat-item">Sessions: <span class="persona-db-stat-val">${p.sessions || 0}</span></span>
+                            </div>
+                        </div>
+                        <div class="persona-models-matrix">
+                            <span class="persona-model-chip chip-llm" title="Default LLM">🧠 ${this.escapeHtml(defModels.llm || 'qwen3.5-4b')}</span>
+                            <span class="persona-model-chip chip-voice" title="Default TTS Voice">🗣️ ${this.escapeHtml(defModels.tts_voice || 'default')}</span>
+                            <span class="persona-model-chip chip-stt" title="Default STT">🎙️ ${this.escapeHtml(defModels.stt || 'base.en')}</span>
+                            <span class="persona-model-chip chip-image" title="Default Image">🎨 ${this.escapeHtml(defModels.image || 'dreamshaper-v8')}</span>
+                            ${defModels.thinking_mode ? '<span class="persona-model-chip" style="color: #c084fc; border-color: rgba(192,132,252,0.4);" title="Thinking Mode">⚡ Deep Thought</span>' : ''}
+                        </div>
+                        <div class="persona-card-actions">
+                            ${!p.is_active ? `<button class="btn-card-activate" data-persona-id="${this.escapeHtml(p.id)}">⚡ Activate</button>` : ''}
+                            <button class="btn-card-delete" data-persona-id="${this.escapeHtml(p.id)}" ${p.is_active || p.is_system ? 'disabled title="Active and built-in system personas cannot be deleted"' : 'title="Delete Persona & Isolated Database"'}>🗑️ Delete</button>
+                        </div>
+                    `;
+                    cardsGrid.appendChild(card);
+                });
+
+                // Attach card action handlers
+                cardsGrid.querySelectorAll(".btn-card-activate").forEach((btn) => {
+                    btn.addEventListener("click", async (e) => {
+                        const targetId = e.currentTarget.dataset.personaId;
+                        try {
+                            btn.textContent = "Activating...";
+                            btn.disabled = true;
+                            const actRes = await fetch(`/api/personas/${targetId}/activate`, { method: "POST" });
+                            if (!actRes.ok) throw new Error(await actRes.text());
+                            this.logEvent("PERSONA", `Activated persona ${targetId} with isolated database.`, "system");
+                            if (this.personaSelect) {
+                                this.personaSelect.value = targetId;
+                            }
+                            this.applyPersonaTheme(targetId);
+                            await renderPersonas();
+                        } catch (err) {
+                            alert(`Failed to activate persona: ${err.message}`);
+                            btn.textContent = "⚡ Activate";
+                            btn.disabled = false;
+                        }
+                    });
+                });
+
+                cardsGrid.querySelectorAll(".btn-card-delete").forEach((btn) => {
+                    btn.addEventListener("click", async (e) => {
+                        const targetId = e.currentTarget.dataset.personaId;
+                        if (!confirm(`Are you sure you want to delete persona '@${targetId}' and its isolated database? This cannot be undone.`)) {
+                            return;
+                        }
+                        try {
+                            btn.textContent = "...";
+                            btn.disabled = true;
+                            const delRes = await fetch(`/api/personas/${targetId}?delete_database=true`, { method: "DELETE" });
+                            if (!delRes.ok) {
+                                const errJson = await delRes.json().catch(() => ({}));
+                                throw new Error(errJson.detail || "Deletion failed");
+                            }
+                            this.logEvent("PERSONA", `Persona @${targetId} and isolated database deleted.`, "system");
+                            await this.refreshPersonaSelector();
+                            await renderPersonas();
+                        } catch (err) {
+                            alert(`Cannot delete persona: ${err.message}`);
+                            btn.textContent = "🗑️ Delete";
+                            btn.disabled = false;
+                        }
+                    });
+                });
+
+            } catch (err) {
+                cardsGrid.innerHTML = `<div class="persona-load-error" style="color: #ef4444; font-family: var(--font-mono); padding: 20px;">Failed to load personas: ${err.message}</div>`;
+            }
+        };
+
+        // Open & Close Modal
+        const openModal = () => {
+            modal.style.display = "flex";
+            switchTab("list");
+            renderPersonas();
+        };
+
+        const closeModal = () => {
+            modal.style.display = "none";
+        };
+
+        btnOpen.addEventListener("click", openModal);
+        btnClose.addEventListener("click", closeModal);
+        if (btnFooterClose) btnFooterClose.addEventListener("click", closeModal);
+
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) closeModal();
+        });
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && modal.style.display !== "none") {
+                closeModal();
+            }
+        });
+
+        // Tab Switching
+        const switchTab = (tab) => {
+            if (tab === "list") {
+                tabList.classList.add("active");
+                tabCreate.classList.remove("active");
+                panelList.style.display = "block";
+                panelCreate.style.display = "none";
+            } else {
+                tabList.classList.remove("active");
+                tabCreate.classList.add("active");
+                panelList.style.display = "none";
+                panelCreate.style.display = "block";
+                if (statusMsg) {
+                    statusMsg.textContent = "";
+                    statusMsg.className = "form-status-msg";
+                }
+            }
+        };
+
+        tabList.addEventListener("click", () => switchTab("list"));
+        tabCreate.addEventListener("click", () => switchTab("create"));
+        if (btnCancel) btnCancel.addEventListener("click", () => switchTab("list"));
+
+        // Form Submit
+        if (formCreate) {
+            formCreate.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                const idInput = document.getElementById("personaInputId");
+                const nameInput = document.getElementById("personaInputDisplayName");
+                const descInput = document.getElementById("personaInputDesc");
+                const promptInput = document.getElementById("personaInputPrompt");
+                const styleInput = document.getElementById("personaInputStyle");
+                const llmSelect = document.getElementById("personaSelectLlm");
+                const sttSelect = document.getElementById("personaSelectStt");
+                const imgSelect = document.getElementById("personaSelectImage");
+                const thinkInput = document.getElementById("personaInputThinking");
+
+                const personaId = (idInput ? idInput.value : "").trim().toLowerCase();
+                const displayName = (nameInput ? nameInput.value : "").trim();
+                const prompt = (promptInput ? promptInput.value : "").trim();
+
+                if (!personaId || !displayName || !prompt) {
+                    if (statusMsg) {
+                        statusMsg.textContent = "Please fill in ID, Display Name, and System Prompt.";
+                        statusMsg.className = "form-status-msg error";
+                    }
+                    return;
+                }
+
+                const payload = {
+                    id: personaId,
+                    display_name: displayName,
+                    description: descInput ? descInput.value.trim() : "",
+                    system_prompt: prompt,
+                    speaking_style: styleInput ? styleInput.value.trim() : "",
+                    avatar_color: colorInput ? colorInput.value : "#00ffcc",
+                    default_models: {
+                        llm: llmSelect ? llmSelect.value : "qwen3.5-4b",
+                        tts_engine: ttsEngineSelect ? ttsEngineSelect.value : "kokoro",
+                        tts_voice: ttsVoiceSelect ? ttsVoiceSelect.value : "af_heart",
+                        stt: sttSelect ? sttSelect.value : "base.en",
+                        image: imgSelect ? imgSelect.value : "dreamshaper-v8",
+                        thinking_mode: thinkInput ? thinkInput.checked : false,
+                    },
+                };
+
+                const submitBtn = document.getElementById("btnSubmitPersonaForm");
+                try {
+                    if (submitBtn) {
+                        submitBtn.textContent = "Provisioning Database...";
+                        submitBtn.disabled = true;
+                    }
+                    const createRes = await fetch("/api/personas", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!createRes.ok) {
+                        const errJson = await createRes.json().catch(() => ({}));
+                        throw new Error(errJson.detail || "Creation failed");
+                    }
+                    this.logEvent("PERSONA", `Persona @${personaId} created and isolated database provisioned!`, "system");
+                    formCreate.reset();
+                    if (colorInput && colorCode) colorCode.textContent = colorInput.value;
+                    await this.refreshPersonaSelector();
+                    switchTab("list");
+                    await renderPersonas();
+                } catch (err) {
+                    if (statusMsg) {
+                        statusMsg.textContent = `Error: ${err.message}`;
+                        statusMsg.className = "form-status-msg error";
+                    }
+                } finally {
+                    if (submitBtn) {
+                        submitBtn.textContent = "✨ Provision Persona & Database";
+                        submitBtn.disabled = false;
+                    }
+                }
+            });
         }
     }
 

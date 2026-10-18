@@ -55,7 +55,17 @@ behavior:
   humor: gentle-playful
   formality: intimate
 
-voice_model: en-us-amy-medium
+display_name: Luna
+avatar_color: "#ff69b4"
+default_models:
+  llm: "qwen3.5-4b"
+  tts_engine: "kokoro"
+  tts_voice: "af_heart"
+  stt: "base.en"
+  image: "dreamshaper-v8"
+  thinking_mode: false
+
+voice_model: af_heart
 tts_settings:
   speed: 1.10
   pitch: 1.20

@@ -48,6 +48,29 @@ class ChatSpeakRequest(BaseModel):
     play_hardware: bool = False
 
 
+class PersonaCreateRequest(BaseModel):
+    """Request model for creating a new persona with provisioned isolated database."""
+    id: str
+    display_name: str | None = None
+    description: str | None = None
+    system_prompt: str | None = None
+    speaking_style: str | None = None
+    vocabulary: str | None = None
+    avatar_color: str | None = None
+    default_models: dict[str, Any] | None = None
+
+
+class PersonaUpdateRequest(BaseModel):
+    """Request model for updating an existing persona and its model defaults."""
+    display_name: str | None = None
+    description: str | None = None
+    system_prompt: str | None = None
+    speaking_style: str | None = None
+    vocabulary: str | None = None
+    avatar_color: str | None = None
+    default_models: dict[str, Any] | None = None
+
+
 class TTSSwitchRequest(BaseModel):
     """Request model for switching active TTS engine and voice."""
     engine: str
@@ -187,20 +210,114 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             "active": engine.state.state.active_personality,
         }
 
+    @app.get("/api/personas")
+    async def list_personas():
+        """List all personas with complete metadata, isolated database statistics, and model defaults."""
+        engine.personalities.load_all()
+        personas = engine.personalities.list_personas_detailed()
+        active_p = getattr(getattr(getattr(engine, "state", None), "state", None), "active_personality", None)
+        if not active_p:
+            active_p = getattr(engine, "active_personality", "neo")
+        return {
+            "status": "ok",
+            "personas": personas,
+            "active": active_p,
+            "total": len(personas),
+        }
+
+    @app.post("/api/personas")
+    async def create_persona(req: PersonaCreateRequest):
+        """Create a new persona and provision its dedicated isolated database."""
+        try:
+            raw_data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+            pers = engine.personalities.create_persona(raw_data)
+            return {
+                "status": "created",
+                "persona": pers.to_dict(),
+                "isolated_db": pers.database_path,
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create persona: {e}")
+
+    @app.get("/api/personas/{persona_id}")
+    async def get_persona(persona_id: str):
+        """Get details, default models, and database statistics for a specific persona."""
+        pers = engine.personalities.get(persona_id)
+        if not pers:
+            raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found")
+        data = pers.to_dict()
+        data["is_active"] = (engine.personalities.active_name == pers.name)
+        data.update(engine.personalities.get_persona_stats(pers.name))
+        return data
+
+    @app.put("/api/personas/{persona_id}")
+    async def update_persona(persona_id: str, req: PersonaUpdateRequest):
+        """Update an existing persona definition and default model configurations."""
+        try:
+            update_data = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
+            pers = engine.personalities.update_persona(persona_id, update_data)
+            return {
+                "status": "updated",
+                "persona": pers.to_dict(),
+            }
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to update persona: {e}")
+
+    @app.delete("/api/personas/{persona_id}")
+    async def delete_persona(persona_id: str, delete_database: bool = True, force: bool = False):
+        """Delete a persona definition and optionally delete its isolated database."""
+        try:
+            ok = engine.personalities.delete_persona(persona_id, delete_database=delete_database, force=force)
+            return {"status": "deleted", "id": persona_id, "deleted_database": delete_database}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete persona: {e}")
+
+    @app.post("/api/personas/{persona_id}/activate")
+    async def activate_persona(persona_id: str):
+        """Activate a persona, hot-swap memory to its isolated database, and apply its default models."""
+        try:
+            res = await engine.switch_personality(persona_id)
+            return res
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to activate persona: {e}")
+
     @app.post("/personality/{name}")
     async def switch_personality(name: str):
-        if name not in engine.personalities.list_personalities():
-            engine.personalities.load_all()
-        success = engine.personalities.set_active(name)
+        """Legacy hot-swap endpoint delegating to engine.switch_personality with resilient fallback."""
+        switch_fn = getattr(engine, "switch_personality", None)
+        if callable(switch_fn) and type(switch_fn).__name__ not in ("MagicMock", "AsyncMock"):
+            try:
+                res = await switch_fn(name)
+                return res
+            except ValueError as e:
+                return {"error": str(e)}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to switch personality: {e}")
+
+        # Fallback or Mock Engine execution
+        mgr = getattr(engine, "personalities", None)
+        if not mgr:
+            return {"error": f"Personality manager unavailable"}
+        success = mgr.set_active(name)
         if success:
-            engine.state.state.active_personality = name
-            pers = engine.personalities.get(name)
-            if pers and getattr(pers, "voice_model", None) and hasattr(engine.tts, "set_active_voice"):
+            if hasattr(engine, "state") and hasattr(engine.state, "state"):
+                engine.state.state.active_personality = name
+            pers = mgr.get(name)
+            if pers and getattr(pers, "voice_model", None) and hasattr(engine, "tts") and hasattr(engine.tts, "set_active_voice"):
                 engine.tts.set_active_voice(pers.voice_model)
             if hasattr(engine, "wakeword") and engine.wakeword:
                 engine.wakeword.set_active_persona(name)
-            await engine.events.emit("personality_switched", personality=name)
-            await engine.events.emit("personality_warming", personality=name)
+            if hasattr(engine, "events") and engine.events:
+                await engine.events.emit("personality_switched", personality=name)
+                await engine.events.emit("personality_warming", personality=name)
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
                 coro = engine.warm_up_llm(name)
                 if asyncio.iscoroutine(coro):

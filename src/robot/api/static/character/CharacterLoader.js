@@ -73,12 +73,12 @@ class CharacterLoader {
             this._texLoader = new THREE.TextureLoader();
         }
 
-        // High-fidelity normal maps for tailored blazer and trousers
-        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png");
+        // High-fidelity normal maps for cute sweater and pleated skirt
+        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png?v=7.0-cute");
         topsNormal.wrapS = THREE.RepeatWrapping;
         topsNormal.wrapT = THREE.RepeatWrapping;
 
-        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png");
+        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png?v=7.0-cute");
         bottomsNormal.wrapS = THREE.RepeatWrapping;
         bottomsNormal.wrapT = THREE.RepeatWrapping;
 
@@ -151,54 +151,54 @@ class CharacterLoader {
                         map: mat.map || null,
                         normalMap: mat.normalMap || null,
                         color: 0xffffff,
-                        roughness: isFace ? 0.48 : 0.54,
+                        roughness: isFace ? 0.46 : 0.52,
                         metalness: 0.0,
-                        clearcoat: isFace ? 0.14 : 0.08,
-                        clearcoatRoughness: 0.35,
-                        reflectivity: 0.32,
+                        clearcoat: isFace ? 0.16 : 0.08,
+                        clearcoatRoughness: 0.32,
+                        reflectivity: 0.35,
                     });
                     if (mat.normalMap) {
                         pbrMat.normalScale = new THREE.Vector2(0.85, 0.85);
                     }
                 } else if (isHair) {
-                    // Realistic Human Hair: Multi-tonal dark chocolate with anisotropic satin sheen
+                    // Realistic Human Hair: Multi-tonal warm chocolate with anisotropic satin sheen
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         normalMap: mat.normalMap || null,
                         color: 0xffffff,
-                        roughness: 0.38,
-                        metalness: 0.14,
+                        roughness: 0.36,
+                        metalness: 0.12,
                     });
                     if (mat.normalMap) {
                         pbrMat.normalScale = new THREE.Vector2(1.2, 1.2);
                     }
                 } else if (isTops) {
-                    // Tailored Designer Blazer: Fine wool twill weave, satin lapels & gold hardware
+                    // Cute Ribbed Knit Sweetheart Sweater: Soft wool knit texture, lace trim & pearl buttons
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         normalMap: topsNormal,
-                        normalScale: new THREE.Vector2(0.85, 0.85),
+                        normalScale: new THREE.Vector2(0.60, 0.60),
                         color: 0xffffff,
-                        roughness: 0.70,
-                        metalness: 0.08,
+                        roughness: 0.78,
+                        metalness: 0.04,
                     });
                 } else if (isBottoms) {
-                    // Tailored Designer Trousers: Suiting fabric, cognac leather belt & gold buckle
+                    // Cute Pleated Skater Skirt: Accordion pleats, pastel pink belt & silver heart buckle
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         normalMap: bottomsNormal,
                         normalScale: new THREE.Vector2(0.65, 0.65),
                         color: 0xffffff,
-                        roughness: 0.75,
-                        metalness: 0.06,
+                        roughness: 0.72,
+                        metalness: 0.05,
                     });
                 } else if (isShoes) {
-                    // Burnished Cognac Leather Designer Boots: Leather gloss & gold hardware
+                    // Cute White Platform Sneakers: Clean white leather & pastel pink ribbon laces
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         color: 0xffffff,
-                        roughness: 0.35,
-                        metalness: 0.20,
+                        roughness: 0.38,
+                        metalness: 0.08,
                     });
                 } else if (isMouth) {
                     // Natural lips and oral cavity: gentle moisture
