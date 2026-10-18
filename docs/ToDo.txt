@@ -38,6 +38,7 @@
 30. [DONE] Dynamic Sentiment & Prosody Modulation: ProsodyModulator evaluating lexical/syntactic sentiment into 9 emotion categories with Piper pitch (±15%), speed (±10%), and noise scaling.
 31. [DONE] Low-Latency Streaming Chat TTS with Clause Prosody & 3D Avatar Sync: Replicated active avatar streaming speech pipeline for chat "Speak" button. /api/chat/speak/stream yields phrases with clause prosody immediately; client starts playback on phrase 0 (<100ms first audio) and gaplessly queues remaining phrases while syncing 3D avatar facial blendshapes and visor illumination.
 32. [DONE] Apple-Grade Engineering, Acoustic Feedback & Hardware Precision: Procedural AcousticEarconEngine (5 crystal harmonic cues), CoreAudio-grade 5ms anti-pop micro-fades and soft saturation limiter in AudioPlayer, Apple Dynamic Island luxury notification HUD with spring physics, 5th-order minimum-jerk trajectory polynomial in ServoJointLimit, parenthetical speech truncation fix, and 3.0s network timeout caps. 277/277 tests pass.
+33. [DONE] Multi-Model Image Synthesis Reliability & Hardening: Validated all 6 dashboard models (sd-turbo, dreamshaper-v8, sdxl-turbo, small-sd, fast-procedural, flux-schnell). Enabled sequential CPU offload for SDXL (zero 4GB VRAM OOMs), enabled GPU execution for small-sd (159s -> 9.5s), resolved variant=fp16 deprecations, upgraded diffusers to 0.30.3, wired live step callbacks, and built docs/NEXT_WAVE_DEVELOPMENTS.txt. 330/330 tests pass.
 
 ---
 

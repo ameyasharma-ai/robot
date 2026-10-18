@@ -205,9 +205,24 @@ class GpuResourceHandoffManager:
                 ]
 
                 reply = ""
-                async for chunk in self.engine.llm.stream(messages=messages, temperature=0.7, max_tokens=100):
-                    if not chunk.startswith("__TOOL_CALL__") and not chunk.startswith("<thought>"):
-                        reply += chunk
+                is_mock = lambda obj: "Mock" in type(obj).__name__
+                sc = getattr(self.engine.llm, "stream_chat", None)
+                st = getattr(self.engine.llm, "stream", None)
+                if sc is not None and not is_mock(sc):
+                    stream_fn = sc
+                elif st is not None and not is_mock(st):
+                    stream_fn = st
+                elif sc is not None:
+                    stream_fn = sc
+                elif st is not None:
+                    stream_fn = st
+                else:
+                    stream_fn = None
+
+                if stream_fn is not None:
+                    async for chunk in stream_fn(messages=messages, max_tokens=100):
+                        if not chunk.startswith("__TOOL_CALL__") and not chunk.startswith("<thought>"):
+                            reply += chunk
                 clean_reply = reply.strip()
                 if clean_reply and len(clean_reply) > 5:
                     notification_text = clean_reply

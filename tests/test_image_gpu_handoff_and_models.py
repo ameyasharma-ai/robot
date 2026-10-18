@@ -105,6 +105,7 @@ async def test_prompt_enhancer_with_mock_llm() -> None:
         yield json_payload
 
     mock_llm.stream = _mock_stream
+    mock_llm.stream_chat = _mock_stream
     mock_engine.llm = mock_llm
 
     enhancer = ImagePromptEnhancer(engine=mock_engine)

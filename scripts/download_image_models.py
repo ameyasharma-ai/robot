@@ -68,10 +68,10 @@ def download_model(meta: ImageModelMetadata) -> bool:
         import torch
 
         if meta.family == ImageModelFamily.FLUX:
-            from diffusers import FluxPipeline
-            FluxPipeline.from_pretrained(
-                meta.repo_id,
-                torch_dtype=torch.float16,
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                repo_id=meta.repo_id,
+                resume_download=True,
             )
         elif meta.family == ImageModelFamily.SDXL:
             from diffusers import AutoPipelineForText2Image

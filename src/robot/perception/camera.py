@@ -99,17 +99,32 @@ class CameraCapture:
                 cap = cv2.VideoCapture(self.device_index)
 
             if not cap.isOpened():
+                try:
+                    cap.release()
+                except Exception:
+                    pass
                 self._is_opened = False
-                logger.warning(
-                    "camera_open_failed_retrying",
-                    device_index=self.device_index,
-                    backoff_s=self._reconnect_backoff,
-                )
+                self._reconnect_count += 1
+                if self._reconnect_count <= 3:
+                    logger.warning(
+                        "camera_open_failed_retrying",
+                        device_index=self.device_index,
+                        backoff_s=self._reconnect_backoff,
+                    )
+                elif self._reconnect_count == 4:
+                    logger.info(
+                        "camera_device_unavailable_dormant",
+                        device_index=self.device_index,
+                        note="No video capture device detected; will retry periodically in background every 60s",
+                    )
+                else:
+                    logger.debug("camera_open_dormant_retry", device_index=self.device_index)
+
                 # Exponential backoff sleep (interrupted if stop() is called)
                 sleep_start = time.time()
                 while self._running and (time.time() - sleep_start) < self._reconnect_backoff:
                     time.sleep(0.1)
-                self._reconnect_backoff = min(10.0, self._reconnect_backoff * 2.0)
+                self._reconnect_backoff = min(60.0 if self._reconnect_count >= 4 else 10.0, self._reconnect_backoff * 2.0)
                 continue
 
             # Connected successfully

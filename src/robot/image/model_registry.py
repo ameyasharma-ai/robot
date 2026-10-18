@@ -74,9 +74,12 @@ class ImageModelMetadata:
         if target_dir.exists() and any(target_dir.glob("snapshots/*")):
             return True
 
-        # Check local models directory
+        # Check local models directory or GGUF directory
         local_dir = Path("models") / "image" / self.id
         if local_dir.exists() and any(local_dir.iterdir()):
+            return True
+        flux_gguf = Path("models") / "image" / "flux" / "flux1-schnell-q2_k.gguf"
+        if self.id in ("flux-schnell", "flux-schnell-gguf") and flux_gguf.exists():
             return True
 
         return False
@@ -92,18 +95,18 @@ class ImageModelRegistry:
         # ─── FLUX Models ──────────────────────────────────────────────────────────
         "flux-schnell": ImageModelMetadata(
             id="flux-schnell",
-            name="FLUX.1 Schnell",
+            name="FLUX.1 Schnell (GGUF Q2_K)",
             family=ImageModelFamily.FLUX,
-            repo_id="black-forest-labs/FLUX.1-schnell",
+            repo_id="leejet/FLUX.1-schnell-gguf",
             is_heavy=True,
             recommended_steps=4,
-            default_guidance_scale=0.0,
+            default_guidance_scale=1.0,
             default_width=512,
             default_height=512,
             supports_negative_prompt=False,
-            vram_mb_required=3800,
+            vram_mb_required=3000,
             pipeline_type="FluxPipeline",
-            description="State-of-the-art 12B rectified flow transformer distilled for 4-step ultra-fidelity rendering.",
+            description="GGUF quantized FLUX model executing via stable-diffusion.cpp with CUDA + CPU RAM offloading.",
         ),
         "flux-dev": ImageModelMetadata(
             id="flux-dev",
@@ -158,14 +161,14 @@ class ImageModelRegistry:
             family=ImageModelFamily.SDXL,
             repo_id="stabilityai/sdxl-turbo",
             is_heavy=True,
-            recommended_steps=4,
+            recommended_steps=1,
             default_guidance_scale=0.0,
             default_width=512,
             default_height=512,
             supports_negative_prompt=False,
             vram_mb_required=3600,
             pipeline_type="AutoPipelineForText2Image",
-            description="High-resolution SDXL architecture distilled for rapid 1-4 step rendering.",
+            description="High-resolution SDXL architecture distilled for rapid 1-step real-time rendering.",
         ),
         "sdxl-lightning": ImageModelMetadata(
             id="sdxl-lightning",

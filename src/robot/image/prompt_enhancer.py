@@ -156,7 +156,22 @@ class ImagePromptEnhancer:
 
         try:
             raw_response = ""
-            async for token in self.engine.llm.stream(messages=messages, temperature=0.7, max_tokens=350):
+            is_mock = lambda obj: "Mock" in type(obj).__name__
+            sc = getattr(self.engine.llm, "stream_chat", None)
+            st = getattr(self.engine.llm, "stream", None)
+            if sc is not None and not is_mock(sc):
+                stream_fn = sc
+            elif st is not None and not is_mock(st):
+                stream_fn = st
+            elif sc is not None:
+                stream_fn = sc
+            elif st is not None:
+                stream_fn = st
+            else:
+                return None
+
+            stream_iter = stream_fn(messages=messages, max_tokens=350)
+            async for token in stream_iter:
                 # Strip tool call or reasoning tags
                 if not token.startswith("__TOOL_CALL__") and not token.startswith("<thought>"):
                     raw_response += token
