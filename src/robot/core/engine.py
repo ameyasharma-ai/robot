@@ -51,7 +51,7 @@ from robot.tools import (
 from robot.tools.fast_path import FastPathRouter
 from robot.tools.builtins import register_builtin_tools
 from robot.tools.skills import ToolSkillManager
-from robot.tts import PiperTTS
+from robot.tts import KokoroTTS, PiperTTS, TTSManager
 
 logger = get_logger("engine")
 
@@ -290,7 +290,7 @@ class RobotEngine:
             self.config.get("llm", {}).get("provider", "local")
         )
         self.stt: WhisperServerSTT | None = None
-        self.tts: PiperTTS | None = None
+        self.tts: TTSManager | PiperTTS | KokoroTTS | None = None
         self.llm: LlamaServerLLM | None = None
         self.memory: MemoryManager | None = None
         self.personalities = PersonalityManager(
@@ -424,13 +424,17 @@ class RobotEngine:
             chunk_seconds=stt_cfg.get("chunk_seconds", 0.8),
         )
 
-        # TTS
-        tts_cfg = self.config.get("tts", {})
-        model_path = tts_cfg.get("model_path", "models/tts/en-us-lessac-medium.onnx")
-        if Path(model_path).exists():
-            self.tts = PiperTTS(model_path)
-        else:
-            logger.warning("tts_model_missing", path=model_path)
+        # TTS (Unified TTSManager supporting Piper ONNX and Kokoro Neural)
+        try:
+            self.tts = TTSManager(self.config)
+        except Exception as e:
+            logger.error("tts_manager_init_failed", error=str(e))
+            tts_cfg = self.config.get("tts", {})
+            model_path = tts_cfg.get("model_path", "models/tts/en-us-lessac-medium.onnx")
+            if Path(model_path).exists():
+                self.tts = PiperTTS(model_path)
+            else:
+                logger.warning("tts_model_missing", path=model_path)
 
         # LLM (supports local llama-server on RTX 3050, Gemini Cloud 1M context, and OpenAI-Compatible)
         llm_cfg = self.config.get("llm", {})

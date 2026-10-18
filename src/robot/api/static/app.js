@@ -74,6 +74,7 @@ class RobotUI {
         this.initLlmProviderToggle();
         this.initLocalLlmModelControls();
         this.initSttModelControls();
+        this.initTtsModelControls();
         this.init3DCharacter();
         this.initTextChat();
         this.initChatWorkspace();
@@ -3829,6 +3830,17 @@ class RobotUI {
             }
         }
 
+        if (data.event === "tts_engine_changed" || data.event === "tts.engine_changed") {
+            if (data.engine) {
+                this.activeTtsEngine = data.engine;
+                this.activeTtsVoice = data.voice || this.activeTtsVoice;
+                if (typeof this.updateTtsDisplays === "function") {
+                    this.updateTtsDisplays(data.engine, data.voice, data.sample_rate);
+                }
+                this.showDynamicIsland("TTS Engine", `Active: ${data.engine.toUpperCase()} (${data.voice || ''})`, "🔊", "pink", 2500);
+            }
+        }
+
         if (data.event === "llm_model_changed" || data.event === "llm.local_model_changed") {
             if (data.model) {
                 this.activeLocalModelId = data.model;
@@ -5577,6 +5589,427 @@ class RobotUI {
 
         // Initial fetch
         await this.refreshSttStatus();
+    }
+
+    /**
+     * Initialize Text-to-Speech (TTS) multi-engine controls (Kokoro Neural & Piper ONNX).
+     * Connects Top Nav picker, Dev Panel Audio Deck card, Chat view top bar,
+     * and the 60+ voice Cyberdeck catalog modal with live audio previews and hot-swapping.
+     * @returns {Promise<void>}
+     */
+    async initTtsModelControls() {
+        const topNavPicker = document.getElementById("btnTopNavTtsPicker");
+        const topNavLabel = document.getElementById("topNavTtsPickerLabel");
+        const topNavBadge = document.getElementById("topNavTtsBadge");
+        const chatPicker = document.getElementById("btnChatTtsPicker");
+        const chatLabel = document.getElementById("chatTtsPickerLabel");
+        const deckOpenBtn = document.getElementById("btnOpenTtsModalDeck");
+        const deckActivePill = document.getElementById("deckTtsActivePill");
+        const deckEngineState = document.getElementById("deckTtsEngineState");
+        const btnDeckKokoro = document.getElementById("btnDeckSwitchKokoro");
+        const btnDeckPiper = document.getElementById("btnDeckSwitchPiper");
+        const deckPresetChips = document.querySelectorAll("#ttsPresetChips .tts-chip");
+
+        const modal = document.getElementById("ttsModelModal");
+        const btnClose = document.getElementById("btnCloseTtsModelModal");
+        const btnCancel = document.getElementById("btnCancelTtsModelModal");
+        const modalKokoroCard = document.getElementById("modalEngineCardKokoro");
+        const modalPiperCard = document.getElementById("modalEngineCardPiper");
+        const badgeKokoro = document.getElementById("badgeModalKokoro");
+        const badgePiper = document.getElementById("badgeModalPiper");
+        const filterChips = document.querySelectorAll("#ttsFilterChips .tts-filter-chip");
+        const searchInput = document.getElementById("ttsVoiceSearchInput");
+        const cardsGrid = document.getElementById("ttsVoiceCardsGrid");
+        const modalHint = document.getElementById("ttsModalHint");
+        const countAll = document.getElementById("countTtsAll");
+
+        this.activeTtsEngine = "kokoro";
+        this.activeTtsVoice = "af_heart";
+        this.ttsVoicesList = [];
+        this.ttsEnginesList = [];
+        this.ttsActiveFilter = "all";
+        this.ttsSearchQuery = "";
+        this.ttsPreviewAudio = null;
+        this.ttsActivePreviewBtn = null;
+
+        /**
+         * Open Text-to-Speech Modal and refresh voice catalog.
+         * @returns {Promise<void>}
+         */
+        this.openTtsModal = async () => {
+            if (!modal) return;
+            modal.style.display = "flex";
+            modal.classList.add("open");
+            await this.refreshTtsStatus();
+        };
+
+        /**
+         * Close Text-to-Speech Modal and stop any running preview audio.
+         * @returns {void}
+         */
+        this.closeTtsModal = () => {
+            if (!modal) return;
+            modal.style.display = "none";
+            modal.classList.remove("open");
+            if (this.ttsPreviewAudio) {
+                this.ttsPreviewAudio.pause();
+                this.ttsPreviewAudio = null;
+            }
+            if (this.ttsActivePreviewBtn) {
+                this.ttsActivePreviewBtn.classList.remove("playing");
+                this.ttsActivePreviewBtn.textContent = "🔊 Preview";
+                this.ttsActivePreviewBtn = null;
+            }
+        };
+
+        if (topNavPicker) topNavPicker.addEventListener("click", () => this.openTtsModal());
+        if (chatPicker) chatPicker.addEventListener("click", () => this.openTtsModal());
+        if (deckOpenBtn) deckOpenBtn.addEventListener("click", () => this.openTtsModal());
+        if (btnClose) btnClose.addEventListener("click", () => this.closeTtsModal());
+        if (btnCancel) btnCancel.addEventListener("click", () => this.closeTtsModal());
+        if (modal) {
+            modal.addEventListener("click", (e) => {
+                if (e.target === modal) this.closeTtsModal();
+            });
+        }
+
+        // Audio deck engine switcher buttons
+        if (btnDeckKokoro) {
+            btnDeckKokoro.addEventListener("click", async () => {
+                if (this.activeTtsEngine === "kokoro") return;
+                await this.switchTtsEngineAndVoice("kokoro", "af_heart");
+            });
+        }
+        if (btnDeckPiper) {
+            btnDeckPiper.addEventListener("click", async () => {
+                if (this.activeTtsEngine === "piper") return;
+                await this.switchTtsEngineAndVoice("piper", "en-us-lessac-medium");
+            });
+        }
+
+        // Modal engine choice cards
+        if (modalKokoroCard) {
+            modalKokoroCard.addEventListener("click", async () => {
+                if (this.activeTtsEngine !== "kokoro") {
+                    await this.switchTtsEngineAndVoice("kokoro", "af_heart");
+                }
+            });
+        }
+        if (modalPiperCard) {
+            modalPiperCard.addEventListener("click", async () => {
+                if (this.activeTtsEngine !== "piper") {
+                    await this.switchTtsEngineAndVoice("piper", "en-us-lessac-medium");
+                }
+            });
+        }
+
+        // Audio deck preset chips
+        deckPresetChips.forEach(chip => {
+            chip.addEventListener("click", async () => {
+                const eng = chip.dataset.engine || "kokoro";
+                const voice = chip.dataset.voice;
+                if (!voice) return;
+                await this.switchTtsEngineAndVoice(eng, voice);
+            });
+        });
+
+        // Filter chips in modal
+        filterChips.forEach(chip => {
+            chip.addEventListener("click", () => {
+                filterChips.forEach(c => c.classList.remove("active"));
+                chip.classList.add("active");
+                this.ttsActiveFilter = chip.dataset.filter || "all";
+                this.renderTtsVoiceCards();
+            });
+        });
+
+        // Search input in modal
+        if (searchInput) {
+            searchInput.addEventListener("input", (e) => {
+                this.ttsSearchQuery = (e.target.value || "").toLowerCase().trim();
+                this.renderTtsVoiceCards();
+            });
+        }
+
+        /**
+         * Fetch TTS status and voices catalog from backend.
+         * @returns {Promise<void>}
+         */
+        this.refreshTtsStatus = async () => {
+            try {
+                const [statusRes, voicesRes] = await Promise.all([
+                    fetch("/api/tts/status"),
+                    fetch("/api/tts/voices"),
+                ]);
+
+                if (statusRes.ok) {
+                    const statusData = await statusRes.json();
+                    this.activeTtsEngine = statusData.active_engine || "kokoro";
+                    this.activeTtsVoice = statusData.active_voice || "af_heart";
+                    this.ttsEnginesList = statusData.engines || [];
+                    this.updateTtsDisplays(this.activeTtsEngine, this.activeTtsVoice, statusData.sample_rate);
+                }
+
+                if (voicesRes.ok) {
+                    const voicesData = await voicesRes.json();
+                    this.ttsVoicesList = voicesData.voices || [];
+                    if (countAll) countAll.textContent = this.ttsVoicesList.length.toString();
+                }
+
+                this.renderTtsVoiceCards();
+            } catch (err) {
+                console.error("Failed to refresh TTS status:", err);
+            }
+        };
+
+        /**
+         * Render voice cards into the modal grid filtered by engine, gender, accent, and search term.
+         * @returns {void}
+         */
+        this.renderTtsVoiceCards = () => {
+            if (!cardsGrid) return;
+            cardsGrid.innerHTML = "";
+
+            // Filter voices based on active modal engine, category filter, and search
+            const filtered = this.ttsVoicesList.filter(v => {
+                // Must match active engine
+                if (v.engine !== this.activeTtsEngine) return false;
+
+                // Category filter
+                if (this.ttsActiveFilter === "female" && v.gender !== "female") return false;
+                if (this.ttsActiveFilter === "male" && v.gender !== "male") return false;
+                if (this.ttsActiveFilter === "american" && v.accent !== "American") return false;
+                if (this.ttsActiveFilter === "british" && v.accent !== "British") return false;
+                if (this.ttsActiveFilter === "international" && (v.accent === "American" || v.accent === "British")) return false;
+
+                // Search query
+                if (this.ttsSearchQuery) {
+                    const haystack = `${v.name} ${v.id} ${v.accent} ${v.style} ${v.gender}`.toLowerCase();
+                    if (!haystack.includes(this.ttsSearchQuery)) return false;
+                }
+                return true;
+            });
+
+            if (filtered.length === 0) {
+                cardsGrid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; color: var(--text-dim); padding: 30px; font-family: var(--font-mono); font-size: 11px;">No voices found matching criteria.</div>`;
+                return;
+            }
+
+            filtered.forEach(v => {
+                const isActive = (v.id === this.activeTtsVoice || v.id.endsWith(this.activeTtsVoice) || this.activeTtsVoice.endsWith(v.id));
+                const card = document.createElement("div");
+                card.className = `tts-voice-card ${isActive ? "active" : ""}`;
+
+                const genderIcon = v.gender === "female" ? "♀" : "♂";
+                const srText = v.engine === "kokoro" ? "24kHz" : "16-22kHz";
+
+                card.innerHTML = `
+                    <div class="model-card-header">
+                        <span class="model-card-title">${v.name} <span style="font-size: 10px; color: ${v.gender === 'female' ? '#f472b6' : '#60a5fa'}; font-weight: 700;">${genderIcon}</span></span>
+                        <span class="model-card-badge">${v.accent.toUpperCase()}</span>
+                    </div>
+                    <div class="model-card-desc">${v.style || "Neural speech synthesis voice."}</div>
+                    <div class="model-card-meta">
+                        <span class="meta-pill">${v.id}</span>
+                        <span class="meta-pill">${srText}</span>
+                        <span class="meta-pill">${v.lang ? v.lang.toUpperCase() : "EN"}</span>
+                    </div>
+                    <div class="card-actions">
+                        <button class="tts-preview-btn" type="button" data-id="${v.id}" data-engine="${v.engine}">🔊 Preview</button>
+                        <button class="tts-select-btn ${isActive ? 'active-btn' : ''}" type="button" data-id="${v.id}" data-engine="${v.engine}">${isActive ? '✓ Active' : 'Select'}</button>
+                    </div>
+                `;
+
+                // Wire Preview button
+                const btnPreview = card.querySelector(".tts-preview-btn");
+                if (btnPreview) {
+                    btnPreview.addEventListener("click", async (e) => {
+                        e.stopPropagation();
+                        await this.previewTtsVoice(v.engine, v.id, btnPreview);
+                    });
+                }
+
+                // Wire Select button
+                const btnSelect = card.querySelector(".tts-select-btn");
+                if (btnSelect) {
+                    btnSelect.addEventListener("click", async (e) => {
+                        e.stopPropagation();
+                        if (isActive) return;
+                        await this.switchTtsEngineAndVoice(v.engine, v.id);
+                    });
+                }
+
+                cardsGrid.appendChild(card);
+            });
+        };
+
+        /**
+         * Synthesize preview audio for a specific voice using POST /api/tts/test.
+         * @param {string} engine - TTS engine name ('kokoro' or 'piper').
+         * @param {string} voiceId - Voice identifier.
+         * @param {HTMLButtonElement} btn - The preview button clicked.
+         * @returns {Promise<void>}
+         */
+        this.previewTtsVoice = async (engine, voiceId, btn) => {
+            if (this.ttsPreviewAudio && this.ttsActivePreviewBtn === btn) {
+                this.ttsPreviewAudio.pause();
+                this.ttsPreviewAudio = null;
+                btn.classList.remove("playing");
+                btn.textContent = "🔊 Preview";
+                this.ttsActivePreviewBtn = null;
+                return;
+            }
+
+            if (this.ttsPreviewAudio) {
+                this.ttsPreviewAudio.pause();
+                this.ttsPreviewAudio = null;
+            }
+            if (this.ttsActivePreviewBtn) {
+                this.ttsActivePreviewBtn.classList.remove("playing");
+                this.ttsActivePreviewBtn.textContent = "🔊 Preview";
+            }
+
+            btn.classList.add("playing");
+            btn.textContent = "⏳ Generating...";
+            this.ttsActivePreviewBtn = btn;
+
+            try {
+                const sampleText = engine === "kokoro"
+                    ? "Hello! This is Kokoro, an ultra-realistic neural voice running locally on the robot."
+                    : "Hello! This is Piper, a high-speed local speech synthesis voice.";
+
+                const res = await fetch("/api/tts/test", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        engine: engine,
+                        voice: voiceId,
+                        text: sampleText,
+                    }),
+                });
+
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const audio = new Audio(url);
+                this.ttsPreviewAudio = audio;
+
+                btn.textContent = "⏹️ Stop";
+
+                audio.onended = () => {
+                    btn.classList.remove("playing");
+                    btn.textContent = "🔊 Preview";
+                    if (this.ttsActivePreviewBtn === btn) this.ttsActivePreviewBtn = null;
+                    this.ttsPreviewAudio = null;
+                    URL.revokeObjectURL(url);
+                };
+
+                audio.onerror = () => {
+                    btn.classList.remove("playing");
+                    btn.textContent = "🔊 Preview";
+                    if (this.ttsActivePreviewBtn === btn) this.ttsActivePreviewBtn = null;
+                    this.ttsPreviewAudio = null;
+                    URL.revokeObjectURL(url);
+                };
+
+                await audio.play();
+            } catch (err) {
+                console.error("Preview failed:", err);
+                btn.classList.remove("playing");
+                btn.textContent = "❌ Failed";
+                setTimeout(() => {
+                    btn.textContent = "🔊 Preview";
+                }, 1500);
+            }
+        };
+
+        /**
+         * Switch the active TTS engine and voice via POST /api/tts/switch.
+         * @param {string} engine - Engine identifier ('kokoro' or 'piper').
+         * @param {string} [voice] - Voice identifier to set.
+         * @returns {Promise<void>}
+         */
+        this.switchTtsEngineAndVoice = async (engine, voice = null) => {
+            if (modalHint) modalHint.textContent = `Switching TTS to ${engine.toUpperCase()} (${voice || 'default'})...`;
+
+            try {
+                const res = await fetch("/api/tts/switch", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ engine: engine, voice: voice }),
+                });
+
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.activeTtsEngine = data.engine;
+                    this.activeTtsVoice = data.voice;
+                    this.updateTtsDisplays(data.engine, data.voice, data.sample_rate);
+                    if (modalHint) modalHint.textContent = `✓ TTS active: ${data.engine.toUpperCase()} (${data.voice}) at ${data.sample_rate}Hz!`;
+                    this.showDynamicIsland("TTS Ready", `${data.engine.toUpperCase()} (${data.voice})`, "✓", "pink", 3000);
+                    this.logEvent("TTS", `Switched active TTS engine to ${data.engine.toUpperCase()} (${data.voice})`, "success");
+                    this.renderTtsVoiceCards();
+                    setTimeout(() => this.closeTtsModal(), 500);
+                } else {
+                    if (modalHint) modalHint.textContent = `Error: ${data.detail || data.error}`;
+                }
+            } catch (err) {
+                console.error("Failed to switch TTS engine:", err);
+                if (modalHint) modalHint.textContent = `Network error: ${err.message}`;
+            }
+        };
+
+        /**
+         * Update labels and active chips across Top Nav, Audio Deck, Chat top bar, and modal cards.
+         * @param {string} engine - Active engine ('kokoro' or 'piper').
+         * @param {string} voice - Active voice name or ID.
+         * @param {number} [sampleRate] - Sample rate in Hz.
+         * @returns {void}
+         */
+        this.updateTtsDisplays = (engine, voice, sampleRate = 24000) => {
+            const cleanVoice = voice ? PathBasename(voice).replace(".onnx", "").replace("en-us-", "") : "default";
+            const engUpper = engine ? engine.toUpperCase() : "TTS";
+            const srText = sampleRate ? `${Math.round(sampleRate / 1000)}kHz` : "24kHz";
+
+            if (topNavLabel) topNavLabel.textContent = `${engUpper}: ${cleanVoice}`;
+            if (topNavBadge) topNavBadge.textContent = srText;
+            if (chatLabel) chatLabel.textContent = `TTS: ${cleanVoice}`;
+
+            if (deckActivePill) {
+                deckActivePill.textContent = `${cleanVoice} (${engUpper})`;
+            }
+
+            if (btnDeckKokoro) btnDeckKokoro.classList.toggle("active", engine === "kokoro");
+            if (btnDeckPiper) btnDeckPiper.classList.toggle("active", engine === "piper");
+
+            if (modalKokoroCard) modalKokoroCard.classList.toggle("active", engine === "kokoro");
+            if (modalPiperCard) modalPiperCard.classList.toggle("active", engine === "piper");
+            if (badgeKokoro) {
+                badgeKokoro.className = `choice-badge ${engine === 'kokoro' ? 'badge-active' : ''}`;
+                badgeKokoro.textContent = engine === "kokoro" ? "ACTIVE" : "SELECT";
+            }
+            if (badgePiper) {
+                badgePiper.className = `choice-badge ${engine === 'piper' ? 'badge-active' : ''}`;
+                badgePiper.textContent = engine === "piper" ? "ACTIVE" : "SELECT";
+            }
+
+            deckPresetChips.forEach(chip => {
+                const chipEng = chip.dataset.engine || "kokoro";
+                const chipVoice = chip.dataset.voice || "";
+                const matches = (chipEng === engine) && (chipVoice === voice || voice.includes(chipVoice) || chipVoice.includes(voice));
+                chip.classList.toggle("active", matches);
+            });
+        };
+
+        // Helper to get file basename
+        function PathBasename(str) {
+            if (!str) return "";
+            const parts = str.split(/[\\/]/);
+            return parts[parts.length - 1];
+        }
+
+        // Initial fetch
+        await this.refreshTtsStatus();
     }
 }
 

@@ -411,13 +411,19 @@ class PiperTTS(TTSProvider):
         return bool(self._voices)
 
 
+from robot.tts.kokoro import KokoroTTS
+from robot.tts.manager import TTSManager
+
 __all__ = [
     "clean_text_for_speech",
     "split_into_phrases",
     "TTSProvider",
     "PiperTTS",
+    "KokoroTTS",
+    "TTSManager",
     "EmotionCategory",
     "ProsodyModulation",
     "ProsodyModulator",
 ]
+
 

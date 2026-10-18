@@ -14,8 +14,9 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import structlog
-from fastapi import Body, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 logger = structlog.get_logger()
@@ -45,6 +46,19 @@ class ChatSpeakRequest(BaseModel):
     speed: float = 1.0
     pitch: float = 1.0
     play_hardware: bool = False
+
+
+class TTSSwitchRequest(BaseModel):
+    """Request model for switching active TTS engine and voice."""
+    engine: str
+    voice: str | None = None
+
+
+class TTSTestRequest(BaseModel):
+    """Request model for generating test audio with a specific TTS engine and voice."""
+    engine: str = "kokoro"
+    voice: str | None = None
+    text: str = "Hello, this is a test of the neural voice engine on the robot."
 
 
 class ChatResponse(BaseModel):
@@ -711,6 +725,147 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         if res.get("status") == "ok" and hasattr(engine, "events") and engine.events:
             await engine.events.emit("stt_model_changed", model=model_id, size_mb=res.get("size_mb"))
         return res
+
+    # ─── Text-to-Speech (Piper & Kokoro) Endpoints ─────────────────────────
+    @app.get("/api/tts/status")
+    async def get_tts_status() -> dict[str, Any]:
+        """Get active TTS engine, voice model, sample rate, and supported engines."""
+        from robot.tts import TTSManager
+        tts = getattr(engine, "tts", None)
+        if isinstance(tts, TTSManager):
+            active_engine = tts.get_active_engine_name()
+            active_voice = tts.get_active_voice()
+            engines_list = tts.list_engines()
+            voices_list = tts.list_voices()
+            eng_inst = tts.get_active_engine()
+            sample_rate = getattr(eng_inst, "SAMPLE_RATE", 16000)
+        else:
+            active_engine = "piper"
+            active_voice = getattr(tts, "_active_model", "en-us-lessac-medium")
+            engines_list = [
+                {
+                    "id": "piper",
+                    "name": "Piper ONNX",
+                    "description": "Ultra low-latency local ONNX synthesis",
+                    "sample_rate": 16000,
+                    "is_available": True,
+                    "is_active": True,
+                    "total_voices": 7,
+                    "recommended_voice": "en-us-lessac-medium",
+                }
+            ]
+            voices_list = []
+            sample_rate = 16000
+
+        return {
+            "status": "ok",
+            "active_engine": active_engine,
+            "active_voice": active_voice,
+            "sample_rate": sample_rate,
+            "total_voices": len(voices_list),
+            "engines": engines_list,
+        }
+
+    @app.get("/api/tts/voices")
+    async def list_tts_voices(engine_filter: str | None = Query(None, alias="engine")) -> dict[str, Any]:
+        """List catalog of all available voices across Kokoro Neural and Piper ONNX."""
+        from robot.tts import TTSManager
+        tts = getattr(engine, "tts", None)
+        if isinstance(tts, TTSManager):
+            voices = tts.list_voices(engine_name=engine_filter)
+            active_engine = tts.get_active_engine_name()
+            active_voice = tts.get_active_voice()
+        else:
+            active_engine = "piper"
+            active_voice = "en-us-lessac-medium"
+            voices = []
+
+        return {
+            "status": "ok",
+            "active_engine": active_engine,
+            "active_voice": active_voice,
+            "total_voices": len(voices),
+            "voices": voices,
+        }
+
+    @app.post("/api/tts/switch")
+    async def switch_tts_engine_and_voice(req: TTSSwitchRequest) -> dict[str, Any]:
+        """Hot-swap the active TTS engine (Piper or Kokoro) and active voice at runtime.
+
+        Args:
+            req: TTSSwitchRequest with engine ('piper' or 'kokoro') and optional voice identifier.
+
+        Returns:
+            Dictionary with switch result status, active engine, and active voice.
+        """
+        from robot.tts import TTSManager
+        tts = getattr(engine, "tts", None)
+        if not isinstance(tts, TTSManager):
+            try:
+                engine.tts = TTSManager(engine.config)
+                tts = engine.tts
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to initialize TTSManager: {e}")
+
+        try:
+            res = tts.switch_engine(req.engine, voice=req.voice)
+            if hasattr(engine, "events") and engine.events:
+                await engine.events.emit(
+                    "tts_engine_changed",
+                    engine=res["engine"],
+                    voice=res["voice"],
+                    sample_rate=res["sample_rate"],
+                )
+            return {
+                "status": "ok",
+                "engine": res["engine"],
+                "voice": res["voice"],
+                "sample_rate": res["sample_rate"],
+            }
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/api/tts/test")
+    async def test_tts_voice(req: TTSTestRequest) -> Response:
+        """Synthesize preview audio using requested engine and voice without changing active state.
+
+        Args:
+            req: TTSTestRequest with engine, voice, and test phrase.
+
+        Returns:
+            Response containing audio/wav binary data for in-browser playback.
+        """
+        from robot.tts import TTSManager
+        import io
+        import wave
+        tts = getattr(engine, "tts", None)
+        if not isinstance(tts, TTSManager):
+            try:
+                engine.tts = TTSManager(engine.config)
+                tts = engine.tts
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"TTSManager unavailable: {e}")
+
+        try:
+            target_engine = tts._get_or_load_engine(req.engine)
+            test_phrase = req.text.strip() or "Hello, this is a test of the neural voice engine on the robot."
+            samples, sr = await target_engine.synthesize(test_phrase, voice_model=req.voice)
+            if len(samples) == 0:
+                raise HTTPException(status_code=500, detail="Synthesis produced zero audio frames.")
+
+            pcm16 = np.clip(samples * 32767.0, -32768.0, 32767.0).astype(np.int16)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(pcm16.tobytes())
+
+            return Response(content=buf.getvalue(), media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"TTS test synthesis failed: {e}")
 
     # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
     @app.get("/spotify/status")

@@ -79,6 +79,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 15: 2B Vision Language Models (VLM) & <4B Uncensored Model Architecture** | Model Registry + GGUF Header Validation + Dynamic Pipeline Projector Offload + Parallel Downloader | ✅ **Active** | RTX 3050 (4GB) + AMD 680M / CPU | Curated 12-model catalog (VLM 2B with tool usage & uncensored models <4B); default 2B VLM configured in YAML (`qwen2-vl-2b-instruct` Q4_K_M + `mmproj-f16`); dynamic `llama-server` resolution in `scripts/run.sh` with `--mmproj` and `--mmproj-offload` flags; chunked parallel HTTP range downloader with GGUF header validation; `/api/models/local` discovery endpoint; zero VRAM budget violations (<3.8GB); 306 / 306 tests pass. |
 | **Phase 16: Multi-Model Diffusion & Dynamic GPU Handoff Architecture** | `ImageModelRegistry` + `GpuResourceHandoffManager` + `ImagePromptEnhancer` + `UnifiedImageProvider` + Selective Downloader + Dashboard Model Selector | ✅ **Active** | NVIDIA RTX 3050 (4GB CUDA) + Cloud LLM / CPU | 9-model catalog spanning FLUX.1 Schnell/Dev, SD-Turbo, SDXL-Turbo, SD 1.5, DreamShaper 8, and Small-SD; CUDA PyTorch 2.6.0+cu124 acceleration enabled on RTX 3050; dynamic GPU handoff offloading local LLM (llama-server) to Cloud API (Gemini/OpenAI) or halting process to evacuate >3.5GB VRAM during heavy diffusion generation; automated prompt expansion and parameter tuning via active LLM; multi-format downloader script with fp16 variant optimization; spoken completion TTS notification; dashboard model dropdown selector; 315 / 315 tests pass. |
 | **Phase 17: Dashboard LLM & Whisper STT Model Hot-Swapping Architecture** | `WhisperServerManager` + `LlamaServerManager` + Unified REST APIs + Web Dashboard Top Nav, Audio Deck & Chat Modals | ✅ **Active** | AMD Radeon 680M (Vulkan) + RTX 3050 (4GB CUDA) | Curated 9-model Whisper catalog (`tiny.en` to `large-v3`) offloaded via Vulkan (0MB RTX VRAM); live `whisper-server` process hot-swapping (<1.0s); local GGUF hot-swapping (`qwen3.5-4b`, `qwen2-vl-2b-instruct` with mmproj, uncensored models); REST endpoints (`/api/stt/status`, `/api/stt/models`, `/api/stt/switch`, `/api/llm/models`, `/api/models/local/switch`); frontend controls in Top Nav (`#btnTopNavLocalPicker`, `#btnTopNavSttPicker`), Dev Audio Deck (`#sttPresetChips`), Chat top bar (`#btnChatLocalPicker`, `#btnChatWhisperPicker`), and cyberdeck modals; 323 / 323 tests pass. |
+| **Phase 18: Kokoro Neural TTS, Multi-Engine Coordinator & Dashboard Voice Controls** | `KokoroTTS` + `TTSManager` + Multi-Engine Hot-Swapping + 61 Voice Neural Catalog + REST APIs + Audio Deck & Modal UI | ✅ **Active** | CPU / AVX2 (0 MB VRAM) | Kokoro-82M ONNX Runtime with 54 voices (`af_heart`, `bf_emma`, `am_adam`, `bm_george`, etc.) and Piper ONNX with 7 models (Ryan, Alan British, Lessac, Amy, Bryce, Kathleen, HFC); sample-rate agile `AudioPlayer` (24kHz / 22.05kHz); in-memory phrase cache & linear pitch modulation; multi-engine coordinator hot-swapping engines and voices with persistence in `data/active_tts_engine.txt`, `data/active_tts_voice.txt`, and `config/default.yaml`; REST APIs (`/api/tts/status`, `/api/tts/voices`, `/api/tts/switch`, `/api/tts/test`); Cyberdeck dashboard controls with Top Nav picker (`#btnTopNavTtsPicker`), Dev Audio Deck card (`#ttsDeckCard` with 10 preset chips), Chat bar controls, and 61-voice modal (`#ttsModelModal`) with live in-browser audio previews; 329 / 329 tests pass. |
 
 
 Legend:
@@ -172,6 +173,14 @@ Legend:
   - Added Web Dashboard controls: Top Navigation model buttons (`#btnTopNavLocalPicker`, `#btnTopNavSttPicker`), Dev Panel Audio Deck Whisper STT Card (`#sttPresetChips`), Chat View top bar pills (`#btnChatLocalPicker`, `#btnChatWhisperPicker`), and cyberdeck modals (`#localModelModal`, `#whisperModelModal`).
   - Automatic model persistence across restarts in `data/active_local_model.txt`, `data/active_stt_model.txt`, and `config/default.yaml`.
   - 100% test pass rate: **323 / 323 tests passing** across all 45 test modules; **115 / 115 Python files clean** with zero import errors (`verify_imports.py`).
+- [x] **Day 16: Phase 18 Kokoro Neural TTS, Multi-Engine Coordinator & Dashboard Voice Controls**:
+  - Integrated Kokoro-82M neural TTS ONNX model (`kokoro-v1.0.onnx`, 311MB) and 54-voice style embeddings (`voices-v1.0.bin`, 27MB) running 100% on CPU/AVX2 (0 MB VRAM on RTX 3050 and AMD 680M).
+  - Expanded Piper ONNX voice catalog with Ryan medium (`en-us-ryan-medium.onnx`) and Alan British medium (`en-gb-alan-medium.onnx`), bringing Piper to 7 models and full catalog to 61 voices.
+  - Implemented `KokoroTTS` engine (`src/robot/tts/kokoro.py`) with 24kHz output, multi-dialect eSpeak phonemization (`en-us`, `en-gb`, `hi`, `ja`, `cmn`), expressive pitch/speed prosody modulation, and in-memory phrase cache.
+  - Implemented `TTSManager` (`src/robot/tts/manager.py`) orchestrating Kokoro and Piper with hot-swapping, state persistence in `data/active_tts_engine.txt`, `data/active_tts_voice.txt`, and `config/default.yaml`, and transparent delegation.
+  - Added REST endpoints: `GET /api/tts/status`, `GET /api/tts/voices`, `POST /api/tts/switch`, and `POST /api/tts/test`.
+  - Built Cyberdeck dashboard UI controls: Top Nav button (`#btnTopNavTtsPicker`), Dev Panel Audio Deck card (`#ttsDeckCard` with 10 quick-switch preset chips), Chat top bar picker (`#chatTtsControls`), and 61-voice Cyberdeck modal (`#ttsModelModal`) with search, dialect filter chips, and live preview audio playback.
+  - 100% test pass rate: **329 / 329 tests passing** across all 46 test modules; **118 / 118 Python files clean** with zero import errors (`verify_imports.py`).
 
 
 ### 🏁 Version 1 (V1) Completed Milestones
@@ -1910,6 +1919,39 @@ Legend:
       - Benchmarked Whisper server hot-swap: switched between `base.en` and `tiny.en` on AMD Radeon 680M in <0.8s with 0 MB RTX 3050 VRAM consumed.
       - 323 / 323 unit tests pass 100% across all 45 test modules (`.venv/bin/pytest tests/`).
       - 115 / 115 Python files verified clean with zero import errors (`verify_imports.py`).
+
+99. **Kokoro Neural TTS, Multi-Engine Coordinator & Dashboard Voice Controls**:
+    - *Symptoms & Requirements*:
+      1. User requested downloading and configuring Kokoro TTS with a diverse suite of voices, alongside an option to seamlessly switch between Piper and Kokoro in the dashboard.
+      2. The system needed a broad multi-engine voice catalog while safeguarding GPU VRAM (keeping speech synthesis strictly on CPU / AVX2 so the RTX 3050 retains all VRAM for LLM inference and diffusion handoff).
+      3. Dynamic switching between Piper (16000Hz / 22050Hz) and Kokoro (24000Hz) required seamless audio player sample rate agility without audio buffer distortion, rate mismatches, or stream lockups.
+      4. Voice and engine selections must persist across restarts.
+    - *Fixes Applied*:
+      1. **Kokoro Neural TTS Engine (`src/robot/tts/kokoro.py`)**:
+         - Integrated Kokoro-82M ONNX Runtime engine (`kokoro-onnx 0.6.1`) with 54 voices (`af_heart`, `af_bella`, `am_adam`, `bf_emma`, `bm_george`, `hf_alpha`, `jf_alpha`, `zf_xiaobei`, etc.) spanning American, British, Hindi, Japanese, and Mandarin dialects.
+         - Built automatic language code detection and multi-accent eSpeak phonemization (`en-us`, `en-gb`, `hi`, `ja`, `cmn`).
+         - Implemented 24kHz high-fidelity output, linear pitch shifting via SciPy resampling, prosody modulation (`speed`, `pitch`), and in-memory pre-warmed phrase caching.
+      2. **Multi-Engine Coordinator (`src/robot/tts/manager.py`)**:
+         - Implemented `TTSManager` implementing `TTSProvider` protocol and orchestrating both Kokoro and Piper.
+         - Built runtime engine switching (`switch_engine`) and voice selection (`switch_voice`), synchronizing state to disk in `data/active_tts_engine.txt`, `data/active_tts_voice.txt`, and `config/default.yaml`.
+         - Exposed unified catalog aggregation (`list_voices`), active status inspection (`get_status`), and transparent delegation (`synthesize`, `synthesize_with_prosody`, `modulate_prosody`, `warm_phrase`, `health_check`).
+         - Integrated `TTSManager` into `src/robot/core/engine.py` with fallback resilience.
+      3. **Voice Catalog Expansion (`scripts/download_tts_models.py`)**:
+         - Automated verification and download script fetching Kokoro weights and style embeddings.
+         - Downloaded additional Piper ONNX voices (`en-us-ryan-medium` and `en-gb-alan-medium`), expanding Piper to 7 models and the overall system catalog to 61 voices.
+      4. **REST API & WebSocket Integration (`src/robot/api/__init__.py`)**:
+         - Added endpoints: `GET /api/tts/status`, `GET /api/tts/voices`, `POST /api/tts/switch` (hot-swap engine and voice), and `POST /api/tts/test` (generate in-memory preview audio).
+         - Added WebSocket broadcast `tts_engine_changed` for multi-client synchronization.
+      5. **Cyberdeck Dashboard UI Controls (`index.html`, `index.css`, `app.js`)**:
+         - Top Navigation: Added `#btnTopNavTtsPicker` with active engine/voice badges and glowing rose/magenta accents.
+         - Dev Panel Audio Deck: Added `#ttsDeckCard` featuring engine switcher pills (Piper / Kokoro), status badge, and 10 quick-switch preset voice chips (`#ttsPresetChips`).
+         - Chat View Top Bar: Added `#chatTtsControls` for fast voice adjustments during chat.
+         - Voice Catalog Modal: Built `#ttsModelModal` with search filtering, dialect chips (All, American, British, Hindi, Japanese, Chinese), engine filter cards, voice information tags, and live in-browser preview audio playback (`/api/tts/test`).
+    - *Verification*:
+      - Added 6 unit and integration tests in `tests/test_tts_multi_engine.py` verifying catalog discovery, synthesis, prosody modulation, hot-swapping, and disk persistence.
+      - Tested live synthesis on Kokoro (`af_heart`) at 24kHz on CPU (0 MB VRAM) and Piper (`en_US-lessac-medium`) at 22.05kHz.
+      - 329 / 329 unit tests pass 100% across all 46 test modules (`.venv/bin/pytest tests/`).
+      - 118 / 118 Python files verified clean with zero import errors (`verify_imports.py`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

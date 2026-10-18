@@ -77,6 +77,15 @@
                     <span class="model-picker-caret">▾</span>
                 </button>
             </div>
+            <!-- Top Nav Text-to-Speech (TTS) Picker Trigger -->
+            <div class="top-nav-tts-controls" id="topNavTtsControls">
+                <button class="top-nav-tts-picker-btn" id="btnTopNavTtsPicker" type="button" title="Switch TTS Voice & Engine (Kokoro Neural / Piper ONNX)">
+                    <span class="tts-picker-icon">🔊</span>
+                    <span class="tts-picker-label" id="topNavTtsPickerLabel">KOKORO: af_heart</span>
+                    <span class="tts-engine-badge" id="topNavTtsBadge">24kHz</span>
+                    <span class="model-picker-caret">▾</span>
+                </button>
+            </div>
         </div>
         <div class="header-center">
             <div class="status-pill status-idle" id="globalStatusPill">
@@ -652,6 +661,43 @@
                                     <button class="stt-chip" data-model="large-v3" title="2.9GB • Max Accuracy SOTA">👑 large-v3 (2.9G)</button>
                                 </div>
                             </div>
+                            <!-- Text-to-Speech (TTS) Multi-Engine & Voice Card -->
+                            <div class="tts-section-card" id="ttsDeckCard">
+                                <div class="tts-card-header">
+                                    <div class="tts-title-row">
+                                        <span class="tts-icon">🔊</span>
+                                        <span class="tts-card-title">TEXT-TO-SPEECH (TTS) ENGINES & VOICES</span>
+                                    </div>
+                                    <div class="tts-engine-pills">
+                                        <button class="tts-engine-switch-btn active" id="btnDeckSwitchKokoro" data-engine="kokoro" title="Switch to Kokoro Neural 24kHz engine">
+                                            🌸 Kokoro Neural (24kHz)
+                                        </button>
+                                        <button class="tts-engine-switch-btn" id="btnDeckSwitchPiper" data-engine="piper" title="Switch to Piper ONNX low-latency engine">
+                                            ⚡ Piper ONNX (16kHz)
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="tts-status-row">
+                                    <div class="tts-active-info">
+                                        <span class="tts-active-lbl">Active Voice:</span>
+                                        <span class="tts-active-chip" id="deckTtsActivePill">af_heart (Warm & Natural)</span>
+                                        <span class="tts-engine-state online" id="deckTtsEngineState">ONLINE (61 Voices)</span>
+                                    </div>
+                                    <button class="tts-open-modal-btn" id="btnOpenTtsModalDeck" type="button" title="Open TTS Voice Catalog Modal">Browse 60+ Voices ⚙️</button>
+                                </div>
+                                <div class="tts-preset-chips" id="ttsPresetChips">
+                                    <button class="tts-chip active" data-engine="kokoro" data-voice="af_heart" title="Kokoro • Warm & Natural American Female">🌸 Heart (US)</button>
+                                    <button class="tts-chip" data-engine="kokoro" data-voice="af_bella" title="Kokoro • Energetic American Female">🌸 Bella (US)</button>
+                                    <button class="tts-chip" data-engine="kokoro" data-voice="af_nicole" title="Kokoro • Crisp Professional Female">🌸 Nicole (US)</button>
+                                    <button class="tts-chip" data-engine="kokoro" data-voice="am_adam" title="Kokoro • Deep American Male">🌸 Adam (US)</button>
+                                    <button class="tts-chip" data-engine="kokoro" data-voice="am_michael" title="Kokoro • Authoritative American Male">🌸 Michael (US)</button>
+                                    <button class="tts-chip" data-engine="kokoro" data-voice="bf_emma" title="Kokoro • British Sophisticated Female">🌸 Emma (UK)</button>
+                                    <button class="tts-chip" data-engine="kokoro" data-voice="bm_george" title="Kokoro • British Refined Male">🌸 George (UK)</button>
+                                    <button class="tts-chip" data-engine="piper" data-voice="en-us-lessac-medium" title="Piper • Fast Low-Latency Lessac">⚡ Lessac (US)</button>
+                                    <button class="tts-chip" data-engine="piper" data-voice="en-us-ryan-medium" title="Piper • Rich Narrative Ryan">⚡ Ryan (US)</button>
+                                    <button class="tts-chip" data-engine="piper" data-voice="en-gb-alan-medium" title="Piper • British Alan">⚡ Alan (UK)</button>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- PANE 3: MEMORY & KNOWLEDGE EXPLORER -->
@@ -770,6 +816,14 @@
                             <button class="chat-stat-pill chat-whisper-btn" id="btnChatWhisperPicker" type="button" title="Switch Whisper STT Model (Vulkan AMD Radeon 680M)">
                                 <span class="whisper-icon">🎙️</span>
                                 <span id="chatWhisperPickerLabel">Whisper: base.en</span>
+                                <span class="chat-select-arrow">▾</span>
+                            </button>
+                        </div>
+                        <!-- Text-to-Speech (TTS) Selector in Chat Mode -->
+                        <div class="chat-tts-controls" id="chatTtsControls">
+                            <button class="chat-stat-pill chat-tts-btn" id="btnChatTtsPicker" type="button" title="Switch TTS Voice & Engine (Kokoro Neural / Piper ONNX)">
+                                <span class="tts-icon">🔊</span>
+                                <span id="chatTtsPickerLabel">TTS: af_heart</span>
                                 <span class="chat-select-arrow">▾</span>
                             </button>
                         </div>
@@ -1241,6 +1295,67 @@
         </div>
     </div>
 
+    <!-- Text-to-Speech (TTS) Engine & Voice Catalog Modal -->
+    <div class="cyber-modal-backdrop" id="ttsModelModal" style="display: none;">
+        <div class="cyber-modal cyber-modal-wide">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🔊</span>
+                    <span>TEXT-TO-SPEECH ENGINES & VOICES</span>
+                </div>
+                <button class="modal-close-btn" id="btnCloseTtsModelModal" title="Close (Esc)">✕</button>
+            </div>
+            <!-- Engine Selection Banner -->
+            <div class="tts-engine-choice-bar">
+                <div class="tts-engine-choice-card active" id="modalEngineCardKokoro" data-engine="kokoro">
+                    <div class="choice-card-head">
+                        <span class="choice-icon">🌸</span>
+                        <div class="choice-titles">
+                            <span class="choice-title">Kokoro Neural (82M)</span>
+                            <span class="choice-sub">Ultra-realistic 24kHz • 54 multi-accent voices</span>
+                        </div>
+                        <span class="choice-badge badge-active" id="badgeModalKokoro">ACTIVE</span>
+                    </div>
+                </div>
+                <div class="tts-engine-choice-card" id="modalEngineCardPiper" data-engine="piper">
+                    <div class="choice-card-head">
+                        <span class="choice-icon">⚡</span>
+                        <div class="choice-titles">
+                            <span class="choice-title">Piper ONNX</span>
+                            <span class="choice-sub">Ultra low-latency (<20ms TTFT) • 7 voices</span>
+                        </div>
+                        <span class="choice-badge" id="badgeModalPiper">SELECT</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Filter Bar & Search -->
+            <div class="tts-filter-toolbar">
+                <div class="tts-filter-chips" id="ttsFilterChips">
+                    <button class="tts-filter-chip active" data-filter="all">All (<span id="countTtsAll">61</span>)</button>
+                    <button class="tts-filter-chip" data-filter="female">Female</button>
+                    <button class="tts-filter-chip" data-filter="male">Male</button>
+                    <button class="tts-filter-chip" data-filter="american">American</button>
+                    <button class="tts-filter-chip" data-filter="british">British</button>
+                    <button class="tts-filter-chip" data-filter="international">International</button>
+                </div>
+                <div class="tts-search-box">
+                    <input type="text" id="ttsVoiceSearchInput" placeholder="Search voice or accent (e.g. Heart, Adam, Emma, Ryan)..." autocomplete="off" />
+                </div>
+            </div>
+            <div class="modal-body" style="max-height: 52vh; overflow-y: auto; padding: 16px;">
+                <div class="model-cards-grid tts-cards-grid" id="ttsVoiceCardsGrid">
+                    <!-- Populated dynamically via /api/tts/voices -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="footer-hint" id="ttsModalHint">Click '🔊 Preview' to listen to any voice before activating.</span>
+                <button class="cyber-btn btn-secondary" id="btnCancelTtsModelModal" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
     <script src="/static/three.min.js?v=4.0"></script>
     <script src="/static/GLTFLoader.js?v=4.0"></script>
@@ -1249,6 +1364,6 @@
     <script src="/static/character/AnimationSystem.js?v=4.0"></script>
     <script src="/static/character/GazeSystem.js?v=4.0"></script>
     <script src="/static/character/CharacterEngine.js?v=4.0"></script>
-    <script src="/static/app.js?v=4.8"></script>
+    <script src="/static/app.js?v=5.0"></script>
 </body>
 </html>
