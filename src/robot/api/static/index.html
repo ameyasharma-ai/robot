@@ -49,6 +49,14 @@
                 </div>
                 <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
             </button>
+            <!-- Top Nav Local Model Picker Trigger -->
+            <div class="top-nav-local-controls" id="topNavLocalControls">
+                <button class="top-nav-model-picker-btn local-picker-btn" id="btnTopNavLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
+                    <span class="model-picker-icon">⚡</span>
+                    <span class="model-picker-label" id="topNavLocalPickerLabel">Qwen 3.5 4B</span>
+                    <span class="model-picker-caret">▾</span>
+                </button>
+            </div>
             <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
             <div class="top-nav-openai-controls" id="topNavOpenaiControls" style="display: none;">
                 <button class="top-nav-model-picker-btn" id="btnTopNavModelPicker" type="button" title="Search and select OpenAI-compatible model (400+ available)">
@@ -58,6 +66,15 @@
                 </button>
                 <button class="top-nav-sub-btn" id="btnTopNavOpenaiConfig" type="button" title="Configure API Endpoint & Key">
                     ⚙️
+                </button>
+            </div>
+            <!-- Top Nav Whisper STT Model Picker Trigger -->
+            <div class="top-nav-whisper-controls" id="topNavWhisperControls">
+                <button class="top-nav-stt-picker-btn" id="btnTopNavSttPicker" type="button" title="Switch Whisper STT Model (AMD Radeon 680M Vulkan)">
+                    <span class="stt-picker-icon">🎙️</span>
+                    <span class="stt-picker-label" id="topNavSttPickerLabel">base.en</span>
+                    <span class="stt-vulkan-badge">VULKAN</span>
+                    <span class="model-picker-caret">▾</span>
                 </button>
             </div>
         </div>
@@ -603,6 +620,36 @@
                                     <button class="chain-btn macro-btn" data-prompt="Check what you see and then play some music and set volume to 50%" title="Execute vision inspection followed by music playback">👁️ Check & 🎵 Play</button>
                                     <button class="chain-btn macro-btn" data-prompt="Set equalizer to bass boost and restart music at 40% volume" title="Switch to Bass+ and restart track at 40%">💥 Bass+ 40%</button>
                                     <button class="chain-btn macro-btn" data-prompt="Look around, introduce yourself, and wave your hand" title="Inspect scene, speak greeting, and trigger gesture">👋 Look & Wave</button>
+                            <!-- Whisper STT Engine & Hardware Offload Card -->
+                            <div class="stt-section-card" id="sttDeckCard">
+                                <div class="stt-card-header">
+                                    <div class="stt-title-row">
+                                        <span class="stt-icon">🎙️</span>
+                                        <span class="stt-card-title">WHISPER STT ENGINE & ACCELERATION</span>
+                                    </div>
+                                    <div class="stt-device-badge" id="deckSttDeviceBadge" title="Hardware acceleration device: Zero RTX VRAM">
+                                        <span class="stt-pulse-dot"></span>
+                                        <span class="stt-device-name">AMD Radeon 680M (Vulkan dev 0)</span>
+                                        <span class="stt-vram-zero-tag">0MB RTX VRAM</span>
+                                    </div>
+                                </div>
+                                <div class="stt-status-row">
+                                    <div class="stt-active-info">
+                                        <span class="stt-active-lbl">Active Model:</span>
+                                        <span class="stt-active-chip" id="deckSttActivePill">base.en (142 MB)</span>
+                                        <span class="stt-engine-state online" id="deckSttEngineState">ONLINE (Port 8081)</span>
+                                    </div>
+                                    <button class="stt-open-modal-btn" id="btnOpenSttModalDeck" type="button" title="Open STT Model Manager">Manage All 9 Models ⚙️</button>
+                                </div>
+                                <div class="stt-preset-chips" id="sttPresetChips">
+                                    <button class="stt-chip" data-model="tiny.en" title="75MB • Ultra-fast English (minimal latency)">⚡ tiny.en (75M)</button>
+                                    <button class="stt-chip active" data-model="base.en" title="142MB • Balanced English default">🎯 base.en (142M)</button>
+                                    <button class="stt-chip" data-model="base" title="142MB • Multilingual default">🌐 base (142M)</button>
+                                    <button class="stt-chip" data-model="small.en" title="466MB • High accuracy English">🧠 small.en (466M)</button>
+                                    <button class="stt-chip" data-model="small" title="466MB • High accuracy Multilingual">🌐 small (466M)</button>
+                                    <button class="stt-chip" data-model="medium.en" title="1.5GB • Studio Grade English">🔮 medium.en (1.5G)</button>
+                                    <button class="stt-chip" data-model="large-v3-turbo" title="1.6GB • Fast SOTA Turbo">🚀 v3-turbo (1.6G)</button>
+                                    <button class="stt-chip" data-model="large-v3" title="2.9GB • Max Accuracy SOTA">👑 large-v3 (2.9G)</button>
                                 </div>
                             </div>
                         </div>
@@ -695,6 +742,14 @@
                             <span class="model-icon">⚡</span>
                             <span id="chatModelLabel">LOCAL QWEN (16K)</span>
                         </div>
+                        <!-- Local GGUF Model Selector in Chat Mode -->
+                        <div class="chat-local-controls" id="chatLocalControls">
+                            <button class="chat-stat-pill chat-local-model-btn" id="btnChatLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
+                                <span class="model-icon">⚡</span>
+                                <span id="chatLocalPickerLabel">Qwen 3.5 4B</span>
+                                <span class="chat-select-arrow">▾</span>
+                            </button>
+                        </div>
                         <!-- OpenAI-Compatible Model Selector in Chat Mode -->
                         <div class="chat-openai-controls" id="chatOpenaiControls" style="display: none;">
                             <button class="chat-openai-model-btn" id="btnChatModelPicker" type="button" title="Search & select from 400+ OpenAI-compatible models">
@@ -708,6 +763,14 @@
                                     <circle cx="12" cy="12" r="3"></circle>
                                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
                                 </svg>
+                            </button>
+                        </div>
+                        <!-- Whisper STT Selector in Chat Mode -->
+                        <div class="chat-whisper-controls" id="chatWhisperControls">
+                            <button class="chat-stat-pill chat-whisper-btn" id="btnChatWhisperPicker" type="button" title="Switch Whisper STT Model (Vulkan AMD Radeon 680M)">
+                                <span class="whisper-icon">🎙️</span>
+                                <span id="chatWhisperPickerLabel">Whisper: base.en</span>
+                                <span class="chat-select-arrow">▾</span>
                             </button>
                         </div>
                         <button class="chat-stat-pill chat-thinking-toggle-btn active" id="btnChatThinkingToggle" type="button" title="Toggle AI Deep Reasoning / Thinking Mode (Local & API models)">
@@ -1117,6 +1180,63 @@
             <div class="modal-footer">
                 <button class="cyber-btn btn-secondary" id="btnTestAndScanModal">🔄 Rescan Active Models</button>
                 <button class="cyber-btn btn-primary" id="btnSaveOpenaiConfig">💾 Save All Configurations</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Local LLM Model Selector Modal -->
+    <div class="cyber-modal-backdrop" id="localModelModal" style="display: none;">
+        <div class="cyber-modal cyber-modal-wide">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">⚡</span>
+                    <span>LOCAL LLM MODEL SELECTOR (RTX 3050 CUDA)</span>
+                </div>
+                <button class="modal-close-btn" id="btnCloseLocalModelModal" title="Close (Esc)">✕</button>
+            </div>
+            <div class="modal-device-strip">
+                <span class="device-pill">GPU: NVIDIA GeForce RTX 3050 (4GB VRAM, CUDA sm_86)</span>
+                <span class="engine-pill">Engine: llama-server (FlashAttention, 16K Context)</span>
+            </div>
+            <div class="modal-body" style="max-height: 60vh; overflow-y: auto; padding: 16px;">
+                <div class="model-cards-grid" id="localModelCardsGrid">
+                    <!-- Populated dynamically via /api/llm/models -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="footer-hint" id="localModelModalHint">Hot-swapping pre-warms slot cache and updates active model.</span>
+                <button class="cyber-btn btn-secondary" id="btnCancelLocalModelModal" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Whisper STT Model Catalog & Switcher Modal -->
+    <div class="cyber-modal-backdrop" id="whisperModelModal" style="display: none;">
+        <div class="cyber-modal cyber-modal-wide">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🎙️</span>
+                    <span>WHISPER STT MODEL PROFILES (VULKAN)</span>
+                </div>
+                <button class="modal-close-btn" id="btnCloseWhisperModelModal" title="Close (Esc)">✕</button>
+            </div>
+            <div class="modal-device-strip stt-device-strip">
+                <span class="device-pill vulkan-pill">⚡ Device: AMD Radeon 680M (Vulkan dev 0)</span>
+                <span class="engine-pill">0 MB VRAM on RTX 3050 • Local Port 8081</span>
+                <span class="stt-live-indicator" id="whisperModalRunningStatus">● ONLINE</span>
+            </div>
+            <div class="modal-body" style="max-height: 60vh; overflow-y: auto; padding: 16px;">
+                <div class="model-cards-grid" id="whisperModelCardsGrid">
+                    <!-- Populated dynamically via /api/stt/models -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="footer-hint" id="whisperModalHint">Zero RTX VRAM overhead. Hot-swap takes ~1 second.</span>
+                <button class="cyber-btn btn-secondary" id="btnCancelWhisperModelModal" type="button">Close</button>
             </div>
         </div>
     </div>

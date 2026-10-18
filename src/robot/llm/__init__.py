@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -919,6 +921,7 @@ class LlamaServerManager:
     BINARY_PATH = "/home/ameya/llama.cpp/build/bin/llama-server"
     MODEL_PATH = "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf"
     HEALTH_URL = "http://127.0.0.1:8080/health"
+    _active_model_id: str | None = None
 
     @classmethod
     def is_running(cls) -> bool:
@@ -959,9 +962,22 @@ class LlamaServerManager:
         cls,
         model_path: str | None = None,
         binary_path: str | None = None,
+        mmproj_path: str | None = None,
+        ngl: int | None = None,
         port: int = 8080,
     ) -> bool:
-        """Launch llama-server with FlashAttention offloaded to the RTX 3050."""
+        """Launch llama-server with FlashAttention offloaded to the RTX 3050.
+
+        Args:
+            model_path: Path to GGUF model file.
+            binary_path: Optional path to llama-server binary.
+            mmproj_path: Optional path to multimodal vision projector file.
+            ngl: Number of GPU layers to offload (default: 99, or 32 for multimodal).
+            port: Port for the llama-server HTTP daemon.
+
+        Returns:
+            bool: True if server launched and passed health check, False otherwise.
+        """
         import subprocess
         from pathlib import Path
 
@@ -975,10 +991,12 @@ class LlamaServerManager:
             logger.error("llama_server_binary_or_model_missing", bin=bin_path, model=m_path)
             return False
 
+        effective_ngl = ngl if ngl is not None else (32 if mmproj_path else 99)
+
         cmd = [
             bin_path,
             "-m", m_path,
-            "-ngl", "99",
+            "-ngl", str(effective_ngl),
             "-t", "8",
             "-tb", "8",
             "-fa", "on",
@@ -992,9 +1010,12 @@ class LlamaServerManager:
             "--port", str(port),
         ]
 
+        if mmproj_path and Path(mmproj_path).exists():
+            cmd.extend(["--mmproj", str(mmproj_path), "--mmproj-offload"])
+
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_dir / "llama-server.log", "a")
+        log_file = open(log_dir / "llama-server.log", "a", encoding="utf-8")
 
         logger.info("starting_llama_server", cmd=" ".join(cmd))
         subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
@@ -1007,6 +1028,229 @@ class LlamaServerManager:
 
         logger.error("llama_server_start_timeout")
         return False
+
+    @classmethod
+    def get_active_model_id(cls) -> str:
+        """Determine currently active local model ID or filename.
+
+        Returns:
+            str: Model ID or filename string.
+        """
+        if cls._active_model_id:
+            return cls._active_model_id
+
+        # 1. Check live process
+        try:
+            res = subprocess.run(
+                ["pgrep", "-a", "llama-server"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout:
+                import re
+                m = re.search(r"-m\s+([^\s]+)", res.stdout)
+                if m:
+                    stem = Path(m.group(1)).name
+                    if stem == "Qwen3.5-4B-Q4_K_M.gguf":
+                        return "qwen3.5-4b"
+                    # Check registry
+                    from robot.llm.model_registry import ModelRegistry
+                    for reg_id, reg_meta in ModelRegistry.CATALOG.items():
+                        if reg_meta.filename == stem:
+                            return reg_id
+                    return stem
+        except Exception:
+            pass
+
+        # 2. Check persisted state file
+        txt_path = Path("data/active_local_model.txt")
+        if txt_path.exists():
+            try:
+                saved = txt_path.read_text(encoding="utf-8").strip()
+                if saved:
+                    return saved
+            except Exception:
+                pass
+
+        # 3. Check config/default.yaml
+        cfg_path = Path("config/default.yaml")
+        if cfg_path.exists():
+            try:
+                import yaml
+                with open(cfg_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                m = cfg.get("llm", {}).get("model", "")
+                if m:
+                    return m
+            except Exception:
+                pass
+
+        return "qwen3.5-4b"
+
+    @classmethod
+    async def switch_model(
+        cls,
+        model_id_or_path: str,
+        engine: Any | None = None,
+        port: int = 8080,
+    ) -> dict[str, Any]:
+        """Hot-swap the local GGUF model on the RTX 3050 GPU.
+
+        Args:
+            model_id_or_path: Identifier from ModelRegistry or path to GGUF model file.
+            engine: Optional active RobotEngine to warm up and re-bind.
+            port: Port for the llama-server (default: 8080).
+
+        Returns:
+            dict[str, Any]: Result status dictionary.
+        """
+        from pathlib import Path
+        from robot.llm.model_registry import ModelRegistry
+
+        logger.info("switching_local_llm_model", target=model_id_or_path)
+
+        target_model_path: Path | None = None
+        target_mmproj_path: Path | None = None
+        is_vision = False
+        resolved_id = model_id_or_path
+        model_name = model_id_or_path
+        ngl = 99
+
+        # Case 1: Qwen 3.5 4B standard model
+        if model_id_or_path in ("qwen3.5-4b", "Qwen3.5-4B", "Qwen3.5-4B-Q4_K_M.gguf"):
+            resolved_id = "qwen3.5-4b"
+            model_name = "Qwen 3.5 4B (Instruct)"
+            default_qwen = Path("/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf")
+            if default_qwen.exists():
+                target_model_path = default_qwen
+        # Case 2: In registered model catalog
+        elif model_id_or_path in ModelRegistry.CATALOG:
+            meta = ModelRegistry.CATALOG[model_id_or_path]
+            resolved_id = meta.id
+            model_name = meta.name
+            target_model_path = meta.get_model_path()
+            if not target_model_path.exists():
+                return {
+                    "status": "error",
+                    "message": f"Model '{meta.name}' is not downloaded yet. Please download it via ./scripts/download_models.sh --model {meta.id}.",
+                }
+            if meta.is_vision:
+                is_vision = True
+                target_mmproj_path = meta.get_mmproj_path()
+                ngl = 32
+        else:
+            # Case 3: Direct filepath
+            p = Path(model_id_or_path)
+            if p.exists() and p.is_file():
+                target_model_path = p
+                resolved_id = p.stem
+                model_name = p.stem
+
+        if not target_model_path or not target_model_path.exists():
+            return {
+                "status": "error",
+                "message": f"Could not find model file for '{model_id_or_path}' on disk.",
+            }
+
+        # Stop currently running server to evacuate VRAM
+        await cls.stop()
+        await asyncio.sleep(0.5)
+
+        # Launch server with new model
+        ok = await cls.start(
+            model_path=str(target_model_path),
+            mmproj_path=str(target_mmproj_path) if target_mmproj_path else None,
+            ngl=ngl,
+            port=port,
+        )
+        if not ok:
+            return {
+                "status": "error",
+                "message": f"Failed to start llama-server with model '{resolved_id}'. Check logs/llama-server.log.",
+            }
+
+        cls._active_model_id = resolved_id
+
+        # Update engine references and pre-warm slots if attached
+        if engine:
+            try:
+                if hasattr(engine, "llm") and hasattr(engine.llm, "model"):
+                    engine.llm.model = resolved_id
+                if hasattr(engine, "llm_provider_type"):
+                    engine.llm_provider_type = "local"
+                if hasattr(engine, "_persist_llm_provider"):
+                    engine._persist_llm_provider("local")
+                if hasattr(engine, "warm_up_llm") and callable(engine.warm_up_llm):
+                    p_name = getattr(engine, "active_personality_name", "neo")
+                    coro = engine.warm_up_llm(p_name)
+                    if asyncio.iscoroutine(coro):
+                        asyncio.create_task(coro)
+                if hasattr(engine, "events") and hasattr(engine.events, "emit"):
+                    emit_coro = engine.events.emit(
+                        "llm.model_changed",
+                        provider="local",
+                        model=resolved_id,
+                        model_name=model_name,
+                        is_vision=is_vision,
+                    )
+                    if asyncio.iscoroutine(emit_coro):
+                        await emit_coro
+            except Exception as e:
+                logger.warning("engine_local_model_rebind_error", error=str(e))
+
+        cls._persist_local_model(resolved_id, target_model_path, target_mmproj_path)
+
+        return {
+            "status": "ok",
+            "provider": "local",
+            "model": resolved_id,
+            "name": model_name,
+            "model_path": str(target_model_path),
+            "is_vision": is_vision,
+            "vram_freed": False,
+        }
+
+    @classmethod
+    def _persist_local_model(
+        cls,
+        model_id: str,
+        model_path: Path,
+        mmproj_path: Path | None = None,
+    ) -> None:
+        """Persist active local model selection to data/ and config/default.yaml.
+
+        Args:
+            model_id: Model identifier string.
+            model_path: Resolved path to the GGUF model file.
+            mmproj_path: Optional path to the mmproj file.
+        """
+        try:
+            data_dir = Path("data")
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "active_local_model.txt").write_text(model_id + "\n", encoding="utf-8")
+        except Exception as e:
+            logger.debug("failed_writing_active_local_model_file", error=str(e))
+
+        try:
+            import yaml
+            cfg_path = Path("config/default.yaml")
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                if "llm" not in cfg or not isinstance(cfg["llm"], dict):
+                    cfg["llm"] = {}
+                cfg["llm"]["model"] = model_id
+                cfg["llm"]["model_path"] = str(model_path)
+                if mmproj_path:
+                    cfg["llm"]["multimodal"] = True
+                    cfg["llm"]["mmproj_path"] = str(mmproj_path)
+                else:
+                    cfg["llm"]["multimodal"] = False
+                with open(cfg_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+        except Exception as e:
+            logger.debug("failed_updating_default_yaml_local_model", error=str(e))
 
 
 class ClauseChunker:

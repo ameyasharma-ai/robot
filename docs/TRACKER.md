@@ -78,6 +78,7 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 14: Actuator Safety & Audio Fault Containment Architecture** | Zero-Motion Reconnect Latch + NaN/Inf/Duplicate Rejection + Device Health States (`AudioDeviceState`) + Generation Stale Purging + Bounded Stream Recovery | ✅ **Active** | USB Serial / Microcontroller + Host Audio (PipeWire/ALSA) | Host vs hardware protection boundary map; NaN/Inf/negative speed rejection; duplicate command filtering (0.05° epsilon); stale proposal rejection (>0.5s); post-reconnect zero-motion latching with operator unlatch; explicit device health states (`HEALTHY`, `DEGRADED`, `RECOVERING`, `ERROR`); monotonic generation tracking purging stale speech synthesis on barge-in; bounded stream recovery (max 3 retries); capture/playback fault isolation; non-blocking telemetry metrics. 297 / 297 tests pass. |
 | **Phase 15: 2B Vision Language Models (VLM) & <4B Uncensored Model Architecture** | Model Registry + GGUF Header Validation + Dynamic Pipeline Projector Offload + Parallel Downloader | ✅ **Active** | RTX 3050 (4GB) + AMD 680M / CPU | Curated 12-model catalog (VLM 2B with tool usage & uncensored models <4B); default 2B VLM configured in YAML (`qwen2-vl-2b-instruct` Q4_K_M + `mmproj-f16`); dynamic `llama-server` resolution in `scripts/run.sh` with `--mmproj` and `--mmproj-offload` flags; chunked parallel HTTP range downloader with GGUF header validation; `/api/models/local` discovery endpoint; zero VRAM budget violations (<3.8GB); 306 / 306 tests pass. |
 | **Phase 16: Multi-Model Diffusion & Dynamic GPU Handoff Architecture** | `ImageModelRegistry` + `GpuResourceHandoffManager` + `ImagePromptEnhancer` + `UnifiedImageProvider` + Selective Downloader + Dashboard Model Selector | ✅ **Active** | NVIDIA RTX 3050 (4GB CUDA) + Cloud LLM / CPU | 9-model catalog spanning FLUX.1 Schnell/Dev, SD-Turbo, SDXL-Turbo, SD 1.5, DreamShaper 8, and Small-SD; CUDA PyTorch 2.6.0+cu124 acceleration enabled on RTX 3050; dynamic GPU handoff offloading local LLM (llama-server) to Cloud API (Gemini/OpenAI) or halting process to evacuate >3.5GB VRAM during heavy diffusion generation; automated prompt expansion and parameter tuning via active LLM; multi-format downloader script with fp16 variant optimization; spoken completion TTS notification; dashboard model dropdown selector; 315 / 315 tests pass. |
+| **Phase 17: Dashboard LLM & Whisper STT Model Hot-Swapping Architecture** | `WhisperServerManager` + `LlamaServerManager` + Unified REST APIs + Web Dashboard Top Nav, Audio Deck & Chat Modals | ✅ **Active** | AMD Radeon 680M (Vulkan) + RTX 3050 (4GB CUDA) | Curated 9-model Whisper catalog (`tiny.en` to `large-v3`) offloaded via Vulkan (0MB RTX VRAM); live `whisper-server` process hot-swapping (<1.0s); local GGUF hot-swapping (`qwen3.5-4b`, `qwen2-vl-2b-instruct` with mmproj, uncensored models); REST endpoints (`/api/stt/status`, `/api/stt/models`, `/api/stt/switch`, `/api/llm/models`, `/api/models/local/switch`); frontend controls in Top Nav (`#btnTopNavLocalPicker`, `#btnTopNavSttPicker`), Dev Audio Deck (`#sttPresetChips`), Chat top bar (`#btnChatLocalPicker`, `#btnChatWhisperPicker`), and cyberdeck modals; 323 / 323 tests pass. |
 
 
 Legend:
@@ -164,6 +165,13 @@ Legend:
   - Built selective model downloader in `scripts/download_image_models.py` and `scripts/download_image_models.sh`.
   - Added `/api/images/models` catalog discovery endpoint and interactive Model Selector dropdown in the Cyber-Studio Deck Image Studio dashboard.
   - 100% test pass rate: **315 / 315 tests passing** across all 44 test modules; **113 / 113 Python files clean** with zero import errors (`verify_imports.py`).
+- [x] **Day 15: Phase 17 Dashboard Local LLM & Whisper STT Model Hot-Swapping Architecture**:
+  - Implemented `WhisperServerManager` (`src/robot/stt/manager.py`) managing 9 curated Whisper models (`tiny.en` 75MB to `large-v3` 2.9GB) accelerated via Vulkan on AMD Radeon 680M iGPU (0MB RTX 3050 VRAM) on port 8081.
+  - Enhanced `LlamaServerManager` (`src/robot/llm/__init__.py`) supporting hot-swapping local GGUF models on RTX 3050 CUDA GPU with multimodal vision projector (`--mmproj`) and slot pre-warming.
+  - Added REST API endpoints: `POST /api/models/local/switch`, `GET /api/llm/models`, `GET /api/stt/status`, `GET /api/stt/models`, `POST /api/stt/switch`.
+  - Added Web Dashboard controls: Top Navigation model buttons (`#btnTopNavLocalPicker`, `#btnTopNavSttPicker`), Dev Panel Audio Deck Whisper STT Card (`#sttPresetChips`), Chat View top bar pills (`#btnChatLocalPicker`, `#btnChatWhisperPicker`), and cyberdeck modals (`#localModelModal`, `#whisperModelModal`).
+  - Automatic model persistence across restarts in `data/active_local_model.txt`, `data/active_stt_model.txt`, and `config/default.yaml`.
+  - 100% test pass rate: **323 / 323 tests passing** across all 45 test modules; **115 / 115 Python files clean** with zero import errors (`verify_imports.py`).
 
 
 ### 🏁 Version 1 (V1) Completed Milestones
@@ -1875,6 +1883,33 @@ Legend:
       - Benchmarked `sd-turbo` generation on NVIDIA GeForce RTX 3050 Laptop GPU: 4 steps @ 512x512 completed in **2.40s** (10.08s cold start with model load).
       - 315 / 315 unit tests pass 100% across all 44 test modules in `.venv/bin/pytest tests/`.
       - 113 / 113 Python files verified clean with zero import errors (`verify_imports.py`).
+
+98. **Dashboard Dynamic Local LLM & Whisper STT Model Hot-Swapping Architecture**:
+    - *Symptoms & Requirements*:
+      1. User needed the ability to switch both local LLM models (4B Qwen, 2B VLM with vision projector, uncensored 1.2B LLaMA, 0.5B abliterated) and Whisper STT speech recognition models (`tiny.en`, `base.en`, `small.en`, `medium.en`, `large-v3-turbo`, etc.) dynamically from the dashboard UI without terminal commands or restarting the entire robot daemon.
+      2. Hardware resource isolation had to be strictly maintained: STT speech inference must stay completely off the NVIDIA RTX 3050 Laptop GPU (4GB VRAM) to leave maximum headroom for LLM inference (and diffusion handoff), offloading STT to the integrated AMD Radeon 680M iGPU via Vulkan (`-dev 0 -fa`).
+      3. Model selections must persist across system and daemon restarts.
+    - *Fixes Applied*:
+      1. **Whisper Server Process Manager (`src/robot/stt/manager.py`)**:
+         - Implemented `WhisperServerManager` with 9 curated models (`tiny.en` 75MB, `base.en` 142MB, `base` 142MB, `small.en` 466MB, `small` 466MB, `medium.en` 1.5GB, `medium` 1.5GB, `large-v3-turbo` 1.6GB, `large-v3` 2.9GB).
+         - Offloaded speech inference to the AMD Radeon 680M iGPU via Vulkan device 0 (`-dev 0 -fa`), consuming 0 MB VRAM on the RTX 3050.
+         - Automated process lifecycle supervision (`start`, `stop`, `switch_model`, `is_running`, `is_running_async`) with configuration persistence in `data/active_stt_model.txt` and `config/default.yaml`.
+      2. **Local LLM Model Switcher (`src/robot/llm/__init__.py`)**:
+         - Enhanced `LlamaServerManager` with dynamic multimodal support (`mmproj_path` and `ngl` overrides for `qwen2-vl-2b-instruct`).
+         - Implemented `get_active_model_id()` and `switch_model(model_id_or_path, engine)` with in-memory caching (`_active_model_id`), slot pre-warming, and state persistence in `data/active_local_model.txt` and `config/default.yaml`.
+      3. **REST API & WebSocket Integration (`src/robot/api/__init__.py`)**:
+         - Added endpoints: `POST /api/models/local/switch`, `GET /api/llm/models`, `GET /api/stt/status`, `GET /api/stt/models`, and `POST /api/stt/switch`.
+         - Added WebSocket broadcast events `llm_model_changed` and `stt_model_changed` for real-time multi-client synchronization.
+      4. **Cyberdeck Dashboard UI Controls (`index.html`, `index.css`, `app.js`)**:
+         - Top Navigation: Added `#btnTopNavLocalPicker` and `#btnTopNavSttPicker` with real-time model name indicators and device badges.
+         - Audio Deck Card: Added `#sttDeckCard` in Dev Panel with live device status (`AMD Radeon 680M (Vulkan dev 0)`), latency telemetry, and 8 quick-switch chips (`#sttPresetChips`).
+         - Chat View Top Bar: Added `#btnChatLocalPicker` and `#btnChatWhisperPicker` for instant access during text conversations.
+         - Cyberdeck Modals: Implemented `#localModelModal` and `#whisperModelModal` with model cards, badges (Free/Vision/Uncensored/Light/Accurate), file sizes, speeds, and one-click hot-swap actions.
+    - *Verification*:
+      - Added 8 unit and integration tests in `tests/test_model_and_whisper_switching.py`.
+      - Benchmarked Whisper server hot-swap: switched between `base.en` and `tiny.en` on AMD Radeon 680M in <0.8s with 0 MB RTX 3050 VRAM consumed.
+      - 323 / 323 unit tests pass 100% across all 45 test modules (`.venv/bin/pytest tests/`).
+      - 115 / 115 Python files verified clean with zero import errors (`verify_imports.py`).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

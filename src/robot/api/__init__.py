@@ -583,6 +583,135 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             "models": models_data,
         }
 
+    @app.post("/api/models/local/switch")
+    async def switch_local_model(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Hot-swap the active local GGUF model running on the RTX 3050 GPU.
+
+        Args:
+            req: Request payload containing the target 'model' or 'model_id'.
+
+        Returns:
+            Dictionary with switch operation status, model metadata, and slot warming state.
+        """
+        model_id = req.get("model") or req.get("model_id")
+        if not model_id:
+            return {"status": "error", "message": "Missing 'model' parameter in request body."}
+        from robot.llm import LlamaServerManager
+        res = await LlamaServerManager.switch_model(model_id, engine=engine)
+        if res.get("status") == "ok" and hasattr(engine, "events") and engine.events:
+            await engine.events.emit("llm_model_changed", model=model_id, parameters=res.get("parameters"))
+        return res
+
+    @app.get("/api/llm/models")
+    async def list_all_llm_models() -> dict[str, Any]:
+        """List unified LLM models across Local, Gemini, and OpenAI-compatible providers."""
+        from pathlib import Path
+        from robot.config import get_project_root
+        from robot.llm import LlamaServerManager
+        from robot.llm.model_registry import ModelRegistry
+
+        base_dir = get_project_root()
+        current_prov = getattr(engine, "llm_provider_type", "local")
+        active_local = LlamaServerManager.get_active_model_id()
+
+        local_models = []
+        # Standard Qwen 3.5 4B model in Downloads
+        qwen_default = Path("/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf")
+        if qwen_default.exists():
+            local_models.append({
+                "id": "qwen3.5-4b",
+                "name": "Qwen 3.5 4B (Instruct)",
+                "parameters": "4B",
+                "is_vision": False,
+                "is_uncensored": False,
+                "supports_tools": True,
+                "is_downloaded": True,
+                "is_active": (active_local == "qwen3.5-4b" and current_prov in ("local", "llama-server")),
+                "description": "Standard high-reasoning local edge model running on RTX 3050 with FlashAttention.",
+            })
+
+        for m in ModelRegistry.list_models():
+            local_models.append({
+                "id": m.id,
+                "name": m.name,
+                "parameters": m.parameters,
+                "is_vision": m.is_vision,
+                "is_uncensored": m.is_uncensored,
+                "supports_tools": m.supports_tools,
+                "is_downloaded": m.is_downloaded(base_dir),
+                "is_active": (active_local == m.id and current_prov in ("local", "llama-server")),
+                "description": m.description,
+            })
+
+        gemini_models = [
+            {"id": "gemini-3.1-flash-lite", "name": "Gemini 3.1 Flash Lite", "context": "1M tokens", "is_active": (current_prov == "gemini")},
+            {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "context": "1M tokens", "is_active": False},
+            {"id": "gemini-1.5-flash", "name": "Gemini 1.5 Flash", "context": "1M tokens", "is_active": False},
+        ]
+
+        return {
+            "status": "ok",
+            "provider": current_prov,
+            "active_local_model": active_local,
+            "local_models": local_models,
+            "gemini_models": gemini_models,
+            "llama_running": LlamaServerManager.is_running(),
+        }
+
+    # ─── Speech-to-Text (Whisper) Endpoints ─────────────────────────────────
+    @app.get("/api/stt/status")
+    async def get_stt_status() -> dict[str, Any]:
+        """Get active Whisper STT model, daemon process state, and hardware offload metrics."""
+        from robot.stt import WhisperServerManager
+        active_id = WhisperServerManager.get_active_model_id()
+        is_running = await WhisperServerManager.is_running_async()
+        meta = WhisperServerManager.MODELS_CATALOG.get(active_id)
+        return {
+            "status": "ok",
+            "is_running": is_running,
+            "active_model": active_id,
+            "name": meta.name if meta else active_id,
+            "parameters": meta.parameters if meta else "unknown",
+            "size_mb": meta.size_mb if meta else 0,
+            "latency_rating": meta.latency_rating if meta else "unknown",
+            "device": "AMD Radeon 680M (Vulkan dev 0)",
+            "vram_rtx3050_mb": 0,
+        }
+
+    @app.get("/api/stt/models")
+    async def list_stt_models() -> dict[str, Any]:
+        """List all registered Whisper models with download and active status."""
+        from robot.stt import WhisperServerManager
+        models = WhisperServerManager.list_models()
+        active_id = WhisperServerManager.get_active_model_id()
+        is_running = await WhisperServerManager.is_running_async()
+        return {
+            "status": "ok",
+            "active_model": active_id,
+            "is_running": is_running,
+            "total_models": len(models),
+            "models": models,
+        }
+
+    @app.post("/api/stt/switch")
+    async def switch_stt_model(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Hot-swap the active Whisper model on the AMD Radeon 680M Vulkan backend.
+
+        Args:
+            req: Request payload containing the target Whisper 'model' or 'model_id'.
+
+        Returns:
+            Dictionary with switch operation status, model name, and file size in MB.
+        """
+        model_id = req.get("model") or req.get("model_id")
+        if not model_id:
+            return {"status": "error", "message": "Missing 'model' parameter in request body."}
+        from robot.stt import WhisperServerManager
+        res = await WhisperServerManager.switch_model(model_id, engine=engine)
+        if res.get("status") == "ok" and hasattr(engine, "events") and engine.events:
+            await engine.events.emit("stt_model_changed", model=model_id, size_mb=res.get("size_mb"))
+        return res
+
     # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
     @app.get("/spotify/status")
     async def spotify_status():

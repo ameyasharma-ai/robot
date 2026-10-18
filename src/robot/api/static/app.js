@@ -72,6 +72,8 @@ class RobotUI {
         this.initViewControls();
         this.initPersonalitySelector();
         this.initLlmProviderToggle();
+        this.initLocalLlmModelControls();
+        this.initSttModelControls();
         this.init3DCharacter();
         this.initTextChat();
         this.initChatWorkspace();
@@ -2732,6 +2734,10 @@ class RobotUI {
         const panelBtnText = document.getElementById("swapModelBtnText");
         const panelBtnIcon = document.getElementById("swapBtnIcon");
 
+        // Local GGUF Model switcher controls (Top Nav & Chat mode)
+        const topNavLocal = document.getElementById("topNavLocalControls");
+        const chatLocalControls = document.getElementById("chatLocalControls");
+
         // OpenAI Model scanning controls & modal (Top Nav, HUD, and Chat mode)
         const topNavOpenai = document.getElementById("topNavOpenaiControls");
         const btnTopNavModelPicker = document.getElementById("btnTopNavModelPicker");
@@ -2984,6 +2990,8 @@ class RobotUI {
                 if (topNavOpenai) topNavOpenai.style.display = "inline-flex";
                 if (openaiControls) openaiControls.style.display = "flex";
                 if (chatOpenaiControls) chatOpenaiControls.style.display = "inline-flex";
+                if (topNavLocal) topNavLocal.style.display = "none";
+                if (chatLocalControls) chatLocalControls.style.display = "none";
 
                 if (icon) icon.textContent = "🌐";
                 if (label) label.textContent = "OPENAI COMPAT";
@@ -3011,6 +3019,8 @@ class RobotUI {
                 if (topNavOpenai) topNavOpenai.style.display = "none";
                 if (openaiControls) openaiControls.style.display = "none";
                 if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
+                if (topNavLocal) topNavLocal.style.display = "none";
+                if (chatLocalControls) chatLocalControls.style.display = "none";
 
                 if (icon) icon.textContent = "✨";
                 if (label) label.textContent = "GEMINI (CLOUD)";
@@ -3032,6 +3042,8 @@ class RobotUI {
                 if (topNavOpenai) topNavOpenai.style.display = "none";
                 if (openaiControls) openaiControls.style.display = "none";
                 if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
+                if (topNavLocal) topNavLocal.style.display = "inline-flex";
+                if (chatLocalControls) chatLocalControls.style.display = "inline-flex";
 
                 const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
                 if (icon) icon.textContent = "⚡";
@@ -3043,6 +3055,9 @@ class RobotUI {
                 if (panelBtnText) panelBtnText.textContent = "SWAP TO GEMINI";
                 if (panelBtnIcon) panelBtnIcon.textContent = "✨";
                 if (btn) btn.title = `Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to swap to Cloud Gemini.`;
+                if (typeof this.updateLocalModelDisplays === "function" && this.activeLocalModelId) {
+                    this.updateLocalModelDisplays(this.activeLocalModelId);
+                }
             }
 
             if (typeof this.syncChatTopBar === "function") this.syncChatTopBar();
@@ -3802,6 +3817,26 @@ class RobotUI {
             this.updateLlmToggleUi(data.provider, data.mode);
             this.syncChatTopBar();
             this.showDynamicIsland("AI Provider Active", `Switched to ${(data.provider || 'local').toUpperCase()}`, "⚡", "cyan");
+        }
+
+        if (data.event === "stt_model_changed" || data.event === "stt.model_changed") {
+            if (data.model) {
+                this.activeSttModelId = data.model;
+                if (typeof this.updateSttDisplays === "function") {
+                    this.updateSttDisplays(data.model, data.size_mb);
+                }
+                this.showDynamicIsland("Whisper Model", `Active: ${data.model}`, "🎙️", "emerald", 2500);
+            }
+        }
+
+        if (data.event === "llm_model_changed" || data.event === "llm.local_model_changed") {
+            if (data.model) {
+                this.activeLocalModelId = data.model;
+                if (typeof this.updateLocalModelDisplays === "function") {
+                    this.updateLocalModelDisplays(data.model);
+                }
+                this.showDynamicIsland("Local Model", `Active: ${data.model}`, "⚡", "cyan", 2500);
+            }
         }
 
         if (data.event === "wake_word_detected" || data.wake_word || data.event === "wakeword.detected") {
@@ -5180,6 +5215,368 @@ class RobotUI {
             requestAnimationFrame(renderWaveform);
         };
         requestAnimationFrame(renderWaveform);
+    }
+
+    /**
+     * Initialize Local LLM Model switcher modal, top nav trigger, and chat pill.
+     * Allows hot-swapping local GGUF models on the RTX 3050 CUDA GPU.
+     * @returns {Promise<void>}
+     */
+    async initLocalLlmModelControls() {
+        const topNavPicker = document.getElementById("btnTopNavLocalPicker");
+        const topNavLabel = document.getElementById("topNavLocalPickerLabel");
+        const chatPicker = document.getElementById("btnChatLocalPicker");
+        const chatLabel = document.getElementById("chatLocalPickerLabel");
+        const modal = document.getElementById("localModelModal");
+        const btnClose = document.getElementById("btnCloseLocalModelModal");
+        const btnCancel = document.getElementById("btnCancelLocalModelModal");
+        const cardsGrid = document.getElementById("localModelCardsGrid");
+        const modalHint = document.getElementById("localModelModalHint");
+
+        this.activeLocalModelId = "qwen3.5-4b";
+        this.localModelsList = [];
+
+        /**
+         * Open Local Model Modal and render current cards.
+         * @returns {Promise<void>}
+         */
+        this.openLocalModelModal = async () => {
+            if (!modal) return;
+            modal.style.display = "flex";
+            modal.classList.add("open");
+            await this.refreshLocalModels();
+        };
+
+        /**
+         * Close Local Model Modal.
+         * @returns {void}
+         */
+        this.closeLocalModelModal = () => {
+            if (!modal) return;
+            modal.style.display = "none";
+            modal.classList.remove("open");
+        };
+
+        if (topNavPicker) topNavPicker.addEventListener("click", () => this.openLocalModelModal());
+        if (chatPicker) chatPicker.addEventListener("click", () => this.openLocalModelModal());
+        if (btnClose) btnClose.addEventListener("click", () => this.closeLocalModelModal());
+        if (btnCancel) btnCancel.addEventListener("click", () => this.closeLocalModelModal());
+        if (modal) {
+            modal.addEventListener("click", (e) => {
+                if (e.target === modal) this.closeLocalModelModal();
+            });
+        }
+
+        /**
+         * Fetch registered local models and render cards.
+         * @returns {Promise<void>}
+         */
+        this.refreshLocalModels = async () => {
+            if (!cardsGrid) return;
+            try {
+                const res = await fetch("/api/llm/models");
+                if (!res.ok) return;
+                const data = await res.json();
+                this.localModelsList = data.local_models || [];
+                if (data.active_local_model) {
+                    this.activeLocalModelId = data.active_local_model;
+                    this.updateLocalModelDisplays(this.activeLocalModelId);
+                }
+                this.renderLocalModelCards();
+            } catch (err) {
+                console.error("Failed to fetch local LLM models:", err);
+            }
+        };
+
+        /**
+         * Render model cards inside the local model selector modal.
+         * @returns {void}
+         */
+        this.renderLocalModelCards = () => {
+            if (!cardsGrid) return;
+            cardsGrid.innerHTML = "";
+            this.localModelsList.forEach(m => {
+                const isActive = m.id === this.activeLocalModelId;
+                const card = document.createElement("div");
+                card.className = `model-profile-card ${isActive ? "active" : ""}`;
+                
+                const badgeText = m.is_vision ? "VISION VLM" : (m.is_uncensored ? "UNCENSORED" : "INSTRUCT");
+                const vramEst = m.parameters === "4B" ? "~3.4 GB" : (m.parameters === "2B" ? "~2.3 GB" : (m.parameters === "0.5B" ? "~0.8 GB" : "~1.2 GB"));
+
+                card.innerHTML = `
+                    <div class="model-card-header">
+                        <span class="model-card-title">${m.name || m.id}</span>
+                        <span class="model-card-badge">${badgeText}</span>
+                    </div>
+                    <div class="model-card-desc">${m.description || "GGUF quantized local model running on RTX 3050 CUDA."}</div>
+                    <div class="model-card-meta">
+                        <span class="meta-pill">Params: ${m.parameters || "N/A"}</span>
+                        <span class="meta-pill">VRAM: ${vramEst}</span>
+                        <span class="meta-pill">Context: 16,384</span>
+                        <span class="meta-pill">FlashAttn: Yes</span>
+                    </div>
+                    <div class="model-card-footer">
+                        <button class="card-select-btn ${isActive ? "active-btn" : ""}" type="button">
+                            ${isActive ? "✓ ACTIVE LOCAL MODEL" : "LOAD THIS MODEL"}
+                        </button>
+                    </div>
+                `;
+
+                if (!isActive) {
+                    card.addEventListener("click", () => this.switchLocalModel(m.id));
+                }
+                cardsGrid.appendChild(card);
+            });
+        };
+
+        /**
+         * Switch active local LLM model via REST API.
+         * @param {string} modelId - Model ID to load.
+         * @returns {Promise<void>}
+         */
+        this.switchLocalModel = async (modelId) => {
+            if (modalHint) modalHint.textContent = `Hot-swapping to ${modelId}... RTX 3050 VRAM loading...`;
+            this.showDynamicIsland("Local Model Switch", `Loading ${modelId} on RTX 3050...`, "⚡", "amber", 4000);
+            this.logEvent("LLM", `Hot-swapping local model to ${modelId}...`, "system");
+
+            try {
+                const res = await fetch("/api/models/local/switch", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: modelId })
+                });
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.activeLocalModelId = modelId;
+                    this.updateLocalModelDisplays(modelId);
+                    if (modalHint) modalHint.textContent = `✓ Model ${modelId} loaded successfully!`;
+                    this.showDynamicIsland("Local Model Ready", `${modelId} loaded on RTX 3050`, "✓", "cyan", 3000);
+                    this.logEvent("LLM", `Local model successfully switched to ${modelId} (${data.parameters || ""})`, "success");
+                    this.renderLocalModelCards();
+                    setTimeout(() => this.closeLocalModelModal(), 600);
+                } else {
+                    if (modalHint) modalHint.textContent = `Error: ${data.message || data.error}`;
+                    this.logEvent("ERROR", `Failed to switch local model: ${data.message || data.error}`, "error");
+                }
+            } catch (err) {
+                if (modalHint) modalHint.textContent = `Network error: ${err.message}`;
+                this.logEvent("ERROR", `Network error switching local model: ${err.message}`, "error");
+            }
+        };
+
+        /**
+         * Update labels and badges across Top Nav, HUD, and Chat view for local models.
+         * @param {string} modelId - Active local model identifier.
+         * @returns {void}
+         */
+        this.updateLocalModelDisplays = (modelId) => {
+            const shortName = (modelId || "").replace(".gguf", "").replace("-Q4_K_M", "").replace("qwen", "Qwen ").replace("llama", "Llama ");
+            if (topNavLabel) topNavLabel.textContent = shortName;
+            if (chatLabel) chatLabel.textContent = shortName;
+            const chatModelLabel = document.getElementById("chatModelLabel");
+            if (chatModelLabel && this.currentLlmProvider === "local") {
+                chatModelLabel.textContent = `LOCAL ${shortName.toUpperCase()}`;
+            }
+        };
+
+        // Fetch initial local model status
+        await this.refreshLocalModels();
+    }
+
+    /**
+     * Initialize Whisper STT model manager, top nav trigger, audio deck chips, and modal catalog.
+     * Manages whisper-server daemon on AMD Radeon 680M iGPU via Vulkan backend.
+     * @returns {Promise<void>}
+     */
+    async initSttModelControls() {
+        const topNavPicker = document.getElementById("btnTopNavSttPicker");
+        const topNavLabel = document.getElementById("topNavSttPickerLabel");
+        const chatPicker = document.getElementById("btnChatWhisperPicker");
+        const chatLabel = document.getElementById("chatWhisperPickerLabel");
+        const deckOpenBtn = document.getElementById("btnOpenSttModalDeck");
+        const deckActivePill = document.getElementById("deckSttActivePill");
+        const deckEngineState = document.getElementById("deckSttEngineState");
+        const deckPresetChips = document.querySelectorAll("#sttPresetChips .stt-chip");
+        const modal = document.getElementById("whisperModelModal");
+        const btnClose = document.getElementById("btnCloseWhisperModelModal");
+        const btnCancel = document.getElementById("btnCancelWhisperModelModal");
+        const cardsGrid = document.getElementById("whisperModelCardsGrid");
+        const modalHint = document.getElementById("whisperModalHint");
+        const modalRunningStatus = document.getElementById("whisperModalRunningStatus");
+
+        this.activeSttModelId = "base.en";
+        this.sttModelsList = [];
+
+        /**
+         * Open Whisper STT Modal and fetch live models.
+         * @returns {Promise<void>}
+         */
+        this.openSttModal = async () => {
+            if (!modal) return;
+            modal.style.display = "flex";
+            modal.classList.add("open");
+            await this.refreshSttStatus();
+        };
+
+        /**
+         * Close Whisper STT Modal.
+         * @returns {void}
+         */
+        this.closeSttModal = () => {
+            if (!modal) return;
+            modal.style.display = "none";
+            modal.classList.remove("open");
+        };
+
+        if (topNavPicker) topNavPicker.addEventListener("click", () => this.openSttModal());
+        if (chatPicker) chatPicker.addEventListener("click", () => this.openSttModal());
+        if (deckOpenBtn) deckOpenBtn.addEventListener("click", () => this.openSttModal());
+        if (btnClose) btnClose.addEventListener("click", () => this.closeSttModal());
+        if (btnCancel) btnCancel.addEventListener("click", () => this.closeSttModal());
+        if (modal) {
+            modal.addEventListener("click", (e) => {
+                if (e.target === modal) this.closeSttModal();
+            });
+        }
+
+        // Wire Audio Deck Preset Chips
+        deckPresetChips.forEach(chip => {
+            chip.addEventListener("click", async () => {
+                const targetModel = chip.dataset.model;
+                if (!targetModel || targetModel === this.activeSttModelId) return;
+                await this.switchSttModel(targetModel);
+            });
+        });
+
+        /**
+         * Query STT status and model catalog from backend.
+         * @returns {Promise<void>}
+         */
+        this.refreshSttStatus = async () => {
+            try {
+                const res = await fetch("/api/stt/models");
+                if (!res.ok) return;
+                const data = await res.json();
+                this.sttModelsList = data.models || [];
+                if (data.active_model) {
+                    this.activeSttModelId = data.active_model;
+                    this.updateSttDisplays(data.active_model);
+                }
+                if (modalRunningStatus) {
+                    modalRunningStatus.textContent = data.is_running ? "● ONLINE" : "○ STOPPED";
+                    modalRunningStatus.style.color = data.is_running ? "#10b981" : "#ef4444";
+                }
+                if (deckEngineState) {
+                    deckEngineState.textContent = data.is_running ? "ONLINE (Port 8081)" : "OFFLINE";
+                    deckEngineState.className = `stt-state-tag ${data.is_running ? "online" : "offline"}`;
+                }
+                this.renderSttModelCards();
+            } catch (err) {
+                console.error("Failed to query STT status:", err);
+            }
+        };
+
+        /**
+         * Render model cards in the Whisper STT modal.
+         * @returns {void}
+         */
+        this.renderSttModelCards = () => {
+            if (!cardsGrid) return;
+            cardsGrid.innerHTML = "";
+            this.sttModelsList.forEach(m => {
+                const isActive = m.id === this.activeSttModelId;
+                const card = document.createElement("div");
+                card.className = `model-profile-card stt-profile-card ${isActive ? "active" : ""}`;
+
+                const speedBadge = m.latency_rating === "ultra_fast" ? "⚡ ULTRA FAST" : (m.latency_rating === "fast" ? "⚡ FAST" : "🔮 HIGH ACCURACY");
+
+                card.innerHTML = `
+                    <div class="model-card-header">
+                        <span class="model-card-title">${m.name || m.id}</span>
+                        <span class="model-card-badge">${speedBadge}</span>
+                    </div>
+                    <div class="model-card-desc">${m.description || "Whisper speech-to-text model accelerated on AMD Radeon 680M Vulkan."}</div>
+                    <div class="model-card-meta">
+                        <span class="meta-pill">Size: ${m.size_mb} MB</span>
+                        <span class="meta-pill">Params: ${m.parameters}</span>
+                        <span class="meta-pill">Lang: ${m.multilingual ? "Multilingual" : "English Only"}</span>
+                        <span class="meta-pill">Device: Vulkan iGPU</span>
+                    </div>
+                    <div class="model-card-footer">
+                        <button class="card-select-btn ${isActive ? "active-btn" : ""}" type="button">
+                            ${isActive ? "✓ ACTIVE STT MODEL" : "ACTIVATE THIS MODEL"}
+                        </button>
+                    </div>
+                `;
+
+                if (!isActive) {
+                    card.addEventListener("click", () => this.switchSttModel(m.id));
+                }
+                cardsGrid.appendChild(card);
+            });
+        };
+
+        /**
+         * Switch active Whisper STT model via REST API.
+         * @param {string} modelId - Model ID to activate.
+         * @returns {Promise<void>}
+         */
+        this.switchSttModel = async (modelId) => {
+            if (modalHint) modalHint.textContent = `Hot-swapping whisper-server to ${modelId} on Vulkan...`;
+            deckPresetChips.forEach(c => {
+                if (c.dataset.model === modelId) c.classList.add("loading");
+            });
+
+            this.showDynamicIsland("Whisper STT Switch", `Loading ${modelId} (AMD Radeon 680M)...`, "🎙️", "emerald", 3500);
+            this.logEvent("STT", `Hot-swapping Whisper STT to ${modelId} on Vulkan...`, "system");
+
+            try {
+                const res = await fetch("/api/stt/switch", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ model: modelId })
+                });
+                const data = await res.json();
+                if (data.status === "ok") {
+                    this.activeSttModelId = modelId;
+                    this.updateSttDisplays(modelId, data.size_mb);
+                    if (modalHint) modalHint.textContent = `✓ Whisper ${modelId} active on port 8081 (Vulkan dev 0)!`;
+                    this.showDynamicIsland("Whisper Ready", `${modelId} active (${data.size_mb || ""}MB)`, "✓", "emerald", 3000);
+                    this.logEvent("STT", `Whisper model successfully hot-swapped to ${modelId} (${data.size_mb || ""}MB, Vulkan)`, "success");
+                    this.renderSttModelCards();
+                    setTimeout(() => this.closeSttModal(), 600);
+                } else {
+                    if (modalHint) modalHint.textContent = `Error: ${data.message || data.error}`;
+                    this.logEvent("ERROR", `Failed to switch Whisper model: ${data.message || data.error}`, "error");
+                }
+            } catch (err) {
+                if (modalHint) modalHint.textContent = `Network error: ${err.message}`;
+                this.logEvent("ERROR", `Network error switching Whisper model: ${err.message}`, "error");
+            } finally {
+                deckPresetChips.forEach(c => c.classList.remove("loading"));
+            }
+        };
+
+        /**
+         * Update labels and active chips across Top Nav, Audio Deck, and Chat mode.
+         * @param {string} modelId - Active model ID.
+         * @param {number} [sizeMb] - Model file size in MB.
+         * @returns {void}
+         */
+        this.updateSttDisplays = (modelId, sizeMb = null) => {
+            if (topNavLabel) topNavLabel.textContent = modelId;
+            if (chatLabel) chatLabel.textContent = `Whisper: ${modelId}`;
+            if (deckActivePill) {
+                const sz = sizeMb ? ` (${sizeMb} MB)` : "";
+                deckActivePill.textContent = `${modelId}${sz}`;
+            }
+            deckPresetChips.forEach(c => {
+                c.classList.toggle("active", c.dataset.model === modelId);
+            });
+        };
+
+        // Initial fetch
+        await this.refreshSttStatus();
     }
 }
 

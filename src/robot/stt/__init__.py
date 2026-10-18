@@ -287,3 +287,15 @@ class StreamingSTT:
         self._in_flight_tasks.clear()
         self._is_active = False
 
+
+from robot.stt.manager import WhisperModelMetadata, WhisperServerManager
+
+__all__ = [
+    "STTProvider",
+    "StreamingSTT",
+    "WhisperModelMetadata",
+    "WhisperServerManager",
+    "WhisperServerSTT",
+    "clean_transcript",
+]
+

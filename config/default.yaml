@@ -1,107 +1,89 @@
-# Robot Core — Default Configuration
-
 llm:
   provider: llama-server
-  base_url: "http://127.0.0.1:8080/v1"
-  model: "qwen2-vl-2b-instruct" # Active Default 2B Vision Model with Tool Calling
-  model_path: "models/llm/Qwen2-VL-2B-Instruct-Q4_K_M.gguf"
-  fallback_model_path: "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf"
-  multimodal: true
-  mmproj_path: "models/vision/mmproj-Qwen2-VL-2B-Instruct-f16.gguf"
+  base_url: http://127.0.0.1:8080/v1
+  model: qwen3.5-4b
+  model_path: /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf
+  fallback_model_path: /home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf
+  multimodal: false
+  mmproj_path: models/vision/mmproj-Qwen2-VL-2B-Instruct-f16.gguf
   max_tokens: 400
   context_window: 16384
   enable_thinking: false
   stream: true
-
-  # ─── Registered 2B Vision & <4B Uncensored Model Catalog ───
-  # Run: ./scripts/download_models.sh --list / --model <id> / --default / --all
-  # 1.  qwen2-vl-2b-instruct: 2B VLM + Tool Calling + mmproj [DEFAULT]
-  # 2.  qwen2-vl-2b-instruct-abliterated: 2B VLM + Uncensored + Tool Calling + mmproj
-  # 3.  smolvlm-instruct-2b: 2.2B Lightweight VLM + mmproj
-  # 4.  moondream2-vision: 1.8B Ultra-Fast Vision Query Model + mmproj
-  # 5.  qwen2.5-coder-3b-abliterated: 3B Coder Uncensored + Native Tool Use
-  # 6.  huihui-qwen3.5-4b-abliterated: 4B Qwen 3.5 Uncensored Drop-In
-  # 7.  llama-3.2-3b-uncensored: 3B Llama 3.2 Uncensored + Tool Use
-  # 8.  hermes-3-llama-3.2-3b: 3B Nous Hermes 3 Steerable Agent + Functions
-  # 9.  llama-3.2-1b-uncensored: 1.2B Llama 3.2 Uncensored (<80ms TTFT)
-  # 10. smollm2-1.7b-abliterated: 1.7B SmolLM2 Uncensored Edge Model
-  # 11. qwen2.5-0.5b-abliterated: 0.5B Qwen 2.5 Uncensored Micro Fallback
-  # 12. phi-3.5-mini-uncensored: 3.8B Phi 3.5 Mini Uncensored High-Reasoning
   gemini:
-    api_key: "[REDACTED_API_KEY]"
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-    model: "gemini-3.1-flash-lite"
-    fallback_models: ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.6-flash", "gemini-3.5-flash"]
-
+    api_key: [REDACTED_API_KEY]
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    model: gemini-3.1-flash-lite
+    fallback_models:
+    - gemini-3.5-flash-lite
+    - gemini-flash-lite-latest
+    - gemini-3.6-flash
+    - gemini-3.5-flash
     context_window: 1000000
     max_tokens: 4096
-
   openai_compatible:
-    api_key: ""
-    base_url: "https://api.openai.com/v1"
-    model: "gpt-4o"
-    fallback_models: ["gpt-4o-mini", "deepseek-chat"]
+    api_key: ''
+    base_url: https://api.openai.com/v1
+    model: gpt-4o
+    fallback_models:
+    - gpt-4o-mini
+    - deepseek-chat
     context_window: 128000
     max_tokens: 4096
     enable_prompt_caching: true
-
 stt:
   provider: whisper-server
-  url: "http://127.0.0.1:8081/inference"
-  model: "medium.en" # Active STT Model: tiny.en (75MB), base.en (142MB), base (142MB), small.en (466MB), small (465MB), medium.en (1.5GB), medium (1.5GB), large-v3-turbo (1.6GB), large-v3 (3.0GB)
-  model_path: "models/stt/ggml-medium.en.bin"
-  language: "en"
+  url: http://127.0.0.1:8081/inference
+  model: /home/ameya/whisper.cpp/models/ggml-tiny.en
+  model_path: /home/ameya/whisper.cpp/models/ggml-tiny.en.bin
+  language: en
   temperature: 0.0
   chunk_seconds: 0.8
-
 tts:
   provider: piper
-  model_path: "models/tts/en-us-lessac-medium.onnx"
+  model_path: models/tts/en-us-lessac-medium.onnx
   sample_rate: 16000
-
 audio:
   sample_rate: 16000
-  vad_frame_size: 512       # 32ms at 16kHz
-  silence_threshold_ms: 130 # Ultra-low latency voice turnaround (<130ms silence detection)
-  barge_in_enabled: true    # Barge-in enabled via reference echo subtraction
-  barge_in_frames: 3        # ~96ms consecutive speech required to interrupt
-  barge_in_confidence: 0.55 # Threshold during playback after subtracting physical speaker bleed
-  normal_confidence: 0.50
+  vad_frame_size: 512
+  silence_threshold_ms: 130
+  barge_in_enabled: true
+  barge_in_frames: 3
+  barge_in_confidence: 0.55
+  normal_confidence: 0.5
   energy_threshold: 0.005
-  barge_in_energy: 0.008    # Excess user voice energy margin required over speaker bleed envelope
-  echo_coupling_ratio: 0.40 # Measured acoustic leakage ratio from laptop chassis speakers to internal mic
+  barge_in_energy: 0.008
+  echo_coupling_ratio: 0.4
   echo_guard_confidence: 0.85
-  echo_guard_energy: 0.020
+  echo_guard_energy: 0.02
   pre_roll_ms: 300
   playback_block_ms: 50
-  echo_guard_s: 0.35 
+  echo_guard_s: 0.35
   barge_in_cooldown_s: 0.35
   wake_word:
     enabled: true
     require_wake_word: true
     follow_up_timeout_s: 12.0
     cooldown_s: 0.0
-    confidence_threshold: 0.50
+    confidence_threshold: 0.5
     wake_words:
-      - "hey neo"
-      - "neo"
-      - "hey cypher"
-      - "cypher"
-      - "hey luna"
-      - "luna"
-      - "hey aria"
-      - "aria"
-      - "hey glados"
-      - "glados"
-      - "hey robot"
-      - "robot"
-      - "wake up"
-
+    - hey neo
+    - neo
+    - hey cypher
+    - cypher
+    - hey luna
+    - luna
+    - hey aria
+    - aria
+    - hey glados
+    - glados
+    - hey robot
+    - robot
+    - wake up
 expression:
   lighting:
     enabled: true
-    backend: "asusctl"   # Direct DBus to asusd with CLI fallback
-
+    backend: asusctl
 vision:
   enabled: true
   camera_index: 0
@@ -109,39 +91,34 @@ vision:
   height: 240
   fps: 30
   perception_fps: 5.0
-  yunet_model_path: "models/vision/face_detection_yunet.onnx"
-  yolo_model_path: "models/vision/yolov8n.pt"
+  yunet_model_path: models/vision/face_detection_yunet.onnx
+  yolo_model_path: models/vision/yolov8n.pt
   enable_motion: true
-
 memory:
   provider: mem0
   vector_store:
     provider: qdrant
-    path: "data/memory/qdrant"
+    path: data/memory/qdrant
     collection: robot_memory
     embedding_dims: 384
   llm:
     provider: openai
-    base_url: "http://127.0.0.1:8080/v1"
-    model: "Qwen3.5-4B-Q4_K_M"
-    api_key: "not-needed"
+    base_url: http://127.0.0.1:8080/v1
+    model: Qwen3.5-4B-Q4_K_M
+    api_key: not-needed
   embedder:
     provider: fastembed
-    model: "BAAI/bge-small-en-v1.5"
-    cache_dir: "models/fastembed"
+    model: BAAI/bge-small-en-v1.5
+    cache_dir: models/fastembed
   score_threshold: 0.82
-
 history:
-  database_path: "data/database/conversations.db"
-
+  database_path: data/database/conversations.db
 personality:
-  default: "neo"
-  directory: "config/personalities"
-
+  default: neo
+  directory: config/personalities
 api:
-  host: "127.0.0.1"
+  host: 127.0.0.1
   port: 8888
-
 context_budget:
   system_personality: 600
   tool_schemas: 1500
@@ -150,12 +127,10 @@ context_budget:
   world_state: 300
   robot_state: 200
   generation_headroom: 1500
-
 logging:
-  level: "INFO"
-  directory: "logs"
+  level: INFO
+  directory: logs
   structured: true
-
 latency:
   vad_target_ms: 30
   stt_partial_target_ms: 500
@@ -166,18 +141,16 @@ latency:
   tts_first_audio_target_ms: 150
   avatar_target_ms: 50
   e2e_first_audio_target_ms: 900
-
 observability:
   enabled: true
   max_trace_history: 250
   redact_sensitive_data: true
   websocket_enabled: true
-
 image:
   enabled: true
-  provider: "unified"          # Unified multi-model (FLUX, SDXL, SD 1.5, SD-Turbo, FastProcedural)
-  default_model: "sd-turbo"    # Default GPU real-time model (1-4 steps, 512x512)
-  gpu_offload_heavy: true      # Automatically offload local LLM to API or stop llama-server to free 4GB VRAM
+  provider: unified
+  default_model: sd-turbo
+  gpu_offload_heavy: true
   default_width: 512
   default_height: 512
   default_steps: 4
@@ -185,4 +158,4 @@ image:
   max_height: 1024
   max_steps: 50
   max_concurrent_jobs: 1
-  output_dir: "data/images"
+  output_dir: data/images
