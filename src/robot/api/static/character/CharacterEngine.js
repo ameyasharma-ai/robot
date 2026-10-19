@@ -22,7 +22,7 @@ class CharacterEngine {
         this.facialSystem = null;
 
         // Options
-        this.modelUrl = options.modelUrl || "/static/models/avatar.glb?v=7.0-cute";
+        this.modelUrl = options.modelUrl || "/static/models/avatar.glb?v=8.0-skinny-cute";
         this.variant = options.variant || "animated"; // "animated" | "realistic"
 
         // Diagnostics
@@ -153,34 +153,39 @@ class CharacterEngine {
             this.scene.add(ring);
         } else {
             // ─── Cinematic Realistic Portrait Studio Lighting ───────────────────
-            // Warm Ambient Base (simulates soft studio bounce)
-            const ambient = new THREE.AmbientLight(0xfff5eb, 0.65);
+            // Warm Ambient Base (fills micro-creases and removes harsh under-chin dropouts)
+            const ambient = new THREE.AmbientLight(0xfff6ed, 0.50);
             this.scene.add(ambient);
 
-            // Key Light: Warm 3800K directional softbox at 45° upper-right
-            // Renders rich natural skin tones and creates crisp, life-like eye catchlights
-            const keyLight = new THREE.DirectionalLight(0xfff2e6, 1.35);
-            keyLight.position.set(2.2, 3.8, 3.0);
+            // Frontal Soft Beauty Ring / Portrait Light
+            // Positioned right at face/chest level (Y=1.25, Z=2.2) to illuminate radiant facial skin,
+            // eliminate any dark lower face/chin shadow band, and create sparkling cornea catchlights
+            const portraitBeautyLight = new THREE.DirectionalLight(0xfff7f0, 0.40);
+            portraitBeautyLight.position.set(0.0, 1.25, 2.2);
+            this.scene.add(portraitBeautyLight);
+
+            // Key Light: Warm 3800K directional softbox at natural 30° upper-right
+            const keyLight = new THREE.DirectionalLight(0xfff2e6, 0.85);
+            keyLight.position.set(1.6, 2.2, 2.6);
             keyLight.castShadow = true;
             keyLight.shadow.mapSize.width = 1024;
             keyLight.shadow.mapSize.height = 1024;
-            keyLight.shadow.bias = -0.0008;
+            keyLight.shadow.bias = -0.0005;
             this.scene.add(keyLight);
 
-            // Fill Light: Soft cool daylight (6000K) from left
-            // Adds dimensionality and fills shadows with natural cool tones
-            const fillLight = new THREE.DirectionalLight(0xd0e2f5, 0.65);
-            fillLight.position.set(-2.2, 2.5, 2.2);
+            // Fill Light: Soft cool daylight (6000K) from left at eye/chest level
+            const fillLight = new THREE.DirectionalLight(0xd0e2f5, 0.35);
+            fillLight.position.set(-1.8, 1.6, 2.0);
             this.scene.add(fillLight);
 
             // Rim / Hair Light: Warm backlight separating hair and shoulders from dark backdrop
-            const rimLight = new THREE.DirectionalLight(0xffe4cc, 0.85);
-            rimLight.position.set(0.0, 3.5, -2.5);
+            const rimLight = new THREE.DirectionalLight(0xffe4cc, 0.65);
+            rimLight.position.set(0.0, 3.2, -2.5);
             this.scene.add(rimLight);
 
-            // Ground Bounce: Soft warm floor bounce softening chin/neck shadows
+            // Ground Bounce: Soft warm floor bounce softening lower contours
             const groundBounce = new THREE.PointLight(0xebe2d8, 0.25, 5);
-            groundBounce.position.set(0, -0.4, 1.2);
+            groundBounce.position.set(0, -0.3, 1.2);
             this.scene.add(groundBounce);
 
             // ─── Sleek Minimalist Obsidian & Smoked Glass Pedestal ─────────────

@@ -73,12 +73,12 @@ class CharacterLoader {
             this._texLoader = new THREE.TextureLoader();
         }
 
-        // High-fidelity normal maps for cute sweater and pleated skirt
-        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png?v=7.0-cute");
+        // High-fidelity normal maps for skinny cute sweater and pleated skirt
+        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png?v=8.0-skinny-cute");
         topsNormal.wrapS = THREE.RepeatWrapping;
         topsNormal.wrapT = THREE.RepeatWrapping;
 
-        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png?v=7.0-cute");
+        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png?v=8.0-skinny-cute");
         bottomsNormal.wrapS = THREE.RepeatWrapping;
         bottomsNormal.wrapT = THREE.RepeatWrapping;
 
@@ -86,7 +86,9 @@ class CharacterLoader {
             if (!node.isMesh && !node.isSkinnedMesh) return;
 
             node.castShadow = true;
-            node.receiveShadow = true;
+            // Face mesh must NOT receive self-shadows from hair bangs/overhangs to eliminate lower face/chin shadow
+            const isFaceNode = Boolean(node.name && node.name.toLowerCase().includes("face"));
+            node.receiveShadow = !isFaceNode;
 
             const materials = Array.isArray(node.material) ? node.material : [node.material];
             const updatedMaterials = materials.map((mat) => {
@@ -123,16 +125,16 @@ class CharacterLoader {
                 let pbrMat = null;
 
                 if (isEyeIris) {
-                    // Realistic Human Iris: Deep hazel/amber with high-gloss refractive cornea
+                    // Realistic Human Iris: Deep luminous crystalline iris with high-gloss refractive cornea
                     pbrMat = new THREE.MeshPhysicalMaterial({
                         map: mat.map || null,
                         color: 0xffffff,
-                        roughness: 0.02,
-                        metalness: 0.02,
+                        roughness: 0.01,
+                        metalness: 0.0,
                         clearcoat: 1.0,
-                        clearcoatRoughness: 0.02,
-                        ior: 1.336, // Human cornea refractive index
-                        reflectivity: 0.98,
+                        clearcoatRoughness: 0.01,
+                        ior: 1.34,
+                        reflectivity: 0.99,
                     });
                 } else if (isEyeWhite) {
                     // Natural Human Sclera: Off-white ivory with delicate moisture gloss

@@ -34,13 +34,13 @@ llm:
 stt:
   provider: whisper-server
   url: http://127.0.0.1:8081/inference
-  model: /home/ameya/whisper.cpp/models/ggml-medium
-  model_path: /home/ameya/whisper.cpp/models/ggml-medium.bin
+  model: /home/ameya/whisper.cpp/models/ggml-large-v3-turbo
+  model_path: /home/ameya/whisper.cpp/models/ggml-large-v3-turbo.bin
   language: en
   temperature: 0.0
   chunk_seconds: 0.8
 tts:
-  provider: kokoro
+  provider: piper
   model_path: models/tts/en-us-lessac-medium.onnx
   sample_rate: 16000
 audio:

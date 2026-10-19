@@ -2508,7 +2508,7 @@ class RobotUI {
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
             this.characterEngine = new CharacterEngine(this.characterContainer, {
                 variant: "animated",
-                modelUrl: "/static/models/avatar.glb?v=7.0-cute",
+                modelUrl: "/static/models/avatar.glb?v=8.0-skinny-cute",
             });
             this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 

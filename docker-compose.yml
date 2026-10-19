@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  robot-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: robot-core
+    restart: unless-stopped
+    ports:
+      - "8888:8888" # Web UI / REST / WebSocket API
+      - "8080:8080" # LLM Server
+      - "8081:8081" # Whisper STT Server
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONWARNINGS=ignore::DeprecationWarning
+      - LLM_PROVIDER=${LLM_PROVIDER:-local}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      # Persistent application data and database
+      - ./data:/app/data
+      # Configuration directory (hot-reloading YAMLs)
+      - ./config:/app/config:ro
+      # Downloaded model weights (GGUF, STT, ONNX, Kokoro)
+      - ./models:/app/models
+      # System logs
+      - ./logs:/app/logs
+      # Host ALSA audio pass-through for real-time microphone & speaker access
+      - /dev/snd:/dev/snd
+    devices:
+      - /dev/snd:/dev/snd
+    # Optional NVIDIA GPU acceleration (RTX 3050)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    network_mode: host
