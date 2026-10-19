@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -1924,6 +1925,131 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             ok = await engine.image_service.cancel_job(job_id)
             return {"cancelled": ok, "job_id": job_id}
         return {"cancelled": False, "error": "Image service not initialized"}
+
+    @app.get("/api/images/gallery")
+    async def get_image_gallery(limit: int = 100) -> dict[str, Any]:
+        """List generated artwork images from data/images with rich metadata.
+
+        Args:
+            limit: Maximum number of gallery images to return.
+
+        Returns:
+            Dictionary containing total count and list of image items with metadata.
+        """
+        from datetime import datetime, timezone
+        from PIL import Image
+
+        images_dir = Path("data/images")
+        if not images_dir.exists():
+            return {"status": "ok", "total": 0, "images": []}
+
+        # Build lookup table from in-memory jobs if available
+        jobs_lookup: dict[str, dict[str, Any]] = {}
+        if hasattr(engine, "image_service") and engine.image_service:
+            for j in engine.image_service.list_jobs(200):
+                out = j.get("output_path", "")
+                if out:
+                    base_name = Path(out).name
+                    jobs_lookup[base_name] = j
+
+        items: list[dict[str, Any]] = []
+        valid_extensions = {".png", ".jpg", ".jpeg", ".webp"}
+
+        for p in images_dir.iterdir():
+            if not p.is_file() or p.suffix.lower() not in valid_extensions:
+                continue
+
+            fname = p.name
+            try:
+                stat = p.stat()
+                mtime = stat.st_mtime
+                size_bytes = stat.st_size
+
+                # Match with in-memory job if possible
+                job_meta = jobs_lookup.get(fname, {})
+                prompt = job_meta.get("prompt", "")
+                model = job_meta.get("model", "")
+                duration_s = job_meta.get("duration_s", 0.0)
+
+                # If prompt is not in in-memory jobs, derive human-readable label
+                if not prompt:
+                    if fname.startswith("img_test_flux"):
+                        prompt = "FLUX.1 Schnell procedural/diffusion test benchmark"
+                        model = "flux-schnell"
+                    elif "sdxl" in fname:
+                        prompt = "SDXL Turbo high-speed generation"
+                        model = "sdxl-turbo"
+                    elif "small_sd" in fname:
+                        prompt = "Small-SD lightweight model generation"
+                        model = "small-sd"
+                    elif fname.startswith("img_"):
+                        prompt = f"Generated Artwork ({fname[:12]})"
+                        model = "diffusion"
+                    else:
+                        prompt = fname.rsplit(".", 1)[0].replace("_", " ").title()
+                        model = "diffusion"
+
+                # Extract dimensions quickly
+                width, height = 512, 512
+                try:
+                    with Image.open(p) as img:
+                        width, height = img.size
+                except Exception:
+                    pass
+
+                size_kb = (
+                    f"{round(size_bytes / 1024, 1)} KB"
+                    if size_bytes < 1024 * 1024
+                    else f"{round(size_bytes / (1024 * 1024), 2)} MB"
+                )
+
+                items.append({
+                    "filename": fname,
+                    "url": f"/data/images/{fname}",
+                    "prompt": prompt,
+                    "model": model or "diffusion",
+                    "duration_s": round(duration_s, 2),
+                    "width": width,
+                    "height": height,
+                    "size_bytes": size_bytes,
+                    "size_kb": size_kb,
+                    "created_at": mtime,
+                    "created_at_iso": datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                })
+            except Exception as e:
+                logger.warning("gallery_image_read_failed", file=fname, error=str(e))
+
+        # Sort reverse chronologically
+        items.sort(key=lambda x: x["created_at"], reverse=True)
+        return {
+            "status": "ok",
+            "total": len(items),
+            "images": items[:limit],
+        }
+
+    @app.delete("/api/images/gallery/{filename}")
+    async def delete_gallery_image(filename: str) -> dict[str, Any]:
+        """Delete a generated artwork from data/images with path traversal protection.
+
+        Args:
+            filename: Target image filename to remove.
+
+        Returns:
+            Dictionary with deletion status and filename.
+        """
+        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", filename) or ".." in filename or "/" in filename:
+            return {"status": "error", "message": "Invalid filename format."}
+
+        target_file = Path("data/images") / filename
+        if not target_file.exists() or not target_file.is_file():
+            return {"status": "error", "message": "File not found."}
+
+        try:
+            target_file.unlink()
+            return {"status": "ok", "deleted": True, "filename": filename}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
 
     # --- Temporal Scheduler Endpoints ---
     @app.get("/api/scheduler/jobs")

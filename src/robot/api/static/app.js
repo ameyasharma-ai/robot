@@ -82,6 +82,8 @@ class RobotUI {
         this.initBlinking();
         this.initWebsocket();
         this.initImageGen();
+        this.initImageGallery();
+        this.initHfDownloadMonitor();
         this.initAudioDeck();
         this.initMemoryDeck();
         this.initPipelineTelemetryDeck();
@@ -5227,12 +5229,327 @@ class RobotUI {
                         }
                     });
                 }
+                if (this.loadGalleryImages) {
+                    this.loadGalleryImages(false);
+                }
             } else {
                 if (placeholder) placeholder.style.display = "block";
                 if (previewImg) previewImg.style.display = "none";
                 if (metaBlock) metaBlock.style.display = "none";
             }
         }
+    }
+
+    /**
+     * Initialize the AI Image Studio Artwork Gallery modal and full-resolution Lightbox.
+     * Fetches artworks from /api/images/gallery, supports filtering by model,
+     * search filtering, modal open/close, full-res preview, download, copy prompt, and deletion.
+     * @returns {void}
+     */
+    initImageGallery() {
+        const btnOpen = document.getElementById("btnOpenGallery");
+        const modal = document.getElementById("imageGalleryModal");
+        const btnClose = document.getElementById("btnCloseGalleryModal");
+        const btnFooterClose = document.getElementById("btnFooterCloseGalleryModal");
+        const btnRefresh = document.getElementById("btnRefreshGallery");
+        const filterChips = document.getElementById("galleryFilterChips");
+        const searchInput = document.getElementById("gallerySearchInput");
+
+        // Lightbox elements
+        const lightboxModal = document.getElementById("galleryLightboxModal");
+        const btnCloseLightbox = document.getElementById("btnCloseLightbox");
+        const lbCopyPrompt = document.getElementById("lightboxCopyPromptBtn");
+        const lbDelete = document.getElementById("lightboxDeleteBtn");
+
+        this.galleryImages = [];
+        this.activeGalleryFilter = "all";
+        this.gallerySearchQuery = "";
+        this.activeLightboxImage = null;
+
+        // Open Gallery Modal
+        if (btnOpen && modal) {
+            btnOpen.addEventListener("click", () => {
+                modal.style.display = "flex";
+                this.loadGalleryImages();
+            });
+        }
+
+        // Close Gallery Modal
+        const closeModal = () => {
+            if (modal) modal.style.display = "none";
+        };
+        if (btnClose) btnClose.addEventListener("click", closeModal);
+        if (btnFooterClose) btnFooterClose.addEventListener("click", closeModal);
+        if (modal) {
+            modal.addEventListener("click", (e) => {
+                if (e.target === modal) closeModal();
+            });
+        }
+
+        // Refresh Gallery
+        if (btnRefresh) {
+            btnRefresh.addEventListener("click", () => {
+                this.loadGalleryImages();
+            });
+        }
+
+        // Filter Chips
+        if (filterChips) {
+            filterChips.addEventListener("click", (e) => {
+                const chip = e.target.closest(".gallery-filter-chip");
+                if (!chip) return;
+                filterChips.querySelectorAll(".gallery-filter-chip").forEach(c => c.classList.remove("active"));
+                chip.classList.add("active");
+                this.activeGalleryFilter = chip.dataset.filter || "all";
+                this.renderGalleryGrid();
+            });
+        }
+
+        // Search Input
+        if (searchInput) {
+            searchInput.addEventListener("input", (e) => {
+                this.gallerySearchQuery = (e.target.value || "").toLowerCase().trim();
+                this.renderGalleryGrid();
+            });
+        }
+
+        // Close Lightbox
+        const closeLightbox = () => {
+            if (lightboxModal) lightboxModal.style.display = "none";
+            this.activeLightboxImage = null;
+        };
+        if (btnCloseLightbox) btnCloseLightbox.addEventListener("click", closeLightbox);
+        if (lightboxModal) {
+            lightboxModal.addEventListener("click", (e) => {
+                if (e.target === lightboxModal) closeLightbox();
+            });
+        }
+
+        // Escape Key Listener
+        window.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") {
+                if (lightboxModal && lightboxModal.style.display !== "none") {
+                    closeLightbox();
+                } else if (modal && modal.style.display !== "none") {
+                    closeModal();
+                }
+            }
+        });
+
+        // Copy Prompt
+        if (lbCopyPrompt) {
+            lbCopyPrompt.addEventListener("click", () => {
+                if (this.activeLightboxImage && this.activeLightboxImage.prompt) {
+                    navigator.clipboard.writeText(this.activeLightboxImage.prompt).then(() => {
+                        const originalText = lbCopyPrompt.textContent;
+                        lbCopyPrompt.textContent = "✓ Copied!";
+                        setTimeout(() => { lbCopyPrompt.textContent = originalText; }, 1800);
+                    }).catch(() => {});
+                }
+            });
+        }
+
+        // Delete Image
+        if (lbDelete) {
+            lbDelete.addEventListener("click", async () => {
+                if (!this.activeLightboxImage) return;
+                const fname = this.activeLightboxImage.filename;
+                if (!confirm(`Are you sure you want to permanently delete '${fname}'?`)) return;
+
+                try {
+                    const res = await fetch(`/api/images/gallery/${encodeURIComponent(fname)}`, {
+                        method: "DELETE"
+                    });
+                    const data = await res.json();
+                    if (data.status === "ok") {
+                        closeLightbox();
+                        this.loadGalleryImages();
+                    } else {
+                        alert(`Failed to delete image: ${data.message || "Unknown error"}`);
+                    }
+                } catch (err) {
+                    alert(`Error deleting image: ${err.message}`);
+                }
+            });
+        }
+
+        // Initial load of gallery count
+        this.loadGalleryImages(false);
+    }
+
+    /**
+     * Load image gallery items from the server API.
+     * @param {boolean} [render=true] - Whether to re-render the gallery grid.
+     * @returns {Promise<void>}
+     */
+    async loadGalleryImages(render = true) {
+        try {
+            const res = await fetch("/api/images/gallery?limit=150");
+            const data = await res.json();
+            if (data.status === "ok" && Array.isArray(data.images)) {
+                this.galleryImages = data.images;
+                const total = data.total || this.galleryImages.length;
+
+                const countBadge = document.getElementById("galleryCountBadge");
+                if (countBadge) countBadge.textContent = total;
+
+                const modalBadge = document.getElementById("modalGalleryCountBadge");
+                if (modalBadge) modalBadge.textContent = `${total} ARTWORKS`;
+
+                const countAll = document.getElementById("galleryCountAll");
+                if (countAll) countAll.textContent = total;
+
+                if (render) {
+                    this.renderGalleryGrid();
+                }
+            }
+        } catch (err) {
+            console.warn("Failed to load gallery images:", err);
+        }
+    }
+
+    /**
+     * Render the filtered gallery images into the DOM grid.
+     * @returns {void}
+     */
+    renderGalleryGrid() {
+        const grid = document.getElementById("galleryGrid");
+        const emptyState = document.getElementById("galleryEmptyState");
+        if (!grid) return;
+
+        let filtered = this.galleryImages || [];
+
+        // Model filter
+        if (this.activeGalleryFilter && this.activeGalleryFilter !== "all") {
+            const filterKey = this.activeGalleryFilter.toLowerCase();
+            filtered = filtered.filter(img => {
+                const m = (img.model || "").toLowerCase();
+                const fn = (img.filename || "").toLowerCase();
+                if (filterKey === "flux") return m.includes("flux") || fn.includes("flux");
+                if (filterKey === "sd-turbo") return m.includes("sd-turbo") || fn.includes("sd_turbo");
+                if (filterKey === "dreamshaper") return m.includes("dreamshaper") || fn.includes("dreamshaper");
+                if (filterKey === "sdxl") return m.includes("sdxl") || fn.includes("sdxl");
+                if (filterKey === "small-sd") return m.includes("small-sd") || fn.includes("small_sd");
+                if (filterKey === "fast-procedural") return m.includes("procedural") || m.includes("fast");
+                return m.includes(filterKey);
+            });
+        }
+
+        // Search query filter
+        if (this.gallerySearchQuery) {
+            const q = this.gallerySearchQuery;
+            filtered = filtered.filter(img => {
+                const prompt = (img.prompt || "").toLowerCase();
+                const model = (img.model || "").toLowerCase();
+                const fn = (img.filename || "").toLowerCase();
+                return prompt.includes(q) || model.includes(q) || fn.includes(q);
+            });
+        }
+
+        if (filtered.length === 0) {
+            grid.innerHTML = "";
+            if (emptyState) emptyState.style.display = "block";
+            return;
+        }
+
+        if (emptyState) emptyState.style.display = "none";
+        grid.innerHTML = filtered.map(img => {
+            const promptEscaped = (img.prompt || "Generated Artwork")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+            const modelLabel = (img.model || "diffusion").toUpperCase();
+            return `
+                <div class="gallery-card" data-filename="${img.filename}">
+                    <div class="gallery-thumb-wrap">
+                        <img src="${img.url}" alt="${promptEscaped}" class="gallery-thumb" loading="lazy" />
+                        <span class="gallery-card-badge">${modelLabel}</span>
+                        <span class="gallery-card-size">${img.size_kb || ""}</span>
+                    </div>
+                    <div class="gallery-card-info">
+                        <div class="gallery-card-prompt" title="${promptEscaped}">${promptEscaped}</div>
+                        <div class="gallery-card-date">${img.created_at_iso || ""}</div>
+                    </div>
+                </div>
+            `;
+        }).join("");
+
+        // Attach click listeners to cards
+        grid.querySelectorAll(".gallery-card").forEach(card => {
+            card.addEventListener("click", () => {
+                const fname = card.dataset.filename;
+                const imgItem = this.galleryImages.find(i => i.filename === fname);
+                if (imgItem) {
+                    this.openGalleryLightbox(imgItem);
+                }
+            });
+        });
+    }
+
+    /**
+     * Open the full-resolution artwork lightbox viewer modal.
+     * @param {Object} img - Artwork metadata item.
+     * @returns {void}
+     */
+    openGalleryLightbox(img) {
+        this.activeLightboxImage = img;
+        const modal = document.getElementById("galleryLightboxModal");
+        const lbImg = document.getElementById("lightboxImage");
+        const lbModel = document.getElementById("lightboxModelBadge");
+        const lbDim = document.getElementById("lightboxDimensionsBadge");
+        const lbSize = document.getElementById("lightboxSizeBadge");
+        const lbPrompt = document.getElementById("lightboxPromptText");
+        const lbDate = document.getElementById("lightboxDateText");
+        const lbDownload = document.getElementById("lightboxDownloadBtn");
+
+        if (lbImg) lbImg.src = img.url;
+        if (lbModel) lbModel.textContent = (img.model || "DIFFUSION").toUpperCase();
+        if (lbDim) lbDim.textContent = `${img.width || 512}×${img.height || 512}`;
+        if (lbSize) lbSize.textContent = img.size_kb || "";
+        if (lbPrompt) lbPrompt.textContent = img.prompt || "Generated Artwork";
+        if (lbDate) lbDate.textContent = img.created_at_iso || "";
+        if (lbDownload) {
+            lbDownload.href = img.url;
+            lbDownload.download = img.filename;
+        }
+
+        if (modal) modal.style.display = "flex";
+    }
+
+    /**
+     * Poll HuggingFace model download progress and update telemetry in HUD buttons.
+     * @returns {void}
+     */
+    initHfDownloadMonitor() {
+        const updateDownloadBadges = async () => {
+            try {
+                const res = await fetch("/api/llm/hf/downloads");
+                const data = await res.json();
+                if (data.status === "ok" && Array.isArray(data.downloads)) {
+                    const activeDownload = data.downloads.find(d => d.status === "downloading" || d.status === "in_progress");
+                    const hfBtn = document.getElementById("btnTopNavHfHub");
+                    if (activeDownload && hfBtn) {
+                        const pct = Math.round(activeDownload.progress_percent || 0);
+                        let badge = hfBtn.querySelector(".hf-dl-live-badge");
+                        if (!badge) {
+                            badge = document.createElement("span");
+                            badge.className = "hf-dl-live-badge badge badge-accent";
+                            badge.style.marginLeft = "6px";
+                            badge.style.fontSize = "0.7rem";
+                            hfBtn.appendChild(badge);
+                        }
+                        badge.textContent = `📥 ${pct}%`;
+                    } else if (hfBtn) {
+                        const badge = hfBtn.querySelector(".hf-dl-live-badge");
+                        if (badge) badge.remove();
+                    }
+                }
+            } catch (err) {
+                // Silently ignore network hiccups during download polling
+            }
+        };
+
+        setInterval(updateDownloadBadges, 4000);
+        updateDownloadBadges();
     }
 
     initAudioDeck() {

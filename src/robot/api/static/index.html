@@ -567,6 +567,9 @@
                                 <label class="img-ctrl-label">Steps:
                                     <input type="number" id="imgStepsInput" value="4" min="1" max="50" class="img-steps-input" title="Inference steps" />
                                 </label>
+                                <button type="button" class="img-gallery-btn cyber-btn-sm" id="btnOpenGallery" title="View Generated Artwork Gallery">
+                                    <span class="btn-icon">🖼️</span> Gallery (<span id="galleryCountBadge">0</span>)
+                                </button>
                                 <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
                                     <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>
                                 </div>
@@ -1612,6 +1615,88 @@
             <div class="modal-footer">
                 <span class="footer-hint">Switching a persona hot-swaps to its isolated database and applies all configured model defaults in real time.</span>
                 <button class="cyber-btn btn-secondary" id="btnFooterClosePersonaModal" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Studio Artwork Gallery Modal -->
+    <div class="cyber-modal-backdrop" id="imageGalleryModal" style="display: none;">
+        <div class="cyber-modal cyber-modal-wide gallery-modal-content">
+            <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
+            <div class="modal-corner bl"></div><div class="modal-corner br"></div>
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span class="modal-icon">🖼️</span>
+                    <span>AI IMAGE STUDIO GALLERY</span>
+                    <span class="badge badge-accent" id="modalGalleryCountBadge">0 ARTWORKS</span>
+                </div>
+                <div class="modal-header-actions">
+                    <button class="cyber-btn-sm" id="btnRefreshGallery" title="Refresh artworks">🔄 Refresh</button>
+                    <button class="modal-close-btn" id="btnCloseGalleryModal" title="Close (Esc)">✕</button>
+                </div>
+            </div>
+
+            <!-- Gallery Filter Toolbar -->
+            <div class="gallery-filter-toolbar">
+                <div class="gallery-filter-chips" id="galleryFilterChips">
+                    <button class="gallery-filter-chip active" data-filter="all">All (<span id="galleryCountAll">0</span>)</button>
+                    <button class="gallery-filter-chip" data-filter="flux">FLUX</button>
+                    <button class="gallery-filter-chip" data-filter="sd-turbo">SD-Turbo</button>
+                    <button class="gallery-filter-chip" data-filter="dreamshaper">DreamShaper</button>
+                    <button class="gallery-filter-chip" data-filter="sdxl">SDXL</button>
+                    <button class="gallery-filter-chip" data-filter="small-sd">Small-SD</button>
+                    <button class="gallery-filter-chip" data-filter="fast-procedural">Procedural</button>
+                </div>
+                <div class="gallery-search-box">
+                    <input type="text" id="gallerySearchInput" class="cyber-input" placeholder="Search by prompt or model..." autocomplete="off" />
+                </div>
+            </div>
+
+            <!-- Gallery Grid Container -->
+            <div class="modal-body gallery-modal-body" id="galleryModalBody">
+                <div class="gallery-grid" id="galleryGrid">
+                    <!-- Populated dynamically via /api/images/gallery -->
+                </div>
+                <div class="gallery-empty-state" id="galleryEmptyState" style="display: none;">
+                    <div class="empty-icon">🎨</div>
+                    <div class="empty-title">No Generated Artwork Found</div>
+                    <div class="empty-sub">Generate visual artwork using the Image Studio to populate your persistent gallery.</div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <span class="footer-hint">Artworks are permanently stored in <code>data/images/</code>. Click any card to preview in full resolution.</span>
+                <button class="cyber-btn btn-secondary" id="btnFooterCloseGalleryModal" type="button">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gallery Lightbox Viewer Modal -->
+    <div class="cyber-modal-backdrop lightbox-backdrop" id="galleryLightboxModal" style="display: none;">
+        <div class="lightbox-modal">
+            <button class="lightbox-close-btn" id="btnCloseLightbox" title="Close Preview (Esc)">✕</button>
+            <div class="lightbox-image-wrap">
+                <img id="lightboxImage" src="" alt="Artwork Preview" />
+            </div>
+            <div class="lightbox-sidebar">
+                <div class="lightbox-badge-row">
+                    <span class="badge badge-accent" id="lightboxModelBadge">MODEL</span>
+                    <span class="badge" id="lightboxDimensionsBadge">512×512</span>
+                    <span class="badge" id="lightboxSizeBadge">350 KB</span>
+                </div>
+                <div class="lightbox-section">
+                    <div class="lightbox-label">PROMPT</div>
+                    <div class="lightbox-prompt" id="lightboxPromptText">Prompt goes here...</div>
+                </div>
+                <div class="lightbox-section">
+                    <div class="lightbox-label">GENERATED AT</div>
+                    <div class="lightbox-value" id="lightboxDateText">2026-10-19 12:00:00 UTC</div>
+                </div>
+                <div class="lightbox-actions">
+                    <a id="lightboxDownloadBtn" href="#" download class="cyber-btn btn-primary" title="Download Full Resolution Artwork">💾 Download Image</a>
+                    <button class="cyber-btn btn-secondary" id="lightboxCopyPromptBtn" type="button">📋 Copy Prompt</button>
+                    <button class="cyber-btn btn-danger" id="lightboxDeleteBtn" type="button">🗑️ Delete Image</button>
+                </div>
             </div>
         </div>
     </div>

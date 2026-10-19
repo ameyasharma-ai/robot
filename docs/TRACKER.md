@@ -82,6 +82,9 @@ The robot runs a heterogeneous, real-time distributed architecture designed for 
 | **Phase 19: HuggingFace Hub LLM Search, Streaming Downloader & Dynamic Auto-Registration Architecture** | `HuggingFaceHubService` + `HuggingFaceDownloadManager` + Dynamic `ModelRegistry` + Dashboard Dual-Tab Modal | ✅ **Active** | Host CPU / Network + RTX 3050 (4GB CUDA) | Live search of HuggingFace Hub GGUF repositories (`/api/llm/hf/search`); quantization file tree inspection (`/api/llm/hf/files`); non-blocking background streaming chunked downloader (`/api/llm/hf/download`, `/api/llm/hf/downloads`, `/api/llm/hf/cancel`) with HTTP Range resume, rolling EWMA speed/ETA telemetry, and binary GGUF magic header validation; dynamic `ModelRegistry` persistence (`models/llm/registry.json`) and auto-discovery of local `.gguf` files; dual-tab cyberdeck dashboard modal with live animated progress bars, Top Nav trigger (`#btnTopNavHfHub`), Chat bar trigger (`#btnChatHfHub`), preset chips, and 1-click model activation hot-swapping to RTX 3050; 337 / 337 tests pass. |
 | **Phase 20: AI Persona Vault, Automated Isolated Database Architecture & Cute Avatar Revamp** | `PersonalityManager` + Isolated SQLite DBs per Persona (`data/memory/personas/{id}/conversations.db`) + Default Model Presets + Cyberdeck Persona Vault Modal + Cute 3D Aesthetic | ✅ **Active** | Host CPU + AMD Radeon 680M + RTX 3050 | Dynamic persona management with zero memory crosstalk; automated provisioning of independent SQLite databases upon persona creation; per-persona default model presets (LLM, TTS engine & voice, STT model, image model, thinking mode); cyberdeck Persona Vault modal (`#personaModal`) with card gallery, stats, and delete controls; updated 3D humanoid avatar with cute aesthetic (sweetheart ribbed knit top, pleated skirt, platform sneakers, glossy lips, soft blush); 100% test pass rate. |
 | **Phase 21: Full Production Dockerization & Skinny Cute Avatar Makeover** | `Dockerfile` + `docker-compose.yml` + `.dockerignore` + `docker_entrypoint.sh` + `install_docker.sh` + Skinny Mesh Tightening & Shadow-Free Facial Lighting | ✅ **Active** | Multi-Device Container (ALSA /dev/snd + NVIDIA RTX 3050 CUDA + Vulkan) | Full production containerization with host audio pass-through, volume-mounted models and persistent databases, healthcheck on port 8888, and automated installer script; 3D avatar tightened for a slender, form-fitting skinny aesthetic with ribbed sweetheart crop top, pleated mini-skirt, seamless hips/thighs without dark waistband artifacts, shadow-free clamshell studio portrait lighting, and breathtaking sapphire-to-amber jewel anime eyes; 343 / 343 tests pass. |
+| **Phase 22: Dynamic Rolling Context Budget Trimmer & Summary Compactor** | `estimate_tokens` (tiktoken cl100k_base + heuristic) + `_trim_and_compact_conversation` + `summarize_conversation_turns` | ✅ **Active** | Host CPU / RTX 3050 | Zero KV-cache evictions by maintaining 100% byte-for-byte system prompt invariance at Slot 0; atomic turn-pair retention; automatic executive summarization of pruned turns injected into user grounding; rolling budget telemetry exposed via `/api/context/inspect`; 350 / 350 tests pass. |
+| **Phase 23: Direct Local VLM Camera Analysis Tool** | `perception.analyze_camera_frame` / `perception.vlm_inspect` + `LocalVLMGrounding` + OCR | ✅ **Active** | AMD Radeon 680M / CPU | Direct programmatic visual query tool utilizing local vision models (`qwen2-vl-2b-instruct` / CPU / iGPU) and optional OCR text extraction (`pytesseract`); data URL encoding; structured tool output; permissions granted across all persona definitions (`luna`, `neo`, `aria`, `glados`); 350 / 350 tests pass. |
+| **Phase 24: Image Studio Gallery HUD Modal & Live Model Download Monitor** | `GET /api/images/gallery` + `DELETE /api/images/gallery/{filename}` + Cyberdeck Gallery Modal & Lightbox | ✅ **Active** | Core Engine / Static Web Frontend | Comprehensive image gallery modal (`#imageGalleryModal`) with model chips, instant search, responsive grid, and interactive lightbox viewer (`#galleryLightboxModal`); path traversal protection; real-time HuggingFace download progress monitoring bar; 350 / 350 tests pass. |
 
 
 
@@ -184,6 +187,28 @@ Legend:
   - Added REST endpoints: `GET /api/tts/status`, `GET /api/tts/voices`, `POST /api/tts/switch`, and `POST /api/tts/test`.
   - Built Cyberdeck dashboard UI controls: Top Nav button (`#btnTopNavTtsPicker`), Dev Panel Audio Deck card (`#ttsDeckCard` with 10 quick-switch preset chips), Chat top bar picker (`#chatTtsControls`), and 61-voice Cyberdeck modal (`#ttsModelModal`) with search, dialect filter chips, and live preview audio playback.
   - 100% test pass rate: **329 / 329 tests passing** across all 46 test modules; **118 / 118 Python files clean** with zero import errors (`verify_imports.py`).
+- [x] **Day 17: Phase 22 Dynamic Rolling Context Budget Trimmer & Summary Compactor**:
+  - Implemented `estimate_tokens(text)` in `src/robot/core/context.py` utilizing `tiktoken` (`cl100k_base`) with character heuristic fallback.
+  - Implemented `summarize_conversation_turns(turns, max_tokens=120)` generating structured executive digests of pruned turns.
+  - Implemented `_trim_and_compact_conversation(messages, budget_tokens)` preserving turn-pair and tool-call atomicity, enforcing clean user-turn boundaries, and injecting `[Earlier Conversation Summary (Compacted for Rolling Budget)]` into user instruction grounding.
+  - Maintained 100% byte-for-byte system prompt invariance at Slot 0 for zero KV-cache eviction.
+  - Added `rolling_budget` telemetry in `/api/context/inspect` (`budget_ceiling`, `history_tokens`, `utilization_pct`, `is_compacted`, `dropped_turns`, `compacted_summary_tokens`).
+  - Unit tests in `tests/test_context.py` (11/11 passing).
+- [x] **Day 18: Phase 23 Direct Local VLM Camera Analysis Tool**:
+  - Implemented `perception.analyze_camera_frame` (and alias `perception.vlm_inspect`) in `src/robot/tools/builtins/perception.py`.
+  - Integrated `LocalVLMGrounding` on AMD Radeon 680M iGPU / CPU, OCR text extraction (`pytesseract`), data URL generation, and structured visual description output.
+  - Added tool aliases (`analyze_camera_frame`, `vlm_inspect`, `read_text`, `inspect_tabletop`) and router keywords in `src/robot/tools/__init__.py`.
+  - Granted permissions across all personality definitions (`luna.yaml`, `neo.yaml`, `aria.yaml`, `glados.yaml`).
+  - Unit tests in `tests/test_perception.py` (9/9 passing).
+- [x] **Day 19: Phase 24 Image Studio Gallery HUD Modal & Live Model Download Monitor**:
+  - Implemented REST API endpoints in `src/robot/api/__init__.py`: `GET /api/images/gallery` (with image dimensions, job metadata mapping, reverse chronological sort) and `DELETE /api/images/gallery/{filename}` (with strict regex path traversal protection).
+  - Built Cyberdeck Gallery Modal (`#imageGalleryModal`) in `index.html` with model chips, real-time search, responsive artwork grid, and lightbox viewer (`#galleryLightboxModal`) with download, copy prompt, and deletion actions.
+  - Designed luxurious cyberpunk gallery cards, badges, and responsive viewer in `src/robot/api/static/index.css`.
+  - Implemented client logic in `src/robot/api/static/app.js`: `initImageGallery()`, `loadGalleryImages()`, `renderGalleryGrid()`, `openGalleryLightbox()`, and `initHfDownloadMonitor()`.
+  - Unit tests in `tests/test_image_gallery.py` (4/4 passing).
+  - 100% test pass rate: **350 / 350 tests passing** across all 47 test modules; **122 / 122 Python files clean** with zero import errors (`verify_imports.py`).
+
+
 
 
 ### 🏁 Version 1 (V1) Completed Milestones
@@ -2160,10 +2185,10 @@ Legend:
        4. **Lighting & Stage Pedestal Isolation in `CharacterEngine.js`**: Isolated persona emissive color updates strictly to named `pedestalAccentRing` meshes, preventing avatar materials and the smoked glass stage disc from being tinted.
        5. **Zero-Cache Static Architecture**: Added `NoCacheStaticFiles` in [`src/robot/api/__init__.py`](file:///home/ameya/robot/src/robot/api/__init__.py) enforcing `Cache-Control: no-cache, no-store, must-revalidate` on all `/static/` routes. Updated all `<link>` and `<script>` tags in `index.html` to `?v=6.0-pbr`, and updated `modelUrl` to `/static/models/avatar.glb?v=6.0-pbr` in `app.js` and `CharacterEngine.js`.
        6. **Automated Window Reload**: Dispatched synthetic F5 reload events to the active Chrome window via Xlib, immediately presenting the updated avatar on the user's screen.
-     - *Verification*:
-       - Unit tests in `tests/`: 337 / 337 passing across 41 test files (100%).
-       - Code integrity: `verify_imports.py` verified 120 / 120 files with zero import or syntax errors.
-       - Visual confirmation: Headless Chrome CDP screenshots (`avatar_realistic_full.png`, `avatar_realistic_body.png`, `avatar_realistic_face.png`) confirmed the high-contrast designer wardrobe, crisp gold hardware, cognac boots, obsidian pedestal, and realistic facial aesthetics.
+      - *Verification*:
+        - Unit tests in `tests/`: 337 / 337 passing across 41 test files (100%).
+        - Code integrity: `verify_imports.py` verified 120 / 120 files with zero import or syntax errors.
+        - Visual confirmation: Headless Chrome CDP screenshots (`avatar_realistic_full.png`, `avatar_realistic_body.png`, `avatar_realistic_face.png`) confirmed the high-contrast designer wardrobe, crisp gold hardware, cognac boots, obsidian pedestal, and realistic facial aesthetics.
 
 78. **Unified Image Provider Diffusion `torch_dtype` Precision Definition Fix**:
      - *Symptoms*: User requested image generation (`dreamshaper-v8` / SD 1.5), and the background synthesis failed with `diffusion_inference_failed_falling_back_to_procedural error="name 'torch_dtype' is not defined"`, triggering fallback to procedural canvas.
@@ -2173,6 +2198,29 @@ Legend:
        - `tests/test_image.py` & `tests/test_image_gpu_handoff_and_models.py`: 16 / 16 passing.
        - Full test suite: 337 / 337 passing across all 41 test files (100%).
        - Code integrity: `verify_imports.py` verified 120 / 120 files clean (100%).
+
+79. **Dynamic Rolling Context Budget Trimmer & Summary Compactor**:
+     - *Symptoms*: Extended multi-turn conversations risked context window overflows or sudden eviction of earlier conversation topics when exceeding the 4,800 local token cap.
+     - *Root Cause*: Lack of intelligent turn-pair atomicity and automatic conversation history summarization resulted in either hard turn-dropping or potential KV-cache invalidation.
+     - *Fix Applied*: Implemented `estimate_tokens(text)` with `tiktoken` (`cl100k_base`), `summarize_conversation_turns(turns)`, and `_trim_and_compact_conversation(messages, budget_tokens)` in `src/robot/core/context.py`. Pruned historical turns are condensed into an executive digest injected into user grounding without modifying Slot 0 system prompt bytes, preserving 100% KV-cache prefix invariance. Telemetry added to `/api/context/inspect`.
+     - *Verification*:
+       - Unit tests in `tests/test_context.py`: 11 / 11 passing.
+       - Full test suite: 350 / 350 passing (100%).
+
+80. **Local VLM Camera Direct Inspection Tool (`perception.analyze_camera_frame`)**:
+     - *Symptoms*: The robot lacked a direct, structured tool for programmatic deep visual inspection and optical text extraction from live camera frames via local vision models.
+     - *Fix Applied*: Implemented `analyze_camera_frame` (with alias `vlm_inspect`) in `src/robot/tools/builtins/perception.py`. Leverages `LocalVLMGrounding` on AMD Radeon 680M / CPU, optional OCR text extraction (`pytesseract`), data URL generation, and structured visual description output. Registered aliases and granted permissions across all personality YAMLs.
+     - *Verification*:
+       - Unit tests in `tests/test_perception.py`: 9 / 9 passing.
+       - Full test suite: 350 / 350 passing (100%).
+
+81. **Image Studio Gallery HUD Modal, Lightbox & Download Monitor**:
+     - *Symptoms*: Generated images stored in `data/images/` could not be browsed, searched, previewed in full resolution, downloaded, or deleted from the Web HUD; HuggingFace model download progress was confined to the LLM modal.
+     - *Fix Applied*: Implemented `GET /api/images/gallery` and `DELETE /api/images/gallery/{filename}` in `src/robot/api/__init__.py` with regex path traversal security; built cyberpunk Image Gallery modal (`#imageGalleryModal`), filter chips, real-time search, responsive grid, and interactive lightbox viewer (`#galleryLightboxModal`) in `index.html`, `index.css`, and `app.js`. Added live HuggingFace download monitoring integration.
+     - *Verification*:
+       - Unit tests in `tests/test_image_gallery.py`: 4 / 4 passing.
+       - Full test suite: 350 / 350 passing (100%).
+       - Code integrity: `verify_imports.py` verified 122 / 122 files clean (100%).
 
 ### ⚠️ Open Watchlist
 1. **Physical Servos Closed-Loop Feedback**:

@@ -96,6 +96,8 @@ tool_permissions:
   web.deep_search: true
   perception.what_do_you_see: true
   perception.inspect_tabletop: true
+  perception.analyze_camera_frame: true
+  perception.vlm_inspect: true
   perception.inspect_view: true
   perception.get_world_state: true
   camera.capture_snapshot: true

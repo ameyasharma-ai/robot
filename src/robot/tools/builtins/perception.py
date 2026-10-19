@@ -190,3 +190,169 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         )
     )
 
+    async def analyze_camera_frame(
+        prompt: str = "Describe what you see in the camera frame in full detail",
+        detail_level: str = "normal",
+        extract_text: bool = True,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Perform comprehensive visual question answering, OCR, and scene analysis on the camera view.
+
+        Args:
+            prompt: Visual query or instruction (e.g. 'Read the text on this paper', 'What brand is this?').
+            detail_level: Granularity level ('concise', 'normal', 'high').
+            extract_text: Whether to perform local OCR text extraction.
+
+        Returns:
+            Structured dictionary with analysis summary, detected objects, extracted text,
+            spatial layout, lighting conditions, and base64 data URL.
+        """
+        target_prompt = (
+            prompt
+            or kwargs.get("query")
+            or kwargs.get("question")
+            or kwargs.get("text")
+            or "Describe what you see in the camera frame in full detail"
+        ).strip()
+        eff_detail = str(detail_level or kwargs.get("detail", "normal")).lower()
+        do_ocr = bool(extract_text if extract_text is not None else kwargs.get("ocr", True))
+
+        frame = None
+        if hasattr(engine, "perception") and engine.perception and engine.perception.camera:
+            frame = engine.perception.camera.get_latest_frame()
+
+        from robot.perception.vlm import LocalVLMGrounding
+
+        vlm = getattr(engine.perception, "vlm", None) if hasattr(engine, "perception") and engine.perception else None
+        if vlm is None:
+            vlm = LocalVLMGrounding(enabled=True, device="amd_igpu")
+
+        if frame is None or getattr(frame, "size", 0) == 0:
+            return {
+                "status": "standby",
+                "summary": (
+                    f"Local VLM inspection: Tabletop/robot camera is in standby mode. "
+                    f"Prompt '{target_prompt}' could not be visually resolved. "
+                    f"Please ensure the physical camera is connected and unmuted."
+                ),
+                "prompt": target_prompt,
+                "detail_level": eff_detail,
+                "detected_objects": [],
+                "detected_text": "",
+                "spatial_layout": "standby",
+                "lighting": "unknown",
+                "dominant_color": "unknown",
+                "image_data_url": None,
+                "device": "amd_igpu",
+            }
+
+        # 1. Encode image to JPEG / base64 data URL
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+        success, encimg = cv2.imencode(".jpg", frame, encode_param)
+        data_url = None
+        if success:
+            b64_str = base64.b64encode(encimg.tobytes()).decode("utf-8")
+            data_url = f"data:image/jpeg;base64,{b64_str}"
+
+        # 2. Local VLM Grounding Analysis (geometric, color, spatial layout)
+        vlm_res = vlm.inspect_frame(frame, query=target_prompt)
+
+        # 3. Optional local OCR extraction
+        detected_text = ""
+        if do_ocr:
+            try:
+                import io
+                import pytesseract
+                from PIL import Image
+
+                pil_img = Image.open(io.BytesIO(encimg.tobytes()))
+                detected_text = pytesseract.image_to_string(pil_img).strip()
+            except Exception:
+                detected_text = ""
+
+        # 4. Synthesize natural language result
+        base_summary = vlm_res.get("summary", "")
+        summary_parts = [base_summary]
+        if detected_text:
+            clean_snippet = detected_text.replace("\n", " ").strip()
+            if len(clean_snippet) > 160:
+                clean_snippet = clean_snippet[:160] + "..."
+            summary_parts.append(f"Readable text extracted from camera: '{clean_snippet}'.")
+
+        if eff_detail == "concise" and vlm_res.get("items"):
+            items = vlm_res.get("items", [])
+            summary_parts = [f"Camera view: {len(items)} item(s) present ({', '.join(i.get('color', '') + ' ' + i.get('shape', '') for i in items[:3])})."]
+            if detected_text:
+                summary_parts.append(f"Text detected: '{detected_text[:80]}'.")
+
+        combined_summary = " ".join(summary_parts)
+
+        return {
+            "status": "success",
+            "summary": combined_summary,
+            "prompt": target_prompt,
+            "detail_level": eff_detail,
+            "detected_objects": vlm_res.get("items", []),
+            "detected_text": detected_text,
+            "lighting": vlm_res.get("lighting", "normal"),
+            "dominant_color": vlm_res.get("dominant_color", "neutral"),
+            "resolution": vlm_res.get("resolution", f"{frame.shape[1]}x{frame.shape[0]}"),
+            "duration_ms": vlm_res.get("duration_ms", 0.0),
+            "image_data_url": data_url,
+            "device": "amd_igpu",
+        }
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="perception.analyze_camera_frame",
+            description=(
+                "Perform comprehensive visual inspection, OCR text extraction, and scene analysis through the robot's physical camera using the Local VLM. "
+                "Answers visual questions, reads text from physical documents, books, medicine labels, whiteboard notes, and identifies object shapes/colors. "
+                "Call this when asked 'read this paper', 'what text is on this', 'analyze what you see', 'what brand/type is this object', or 'describe the scene in detail'."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Visual question or inspection prompt (e.g. 'Read the text on the document', 'What item is in front of me?')",
+                        "default": "Describe what you see in the camera frame in full detail",
+                    },
+                    "detail_level": {
+                        "type": "string",
+                        "enum": ["concise", "normal", "high"],
+                        "default": "normal",
+                        "description": "Desired detail granularity of visual report",
+                    },
+                    "extract_text": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Whether to perform optical character recognition (OCR) on the camera frame",
+                    },
+                },
+            },
+            handler=analyze_camera_frame,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="perception",
+        )
+    )
+
+    engine.tool_registry.register(
+        ToolDefinition(
+            name="perception.vlm_inspect",
+            description="Alias for perception.analyze_camera_frame. Perform visual analysis and OCR text reading on camera frame.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "default": "Describe what you see"},
+                    "detail_level": {"type": "string", "enum": ["concise", "normal", "high"], "default": "normal"},
+                    "extract_text": {"type": "boolean", "default": True},
+                },
+            },
+            handler=analyze_camera_frame,
+            permission_level=PermissionLevel.READ_ONLY,
+            family="perception",
+        )
+    )
+
+

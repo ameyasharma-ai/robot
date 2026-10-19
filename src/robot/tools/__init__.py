@@ -104,6 +104,11 @@ class ToolRegistry:
         "what_do_you_see": "perception.what_do_you_see",
         "vision": "perception.what_do_you_see",
         "see": "perception.what_do_you_see",
+        "analyze_camera_frame": "perception.analyze_camera_frame",
+        "analyze_frame": "perception.analyze_camera_frame",
+        "vlm_inspect": "perception.analyze_camera_frame",
+        "read_text": "perception.analyze_camera_frame",
+        "inspect_tabletop": "perception.inspect_tabletop",
         "generate_image": "image.generate",
         "create_image": "image.generate",
         "wikipedia": "knowledge.wikipedia",
@@ -322,7 +327,8 @@ class ToolRouter:
             "what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that",
             "look at this", "look around", "look at me", "who is here", "who is this", "can you see me", "do you see me",
             "what am i holding", "what i am holding", "inspect scene", "check", "check this", "check that", "check what",
-            "inspect", "look", "see", "camera", "vision", "describe scene", "describe what you see"
+            "inspect", "look", "see", "camera", "vision", "describe scene", "describe what you see",
+            "read this", "read paper", "read text", "read document", "what does this say", "analyze frame", "vlm", "vlm inspect", "analyze camera", "inspect tabletop"
         ],
         "os": [
             "launch", "open", "start", "run", "start app", "open app", "launch app", "open vs code", "open spotify",

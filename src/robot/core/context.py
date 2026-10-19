@@ -24,6 +24,14 @@ logger = get_logger("context")
 import re
 import time
 
+try:
+    import tiktoken
+
+    _TIKTOKEN_ENC = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _TIKTOKEN_ENC = None
+
+
 GROUNDING_POLICY = (
     "Truth, Tools & Real-Time Action Directives:\n"
     "- User Entity Ownership & Attribution Directive: The human speaking with you is your creator and conversational partner. All facts, likes, dislikes, family members, friends, and romantic interests (e.g. 'crush', 'partner', 'friends', 'goals') stored in user memories belong exclusively to the USER. NEVER claim or misattribute the user's personal relationships or crushes as your own! If a fact states 'Crush: Anubha', Anubha is the USER'S crush, not yours. You must refer to them accurately as 'your crush Anubha'.\n"
@@ -370,14 +378,20 @@ class ContextEngine:
             if archive_str:
                 grounding_parts.append(f"[Historical Multi-Session Conversation Archive]:\n{archive_str}")
 
-        # 5. Recent Conversation History (Current Session)
+        # 5. Recent Conversation History (Current Session) with Dynamic Rolling Trimmer
         conv_budget = 250000 if high_intelligence else self._budget.get("recent_conversation", 2200)
         trimmed: list[dict] = []
+        compacted_summary: str | None = None
+        dropped_turns_count = 0
         if resolved_recent:
-            trimmed = _trim_conversation(
+            trimmed, compacted_summary, dropped_turns_count = _trim_and_compact_conversation(
                 resolved_recent, conv_budget
             )
             messages.extend(trimmed)
+            if compacted_summary:
+                grounding_parts.append(
+                    f"[Earlier Conversation Summary (Compacted for Rolling Budget)]:\n{compacted_summary}"
+                )
 
         # 6. Dynamic Context Grounding (Tool results from current turn / deep web extraction)
         tool_parts = []
@@ -475,6 +489,17 @@ class ContextEngine:
                 "is_slot_0_stable": True,
                 "static_prefix_tokens": _estimate_tokens(messages[0]["content"]) if messages else 0,
             },
+            "rolling_budget": {
+                "budget_ceiling": conv_budget,
+                "history_tokens": sum(_estimate_tokens(str(m.get("content", ""))) for m in trimmed),
+                "utilization_pct": round(
+                    (sum(_estimate_tokens(str(m.get("content", ""))) for m in trimmed) / max(1, conv_budget)) * 100,
+                    1,
+                ),
+                "is_compacted": bool(compacted_summary),
+                "dropped_turns": dropped_turns_count,
+                "compacted_summary_tokens": _estimate_tokens(compacted_summary) if compacted_summary else 0,
+            },
             "timestamp": time.time(),
         }
 
@@ -488,9 +513,26 @@ class ContextEngine:
         return messages
 
 
-def _estimate_tokens(text: str) -> int:
-    """Rough token estimation: ~4 chars per token for English."""
-    return len(text) // 4
+def estimate_tokens(text: str) -> int:
+    """Accurately estimate or count tokens using tiktoken with fallback to char heuristics.
+
+    Args:
+        text: Input string to tokenize.
+
+    Returns:
+        Estimated or exact token count (>= 0).
+    """
+    if not text:
+        return 0
+    if _TIKTOKEN_ENC is not None:
+        try:
+            return len(_TIKTOKEN_ENC.encode(text, disallowed_special=()))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+_estimate_tokens = estimate_tokens
 
 
 def _format_memories(memories: list[dict], budget_tokens: int) -> str:
@@ -554,8 +596,62 @@ def _format_world_state(world_state: dict) -> str:
     return "\n".join(lines)
 
 
-def _trim_conversation(messages: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
-    """Prune conversation turns to fit budget while preserving turn-pair integrity.
+
+def summarize_conversation_turns(turns: list[dict[str, Any]], max_tokens: int = 120) -> str:
+    """Summarize pruned conversation turns into a succinct multi-line executive digest.
+
+    Args:
+        turns: List of historical message dictionaries that were dropped from context.
+        max_tokens: Maximum token ceiling for the generated summary.
+
+    Returns:
+        Succinct multi-line string summarizing earlier dialogue.
+    """
+    if not turns:
+        return ""
+
+    user_intents: list[str] = []
+    assistant_actions: list[str] = []
+
+    for turn in turns:
+        role = turn.get("role", "")
+        content = str(turn.get("content") or "").strip()
+        if not content:
+            continue
+        first_line = content.split("\n")[0]
+        snippet = first_line[:90].strip()
+        if len(first_line) > 90:
+            snippet += "..."
+
+        if role == "user":
+            user_intents.append(snippet)
+        elif role == "assistant":
+            assistant_actions.append(snippet)
+
+    summary_lines = []
+    if user_intents:
+        samples = user_intents[:2]
+        if len(user_intents) > 2:
+            samples.append(user_intents[-1])
+        summary_lines.append(f"• User previously inquired about: {'; '.join(samples)}")
+
+    if assistant_actions:
+        samples_act = assistant_actions[:2]
+        if len(assistant_actions) > 2:
+            samples_act.append(assistant_actions[-1])
+        summary_lines.append(f"• Assistant previously responded: {'; '.join(samples_act)}")
+
+    full_summary = "\n".join(summary_lines)
+    if _estimate_tokens(full_summary) > max_tokens:
+        full_summary = full_summary[: max_tokens * 4] + "..."
+    return full_summary
+
+
+def _trim_and_compact_conversation(
+    messages: list[dict[str, Any]],
+    budget_tokens: int,
+) -> tuple[list[dict[str, Any]], str | None, int]:
+    """Prune conversation turns to fit budget, compacting dropped turns into an executive summary.
 
     Architectural Rationale:
     1. Turn-Pair & Tool Call Atomicity: In Qwen chat template, an assistant tool call
@@ -564,20 +660,22 @@ def _trim_conversation(messages: list[dict[str, Any]], budget_tokens: int) -> li
        the template encounters an invalid conversational state.
     2. Historical Purity: Any legacy grounding wrappers in historical user turns are sanitized
        to extract the canonical user instruction, ensuring historical turn token invariance.
-    3. Oldest-First Sliding Window: Retains the most recent exchanges while dropping the oldest
-       complete turns from the beginning of history when budget is exceeded.
+    3. Oldest-First Sliding Window & Compaction: Retains the most recent exchanges while distilling
+       dropped turns into a concise executive digest so conversational context is never lost.
 
     Args:
         messages: List of historical conversation messages.
         budget_tokens: Maximum token budget allocated for conversation history.
 
     Returns:
-        List of trimmed, structurally valid conversation messages.
+        Tuple containing:
+        - List of trimmed, structurally valid conversation messages.
+        - Compacted summary string of dropped turns (or None if no turns dropped).
+        - Count of dropped turns.
     """
     if not messages:
-        return []
+        return [], None, 0
 
-    # 1. Sanitize messages: ensure clean structure and strip any accidental historical grounding wrappers / leaked assistant tokens
     clean_msgs: list[dict[str, Any]] = []
     for msg in messages:
         m = dict(msg)
@@ -592,31 +690,58 @@ def _trim_conversation(messages: list[dict[str, Any]], budget_tokens: int) -> li
                 elif "[User Input]:\n" in content:
                     m["content"] = content.split("[User Input]:\n", 1)[1].strip()
             elif role == "assistant":
-                # Clean assistant history: strip leaked thoughts, internal motion/tool brackets
                 c = re.sub(r"<thought>.*?</thought>", "", content, flags=re.DOTALL)
                 c = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", c)
                 c = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", c, flags=re.IGNORECASE)
                 m["content"] = c.strip()
         clean_msgs.append(m)
 
-    # 2. Walk backwards to collect turns within budget
+    total_tokens = sum(_estimate_tokens(str(m.get("content") or "")) for m in clean_msgs)
+    if total_tokens <= budget_tokens:
+        return clean_msgs, None, 0
+
+    # Walk backwards to collect turns within budget
     result: list[dict[str, Any]] = []
     total = 0
-    for msg in reversed(clean_msgs):
+    retained_indices: set[int] = set()
+
+    for idx in range(len(clean_msgs) - 1, -1, -1):
+        msg = clean_msgs[idx]
         content_str = str(msg.get("content") or "")
         tokens = _estimate_tokens(content_str)
         if total + tokens > budget_tokens:
             break
         result.insert(0, msg)
+        retained_indices.add(idx)
         total += tokens
 
-    # 3. Ensure valid turn boundary:
-    # If the first retained message is an orphan 'tool' or 'assistant' message, drop it and any immediate siblings
-    # until the history starts cleanly with a 'user' turn.
+    # Ensure valid turn boundary (must start with user turn)
     while result and result[0].get("role") in ("tool", "assistant"):
-        result.pop(0)
+        popped = result.pop(0)
+        for idx in sorted(retained_indices):
+            if clean_msgs[idx] == popped:
+                retained_indices.remove(idx)
+                break
 
-    return result
+    dropped_turns = [clean_msgs[i] for i in range(len(clean_msgs)) if i not in retained_indices]
+    compacted_summary = summarize_conversation_turns(dropped_turns) if dropped_turns else None
+
+    return result, compacted_summary, len(dropped_turns)
+
+
+def _trim_conversation(messages: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
+    """Prune conversation turns to fit budget while preserving turn-pair integrity.
+
+    Args:
+        messages: List of historical conversation messages.
+        budget_tokens: Maximum token budget allocated for conversation history.
+
+    Returns:
+        List of trimmed, structurally valid conversation messages.
+    """
+    trimmed, _, _ = _trim_and_compact_conversation(messages, budget_tokens)
+    return trimmed
+
 
 
 def _format_all_facts(facts: list[dict], budget_tokens: int) -> str:

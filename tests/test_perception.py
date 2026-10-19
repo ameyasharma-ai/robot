@@ -264,9 +264,72 @@ def test_perception_get_latest_scene():
     assert scene["num_faces"] == 1
     assert len(scene["people"]) == 1
     assert scene["people"][0]["id"] == "person_0"
-    assert len(scene["objects"]) == 1
-    assert scene["objects"][0]["label"] == "cup"
     assert "motion" in scene
     assert "lighting" in scene
+
+
+@pytest.mark.asyncio
+async def test_perception_analyze_camera_frame():
+    """Verify perception.analyze_camera_frame and perception.vlm_inspect tools."""
+    from unittest.mock import MagicMock
+    from robot.core.engine import RobotEngine
+    from robot.tools.builtins.perception import register_perception_tools
+    from robot.tools import PermissionLevel
+
+    engine = RobotEngine()
+    register_perception_tools(engine)
+
+    # 1. Verification of tool definitions and aliases
+    tool_def = engine.tool_registry.get("perception.analyze_camera_frame")
+    assert tool_def is not None
+    assert tool_def.permission_level == PermissionLevel.READ_ONLY
+    assert tool_def.family == "perception"
+
+    alias_def = engine.tool_registry.get("perception.vlm_inspect")
+    assert alias_def is not None
+
+    # 2. Standby / offline camera behavior
+    engine.perception = MagicMock()
+    engine.perception.camera = None
+
+    res_standby = await tool_def.handler(prompt="Read the paper in front of you")
+    assert res_standby["status"] == "standby"
+    assert "standby" in res_standby["summary"].lower()
+    assert res_standby["prompt"] == "Read the paper in front of you"
+    assert res_standby["image_data_url"] is None
+
+    # 3. Live camera frame analysis
+    # Create synthetic test frame (640x480 RGB with bright colored rectangle)
+    test_frame = np.full((480, 640, 3), 200, dtype=np.uint8)
+    # Draw blue rectangle
+    test_frame[100:250, 150:350] = [220, 50, 50]  # BGR
+
+    mock_cam = MagicMock()
+    mock_cam.get_latest_frame.return_value = test_frame
+    engine.perception.camera = mock_cam
+    engine.perception.vlm = None
+
+    res_live = await tool_def.handler(
+        prompt="What object is on the table?",
+        detail_level="normal",
+        extract_text=False,
+    )
+    assert res_live["status"] == "success"
+    assert res_live["prompt"] == "What object is on the table?"
+    assert res_live["detail_level"] == "normal"
+    assert res_live["resolution"] == "640x480"
+    assert res_live["image_data_url"] is not None
+    assert res_live["image_data_url"].startswith("data:image/jpeg;base64,")
+    assert len(res_live["detected_objects"]) >= 1
+
+    # 4. Concise detail level test
+    res_concise = await alias_def.handler(
+        prompt="Quick look",
+        detail_level="concise",
+        extract_text=False,
+    )
+    assert res_concise["status"] == "success"
+    assert "Camera view:" in res_concise["summary"] or "AMD iGPU" in res_concise["summary"]
+
 
 

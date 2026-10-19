@@ -144,4 +144,62 @@ def test_assistant_history_thought_and_bracket_stripping():
     assert "Playing jazz now for you Ameya!" in hist_assistant["content"]
 
 
+def test_dynamic_rolling_context_budget_trimmer_and_compaction():
+    """Verify that exceeding conversation budget prunes older turns and synthesizes a compact digest."""
+    engine = ContextEngine({"recent_conversation": 80})
+
+    history = [
+        {"role": "user", "content": "What is the capital of France and what is the best bakery there?"},
+        {"role": "assistant", "content": "The capital is Paris, and Du Pain et des Idées is widely celebrated for bakeries."},
+        {"role": "user", "content": "What about Italy and its best pasta places in Rome?"},
+        {"role": "assistant", "content": "The capital is Rome, and Roscioli serves phenomenal carbonara."},
+        {"role": "user", "content": "Tell me about Tokyo and ramen spots in Shinjuku."},
+        {"role": "assistant", "content": "Tokyo features Fuunji for exceptional tsukemen and Ichiran for tonkotsu."},
+    ]
+
+    messages = engine.build_messages(
+        system_prompt="You are Cypher.",
+        user_text="Which of these cities should I visit first?",
+        recent_conversation=history,
+    )
+
+    # Context should retain only the most recent turns within 80 tokens
+    assert len(messages) >= 3
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert messages[-1]["role"] == "user"
+
+    # Compacted summary of earlier turns must be injected into the user turn grounding
+    user_turn = messages[-1]["content"]
+    assert "Earlier Conversation Summary (Compacted for Rolling Budget)" in user_turn
+    assert "France" in user_turn or "Paris" in user_turn
+
+    # Diagnostics verification
+    diag = engine.get_last_diagnostics()
+    assert "rolling_budget" in diag
+    rb = diag["rolling_budget"]
+    assert rb["budget_ceiling"] == 80
+    assert rb["is_compacted"] is True
+    assert rb["dropped_turns"] > 0
+    assert rb["compacted_summary_tokens"] > 0
+
+
+def test_summarize_conversation_turns_helper():
+    """Verify summarize_conversation_turns produces concise digest with user and assistant highlights."""
+    from robot.core.context import summarize_conversation_turns
+
+    dropped = [
+        {"role": "user", "content": "Can you open the Spotify app?"},
+        {"role": "assistant", "content": "Opening Spotify for you now Ameya."},
+        {"role": "user", "content": "Now play some lo-fi beats."},
+        {"role": "assistant", "content": "Playing chill lo-fi beats playlist."},
+    ]
+    summary = summarize_conversation_turns(dropped, max_tokens=100)
+    assert "User previously inquired about:" in summary
+    assert "Spotify" in summary
+    assert "Assistant previously responded:" in summary
+    assert "lo-fi" in summary or "Spotify" in summary
+
+
+
 
