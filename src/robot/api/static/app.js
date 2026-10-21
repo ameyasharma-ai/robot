@@ -1103,24 +1103,87 @@ class RobotUI {
         }
     }
 
+    /**
+     * Render the chat welcome splash screen tailored to the active personality and isolated database.
+     * @returns {void}
+     */
     renderChatWelcome() {
         if (!this.chatMessagesContainer) return;
-        const persona = (this.personaSelect ? this.personaSelect.value : "neo").toUpperCase();
+        const rawPersona = this.personaSelect ? this.personaSelect.value : "neo";
+        const personaTitle = (typeof this.formatPersonaName === "function")
+            ? this.formatPersonaName(rawPersona)
+            : (rawPersona === "neo" ? "CYPHER" : rawPersona.toUpperCase());
+
         this.chatMessagesContainer.innerHTML = `
             <div class="chat-welcome-hero">
                 <div class="hero-logo">🤖</div>
-                <h2 class="hero-title">${this.escapeHtml(persona)} AI WORKSPACE</h2>
+                <h2 class="hero-title">${this.escapeHtml(personaTitle)} AI WORKSPACE</h2>
                 <p class="hero-desc">
-                    Isolated conversational threads with shared global memory across all instances and voice turns.
+                    Isolated conversational thread with independent persona database and zero memory leakage.
                     Microphone is unloaded to preserve audio privacy and hardware bandwidth.
                 </p>
                 <div class="hero-features">
                     <div class="hero-feat"><span class="feat-icon">⚡</span> Real-time token streaming with live tok/s</div>
                     <div class="hero-feat"><span class="feat-icon">🛠️</span> Interactive tool execution telemetry cards</div>
-                    <div class="hero-feat"><span class="feat-icon">🧠</span> Shared persistent vector facts & context memory</div>
+                    <div class="hero-feat"><span class="feat-icon">🧠</span> Isolated vector facts & persistent database</div>
                 </div>
             </div>
         `;
+    }
+
+    /**
+     * Synchronize all UI indicators, welcome hero, and hardware pickers when active persona changes.
+     * @param {string} personaId - Persona identifier (e.g. 'jarvis', 'luna', 'neo').
+     * @param {string} [personaTitle] - Optional display title (e.g. 'Jarvis', 'Luna', 'CYPHER').
+     * @returns {Promise<void>}
+     */
+    async updateActivePersonaUI(personaId, personaTitle) {
+        if (!personaId) return;
+        const cleanId = personaId.toLowerCase();
+        const title = personaTitle || ((typeof this.formatPersonaName === "function")
+            ? this.formatPersonaName(cleanId)
+            : (cleanId === "neo" ? "CYPHER" : cleanId.toUpperCase()));
+
+        if (this.personaSelect && this.personaSelect.value !== cleanId) {
+            this.personaSelect.value = cleanId;
+        }
+        if (this.personaName) {
+            this.personaName.textContent = title;
+        }
+        if (this.chatPersonaLabel) {
+            this.chatPersonaLabel.textContent = title;
+        }
+
+        // Dynamically update existing welcome hero in DOM if visible
+        const existingHeroTitle = document.querySelector(".chat-welcome-hero .hero-title");
+        if (existingHeroTitle) {
+            existingHeroTitle.textContent = `${title} AI WORKSPACE`;
+        }
+
+        // Update assistant sender tags in the active chat view
+        document.querySelectorAll(".msg-assistant .chat-msg-sender").forEach((el) => {
+            el.textContent = title;
+        });
+
+        this.applyPersonaTheme(cleanId);
+        this.syncChatTopBar();
+
+        // Refresh hardware pickers to display newly applied models (TTS, STT, LLM)
+        try {
+            await Promise.all([
+                this.refreshTtsStatus ? this.refreshTtsStatus() : Promise.resolve(),
+                this.refreshSttStatus ? this.refreshSttStatus() : Promise.resolve(),
+                this.refreshLlmStatus ? this.refreshLlmStatus() : Promise.resolve(),
+                this.loadChatSessions ? this.loadChatSessions() : Promise.resolve(),
+            ]);
+        } catch (e) {
+            console.error("Failed to refresh status after persona switch:", e);
+        }
+
+        // If the chat messages container is empty or showing the hero, re-render welcome hero
+        if (this.chatMessagesContainer && (!this.chatMessagesContainer.children.length || document.querySelector(".chat-welcome-hero"))) {
+            this.renderChatWelcome();
+        }
     }
 
     appendHistoricalMessage(msg) {
@@ -2510,7 +2573,7 @@ class RobotUI {
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
             this.characterEngine = new CharacterEngine(this.characterContainer, {
                 variant: "animated",
-                modelUrl: "/static/models/avatar.glb?v=8.0-skinny-cute",
+                modelUrl: "/static/models/avatar.glb?v=9.0-skinny-cute-pro",
             });
             this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 
@@ -2725,11 +2788,14 @@ class RobotUI {
                 document.querySelectorAll(".msg-assistant .chat-msg-sender").forEach((el) => {
                     el.textContent = disp;
                 });
-                const switchRes = await fetch(`/personality/${chosen}`, { method: "POST" });
+                const switchRes = await fetch(`/api/personas/${chosen}/activate`, { method: "POST" });
                 if (switchRes.ok) {
-                    this.logEvent("PERSONA", `Personality switched to ${disp} (priming in background)`, "system");
-                    if (this.personaName) this.personaName.textContent = disp;
-                    this.syncChatTopBar();
+                    this.logEvent("PERSONA", `Personality switched to ${disp} with isolated database`, "system");
+                    await this.updateActivePersonaUI(chosen, disp);
+                } else {
+                    // Fallback to legacy personality switch
+                    await fetch(`/personality/${chosen}`, { method: "POST" });
+                    await this.updateActivePersonaUI(chosen, disp);
                 }
             } catch (err) {
                 this.logEvent("ERROR", `Failed to switch personality: ${err.message}`, "error");
@@ -2935,10 +3001,7 @@ class RobotUI {
                             const actRes = await fetch(`/api/personas/${targetId}/activate`, { method: "POST" });
                             if (!actRes.ok) throw new Error(await actRes.text());
                             this.logEvent("PERSONA", `Activated persona ${targetId} with isolated database.`, "system");
-                            if (this.personaSelect) {
-                                this.personaSelect.value = targetId;
-                            }
-                            this.applyPersonaTheme(targetId);
+                            await this.updateActivePersonaUI(targetId);
                             await renderPersonas();
                         } catch (err) {
                             alert(`Failed to activate persona: ${err.message}`);
@@ -4297,14 +4360,10 @@ class RobotUI {
 
         if (data.event === "personality_switched" && data.personality) {
             const chosen = data.personality;
-            if (this.personaSelect && this.personaSelect.value !== chosen) {
-                this.personaSelect.value = chosen;
-            }
-            if (this.personaName) {
-                this.personaName.textContent = (chosen === "neo" ? "CYPHER" : chosen.toUpperCase());
-            }
-            this.applyPersonaTheme(chosen);
-            const disp = chosen === "neo" ? "CYPHER" : chosen.toUpperCase();
+            const disp = (typeof this.formatPersonaName === "function")
+                ? this.formatPersonaName(chosen)
+                : (chosen === "neo" ? "CYPHER" : chosen.toUpperCase());
+            this.updateActivePersonaUI(chosen, disp);
             this.logEvent("PERSONA", `Personality switched to ${disp}`, "system");
             this.showDynamicIsland("Persona Active", `Switched to ${disp}`, "👤", "emerald");
         }
@@ -5953,9 +6012,11 @@ class RobotUI {
         const topNavPicker = document.getElementById("btnTopNavLocalPicker");
         const topNavLabel = document.getElementById("topNavLocalPickerLabel");
         const btnTopNavHfHub = document.getElementById("btnTopNavHfHub");
+        const btnTopNavLlamaSettings = document.getElementById("btnTopNavLlamaSettings");
         const chatPicker = document.getElementById("btnChatLocalPicker");
         const chatLabel = document.getElementById("chatLocalPickerLabel");
         const btnChatHfHub = document.getElementById("btnChatHfHub");
+        const btnChatLlamaSettings = document.getElementById("btnChatLlamaSettings");
         const modal = document.getElementById("localModelModal");
         const btnClose = document.getElementById("btnCloseLocalModelModal");
         const btnCancel = document.getElementById("btnCancelLocalModelModal");
@@ -5964,8 +6025,10 @@ class RobotUI {
         // Tab Navigation Elements
         const tabBtnInstalled = document.getElementById("tabBtnLocalInstalled");
         const tabBtnHfHub = document.getElementById("tabBtnLocalHfHub");
+        const tabBtnSettings = document.getElementById("tabBtnLocalSettings");
         const tabContentInstalled = document.getElementById("tabContentLocalInstalled");
         const tabContentHfHub = document.getElementById("tabContentLocalHfHub");
+        const tabContentSettings = document.getElementById("tabContentLocalSettings");
         const btnGoToHfHub = document.getElementById("btnGoToHfHub");
         const installedCountBadge = document.getElementById("localInstalledCountBadge");
         const hfActiveDownloadsBadge = document.getElementById("hfActiveDownloadsBadge");
@@ -5992,36 +6055,53 @@ class RobotUI {
         this.completedHfDownloadIds = new Set();
 
         /**
-         * Switch between Installed Models tab and HuggingFace Hub tab.
-         * @param {"installed" | "hf"} tabId - Target tab identifier.
+         * Switch between Installed Models, HuggingFace Hub, and LM Studio Settings tabs.
+         * @param {"installed" | "hf" | "settings"} tabId - Target tab identifier.
          * @returns {void}
          */
         this.switchLocalModelModalTab = (tabId) => {
-            if (tabId === "hf") {
+            if (tabId === "settings") {
                 if (tabBtnInstalled) tabBtnInstalled.classList.remove("active");
+                if (tabBtnHfHub) tabBtnHfHub.classList.remove("active");
+                if (tabBtnSettings) tabBtnSettings.classList.add("active");
+                if (tabContentInstalled) tabContentInstalled.style.display = "none";
+                if (tabContentHfHub) tabContentHfHub.style.display = "none";
+                if (tabContentSettings) tabContentSettings.style.display = "block";
+                if (modalHint) modalHint.textContent = "Live configuration for llama-server process on RTX 3050 CUDA.";
+                if (typeof this.loadLlamaSettings === "function") {
+                    this.loadLlamaSettings();
+                }
+            } else if (tabId === "hf") {
+                if (tabBtnInstalled) tabBtnInstalled.classList.remove("active");
+                if (tabBtnSettings) tabBtnSettings.classList.remove("active");
                 if (tabBtnHfHub) tabBtnHfHub.classList.add("active");
                 if (tabContentInstalled) tabContentInstalled.style.display = "none";
+                if (tabContentSettings) tabContentSettings.style.display = "none";
                 if (tabContentHfHub) tabContentHfHub.style.display = "block";
+                if (modalHint) modalHint.textContent = "Search, discover, and stream GGUF model quants directly into models/llm/.";
                 if (hfSearchInput && !hfSearchInput.value) {
-                    // Trigger popular search automatically on first visit
                     this.searchHuggingFace("instruct");
                 }
             } else {
                 if (tabBtnHfHub) tabBtnHfHub.classList.remove("active");
+                if (tabBtnSettings) tabBtnSettings.classList.remove("active");
                 if (tabBtnInstalled) tabBtnInstalled.classList.add("active");
                 if (tabContentHfHub) tabContentHfHub.style.display = "none";
+                if (tabContentSettings) tabContentSettings.style.display = "none";
                 if (tabContentInstalled) tabContentInstalled.style.display = "block";
+                if (modalHint) modalHint.textContent = "Hot-swapping pre-warms slot cache and updates active model.";
                 this.refreshLocalModels();
             }
         };
 
         if (tabBtnInstalled) tabBtnInstalled.addEventListener("click", () => this.switchLocalModelModalTab("installed"));
         if (tabBtnHfHub) tabBtnHfHub.addEventListener("click", () => this.switchLocalModelModalTab("hf"));
+        if (tabBtnSettings) tabBtnSettings.addEventListener("click", () => this.switchLocalModelModalTab("settings"));
         if (btnGoToHfHub) btnGoToHfHub.addEventListener("click", () => this.switchLocalModelModalTab("hf"));
 
         /**
          * Open Local Model Modal and render current cards.
-         * @param {"installed" | "hf"} [initialTab="installed"] - Initial tab to activate.
+         * @param {"installed" | "hf" | "settings"} [initialTab="installed"] - Initial tab to activate.
          * @returns {Promise<void>}
          */
         this.openLocalModelModal = async (initialTab = "installed") => {
@@ -6029,7 +6109,9 @@ class RobotUI {
             modal.style.display = "flex";
             modal.classList.add("open");
             this.switchLocalModelModalTab(initialTab);
-            await this.refreshLocalModels();
+            if (initialTab === "installed") {
+                await this.refreshLocalModels();
+            }
             await this.pollHfDownloads();
         };
 
@@ -6045,8 +6127,10 @@ class RobotUI {
 
         if (topNavPicker) topNavPicker.addEventListener("click", () => this.openLocalModelModal("installed"));
         if (btnTopNavHfHub) btnTopNavHfHub.addEventListener("click", () => this.openLocalModelModal("hf"));
+        if (btnTopNavLlamaSettings) btnTopNavLlamaSettings.addEventListener("click", () => this.openLocalModelModal("settings"));
         if (chatPicker) chatPicker.addEventListener("click", () => this.openLocalModelModal("installed"));
         if (btnChatHfHub) btnChatHfHub.addEventListener("click", () => this.openLocalModelModal("hf"));
+        if (btnChatLlamaSettings) btnChatLlamaSettings.addEventListener("click", () => this.openLocalModelModal("settings"));
         if (btnClose) btnClose.addEventListener("click", () => this.closeLocalModelModal());
         if (btnCancel) btnCancel.addEventListener("click", () => this.closeLocalModelModal());
         if (modal) {
@@ -6595,6 +6679,247 @@ class RobotUI {
                 this.searchHuggingFace(query);
             });
         });
+
+        /**
+         * Load advanced LM Studio / llama-server hardware settings from the backend.
+         * Populates all sliders, input fields, checkboxes, and quantization selectors.
+         * @returns {Promise<void>}
+         */
+        this.loadLlamaSettings = async () => {
+            try {
+                const res = await fetch("/api/llm/settings");
+                if (!res.ok) return;
+                const data = await res.json();
+                const s = data.settings || {};
+
+                const setVal = (id, val) => {
+                    const el = document.getElementById(id);
+                    if (el && val !== undefined && val !== null) el.value = val;
+                };
+                const setChecked = (id, val) => {
+                    const el = document.getElementById(id);
+                    if (el && val !== undefined) el.checked = Boolean(val);
+                };
+
+                const ngl = s.n_gpu_layers !== undefined ? s.n_gpu_layers : 99;
+                setVal("cfgGpuLayers", ngl);
+                setVal("cfgGpuLayersNum", ngl);
+                const nglBadge = document.getElementById("cfgGpuLayersVal");
+                if (nglBadge) nglBadge.textContent = ngl;
+
+                setChecked("cfgFlashAttn", s.flash_attn !== false);
+                setChecked("cfgNoKvOffload", s.no_kv_offload === true);
+                setVal("cfgMainGpu", s.main_gpu !== undefined ? s.main_gpu : 0);
+                setVal("cfgSplitMode", s.split_mode || "none");
+
+                setVal("cfgCtxSize", s.ctx_size || 16384);
+                setVal("cfgBatchSize", s.batch_size || 4096);
+                setVal("cfgUbatchSize", s.ubatch_size || 4096);
+                setVal("cfgParallel", s.parallel || 1);
+                setChecked("cfgContBatching", s.cont_batching !== false);
+
+                setVal("cfgCacheTypeK", s.cache_type_k || "q4_0");
+                setVal("cfgCacheTypeV", s.cache_type_v || "q4_0");
+
+                setVal("cfgThreads", s.threads || 8);
+                setVal("cfgThreadsBatch", s.threads_batch || 8);
+                setChecked("cfgMlock", s.mlock === true);
+                setChecked("cfgNoMmap", s.no_mmap === true);
+                setVal("cfgNuma", s.numa || "none");
+                setChecked("cfgCpuStrict", s.cpu_strict === true);
+
+                setVal("cfgRopeScaling", s.rope_scaling || "none");
+                setVal("cfgRopeScale", s.rope_scale || "");
+                setVal("cfgMmprojPath", s.mmproj_path || "");
+                setChecked("cfgMmprojOffload", s.mmproj_offload !== false);
+
+                setVal("cfgTemp", s.temp !== undefined ? s.temp : 0.7);
+                setVal("cfgTopP", s.top_p !== undefined ? s.top_p : 0.9);
+                setVal("cfgTopK", s.top_k !== undefined ? s.top_k : 40);
+                setVal("cfgMinP", s.min_p !== undefined ? s.min_p : 0.05);
+                setVal("cfgRepeatPenalty", s.repeat_penalty !== undefined ? s.repeat_penalty : 1.1);
+                setVal("cfgReasoningBudget", s.reasoning_budget !== undefined ? s.reasoning_budget : -1);
+                setVal("cfgCustomCliArgs", s.custom_cli_args || "");
+            } catch (err) {
+                console.error("Failed to load llama-server settings:", err);
+            }
+        };
+
+        // Two-way sync for GPU layer slider and numeric input
+        const sliderNgl = document.getElementById("cfgGpuLayers");
+        const numNgl = document.getElementById("cfgGpuLayersNum");
+        const badgeNgl = document.getElementById("cfgGpuLayersVal");
+        if (sliderNgl && numNgl) {
+            sliderNgl.addEventListener("input", (e) => {
+                numNgl.value = e.target.value;
+                if (badgeNgl) badgeNgl.textContent = e.target.value;
+            });
+            numNgl.addEventListener("input", (e) => {
+                sliderNgl.value = e.target.value;
+                if (badgeNgl) badgeNgl.textContent = e.target.value;
+            });
+        }
+
+        // Bind preset chips for quick layer setting
+        document.querySelectorAll(".quick-preset-chips .preset-chip-btn").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const val = btn.dataset.val;
+                if (sliderNgl) sliderNgl.value = val;
+                if (numNgl) numNgl.value = val;
+                if (badgeNgl) badgeNgl.textContent = val;
+            });
+        });
+
+        /**
+         * Collect all current settings form values into an updated options dictionary.
+         * @returns {Object} LlamaSettings dictionary.
+         */
+        const collectLlamaSettings = () => {
+            const getVal = (id, def = "") => {
+                const el = document.getElementById(id);
+                return el ? el.value : def;
+            };
+            const getNum = (id, def = 0) => {
+                const el = document.getElementById(id);
+                return el ? (parseFloat(el.value) || def) : def;
+            };
+            const getChecked = (id, def = false) => {
+                const el = document.getElementById(id);
+                return el ? el.checked : def;
+            };
+
+            const ropeScaleStr = getVal("cfgRopeScale");
+            return {
+                n_gpu_layers: parseInt(getVal("cfgGpuLayers", "99"), 10),
+                main_gpu: parseInt(getVal("cfgMainGpu", "0"), 10),
+                split_mode: getVal("cfgSplitMode", "none"),
+                flash_attn: getChecked("cfgFlashAttn", true),
+                no_kv_offload: getChecked("cfgNoKvOffload", false),
+                ctx_size: parseInt(getVal("cfgCtxSize", "16384"), 10),
+                batch_size: parseInt(getVal("cfgBatchSize", "4096"), 10),
+                ubatch_size: parseInt(getVal("cfgUbatchSize", "4096"), 10),
+                parallel: parseInt(getVal("cfgParallel", "1"), 10),
+                cont_batching: getChecked("cfgContBatching", true),
+                cache_type_k: getVal("cfgCacheTypeK", "q4_0"),
+                cache_type_v: getVal("cfgCacheTypeV", "q4_0"),
+                threads: parseInt(getVal("cfgThreads", "8"), 10),
+                threads_batch: parseInt(getVal("cfgThreadsBatch", "8"), 10),
+                cpu_strict: getChecked("cfgCpuStrict", false),
+                mlock: getChecked("cfgMlock", false),
+                no_mmap: getChecked("cfgNoMmap", false),
+                numa: getVal("cfgNuma", "none"),
+                rope_scaling: getVal("cfgRopeScaling", "none"),
+                rope_scale: ropeScaleStr ? parseFloat(ropeScaleStr) : null,
+                mmproj_path: getVal("cfgMmprojPath", "").trim(),
+                mmproj_offload: getChecked("cfgMmprojOffload", true),
+                temp: getNum("cfgTemp", 0.7),
+                top_p: getNum("cfgTopP", 0.9),
+                top_k: parseInt(getVal("cfgTopK", "40"), 10),
+                min_p: getNum("cfgMinP", 0.05),
+                repeat_penalty: getNum("cfgRepeatPenalty", 1.1),
+                reasoning_budget: parseInt(getVal("cfgReasoningBudget", "-1"), 10),
+                custom_cli_args: getVal("cfgCustomCliArgs", "").trim(),
+            };
+        };
+
+        /**
+         * Display status feedback message in the settings modal.
+         * @param {string} msg - Message to display.
+         * @param {"success" | "error" | "loading"} [type="success"] - Message style type.
+         * @returns {void}
+         */
+        const showLlamaStatus = (msg, type = "success") => {
+            const box = document.getElementById("llamaSettingsStatusBox");
+            const txt = document.getElementById("llamaSettingsStatusText");
+            if (!box || !txt) return;
+            box.style.display = "flex";
+            box.className = `llama-settings-status-box ${type}`;
+            txt.textContent = msg;
+            if (type === "success") {
+                setTimeout(() => { box.style.display = "none"; }, 5000);
+            }
+        };
+
+        const btnApply = document.getElementById("btnApplyLlamaSettingsReload");
+        const btnSave = document.getElementById("btnSaveLlamaSettings");
+        const btnReset = document.getElementById("btnResetLlamaSettings");
+
+        if (btnApply) {
+            btnApply.addEventListener("click", async () => {
+                try {
+                    btnApply.disabled = true;
+                    btnApply.textContent = "⚡ Restarting llama-server...";
+                    showLlamaStatus("Stopping llama-server, applying hardware parameters, and offloading layers to RTX 3050...", "loading");
+                    const payload = { settings: collectLlamaSettings(), reload: true };
+                    const res = await fetch("/api/llm/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    });
+                    const data = await res.json();
+                    if (data.status === "reloaded" || data.status === "ok") {
+                        showLlamaStatus("✨ Llama-server reloaded successfully with new hardware offload parameters!", "success");
+                        this.logEvent("LLM", "llama-server restarted with updated hardware/offload parameters.", "system");
+                        await this.refreshLlmStatus();
+                    } else {
+                        showLlamaStatus(`⚠️ Reload failed: ${data.message || JSON.stringify(data)}`, "error");
+                    }
+                } catch (e) {
+                    showLlamaStatus(`❌ Error reloading llama-server: ${e.message}`, "error");
+                } finally {
+                    btnApply.disabled = false;
+                    btnApply.textContent = "⚡ Apply & Reload Model Now";
+                }
+            });
+        }
+
+        if (btnSave) {
+            btnSave.addEventListener("click", async () => {
+                try {
+                    btnSave.disabled = true;
+                    const payload = { settings: collectLlamaSettings(), reload: false };
+                    const res = await fetch("/api/llm/settings", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    });
+                    if (res.ok) {
+                        showLlamaStatus("💾 Settings saved successfully. They will apply on the next model switch or server start.", "success");
+                    } else {
+                        showLlamaStatus("⚠️ Failed to save settings.", "error");
+                    }
+                } catch (e) {
+                    showLlamaStatus(`❌ Error saving: ${e.message}`, "error");
+                } finally {
+                    btnSave.disabled = false;
+                }
+            });
+        }
+
+        if (btnReset) {
+            btnReset.addEventListener("click", async () => {
+                if (!confirm("Reset all llama.cpp and offloading settings to RTX 3050 defaults and reload?")) return;
+                try {
+                    btnReset.disabled = true;
+                    showLlamaStatus("Resetting settings to defaults and reloading...", "loading");
+                    const res = await fetch("/api/llm/settings/reset", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ reload: true }),
+                    });
+                    const data = await res.json();
+                    if (data.status === "reloaded" || data.status === "reset") {
+                        showLlamaStatus("↺ Settings reset to optimal defaults and llama-server reloaded!", "success");
+                        await this.loadLlamaSettings();
+                        await this.refreshLlmStatus();
+                    }
+                } catch (e) {
+                    showLlamaStatus(`❌ Reset failed: ${e.message}`, "error");
+                } finally {
+                    btnReset.disabled = false;
+                }
+            });
+        }
 
         // Fetch initial local model status and check for any background downloads
         await this.refreshLocalModels();

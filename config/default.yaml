@@ -34,8 +34,8 @@ llm:
 stt:
   provider: whisper-server
   url: http://127.0.0.1:8081/inference
-  model: /home/ameya/whisper.cpp/models/ggml-large-v3-turbo
-  model_path: /home/ameya/whisper.cpp/models/ggml-large-v3-turbo.bin
+  model: /home/ameya/whisper.cpp/models/ggml-base
+  model_path: /home/ameya/whisper.cpp/models/ggml-base.bin
   language: en
   temperature: 0.0
   chunk_seconds: 0.8
@@ -86,7 +86,7 @@ expression:
     backend: asusctl
 vision:
   enabled: true
-  camera_index: 0
+  camera_index: 1
   width: 320
   height: 240
   fps: 30

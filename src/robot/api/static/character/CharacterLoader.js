@@ -73,12 +73,12 @@ class CharacterLoader {
             this._texLoader = new THREE.TextureLoader();
         }
 
-        // High-fidelity normal maps for skinny cute sweater and pleated skirt
-        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png?v=8.0-skinny-cute");
+        // High-fidelity normal maps for skinny cute professional blazer and pencil bottoms
+        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png?v=9.0-skinny-cute-pro");
         topsNormal.wrapS = THREE.RepeatWrapping;
         topsNormal.wrapT = THREE.RepeatWrapping;
 
-        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png?v=8.0-skinny-cute");
+        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png?v=9.0-skinny-cute-pro");
         bottomsNormal.wrapS = THREE.RepeatWrapping;
         bottomsNormal.wrapT = THREE.RepeatWrapping;
 
@@ -175,32 +175,32 @@ class CharacterLoader {
                         pbrMat.normalScale = new THREE.Vector2(1.2, 1.2);
                     }
                 } else if (isTops) {
-                    // Cute Ribbed Knit Sweetheart Sweater: Soft wool knit texture, lace trim & pearl buttons
+                    // Tailored Midnight Slate Blazer: Satin peak lapels, gold piping, ivory silk blouse, ribbon brooch
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         normalMap: topsNormal,
-                        normalScale: new THREE.Vector2(0.60, 0.60),
+                        normalScale: new THREE.Vector2(0.75, 0.75),
                         color: 0xffffff,
-                        roughness: 0.78,
-                        metalness: 0.04,
+                        roughness: 0.65,
+                        metalness: 0.08,
                     });
                 } else if (isBottoms) {
-                    // Cute Pleated Skater Skirt: Accordion pleats, pastel pink belt & silver heart buckle
+                    // Tailored Pencil Bottoms: Cognac leather belt, brushed gold buckle, vertical front crease
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         normalMap: bottomsNormal,
-                        normalScale: new THREE.Vector2(0.65, 0.65),
+                        normalScale: new THREE.Vector2(0.75, 0.75),
                         color: 0xffffff,
-                        roughness: 0.72,
-                        metalness: 0.05,
+                        roughness: 0.62,
+                        metalness: 0.10,
                     });
                 } else if (isShoes) {
-                    // Cute White Platform Sneakers: Clean white leather & pastel pink ribbon laces
+                    // Burnished Italian Leather Pumps: Espresso-black leather with gold buckle hardware
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         color: 0xffffff,
-                        roughness: 0.38,
-                        metalness: 0.08,
+                        roughness: 0.28,
+                        metalness: 0.18,
                     });
                 } else if (isMouth) {
                     // Natural lips and oral cavity: gentle moisture

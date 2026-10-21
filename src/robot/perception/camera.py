@@ -85,8 +85,63 @@ class CameraCapture:
         logger.info("camera_worker_started", device_index=self.device_index)
         return True
 
+    def _find_working_camera(self) -> int | None:
+        """Probe candidate video device indices to locate an active, working camera.
+
+        Returns:
+            int | None: Index of the first responsive video capture device, or None.
+        """
+        import cv2
+
+        candidates: list[int] = []
+        if isinstance(self.device_index, int) and self.device_index >= 0:
+            candidates.append(self.device_index)
+        for idx in (0, 1, 2, 3, 4):
+            if idx not in candidates:
+                candidates.append(idx)
+
+        for idx in candidates:
+            try:
+                with silence_c_stderr():
+                    test_cap = cv2.VideoCapture(idx)
+                    if test_cap.isOpened():
+                        ret, test_frame = test_cap.read()
+                        test_cap.release()
+                        if ret and test_frame is not None and test_frame.size > 0:
+                            logger.info("camera_auto_detected", candidate_index=idx)
+                            return idx
+            except Exception:
+                pass
+        return None
+
+    def capture_snapshot(self) -> Optional[np.ndarray]:
+        """Capture and return the most recent camera frame or take an on-demand frame.
+
+        Returns:
+            np.ndarray | None: BGR numpy image array, or None if camera is unavailable.
+        """
+        frame = self.get_latest_frame()
+        if frame is not None and frame.size > 0:
+            return frame.copy()
+
+        # Fallback to direct snapshot if background loop has not yet delivered a frame
+        working_idx = self._find_working_camera()
+        if working_idx is not None:
+            try:
+                import cv2
+                with silence_c_stderr():
+                    temp_cap = cv2.VideoCapture(working_idx)
+                    if temp_cap.isOpened():
+                        ret, snap = temp_cap.read()
+                        temp_cap.release()
+                        if ret and snap is not None and snap.size > 0:
+                            return snap
+            except Exception:
+                pass
+        return None
+
     def _capture_worker(self) -> None:
-        """Continuously reads frames from camera with self-healing auto-reconnect."""
+        """Continuously read frames from camera with self-healing auto-reconnect and device probing."""
         self._reconnect_count = 0
         self._reconnect_backoff = 1.0
 
@@ -97,6 +152,20 @@ class CameraCapture:
             os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"
             with silence_c_stderr():
                 cap = cv2.VideoCapture(self.device_index)
+
+            # If default index fails, automatically probe for available device
+            if not cap.isOpened():
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+                working_idx = self._find_working_camera()
+                if working_idx is not None and working_idx != self.device_index:
+                    logger.info("switching_to_working_camera", old_index=self.device_index, new_index=working_idx)
+                    self.device_index = working_idx
+                    with silence_c_stderr():
+                        cap = cv2.VideoCapture(self.device_index)
 
             if not cap.isOpened():
                 try:

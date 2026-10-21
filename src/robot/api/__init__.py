@@ -790,6 +790,30 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             "llama_running": LlamaServerManager.is_running(),
         }
 
+    # ─── Llama.cpp Advanced Loader & Offloading Settings (LM Studio) ───────
+    @app.get("/api/llm/settings")
+    async def get_llama_settings() -> dict[str, Any]:
+        """Retrieve current llama-server configuration parameters and hardware offloading state."""
+        from robot.llm import LlamaServerManager
+        return LlamaServerManager.get_settings()
+
+    @app.post("/api/llm/settings")
+    async def update_llama_settings(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        """Update llama-server loading parameters and optionally hot-reload the running process."""
+        from robot.llm import LlamaServerManager
+        settings_data = req.get("settings", req)
+        reload = bool(req.get("reload", False))
+        res = await LlamaServerManager.update_settings(settings_data, reload=reload, engine=engine)
+        return res
+
+    @app.post("/api/llm/settings/reset")
+    async def reset_llama_settings(req: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Reset llama-server configuration to optimal RTX 3050 defaults."""
+        from robot.llm import LlamaServerManager
+        reload = bool(req.get("reload", False))
+        res = await LlamaServerManager.reset_settings(reload=reload, engine=engine)
+        return res
+
     # ─── HuggingFace Hub LLM Search & Downloader Endpoints ──────────────────
     @app.get("/api/llm/hf/search")
     async def search_huggingface_models(

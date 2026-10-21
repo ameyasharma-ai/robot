@@ -172,17 +172,46 @@ def format_situation_banner(situation: dict | None = None) -> str:
     return "[Real-Time Situation Telemetry Banner]:\n" + "\n".join(parts)
 
 
-def format_user_core_profile(user_profile: str | None = None) -> str:
+def format_user_core_profile(user_profile: str | dict[str, Any] | None = None) -> str:
     """Format non-evictable User Core Profile Sheet for context injection.
 
+    If an explicit empty string ("") or empty dict ({}) is passed (e.g. from an isolated custom persona),
+    returns an empty string so that custom characters have zero memory leaks.
+    If None is passed, falls back to the default system profile template.
+
     Args:
-        user_profile: Explicit user profile string or default profile template.
+        user_profile: Explicit user profile string, profile dictionary, or None.
 
     Returns:
-        Formatted user profile sheet string.
+        Formatted user profile sheet string, or empty string.
     """
-    if user_profile and user_profile.strip():
+    if user_profile == "" or user_profile == {}:
+        return ""
+
+    if isinstance(user_profile, str):
         return user_profile.strip()
+
+    if isinstance(user_profile, dict):
+        name = user_profile.get("name") or user_profile.get("user_name", "")
+        role = user_profile.get("role") or user_profile.get("user_role", "")
+        facts = user_profile.get("facts", [])
+        if not name and not role and not facts:
+            return ""
+
+        lines = ["=== USER CORE IDENTITY PROFILE ==="]
+        if name or role:
+            lines.append("Identity & Role:")
+            if name:
+                lines.append(f"• User Name: {name}")
+            if role:
+                lines.append(f"• User Role: {role}")
+            lines.append("")
+        if facts:
+            lines.append("Verified User Facts:")
+            for fact in facts:
+                lines.append(f"• {fact}")
+            lines.append("")
+        return "\n".join(lines).strip()
 
     return (
         "=== USER CORE IDENTITY PROFILE ===\n"
@@ -298,7 +327,8 @@ class ContextEngine:
 
         # 2. User Core Identity Profile Sheet (Static & Non-Evictable — placed first for 100% KV cache invariance)
         profile_sheet = format_user_core_profile(resolved_profile)
-        grounding_parts.append(profile_sheet)
+        if profile_sheet:
+            grounding_parts.append(profile_sheet)
 
         # Gate memories: do NOT inject irrelevant memories if user turn is a greeting or action/command
         greeting_patterns = [
@@ -418,7 +448,16 @@ class ContextEngine:
                 + user_content
             )
 
-        messages.append({"role": "user", "content": user_content})
+        if image_data_url:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_content},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            })
+        else:
+            messages.append({"role": "user", "content": user_content})
 
         # Safeguard for High-Intelligence Mode: ensure total context never exceeds 800,000 tokens (80% of 1M limit)
         token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
@@ -430,7 +469,11 @@ class ContextEngine:
             excess = token_estimate - 800000
             chars_to_trim = excess * 4
             if len(user_content) > chars_to_trim:
-                messages[-1]["content"] = user_content[chars_to_trim:]
+                trimmed_content = user_content[chars_to_trim:]
+                if image_data_url:
+                    messages[-1]["content"][0]["text"] = trimmed_content
+                else:
+                    messages[-1]["content"] = trimmed_content
             token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
 
         # Safeguard for Local Mode (RTX 3050 16K context limit):

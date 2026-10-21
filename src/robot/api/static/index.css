@@ -10390,6 +10390,334 @@ button:active, .view-btn:active, .action-btn:active, .send-btn:active {
     }
 }
 
+/* ════════════════════════════════════════════════════════════════════════════════════════
+   LM STUDIO LLAMA-SERVER ADVANCED LOADER & OFFLOADING SETTINGS PANEL
+   Cyberdeck styling for GPU layer sliders, KV cache options, and CPU threading controls.
+   ════════════════════════════════════════════════════════════════════════════════════════ */
+
+.llama-settings-header-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: rgba(0, 240, 255, 0.05);
+    border: 1px solid rgba(0, 240, 255, 0.2);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    color: #e2e8f0;
+    font-size: 11.5px;
+    line-height: 1.5;
+}
+
+.llama-settings-status-box {
+    padding: 10px 14px;
+    border-radius: 6px;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: fadeIn 0.2s ease-in-out;
+}
+
+.llama-settings-status-box.success {
+    background: rgba(16, 185, 129, 0.15);
+    border: 1px solid rgba(16, 185, 129, 0.4);
+    color: #34d399;
+}
+
+.llama-settings-status-box.error {
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #f87171;
+}
+
+.llama-settings-status-box.loading {
+    background: rgba(0, 240, 255, 0.15);
+    border: 1px solid rgba(0, 240, 255, 0.4);
+    color: #38bdf8;
+}
+
+.llama-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+.llama-settings-card {
+    background: rgba(6, 16, 28, 0.85);
+    border: 1px solid rgba(0, 240, 255, 0.15);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.llama-settings-card:hover {
+    border-color: rgba(0, 240, 255, 0.35);
+    box-shadow: 0 6px 20px rgba(0, 240, 255, 0.1);
+}
+
+.llama-settings-card.card-full-width {
+    grid-column: 1 / -1;
+}
+
+.llama-settings-card .card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: rgba(0, 240, 255, 0.06);
+    border-bottom: 1px solid rgba(0, 240, 255, 0.12);
+}
+
+.llama-settings-card .card-head .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #e2e8f0;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.llama-settings-card .card-head .card-badge {
+    margin-left: auto;
+    font-size: 9px;
+    font-family: var(--font-mono, monospace);
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(0, 240, 255, 0.12);
+    color: #00f0ff;
+    border: 1px solid rgba(0, 240, 255, 0.25);
+}
+
+.llama-settings-card .card-body {
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.setting-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.setting-field-dual {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    align-items: end;
+}
+
+.setting-field-quad {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    align-items: end;
+}
+
+.setting-field-toggle,
+.sub-field-toggle {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+}
+
+.setting-field label,
+.sub-field label {
+    font-size: 10.5px;
+    color: #94a3b8;
+    font-weight: 600;
+}
+
+.field-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.field-value-badge {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    font-weight: 700;
+    color: #00f0ff;
+    background: rgba(0, 240, 255, 0.15);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+.range-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.cyber-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    outline: none;
+    cursor: pointer;
+}
+
+.cyber-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #00f0ff;
+    cursor: pointer;
+    box-shadow: 0 0 8px #00f0ff;
+    border: 2px solid #030a12;
+}
+
+.cyber-slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #00f0ff;
+    cursor: pointer;
+    box-shadow: 0 0 8px #00f0ff;
+    border: 2px solid #030a12;
+}
+
+.quick-preset-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+.preset-chip-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    color: #94a3b8;
+    font-size: 9.5px;
+    font-family: var(--font-mono, monospace);
+    padding: 2px 7px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.preset-chip-btn:hover {
+    background: rgba(0, 240, 255, 0.15);
+    border-color: #00f0ff;
+    color: #00f0ff;
+}
+
+.cyber-number-input,
+.cyber-text-input {
+    background: rgba(3, 10, 18, 0.8);
+    border: 1px solid rgba(0, 240, 255, 0.25);
+    border-radius: 4px;
+    color: #f8fafc;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    padding: 6px 8px;
+    width: 100%;
+    outline: none;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.cyber-number-input:focus,
+.cyber-text-input:focus {
+    border-color: #00f0ff;
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.3);
+}
+
+.field-hint {
+    font-size: 9.5px;
+    color: #64748b;
+    line-height: 1.4;
+}
+
+.cyber-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 11px;
+    color: #e2e8f0;
+}
+
+.cyber-toggle-label input {
+    display: none;
+}
+
+.cyber-toggle-label .toggle-slider {
+    position: relative;
+    width: 30px;
+    height: 16px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 10px;
+    transition: background 0.2s ease;
+}
+
+.cyber-toggle-label .toggle-slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    background: #94a3b8;
+    border-radius: 50%;
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.cyber-toggle-label input:checked + .toggle-slider {
+    background: rgba(0, 240, 255, 0.3);
+}
+
+.cyber-toggle-label input:checked + .toggle-slider::after {
+    transform: translateX(14px);
+    background: #00f0ff;
+    box-shadow: 0 0 6px #00f0ff;
+}
+
+.llama-settings-actions-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0 4px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.llama-settings-actions-bar .btn-danger {
+    margin-left: auto;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    color: #f87171;
+}
+
+.llama-settings-actions-bar .btn-danger:hover {
+    background: rgba(239, 68, 68, 0.3);
+    border-color: #ef4444;
+    color: #ffffff;
+}
+
+/* Responsive adjustments for LM Studio Settings Grid */
+@media (max-width: 900px) {
+    .llama-settings-grid {
+        grid-template-columns: 1fr;
+    }
+    .setting-field-quad {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
 
 
 

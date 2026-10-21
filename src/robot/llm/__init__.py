@@ -14,6 +14,7 @@ import httpx
 import requests
 
 from robot.llm.model_registry import ModelCategory, ModelMetadata, ModelRegistry
+from robot.llm.settings import LlamaServerSettings
 from robot.telemetry import get_logger
 
 logger = get_logger("llm")
@@ -965,15 +966,17 @@ class LlamaServerManager:
         mmproj_path: str | None = None,
         ngl: int | None = None,
         port: int = 8080,
+        settings: LlamaServerSettings | None = None,
     ) -> bool:
-        """Launch llama-server with FlashAttention offloaded to the RTX 3050.
+        """Launch llama-server with FlashAttention offloaded to the RTX 3050 using advanced settings.
 
         Args:
             model_path: Path to GGUF model file.
             binary_path: Optional path to llama-server binary.
             mmproj_path: Optional path to multimodal vision projector file.
-            ngl: Number of GPU layers to offload (default: 99, or 32 for multimodal).
+            ngl: Number of GPU layers to offload (overrides settings if provided).
             port: Port for the llama-server HTTP daemon.
+            settings: Optional LlamaServerSettings configuration object.
 
         Returns:
             bool: True if server launched and passed health check, False otherwise.
@@ -991,27 +994,20 @@ class LlamaServerManager:
             logger.error("llama_server_binary_or_model_missing", bin=bin_path, model=m_path)
             return False
 
-        effective_ngl = ngl if ngl is not None else (32 if mmproj_path else 99)
-
-        cmd = [
-            bin_path,
-            "-m", m_path,
-            "-ngl", str(effective_ngl),
-            "-t", "8",
-            "-tb", "8",
-            "-fa", "on",
-            "-ctk", "q4_0",
-            "-ctv", "q4_0",
-            "-c", "16384",
-            "-np", "1",
-            "-b", "4096",
-            "-ub", "4096",
-            "--host", "127.0.0.1",
-            "--port", str(port),
-        ]
+        active_settings = settings or LlamaServerSettings.load()
+        if ngl is not None:
+            active_settings.n_gpu_layers = ngl
+        elif mmproj_path:
+            active_settings.n_gpu_layers = min(active_settings.n_gpu_layers, 32)
 
         if mmproj_path and Path(mmproj_path).exists():
-            cmd.extend(["--mmproj", str(mmproj_path), "--mmproj-offload"])
+            active_settings.mmproj_path = str(mmproj_path)
+
+        cmd = active_settings.build_cli_args(
+            bin_path=bin_path,
+            model_path=m_path,
+            port=port,
+        )
 
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -1028,6 +1024,90 @@ class LlamaServerManager:
 
         logger.error("llama_server_start_timeout")
         return False
+
+    @classmethod
+    def get_settings(cls) -> dict[str, Any]:
+        """Retrieve current llama-server configuration and status.
+
+        Returns:
+            dict[str, Any]: Active settings dictionary and status metadata.
+        """
+        s = LlamaServerSettings.load()
+        return {
+            "settings": s.to_dict(),
+            "is_running": cls.is_running(),
+            "active_model": cls.get_active_model_id(),
+        }
+
+    @classmethod
+    async def update_settings(
+        cls,
+        new_settings: dict[str, Any],
+        reload: bool = False,
+        engine: Any | None = None,
+        port: int = 8080,
+    ) -> dict[str, Any]:
+        """Save updated llama-server settings and optionally hot-reload the running process.
+
+        Args:
+            new_settings: Dictionary of configuration parameters matching LlamaServerSettings.
+            reload: Whether to restart llama-server immediately with new parameters.
+            engine: Optional active RobotEngine to warm up after reload.
+            port: Port for llama-server.
+
+        Returns:
+            dict[str, Any]: Status summary dictionary.
+        """
+        s = LlamaServerSettings.from_dict(new_settings)
+        s.save()
+
+        if reload:
+            active_model = cls.get_active_model_id()
+            res = await cls.switch_model(active_model, engine=engine, port=port)
+            return {
+                "status": "reloaded" if res.get("status") == "ok" else "error",
+                "settings": s.to_dict(),
+                "reload_result": res,
+            }
+
+        return {
+            "status": "saved",
+            "settings": s.to_dict(),
+        }
+
+    @classmethod
+    async def reset_settings(
+        cls,
+        reload: bool = False,
+        engine: Any | None = None,
+        port: int = 8080,
+    ) -> dict[str, Any]:
+        """Reset llama-server configuration to optimal defaults for RTX 3050 4GB.
+
+        Args:
+            reload: Whether to restart llama-server immediately.
+            engine: Optional active RobotEngine.
+            port: Port for llama-server.
+
+        Returns:
+            dict[str, Any]: Status summary dictionary.
+        """
+        s = LlamaServerSettings()
+        s.save()
+
+        if reload:
+            active_model = cls.get_active_model_id()
+            res = await cls.switch_model(active_model, engine=engine, port=port)
+            return {
+                "status": "reloaded" if res.get("status") == "ok" else "error",
+                "settings": s.to_dict(),
+                "reload_result": res,
+            }
+
+        return {
+            "status": "reset",
+            "settings": s.to_dict(),
+        }
 
     @classmethod
     def get_active_model_id(cls) -> str:

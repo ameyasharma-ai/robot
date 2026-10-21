@@ -68,6 +68,9 @@
                     <button class="top-nav-sub-btn" id="btnTopNavHfHub" type="button" title="Search & Download LLMs from HuggingFace Hub">
                         🤗
                     </button>
+                    <button class="top-nav-sub-btn" id="btnTopNavLlamaSettings" type="button" title="LM Studio & Llama.cpp Loading / Offloading Settings">
+                        ⚙️
+                    </button>
                 </div>
                 <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
                 <div class="top-nav-openai-controls" id="topNavOpenaiControls" style="display: none;">
@@ -831,6 +834,10 @@
                                 <span class="model-icon">🤗</span>
                                 <span>HF HUB</span>
                             </button>
+                            <button class="chat-stat-pill chat-local-model-btn" id="btnChatLlamaSettings" type="button" title="LM Studio & Llama.cpp Loading / Offloading Settings">
+                                <span class="model-icon">⚙️</span>
+                                <span>SETTINGS</span>
+                            </button>
                         </div>
                         <!-- OpenAI-Compatible Model Selector in Chat Mode -->
                         <div class="chat-openai-controls" id="chatOpenaiControls" style="display: none;">
@@ -1306,6 +1313,11 @@
                     <span>HUGGINGFACE HUB SEARCH & DOWNLOAD</span>
                     <span class="tab-neon-badge">HUB</span>
                 </button>
+                <button class="local-modal-tab-btn" id="tabBtnLocalSettings" type="button">
+                    <span class="tab-icon">⚙️</span>
+                    <span>LM STUDIO LOADER & OFFLOADING SETTINGS</span>
+                    <span class="tab-neon-badge">LLAMA.CPP</span>
+                </button>
             </div>
 
             <!-- Tab 1: Installed & Registered Local Models -->
@@ -1373,6 +1385,347 @@
                 </div>
                 <div class="hf-models-grid" id="hfSearchResultsGrid">
                     <!-- Populated dynamically via /api/llm/hf/search -->
+                </div>
+            </div>
+
+            <!-- Tab 3: LM Studio Loader & Offloading Advanced Settings -->
+            <div class="modal-body local-tab-content" id="tabContentLocalSettings" style="display: none; max-height: 60vh; overflow-y: auto; padding: 16px;">
+                <div class="llama-settings-header-banner">
+                    <div class="banner-text">
+                        <span class="banner-icon">⚙️</span>
+                        <span>Direct low-level control over every parameter supported by llama.cpp: offloaded GPU layers, FlashAttention, context window, KV cache quantization, threading, memory mapping, and custom CLI flags.</span>
+                    </div>
+                </div>
+
+                <div class="llama-settings-status-box" id="llamaSettingsStatusBox" style="display: none;">
+                    <span id="llamaSettingsStatusText"></span>
+                </div>
+
+                <form id="llamaSettingsForm" class="llama-settings-grid" onsubmit="return false;">
+                    <!-- Group 1: GPU Offloading & VRAM Allocation -->
+                    <div class="llama-settings-card">
+                        <div class="card-head">
+                            <span class="card-icon">🚀</span>
+                            <span class="card-title">GPU Offloading & Acceleration</span>
+                            <span class="card-badge">RTX 3050</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field">
+                                <div class="field-label-row">
+                                    <label for="cfgGpuLayers">GPU Offload Layers (<code>-ngl</code>):</label>
+                                    <span class="field-value-badge" id="cfgGpuLayersVal">99</span>
+                                </div>
+                                <div class="range-slider-row">
+                                    <input type="range" id="cfgGpuLayers" class="cyber-slider" min="0" max="99" step="1" value="99" />
+                                    <input type="number" id="cfgGpuLayersNum" class="cyber-number-input" min="0" max="99" value="99" />
+                                </div>
+                                <div class="quick-preset-chips">
+                                    <button type="button" class="preset-chip-btn" data-val="0">CPU Only (0)</button>
+                                    <button type="button" class="preset-chip-btn" data-val="16">Partial (16)</button>
+                                    <button type="button" class="preset-chip-btn" data-val="32">Half (32)</button>
+                                    <button type="button" class="preset-chip-btn" data-val="99">Max GPU (99)</button>
+                                </div>
+                                <small class="field-hint">Number of model layers to offload to NVIDIA RTX 3050 VRAM. 99 offloads all layers for peak speed.</small>
+                            </div>
+
+                            <div class="setting-field-toggle">
+                                <label class="cyber-toggle-label">
+                                    <input type="checkbox" id="cfgFlashAttn" checked />
+                                    <span class="toggle-slider"></span>
+                                    <span class="toggle-text">FlashAttention (<code>-fa on</code>)</span>
+                                </label>
+                                <small class="field-hint">Reduces VRAM usage and accelerates prompt prefill via fused FlashAttention kernels.</small>
+                            </div>
+
+                            <div class="setting-field-toggle">
+                                <label class="cyber-toggle-label">
+                                    <input type="checkbox" id="cfgNoKvOffload" />
+                                    <span class="toggle-slider"></span>
+                                    <span class="toggle-text">Keep KV Cache in System RAM (<code>--no-kv-offload</code>)</span>
+                                </label>
+                                <small class="field-hint">Keeps context KV cache in host DDR5 memory to prevent 4GB VRAM overflow on huge contexts.</small>
+                            </div>
+
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgMainGpu">Main GPU Device ID (<code>--main-gpu</code>):</label>
+                                    <input type="number" id="cfgMainGpu" class="cyber-number-input" value="0" min="0" />
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgSplitMode">GPU Split Mode (<code>--split-mode</code>):</label>
+                                    <select id="cfgSplitMode" class="cyber-select">
+                                        <option value="none">none (single GPU)</option>
+                                        <option value="layer">layer (layer-by-layer)</option>
+                                        <option value="row">row (tensor parallel)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Group 2: Context Window & Batching -->
+                    <div class="llama-settings-card">
+                        <div class="card-head">
+                            <span class="card-icon">📏</span>
+                            <span class="card-title">Context Window & Batch Processing</span>
+                            <span class="card-badge">Memory Budget</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field">
+                                <label for="cfgCtxSize">Context Length (<code>-c</code> / tokens):</label>
+                                <select id="cfgCtxSize" class="cyber-select">
+                                    <option value="2048">2,048 tokens (Ultra Low RAM)</option>
+                                    <option value="4096">4,096 tokens (Fast)</option>
+                                    <option value="8192">8,192 tokens (Balanced)</option>
+                                    <option value="16384" selected>16,384 tokens (Standard 16K)</option>
+                                    <option value="32768">32,768 tokens (High Context)</option>
+                                    <option value="65536">65,536 tokens (Ultra Deep)</option>
+                                </select>
+                                <small class="field-hint">Total context token capacity. Larger values consume more KV memory.</small>
+                            </div>
+
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgBatchSize">Prompt Batch (<code>-b</code>):</label>
+                                    <select id="cfgBatchSize" class="cyber-select">
+                                        <option value="512">512</option>
+                                        <option value="1024">1024</option>
+                                        <option value="2048">2048</option>
+                                        <option value="4096" selected>4096</option>
+                                    </select>
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgUbatchSize">Micro-Batch (<code>-ub</code>):</label>
+                                    <select id="cfgUbatchSize" class="cyber-select">
+                                        <option value="256">256</option>
+                                        <option value="512">512</option>
+                                        <option value="1024">1024</option>
+                                        <option value="2048">2048</option>
+                                        <option value="4096" selected>4096</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgParallel">Parallel Slots (<code>-np</code>):</label>
+                                    <input type="number" id="cfgParallel" class="cyber-number-input" value="1" min="1" max="8" />
+                                </div>
+                                <div class="sub-field-toggle">
+                                    <label class="cyber-toggle-label">
+                                        <input type="checkbox" id="cfgContBatching" checked />
+                                        <span class="toggle-slider"></span>
+                                        <span class="toggle-text">Continuous Batching (<code>-cb</code>)</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Group 3: KV Cache Quantization -->
+                    <div class="llama-settings-card">
+                        <div class="card-head">
+                            <span class="card-icon">🗜️</span>
+                            <span class="card-title">KV Cache Quantization</span>
+                            <span class="card-badge">VRAM Compression</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgCacheTypeK">K-Cache Quantization (<code>-ctk</code>):</label>
+                                    <select id="cfgCacheTypeK" class="cyber-select">
+                                        <option value="q4_0" selected>q4_0 (75% VRAM savings - recommended)</option>
+                                        <option value="q8_0">q8_0 (50% VRAM savings - near-lossless)</option>
+                                        <option value="f16">f16 (Full precision - maximum VRAM)</option>
+                                        <option value="q4_1">q4_1 (4-bit with scale)</option>
+                                        <option value="iq4_nl">iq4_nl (Importance 4-bit)</option>
+                                        <option value="q5_0">q5_0 (5-bit quantization)</option>
+                                    </select>
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgCacheTypeV">V-Cache Quantization (<code>-ctv</code>):</label>
+                                    <select id="cfgCacheTypeV" class="cyber-select">
+                                        <option value="q4_0" selected>q4_0 (75% VRAM savings - recommended)</option>
+                                        <option value="q8_0">q8_0 (50% VRAM savings - near-lossless)</option>
+                                        <option value="f16">f16 (Full precision - maximum VRAM)</option>
+                                        <option value="q4_1">q4_1 (4-bit with scale)</option>
+                                        <option value="iq4_nl">iq4_nl (Importance 4-bit)</option>
+                                        <option value="q5_0">q5_0 (5-bit quantization)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <small class="field-hint">Quantizing the KV cache to q4_0 cuts context VRAM footprint from ~1.8GB down to ~450MB, allowing 16K context on 4GB GPUs.</small>
+                        </div>
+                    </div>
+
+                    <!-- Group 4: CPU & Threading -->
+                    <div class="llama-settings-card">
+                        <div class="card-head">
+                            <span class="card-icon">🧠</span>
+                            <span class="card-title">CPU Threading & Memory Locking</span>
+                            <span class="card-badge">Ryzen 7 6800H</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgThreads">Generation Threads (<code>-t</code>):</label>
+                                    <input type="number" id="cfgThreads" class="cyber-number-input" value="8" min="1" max="32" />
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgThreadsBatch">Batch Threads (<code>-tb</code>):</label>
+                                    <input type="number" id="cfgThreadsBatch" class="cyber-number-input" value="8" min="1" max="32" />
+                                </div>
+                            </div>
+
+                            <div class="setting-field-dual">
+                                <div class="sub-field-toggle">
+                                    <label class="cyber-toggle-label">
+                                        <input type="checkbox" id="cfgMlock" />
+                                        <span class="toggle-slider"></span>
+                                        <span class="toggle-text">Lock in RAM (<code>--mlock</code>)</span>
+                                    </label>
+                                </div>
+                                <div class="sub-field-toggle">
+                                    <label class="cyber-toggle-label">
+                                        <input type="checkbox" id="cfgNoMmap" />
+                                        <span class="toggle-slider"></span>
+                                        <span class="toggle-text">Disable MMAP (<code>--no-mmap</code>)</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgNuma">NUMA Mode (<code>--numa</code>):</label>
+                                    <select id="cfgNuma" class="cyber-select">
+                                        <option value="none">none (default)</option>
+                                        <option value="distribute">distribute</option>
+                                        <option value="isolate">isolate</option>
+                                        <option value="numactl">numactl</option>
+                                    </select>
+                                </div>
+                                <div class="sub-field-toggle">
+                                    <label class="cyber-toggle-label">
+                                        <input type="checkbox" id="cfgCpuStrict" />
+                                        <span class="toggle-slider"></span>
+                                        <span class="toggle-text">Strict Core Pinning (<code>--cpu-strict</code>)</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Group 5: RoPE & Multimodal Vision Projector -->
+                    <div class="llama-settings-card">
+                        <div class="card-head">
+                            <span class="card-icon">👁️</span>
+                            <span class="card-title">RoPE Scaling & Vision Projector</span>
+                            <span class="card-badge">VLM & Context</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgRopeScaling">RoPE Scaling (<code>--rope-scaling</code>):</label>
+                                    <select id="cfgRopeScaling" class="cyber-select">
+                                        <option value="none">none (default)</option>
+                                        <option value="linear">linear</option>
+                                        <option value="yarn">yarn</option>
+                                    </select>
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgRopeScale">RoPE Scale (<code>--rope-scale</code>):</label>
+                                    <input type="number" id="cfgRopeScale" class="cyber-number-input" step="0.1" placeholder="e.g. 2.0" />
+                                </div>
+                            </div>
+
+                            <div class="setting-field">
+                                <label for="cfgMmprojPath">Multimodal Projector Path (<code>--mmproj</code>):</label>
+                                <input type="text" id="cfgMmprojPath" class="cyber-text-input" placeholder="e.g. models/llm/mmproj-f16.gguf" />
+                            </div>
+
+                            <div class="setting-field-toggle">
+                                <label class="cyber-toggle-label">
+                                    <input type="checkbox" id="cfgMmprojOffload" checked />
+                                    <span class="toggle-slider"></span>
+                                    <span class="toggle-text">Offload Vision Projector to GPU (<code>--mmproj-offload</code>)</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Group 6: Sampling & Reasoning Defaults -->
+                    <div class="llama-settings-card">
+                        <div class="card-head">
+                            <span class="card-icon">🎯</span>
+                            <span class="card-title">Sampling & Reasoning Parameters</span>
+                            <span class="card-badge">Generation</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field-quad">
+                                <div class="sub-field">
+                                    <label for="cfgTemp">Temp (<code>--temp</code>):</label>
+                                    <input type="number" id="cfgTemp" class="cyber-number-input" step="0.05" min="0" max="2" value="0.7" />
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgTopP">Top-P (<code>--top-p</code>):</label>
+                                    <input type="number" id="cfgTopP" class="cyber-number-input" step="0.05" min="0" max="1" value="0.9" />
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgTopK">Top-K (<code>--top-k</code>):</label>
+                                    <input type="number" id="cfgTopK" class="cyber-number-input" min="0" max="200" value="40" />
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgMinP">Min-P (<code>--min-p</code>):</label>
+                                    <input type="number" id="cfgMinP" class="cyber-number-input" step="0.01" min="0" max="1" value="0.05" />
+                                </div>
+                            </div>
+
+                            <div class="setting-field-dual">
+                                <div class="sub-field">
+                                    <label for="cfgRepeatPenalty">Repeat Penalty (<code>--repeat-penalty</code>):</label>
+                                    <input type="number" id="cfgRepeatPenalty" class="cyber-number-input" step="0.05" min="1" max="2" value="1.1" />
+                                </div>
+                                <div class="sub-field">
+                                    <label for="cfgReasoningBudget">Reasoning Budget (<code>--reasoning-budget</code>):</label>
+                                    <input type="number" id="cfgReasoningBudget" class="cyber-number-input" value="-1" title="-1 = unlimited" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Group 7: Arbitrary Custom llama-server Flags -->
+                    <div class="llama-settings-card card-full-width">
+                        <div class="card-head">
+                            <span class="card-icon">⚡</span>
+                            <span class="card-title">Custom llama-server CLI Arguments</span>
+                            <span class="card-badge">Advanced Pass-through</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="setting-field">
+                                <input
+                                    type="text"
+                                    id="cfgCustomCliArgs"
+                                    class="cyber-text-input"
+                                    placeholder="Enter any additional llama.cpp flags (e.g. --chat-template chatml --grammar-file ... -sps 0.15)"
+                                    autocomplete="off"
+                                />
+                                <small class="field-hint">Any flags specified here are appended directly to the <code>llama-server</code> command line invocation.</small>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- Action Toolbar -->
+                <div class="llama-settings-actions-bar">
+                    <button type="button" class="cyber-btn btn-primary" id="btnApplyLlamaSettingsReload">
+                        ⚡ Apply & Reload Model Now
+                    </button>
+                    <button type="button" class="cyber-btn btn-secondary" id="btnSaveLlamaSettings">
+                        💾 Save Without Restart
+                    </button>
+                    <button type="button" class="cyber-btn btn-danger" id="btnResetLlamaSettings">
+                        ↺ Reset Defaults
+                    </button>
                 </div>
             </div>
 
@@ -1702,13 +2055,13 @@
     </div>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
-    <script src="/static/three.min.js?v=8.0-skinny-cute"></script>
-    <script src="/static/GLTFLoader.js?v=8.0-skinny-cute"></script>
-    <script src="/static/character/CharacterRig.js?v=8.0-skinny-cute"></script>
-    <script src="/static/character/CharacterLoader.js?v=8.0-skinny-cute"></script>
-    <script src="/static/character/AnimationSystem.js?v=8.0-skinny-cute"></script>
-    <script src="/static/character/GazeSystem.js?v=8.0-skinny-cute"></script>
-    <script src="/static/character/CharacterEngine.js?v=8.0-skinny-cute"></script>
-    <script src="/static/app.js?v=8.0-skinny-cute"></script>
+    <script src="/static/three.min.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/GLTFLoader.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/character/CharacterRig.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/character/CharacterLoader.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/character/AnimationSystem.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/character/GazeSystem.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/character/CharacterEngine.js?v=9.0-skinny-cute-pro"></script>
+    <script src="/static/app.js?v=9.0-skinny-cute-pro"></script>
 </body>
 </html>

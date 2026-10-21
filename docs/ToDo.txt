@@ -42,6 +42,17 @@
 34. [DONE] Dynamic Rolling Context Budget Trimmer & Summary Compactor: Implemented tiktoken-accelerated token budgeting, turn-pair atomicity, and executive turn compaction in src/robot/core/context.py while preserving 100% KV-cache Slot 0 prefix invariance. 350/350 tests pass.
 35. [DONE] Local VLM Camera Analysis Tool: Implemented perception.analyze_camera_frame (and perception.vlm_inspect) leveraging LocalVLMGrounding on AMD Radeon 680M / CPU + OCR text extraction in src/robot/tools/builtins/perception.py. 350/350 tests pass.
 36. [DONE] Image Studio Gallery HUD Modal, Lightbox & Download Monitor: Implemented /api/images/gallery and /api/images/gallery/{filename} with path traversal protection, cyberdeck gallery grid, model chips, search, and full-resolution lightbox viewer in web HUD. 350/350 tests pass.
+37. [DONE] Skinny, Cute & Professional 3D Avatar Transformation: Re-engineered 3D humanoid avatar wardrobe and aesthetics in src/robot/api/static/models/avatar.glb with tailored peak-lapel wool twill blazer, silk ribbon necktie with pearl brooch, high-waisted pencil trousers, cognac leather belt, Italian leather pumps, and porcelain-peach skin. Tightened 1,187 mesh vertices for a slender silhouette and tuned PBR normal maps with cache buster ?v=9.0-skinny-cute-pro. 350/350 tests pass.
+38. [DONE] ChatGPT Architectural Bridge & Local-First Production Roadmap: Orchestrated bidirectional AI Development Bridge with ChatGPT in Chrome over WebSocket ws://127.0.0.1:8765. Successfully transmitted full architecture and avatar overhaul report, and captured comprehensive 27,335-character Principal Systems Architect specification in .agents/artifacts/latest_chatgpt_spec.md covering 4GB VRAM GPU admission control, turn-state barge-in, Tauri local-first packaging, and zero-telemetry SQLite persistence.
+
+---
+
+## 🚀 Immediate Production Sprint (ChatGPT Architectural Directive)
+- [ ] Task 1: Build a repeatable GPU/CPU memory and latency benchmark suite (measure peak VRAM across Ollama 3B, YOLOv8, Kokoro, Whisper).
+- [ ] Task 2: Implement a central GPU admission controller & bounded inference queues (`runtime/resource_manager.py`).
+- [ ] Task 3: Finish the turn-state machine, including immediate audio playback cancellation, pipeline flush, and duplex barge-in.
+- [ ] Task 4: Add end-to-end trace IDs (`trace_id`, `session_id`, `turn_id`) and automated fault-injection tests.
+- [ ] Task 5: Package the Linux application with a managed backend and verified model downloads (Tauri desktop shell + Python sidecar).
 
 ---
 

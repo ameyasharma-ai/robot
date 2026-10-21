@@ -1412,33 +1412,49 @@ class MemoryManager:
     async def get_core_user_profile(self, user_id: str = "user") -> str:
         """Extract and format core user profile sheet from durable memory facts.
 
-        Zero-poisoning design:
-        - Contains verified user identity, creator relationship, and attribution policy.
-        - Strictly excludes random database facts, crush details, and benchmarks from the static profile.
-        - Dynamically appends at most 3 explicit preferences (e.g. favorite food/color).
+        Zero-poisoning & Persona-Isolation Design:
+        - If user_id is a custom/isolated persona (not a default system persona)
+          and no facts exist in its isolated database, returns an empty string ("")
+          to guarantee a 100% clean slate with zero identity or memory leakage.
+        - For default system personas, provides verified user identity and attribution policy.
 
         Args:
             user_id: Personality workspace namespace to pull facts from.
 
         Returns:
-            str: Clean, grounded markdown profile block.
+            str: Clean, grounded markdown profile block or empty string if clean-slate.
         """
         facts = await self.get_all_facts(user_id=user_id, limit=30)
-        identity_lines = [
-            "• User Name: Ameya",
-            "• User Role: AI Engineer & Robot Systems Creator",
-        ]
+        cached_profile = await self.get_user_profile(user_id)
+
+        system_personas = {"user", "neo", "luna", "aria", "glados"}
+        is_system = user_id.lower() in system_personas
+
+        # Custom personas start with 100% clean slate unless explicit facts or profile exist
+        if not is_system and not facts and not cached_profile.get("name") and not cached_profile.get("facts"):
+            return ""
+
+        user_name = cached_profile.get("name", "Ameya" if is_system else "")
+        user_role = cached_profile.get("role", "AI Engineer & Robot Systems Creator" if is_system else "")
+
+        if not user_name and not facts:
+            return ""
+
+        identity_lines = []
+        if user_name:
+            identity_lines.append(f"• User Name: {user_name}")
+        if user_role:
+            identity_lines.append(f"• User Role: {user_role}")
+
         attribution_lines = [
-            "• User (Ameya) is the human creator and developer. You are the AI robot assistant.",
+            f"• User{f' ({user_name})' if user_name else ''} is the human user. You are the AI robot assistant.",
             "• Never confuse user's attributes, personal life, or preferences with your own.",
         ]
         tech_lines = [
             "• Tech Stack: Python, PyTorch, C++, AsyncIO, WebSockets, Local LLMs, Web & Robotics",
-        ]
+        ] if is_system else []
         pref_lines: list[str] = []
 
-        # Check if partitioned profile has durable preferences
-        cached_profile = await self.get_user_profile(user_id)
         d_prefs = cached_profile.get("durable_preferences", {})
         if d_prefs:
             for v in d_prefs.values():
@@ -1446,8 +1462,7 @@ class MemoryManager:
                 if len(pref_lines) >= 3:
                     break
 
-        if not pref_lines:
-            # Only extract durable user preferences if explicitly stated as favorite/preference
+        if not pref_lines and facts:
             pref_keywords = ("favorite food", "favorite color", "favorite genre", "favorite music", "prefer")
             for f in facts:
                 txt = f.get("fact", f.get("memory", "")).strip()
@@ -1456,7 +1471,6 @@ class MemoryManager:
                 txt_clean = " ".join(txt.split())
                 txt_lower = txt_clean.lower()
                 if any(k in txt_lower for k in pref_keywords):
-                    # Ensure it's not a crush, test benchmark fact, or allergy
                     if not any(bad in txt_lower for bad in ("crush", "telescope", "anubha", "allergy", "anand")):
                         clean_entry = f"• {txt_clean}"
                         if not any(txt_clean.lower() in p.lower() for p in pref_lines):
@@ -1466,10 +1480,12 @@ class MemoryManager:
 
         profile_sections = [
             "=== USER CORE IDENTITY PROFILE ===",
-            "Identity & Role:\n" + "\n".join(identity_lines),
-            "Attribution Policy:\n" + "\n".join(attribution_lines),
-            "Technical Profile:\n" + "\n".join(tech_lines),
         ]
+        if identity_lines:
+            profile_sections.append("Identity & Role:\n" + "\n".join(identity_lines))
+        profile_sections.append("Attribution Policy:\n" + "\n".join(attribution_lines))
+        if tech_lines:
+            profile_sections.append("Technical Profile:\n" + "\n".join(tech_lines))
         if pref_lines:
             profile_sections.append("Established Preferences:\n" + "\n".join(pref_lines))
 
