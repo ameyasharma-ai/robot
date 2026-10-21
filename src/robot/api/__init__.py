@@ -112,6 +112,10 @@ class VoiceModeRequest(BaseModel):
     enabled: bool
 
 
+class CameraModeRequest(BaseModel):
+    enabled: bool
+
+
 class ImageGenRequest(BaseModel):
     prompt: str
     model: str | None = "default"
@@ -186,6 +190,22 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 engine.capture.pause()
         await engine.events.emit("voice_mode_changed", voice_enabled=engine.voice_enabled)
         return {"status": "ok", "voice_enabled": engine.voice_enabled, "is_chat_mode": engine.is_chat_mode}
+
+    @app.post("/camera-mode")
+    @app.post("/api/camera-mode")
+    async def set_camera_mode(req: CameraModeRequest):
+        """Toggle camera hardware acquisition on or off for privacy or chat mode."""
+        actual = engine.set_camera_mode(bool(req.enabled))
+        if hasattr(engine, "notify_user_activity"):
+            engine.notify_user_activity()
+        await engine.events.emit("camera_mode_changed", camera_enabled=actual)
+        return {"status": "ok", "camera_enabled": actual}
+
+    @app.get("/camera-mode")
+    @app.get("/api/camera-mode")
+    async def get_camera_mode():
+        """Get current camera hardware acquisition status."""
+        return {"status": "ok", "camera_enabled": engine.is_camera_enabled}
 
     @app.post("/api/view-mode")
     async def set_view_mode(req: dict[str, Any]):
@@ -1804,9 +1824,11 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     @app.get("/camera/snapshot")
     async def get_camera_snapshot():
         """Get the latest snapshot from the robot's camera with green perception polygons."""
+        from fastapi.responses import Response
+        if not engine.is_camera_enabled:
+            return Response(content=b"Camera paused or disabled", status_code=503)
         if hasattr(engine, "perception") and engine.perception:
             import cv2
-            from fastapi.responses import Response
 
             frame = engine.perception.get_annotated_frame()
             if frame is not None:
@@ -1818,14 +1840,17 @@ def create_app(engine: "RobotEngine") -> FastAPI:
 
     @app.get("/camera/stream")
     async def get_camera_stream():
-        """Ultra-low latency 60 FPS continuous MJPEG video stream with green polygons."""
-        from fastapi.responses import StreamingResponse
+        """Ultra-low latency continuous MJPEG video stream with green polygons."""
+        from fastapi.responses import Response, StreamingResponse
+        if not engine.is_camera_enabled:
+            return Response(content=b"Camera paused or disabled", status_code=503)
+
         import asyncio
         import cv2
 
         async def frame_generator():
             try:
-                while True:
+                while engine.is_camera_enabled:
                     if hasattr(engine, "perception") and engine.perception:
                         frame = engine.perception.get_annotated_frame()
                         if frame is not None:

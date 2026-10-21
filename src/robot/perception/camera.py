@@ -63,6 +63,7 @@ class CameraCapture:
         self.target_fps = fps
 
         self._running = False
+        self._paused = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._latest_frame: Optional[np.ndarray] = None
@@ -72,7 +73,24 @@ class CameraCapture:
 
     @property
     def is_running(self) -> bool:
-        return self._running and self._is_opened
+        return self._running and self._is_opened and not self._paused
+
+    @property
+    def is_paused(self) -> bool:
+        """Return True if camera capture is temporarily paused."""
+        return self._paused
+
+    def pause(self) -> None:
+        """Pause capture and release hardware video device for privacy or chat mode."""
+        self._paused = True
+        with self._lock:
+            self._latest_frame = None
+        logger.info("camera_paused_hardware_released")
+
+    def resume(self) -> None:
+        """Resume camera capture and reconnect to video device."""
+        self._paused = False
+        logger.info("camera_resumed")
 
     def start(self) -> bool:
         """Start the background capture thread."""
@@ -118,8 +136,11 @@ class CameraCapture:
         """Capture and return the most recent camera frame or take an on-demand frame.
 
         Returns:
-            np.ndarray | None: BGR numpy image array, or None if camera is unavailable.
+            np.ndarray | None: BGR numpy image array, or None if camera is unavailable or paused.
         """
+        if self._paused:
+            return None
+
         frame = self.get_latest_frame()
         if frame is not None and frame.size > 0:
             return frame.copy()
@@ -146,6 +167,13 @@ class CameraCapture:
         self._reconnect_backoff = 1.0
 
         while self._running:
+            if self._paused:
+                self._is_opened = False
+                with self._lock:
+                    self._latest_frame = None
+                time.sleep(0.1)
+                continue
+
             import cv2
 
             os.environ["OPENCV_LOG_LEVEL"] = "OFF"
@@ -191,7 +219,7 @@ class CameraCapture:
 
                 # Exponential backoff sleep (interrupted if stop() is called)
                 sleep_start = time.time()
-                while self._running and (time.time() - sleep_start) < self._reconnect_backoff:
+                while self._running and not self._paused and (time.time() - sleep_start) < self._reconnect_backoff:
                     time.sleep(0.1)
                 self._reconnect_backoff = min(60.0 if self._reconnect_count >= 4 else 10.0, self._reconnect_backoff * 2.0)
                 continue
@@ -220,7 +248,7 @@ class CameraCapture:
             consecutive_failures = 0
 
             try:
-                while self._running:
+                while self._running and not self._paused:
                     t0 = time.time()
                     ret, frame = cap.read()
                     if ret and frame is not None:

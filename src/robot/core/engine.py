@@ -432,6 +432,7 @@ class RobotEngine:
         self._entering_standby = False
         self._last_bot_phrases: list[str] = []
         self.voice_enabled = True
+        self.camera_enabled = True
         self.is_chat_mode = False
         self.thinking_enabled = True
         self._pending_motion: dict | None = None
@@ -475,6 +476,29 @@ class RobotEngine:
             db_path=sched_cfg.get("database_path", "data/database/scheduler.db"),
         )
 
+    @property
+    def is_camera_enabled(self) -> bool:
+        """Return True if camera perception is currently active."""
+        if getattr(self, "perception", None) is not None:
+            return not self.perception.is_paused
+        return bool(getattr(self, "camera_enabled", True))
+
+    def set_camera_mode(self, enabled: bool) -> bool:
+        """Enable or disable camera capture and perception pipeline.
+
+        Args:
+            enabled: True to enable camera, False to pause and release hardware.
+
+        Returns:
+            bool: Current camera enabled status.
+        """
+        self.camera_enabled = bool(enabled)
+        if getattr(self, "perception", None) is not None:
+            if self.camera_enabled:
+                self.perception.resume()
+            else:
+                self.perception.pause()
+        return self.is_camera_enabled
 
     async def setup(self) -> None:
         """Initialize all subsystems."""

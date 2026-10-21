@@ -203,13 +203,14 @@ Legend:
   - Added tool aliases (`analyze_camera_frame`, `vlm_inspect`, `read_text`, `inspect_tabletop`) and router keywords in `src/robot/tools/__init__.py`.
   - Granted permissions across all personality definitions (`luna.yaml`, `neo.yaml`, `aria.yaml`, `glados.yaml`).
   - Unit tests in `tests/test_perception.py` (9/9 passing).
-- [x] **Day 19: Phase 24 Image Studio Gallery HUD Modal & Live Model Download Monitor**:
-  - Implemented REST API endpoints in `src/robot/api/__init__.py`: `GET /api/images/gallery` (with image dimensions, job metadata mapping, reverse chronological sort) and `DELETE /api/images/gallery/{filename}` (with strict regex path traversal protection).
-  - Built Cyberdeck Gallery Modal (`#imageGalleryModal`) in `index.html` with model chips, real-time search, responsive artwork grid, and lightbox viewer (`#galleryLightboxModal`) with download, copy prompt, and deletion actions.
-  - Designed luxurious cyberpunk gallery cards, badges, and responsive viewer in `src/robot/api/static/index.css`.
-  - Implemented client logic in `src/robot/api/static/app.js`: `initImageGallery()`, `loadGalleryImages()`, `renderGalleryGrid()`, `openGalleryLightbox()`, and `initHfDownloadMonitor()`.
-  - Unit tests in `tests/test_image_gallery.py` (4/4 passing).
-  - 100% test pass rate: **350 / 350 tests passing** across all 47 test modules; **122 / 122 Python files clean** with zero import errors (`verify_imports.py`).
+- [x] **Day 20: Comprehensive Cyberdeck UI Fluidity, Oscilloscope Audio Scaling, Context Window Gauge, Avatar Original Wardrobe Restoration & Speech Leak Eradication**:
+  - **Avatar Wardrobe Restoration**: Extracted authentic original textures from commit `db42eea` (`original_tops.png` white crewneck t-shirt, `original_bottoms.png` black shorts, `original_shoes.png` classic sneakers, `original_body.png` clean skin) and repacked into `avatar.glb`. Updated `CharacterLoader.js` to use pure soft cotton/matte PBR shaders (`roughness: 0.85, metalness: 0.0`) without blazer normal maps, retaining photorealistic facial geometry, 4K hazel iris, soft blush, and clearcoat eyes.
+  - **Dynamic Audio Oscilloscope**: Wired `_run_voice_pipeline` in `src/robot/core/engine.py` to stream throttled 25Hz `audio_waveform` events over WebSockets with real-time `rms` and `is_voice` VAD probability. Bound `acousticWaveformCanvas` in `app.js` to dynamically scale wave amplitudes, peak dB readings, and noise floor chips to physical microphone volume.
+  - **Live Context Window Gauge**: Replaced hardcoded `842 / 4096 TOKENS` in `index.html` with real-time dynamic tracking in `app.js:updateMetrics()`, updating `#contextTokenRatio` and `#contextBudgetBar` according to active model limits (16k local, 128k OpenAI, 1M Gemini) and live `CONTEXT_INPUT_TOKENS`.
+  - **Zero-Overlap Cyberdeck UI Overhaul**: Fixed header bar collisions, dynamic text truncation, safe auto-collapsing `#sessionStats` on screens <1440px (preventing `#btnOpenPersonaVault` and OpenAI Compat pill clipping). Decoupled `.m-bar` from `.m-val` in latency cards preventing progress bar cut-through. Stacked 3D avatar reasoning bubbles above speech bubbles with scroll containment. Added a camera hardware pause/resume toggle with device release to the continuous perception card.
+  - **Speech Leak & Pseudo Tool Monologue Interception**: Filtered `__THOUGHT__` tokens and stripped `<thought>` / `<think>` tags in `autonomy.py` proactive monologue TTS. Implemented pseudo tool call interception in `engine.py` to prevent models emitting descriptive text (`"Let's call 'perception.analyze_camera_frame'..."`) from being verbalized aloud, dispatching them to dynamic tool execution instead. Clarified terminal wake word gating logs.
+  - **Verification**: 100% test pass rate (**350 / 350 tests passing**); **122 / 122 Python files clean** with zero import errors (`verify_imports.py`); knowledge graph synchronized via `graphify update .`.
+
 
 
 
@@ -2222,7 +2223,23 @@ Legend:
      - *Fix Applied*: Implemented `GET /api/images/gallery` and `DELETE /api/images/gallery/{filename}` in `src/robot/api/__init__.py` with regex path traversal security; built cyberpunk Image Gallery modal (`#imageGalleryModal`), filter chips, real-time search, responsive grid, and interactive lightbox viewer (`#galleryLightboxModal`) in `index.html`, `index.css`, and `app.js`. Added live HuggingFace download monitoring integration.
      - *Verification*:
        - Unit tests in `tests/test_image_gallery.py`: 4 / 4 passing.
-       - Full test suite: 350 / 350 passing (100%).
+82. **Comprehensive UI Overhaul, Responsiveness, Dynamic Audio Oscilloscope, Live Context Budget, Avatar Wardrobe Restoration & Speech Leak Elimination**:
+     - *Symptoms*:
+       1. Elements across the dashboard overlapped severely: header top bar pushed `#btnOpenPersonaVault` ("Vault") off-screen, collided with the OpenAI Compat pill, and crowded out `#sessionStats`; latency card's `TOTAL E2E` progress bar cut right through the latency numbers; 3D avatar reasoning bubble overlapped speech bubbles and input controls; continuous perception live badge was clipped.
+       2. Avatar was wearing an unwanted navy blazer and trousers rather than her original casual white crewneck t-shirt, black shorts, and sneakers from the beginning of the project.
+       3. Audio oscilloscope in the dashboard ran on a static dummy sine wave and did not reflect actual microphone acoustic amplitude.
+       4. Context window panel was hardcoded to `842 / 4096 TOKENS (20.5%)` and never updated.
+       5. Autonomous thought tags (`__THOUGHT__`) and model pseudo tool call strings (`"Let's call 'perception.analyze_camera_frame'..."`) were being read aloud by TTS.
+       6. Terminal logs continuously printed `💤 [WAKE WORD REQUIRED IGNORED]`, confusing the user.
+     - *Fixes Applied*:
+       1. **Avatar Wardrobe Restoration**: Extracted authentic original textures from commit `db42eea` (`realistic_tops.png` white crewneck t-shirt, `realistic_bottoms.png` black shorts, `realistic_shoes.png` classic sneakers, `realistic_body.png` clean skin) and repacked into `avatar.glb`. Updated `CharacterLoader.js` to use pure soft cotton/matte PBR shaders (`roughness: 0.85, metalness: 0.0`) without blazer normal maps, retaining photorealistic facial geometry, 4K hazel iris, soft blush, and clearcoat eyes.
+       2. **Dynamic Audio Oscilloscope**: Wired `_run_voice_pipeline` in `src/robot/core/engine.py` to stream throttled 25Hz `audio_waveform` events over WebSockets with real-time `rms` and `is_voice` VAD probability. Bound `acousticWaveformCanvas` in `app.js` to dynamically scale wave amplitudes, peak dB readings, and noise floor chips to physical microphone volume.
+       3. **Live Context Window Gauge**: Replaced hardcoded `842 / 4096 TOKENS` in `index.html` with real-time dynamic tracking in `app.js:updateMetrics()`, updating `#contextTokenRatio` and `#contextBudgetBar` according to active model limits (16k local, 128k OpenAI, 1M Gemini) and live `CONTEXT_INPUT_TOKENS`.
+       4. **Zero-Overlap Cyberdeck UI Overhaul**: Fixed header bar collisions, dynamic text truncation, safe auto-collapsing `#sessionStats` on screens <1440px (preventing `#btnOpenPersonaVault` and OpenAI Compat pill clipping). Decoupled `.m-bar` from `.m-val` in latency cards preventing progress bar cut-through. Stacked 3D avatar reasoning bubbles above speech bubbles with scroll containment. Added a camera hardware pause/resume toggle with device release to the continuous perception card.
+       5. **Speech Leak & Pseudo Tool Monologue Interception**: Filtered `__THOUGHT__` tokens and stripped `<thought>` / `<think>` tags in `autonomy.py` proactive monologue TTS. Implemented pseudo tool call interception in `engine.py` to prevent models emitting descriptive text (`"Let's call 'perception.analyze_camera_frame'..."`) from being verbalized aloud, dispatching them to dynamic tool execution instead. Clarified terminal wake word gating logs.
+     - *Verification*:
+       - Unit tests in `tests/test_ui_elements_and_waveform.py`: 5 / 5 passing.
+       - Full test suite: 355 / 355 passing across all 48 test modules (100%).
        - Code integrity: `verify_imports.py` verified 122 / 122 files clean (100%).
 
 ### ⚠️ Open Watchlist

@@ -204,7 +204,6 @@ body.mode-dual .matrix-rain-canvas {
     user-select: none;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
     box-sizing: border-box;
-    overflow: hidden;
 }
 
 /* Three-Zone Layout Containers */
@@ -221,10 +220,9 @@ body.mode-dual .matrix-rain-canvas {
 }
 
 .nav-zone-center {
-    flex-shrink: 1;
+    flex: 1 1 auto;
     justify-content: center;
     min-width: 0;
-    overflow: hidden;
 }
 
 .nav-zone-right {
@@ -770,7 +768,7 @@ body.mode-dual .matrix-rain-canvas {
     margin-bottom: 14px;
 }
 
-.modal-body label {
+.modal-body label:not(.cyber-toggle-label):not(.cyber-checkbox-label) {
     display: block;
     font-size: 10px;
     font-weight: 700;
@@ -833,14 +831,16 @@ body.mode-dual .matrix-rain-canvas {
     margin-top: 6px;
 }
 
+.modal-body .cyber-checkbox-label,
 .cyber-checkbox-label {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    font-size: 10.5px;
-    color: #cbd5e1;
-    cursor: pointer;
-    text-transform: none;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    font-size: 10.5px !important;
+    color: #cbd5e1 !important;
+    cursor: pointer !important;
+    text-transform: none !important;
+    margin-bottom: 0 !important;
 }
 
 .modal-feedback {
@@ -6173,34 +6173,86 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     .telemetry-pod {
         display: none !important;
     }
+    .brand-ver {
+        display: none !important;
+    }
+    #btnTopNavHfHub {
+        display: none !important;
+    }
     .top-nav-stt-picker-btn .stt-vulkan-badge,
     .top-nav-tts-picker-btn .tts-engine-badge {
         display: none !important;
     }
+    .llm-toggle-info .llm-toggle-sub,
+    .llm-toggle-btn .llm-mode-badge {
+        display: none !important;
+    }
+    .llm-toggle-btn {
+        padding: 4px 8px !important;
+        gap: 6px !important;
+        height: 28px !important;
+    }
+    .llm-toggle-label {
+        font-size: 11px !important;
+    }
     .top-nav-model-picker-btn,
     .top-nav-stt-picker-btn,
     .top-nav-tts-picker-btn {
-        max-width: 140px;
+        max-width: 110px !important;
+        padding: 3px 7px !important;
+        height: 28px !important;
+    }
+    .top-nav-model-picker-btn .model-picker-label,
+    .top-nav-stt-picker-btn .stt-picker-label,
+    .top-nav-tts-picker-btn .tts-picker-label {
+        font-size: 10.5px !important;
+        max-width: 80px !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        white-space: nowrap !important;
+    }
+    .llm-provider-wrap {
+        gap: 5px !important;
+        flex-shrink: 1 !important;
+    }
+    .nav-zone {
+        gap: 6px !important;
+    }
+    .nav-zone-center {
+        justify-content: center !important;
+        min-width: 0 !important;
     }
 }
 
 /* --- Tablets & Compact Viewports (<= 992px) --- */
 @media (max-width: 992px) {
     .telemetry-pill,
-    .telemetry-pod {
+    .telemetry-pod,
+    .top-nav-whisper-controls,
+    .top-nav-tts-controls,
+    #topNavWhisperControls,
+    #topNavTtsControls,
+    #btnTopNavFullscreen,
+    .nav-divider,
+    #globalStatusPill {
         display: none !important;
     }
 
     .llm-toggle-info .llm-toggle-sub {
-        display: none;
+        display: none !important;
     }
 
     .llm-toggle-btn {
-        padding: 5px 9px;
+        padding: 4px 8px !important;
+        height: 28px !important;
     }
 
     .brand-ver {
-        display: none;
+        display: none !important;
+    }
+
+    .top-nav-model-picker-btn {
+        max-width: 100px !important;
     }
 }
 
@@ -6381,9 +6433,21 @@ body.mode-chat .chat-workspace-panel { display: flex; }
         line-height: 22px !important;
     }
 
-    .fullscreen-btn {
+    .fullscreen-btn,
+    #btnOpenPersonaModal,
+    .persona-manage-btn {
         display: none !important;
     }
+
+/* --- Ultra-Compact Mobile Phones (<= 500px) --- */
+@media (max-width: 500px) {
+    .nav-zone-center,
+    .llm-provider-wrap,
+    .status-pill,
+    #globalStatusPill {
+        display: none !important;
+    }
+}
 
     /* Main Viewport in Dual Mode */
     .main-viewport,
@@ -6460,7 +6524,8 @@ body.mode-chat .chat-workspace-panel { display: flex; }
         z-index: 31;
     }
 
-    .voice-toggle-btn {
+    .voice-toggle-btn,
+    .thinking-toggle-btn {
         padding: 0 10px;
         height: 36px;
         min-width: 36px;
@@ -6468,8 +6533,9 @@ body.mode-chat .chat-workspace-panel { display: flex; }
         border-radius: 8px;
     }
 
-    .voice-toggle-btn .voice-label {
-        display: none;
+    .voice-toggle-btn .voice-label,
+    .thinking-toggle-btn .thinking-label {
+        display: none !important;
     }
 
     .chat-input {
@@ -10554,12 +10620,39 @@ button:active, .view-btn:active, .action-btn:active, .send-btn:active {
     align-items: end;
 }
 
-.setting-field-toggle,
+.setting-field-toggle {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px;
+    background: rgba(3, 10, 18, 0.6);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    border-radius: 6px;
+    margin-bottom: 8px;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.setting-field-toggle:hover {
+    background: rgba(0, 240, 255, 0.03);
+    border-color: rgba(0, 240, 255, 0.28);
+}
+
 .sub-field-toggle {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 4px 0;
+    justify-content: center;
+    padding: 8px 12px;
+    background: rgba(3, 10, 18, 0.6);
+    border: 1px solid rgba(0, 240, 255, 0.12);
+    border-radius: 6px;
+    min-height: 48px;
+    box-sizing: border-box;
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.sub-field-toggle:hover {
+    background: rgba(0, 240, 255, 0.03);
+    border-color: rgba(0, 240, 255, 0.28);
 }
 
 .setting-field label,
@@ -10676,48 +10769,89 @@ button:active, .view-btn:active, .action-btn:active, .send-btn:active {
     line-height: 1.4;
 }
 
+.modal-body .cyber-toggle-label,
 .cyber-toggle-label {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    font-size: 11px;
-    color: #e2e8f0;
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    cursor: pointer !important;
+    font-size: 11.5px !important;
+    font-weight: 600 !important;
+    text-transform: none !important;
+    color: #e2e8f0 !important;
+    letter-spacing: 0.2px !important;
+    margin-bottom: 0 !important;
+    user-select: none;
+    width: 100%;
 }
 
 .cyber-toggle-label input {
-    display: none;
+    display: none !important;
 }
 
 .cyber-toggle-label .toggle-slider {
-    position: relative;
-    width: 30px;
-    height: 16px;
-    background: rgba(255, 255, 255, 0.15);
-    border-radius: 10px;
-    transition: background 0.2s ease;
+    display: inline-block !important;
+    position: relative !important;
+    flex-shrink: 0 !important;
+    width: 36px !important;
+    height: 20px !important;
+    background: rgba(255, 255, 255, 0.12) !important;
+    border: 1px solid rgba(255, 255, 255, 0.22) !important;
+    border-radius: 12px !important;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5) !important;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    cursor: pointer !important;
+}
+
+.cyber-toggle-label:hover .toggle-slider {
+    border-color: rgba(0, 240, 255, 0.45) !important;
 }
 
 .cyber-toggle-label .toggle-slider::after {
-    content: '';
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 12px;
-    height: 12px;
-    background: #94a3b8;
-    border-radius: 50%;
-    transition: transform 0.2s ease, background 0.2s ease;
+    content: '' !important;
+    position: absolute !important;
+    top: 2px !important;
+    left: 2px !important;
+    width: 14px !important;
+    height: 14px !important;
+    background: #cbd5e1 !important;
+    border-radius: 50% !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6) !important;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.2s ease, box-shadow 0.2s ease !important;
 }
 
 .cyber-toggle-label input:checked + .toggle-slider {
-    background: rgba(0, 240, 255, 0.3);
+    background: rgba(0, 240, 255, 0.28) !important;
+    border-color: #00f0ff !important;
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.35), inset 0 1px 2px rgba(0, 0, 0, 0.3) !important;
 }
 
 .cyber-toggle-label input:checked + .toggle-slider::after {
-    transform: translateX(14px);
-    background: #00f0ff;
-    box-shadow: 0 0 6px #00f0ff;
+    transform: translateX(16px) !important;
+    background: #00f0ff !important;
+    box-shadow: 0 0 8px #00f0ff, 0 1px 3px rgba(0, 0, 0, 0.6) !important;
+}
+
+.cyber-toggle-label .toggle-text {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    flex-wrap: wrap !important;
+    font-size: 11.5px !important;
+    font-weight: 600 !important;
+    color: #e2e8f0 !important;
+    text-transform: none !important;
+    line-height: 1.4 !important;
+}
+
+.cyber-toggle-label .toggle-text code {
+    background: rgba(0, 240, 255, 0.08) !important;
+    border: 1px solid rgba(0, 240, 255, 0.25) !important;
+    color: #38bdf8 !important;
+    font-size: 10px !important;
+    padding: 1px 5px !important;
+    border-radius: 4px !important;
+    font-family: var(--font-mono, monospace) !important;
 }
 
 .llama-settings-actions-bar {

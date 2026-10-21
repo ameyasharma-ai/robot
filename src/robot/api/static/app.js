@@ -2674,11 +2674,64 @@ class RobotUI {
             });
         }
 
-        // ─── Camera Box Resizing Controls ──────────────────────────────
+        // ─── Camera Box Controls & Hardware Toggle ─────────────────────────
         const cameraBox = document.getElementById("cameraBox");
+        const btnToggleCam = document.getElementById("btnToggleCamera");
         const btnReset = document.getElementById("btnStreamReset");
         const btnExpand = document.getElementById("btnStreamExpand");
         const resizeHandle = document.getElementById("resizeHandle");
+        this.cameraEnabled = true;
+
+        if (btnToggleCam) {
+            /**
+             * Handles camera toggle button click to pause/resume hardware video stream.
+             * @param {MouseEvent} e - Click event.
+             * @returns {Promise<void>}
+             */
+            btnToggleCam.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                const targetState = !this.cameraEnabled;
+                try {
+                    const res = await fetch("/camera-mode", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ enabled: targetState }),
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        this.cameraEnabled = data.camera_enabled;
+                        const radar = document.getElementById("radarStandby");
+                        if (this.cameraEnabled) {
+                            btnToggleCam.classList.remove("muted");
+                            btnToggleCam.title = "Camera Active. Click to pause camera and release hardware.";
+                            btnToggleCam.textContent = "📷";
+                            if (radar) radar.style.display = "none";
+                            if (this.cameraImg) {
+                                this.cameraImg.style.display = "block";
+                                this.cameraImg.src = `/camera/stream?t=${Date.now()}`;
+                            }
+                            this.logEvent("PERCEPTION", "Camera stream resumed", "system");
+                        } else {
+                            btnToggleCam.classList.add("muted");
+                            btnToggleCam.title = "Camera Paused. Click to enable camera.";
+                            btnToggleCam.textContent = "🚫";
+                            if (this.cameraImg) {
+                                this.cameraImg.src = "";
+                                this.cameraImg.style.display = "none";
+                            }
+                            if (radar) {
+                                radar.style.display = "flex";
+                                const rLabel = radar.querySelector(".radar-label");
+                                if (rLabel) rLabel.innerHTML = '<span class="radar-dot"></span> CAMERA HARDWARE PAUSED';
+                            }
+                            this.logEvent("PERCEPTION", "Camera stream paused (hardware released)", "system");
+                        }
+                    }
+                } catch (err) {
+                    console.error("Failed to toggle camera:", err);
+                }
+            });
+        }
 
         if (btnReset && cameraBox) {
             btnReset.addEventListener("click", (e) => {
@@ -4912,14 +4965,20 @@ class RobotUI {
                 this.cameraImg.style.display = "none";
                 const radar = document.getElementById("radarStandby");
                 if (radar) radar.style.display = "flex";
-                setTimeout(() => {
-                    this.cameraImg.src = `/camera/stream?t=${Date.now()}`;
-                }, 3000);
+                if (this.cameraEnabled) {
+                    setTimeout(() => {
+                        if (this.cameraEnabled) {
+                            this.cameraImg.src = `/camera/stream?t=${Date.now()}`;
+                        }
+                    }, 3000);
+                }
             };
             this.cameraImg.onload = () => {
-                this.cameraImg.style.display = "block";
-                const radar = document.getElementById("radarStandby");
-                if (radar) radar.style.display = "none";
+                if (this.cameraEnabled) {
+                    this.cameraImg.style.display = "block";
+                    const radar = document.getElementById("radarStandby");
+                    if (radar) radar.style.display = "none";
+                }
             };
         }
 

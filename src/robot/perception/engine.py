@@ -92,8 +92,32 @@ class PerceptionEngine:
             self._yolo = None
             return False
 
+    @property
+    def is_paused(self) -> bool:
+        """Return True if visual perception is temporarily paused."""
+        return self.camera.is_paused
+
+    def pause(self) -> None:
+        """Pause visual perception and release camera hardware."""
+        self.camera.pause()
+        with self._annotated_lock:
+            self._latest_annotated_frame = None
+        self.world_state.lighting = "offline"
+        self.world_state.motion = "none"
+        self.world_state.people = []
+        self.world_state.objects = []
+        self.world_state.updated_at = time.time()
+        logger.info("perception_engine_paused")
+
+    def resume(self) -> None:
+        """Resume visual perception and reacquire camera hardware."""
+        self.camera.resume()
+        logger.info("perception_engine_resumed")
+
     def get_annotated_frame(self) -> Optional[np.ndarray]:
         """Return the latest frame drawn with green polygons and perception overlays."""
+        if self.camera.is_paused:
+            return None
         with self._annotated_lock:
             if self._latest_annotated_frame is not None:
                 return self._latest_annotated_frame.copy()
