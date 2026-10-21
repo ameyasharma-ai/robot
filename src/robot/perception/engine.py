@@ -419,8 +419,10 @@ class PerceptionEngine:
         # 5. Generate high-tech HUD annotated visual frame
         annotated = frame.copy()
 
-        # Render Detected Objects
+        # Render Detected Objects (omit person if already tracked by YuNet)
         for obj in objects:
+            if obj.label.lower() == "person" and len(people) > 0:
+                continue
             ox, oy, obw, obh = obj.bbox
             opts = np.array([
                 [ox, oy],
@@ -429,34 +431,45 @@ class PerceptionEngine:
                 [ox, oy + obh]
             ], np.int32).reshape((-1, 1, 2))
 
-            cv2.polylines(annotated, [opts], isClosed=True, color=(0, 230, 180), thickness=2, lineType=cv2.LINE_AA)
+            cv2.polylines(annotated, [opts], isClosed=True, color=(0, 230, 180), thickness=1, lineType=cv2.LINE_AA)
             cv2.circle(annotated, (ox + obw // 2, oy + obh // 2), 3, (0, 230, 180), -1)
 
             obj_tag = f"{obj.label.upper()} {int(obj.confidence * 100)}%"
-            cv2.rectangle(annotated, (ox, max(0, oy - 20)), (ox + len(obj_tag) * 8 + 4, oy), (0, 30, 20), -1)
-            cv2.putText(annotated, obj_tag, (ox + 2, max(12, oy - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 200), 1, cv2.LINE_AA)
+            (otw, oth), _ = cv2.getTextSize(obj_tag, cv2.FONT_HERSHEY_SIMPLEX, 0.36, 1)
+            tag_oy = max(oth + 4, oy - 4)
+            cv2.rectangle(annotated, (ox, tag_oy - oth - 3), (ox + otw + 4, tag_oy + 2), (4, 18, 14), -1)
+            cv2.rectangle(annotated, (ox, tag_oy - oth - 3), (ox + otw + 4, tag_oy + 2), (0, 230, 180), 1)
+            cv2.putText(annotated, obj_tag, (ox + 2, tag_oy - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 255, 200), 1, cv2.LINE_AA)
 
-        # Render Detected People
+        # Render Detected People via Sleek Cyber Reticle & Corner Brackets
         for p in people:
             x, y, bw, bh = p.bbox
-            pts = np.array([
-                [x, y],
-                [x + bw, y],
-                [x + bw, y + bh],
-                [x, y + bh]
-            ], np.int32).reshape((-1, 1, 2))
+            corner_len = max(8, min(18, bw // 4, bh // 4))
 
-            cv2.polylines(annotated, [pts], isClosed=True, color=(0, 255, 128), thickness=2, lineType=cv2.LINE_AA)
+            # Top-left corner
+            cv2.line(annotated, (x, y), (x + corner_len, y), (0, 255, 128), 2, cv2.LINE_AA)
+            cv2.line(annotated, (x, y), (x, y + corner_len), (0, 255, 128), 2, cv2.LINE_AA)
+            # Top-right corner
+            cv2.line(annotated, (x + bw, y), (x + bw - corner_len, y), (0, 255, 128), 2, cv2.LINE_AA)
+            cv2.line(annotated, (x + bw, y), (x + bw, y + corner_len), (0, 255, 128), 2, cv2.LINE_AA)
+            # Bottom-left corner
+            cv2.line(annotated, (x, y + bh), (x + corner_len, y + bh), (0, 255, 128), 2, cv2.LINE_AA)
+            cv2.line(annotated, (x, y + bh), (x, y + bh - corner_len), (0, 255, 128), 2, cv2.LINE_AA)
+            # Bottom-right corner
+            cv2.line(annotated, (x + bw, y + bh), (x + bw - corner_len, y + bh), (0, 255, 128), 2, cv2.LINE_AA)
+            cv2.line(annotated, (x + bw, y + bh), (x + bw, y + bh - corner_len), (0, 255, 128), 2, cv2.LINE_AA)
 
+            # Center target crosshair dot
             cx, cy = x + bw // 2, y + bh // 2
-            cv2.circle(annotated, (cx, cy), 4, (0, 255, 0), -1)
+            cv2.circle(annotated, (cx, cy), 3, (0, 255, 128), -1)
 
-            tag_text = f"TARGET: {p.id.upper()} | {int(p.confidence * 100)}% | {p.distance_estimate.upper()}"
-            cv2.rectangle(annotated, (x, max(0, y - 22)), (x + len(tag_text) * 9, y), (0, 0, 0), -1)
-            cv2.putText(annotated, tag_text, (x + 4, max(12, y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 128), 1, cv2.LINE_AA)
-
-        hud_info = f"PERCEPTION: 10 FPS | OBJ: {len(objects)} | TABLETOP: {len(tabletop_items)} | PEOPLE: {len(people)} | LIGHT: {lighting.upper()}"
-        cv2.putText(annotated, hud_info, (14, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            # Sleek compact badge (avoids blocking face or running off frame)
+            tag_text = f"USER • {int(p.confidence * 100)}%"
+            (tw, th), _ = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            tag_y = max(th + 5, y - 4)
+            cv2.rectangle(annotated, (x, tag_y - th - 4), (x + tw + 6, tag_y + 2), (8, 20, 14), -1)
+            cv2.rectangle(annotated, (x, tag_y - th - 4), (x + tw + 6, tag_y + 2), (0, 255, 128), 1)
+            cv2.putText(annotated, tag_text, (x + 3, tag_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 128), 1, cv2.LINE_AA)
 
         with self._annotated_lock:
             self._latest_annotated_frame = annotated

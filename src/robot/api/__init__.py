@@ -176,7 +176,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         )
 
     @app.post("/voice-mode")
-    async def set_voice_mode(req: VoiceModeRequest):
+    async def set_voice_mode(req: VoiceModeRequest) -> dict[str, Any]:
         """Toggle voice/mic listening on or off for text-only chatting."""
         engine.voice_enabled = bool(req.enabled)
         engine.is_chat_mode = not engine.voice_enabled
@@ -190,6 +190,44 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 engine.capture.pause()
         await engine.events.emit("voice_mode_changed", voice_enabled=engine.voice_enabled)
         return {"status": "ok", "voice_enabled": engine.voice_enabled, "is_chat_mode": engine.is_chat_mode}
+
+    @app.get("/api/voice/status")
+    async def get_voice_status() -> dict[str, Any]:
+        """Retrieve voice listening and wake-word gating status.
+
+        Returns:
+            dict[str, Any]: Voice configuration including active wake word,
+                hardware mic mute state, and wake-word gating requirement.
+        """
+        active_word = getattr(getattr(engine, "wakeword", None), "active_wake_word", "luna")
+        return {
+            "status": "ok",
+            "voice_enabled": engine.voice_enabled,
+            "require_wake_word": getattr(engine, "require_wake_word", True),
+            "active_wake_word": active_word,
+            "barge_in": getattr(engine, "barge_in_enabled", True),
+        }
+
+    @app.post("/api/voice/wake-word-toggle")
+    async def toggle_wake_word(req: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Toggle or set whether the active wake word is required to talk.
+
+        Args:
+            req: Optional JSON payload containing boolean `require_wake_word`.
+
+        Returns:
+            dict[str, Any]: Updated wake-word gating status.
+        """
+        explicit = req.get("require_wake_word")
+        if explicit is None:
+            engine.require_wake_word = not getattr(engine, "require_wake_word", True)
+        else:
+            engine.require_wake_word = bool(explicit)
+        await engine.events.emit(
+            "wake_word_mode_changed",
+            require_wake_word=engine.require_wake_word,
+        )
+        return {"status": "ok", "require_wake_word": engine.require_wake_word}
 
     @app.post("/camera-mode")
     @app.post("/api/camera-mode")

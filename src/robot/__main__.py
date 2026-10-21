@@ -37,10 +37,20 @@ def main() -> None:
         loop = asyncio.get_running_loop()
         engine_task = asyncio.create_task(engine.run())
 
-        def _handle_signal() -> None:
+        async def _graceful_shutdown() -> None:
+            """Shut down engine components gracefully before terminating tasks."""
+            await engine.stop()
+            for _ in range(20):
+                if engine_task.done():
+                    return
+                await asyncio.sleep(0.1)
             if not engine_task.done():
-                asyncio.create_task(engine.stop())
                 engine_task.cancel()
+
+        def _handle_signal() -> None:
+            """Handle termination signals and schedule graceful shutdown."""
+            if not engine_task.done():
+                loop.create_task(_graceful_shutdown())
 
         sigs = [signal.SIGINT, signal.SIGTERM]
         if hasattr(signal, "SIGQUIT"):
