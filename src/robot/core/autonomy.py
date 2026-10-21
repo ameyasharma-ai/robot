@@ -347,20 +347,34 @@ class CuriosityEngine:
 
             full_thought = ""
             async for token in self.engine.llm.stream_chat(messages, max_tokens=60):
+                # Filter out internal reasoning tokens so thoughts are never spoken by TTS
+                if token.startswith("__THOUGHT__"):
+                    continue
                 full_thought += token
                 if len(full_thought) >= 40 and any(p in token for p in [".", "!", "?", ".\n", "!\n", "?\n"]):
                     break
                 if len(full_thought) >= 250:
                     break
 
-            cleaned_thought = full_thought.strip().replace('"', "").replace("\n", " ")
+            import re
+            cleaned = re.sub(r"<thought>.*?</thought>", "", full_thought, flags=re.DOTALL)
+            cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"\[thought\].*?\[/thought\]", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r"\[think\].*?\[/think\]", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            # Remove any trailing unclosed thinking blocks
+            cleaned = re.sub(r"<think>.*", "", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"<thought>.*", "", cleaned, flags=re.DOTALL)
+            cleaned = re.sub(r"\[think\].*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r"\[thought\].*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
+            cleaned = re.sub(r"__THOUGHT__.*", "", cleaned)
+            cleaned_thought = cleaned.strip().replace('"', "").replace("\n", " ")
             if cleaned_thought and not cleaned_thought.endswith((".", "!", "?")):
                 last_punc = max(cleaned_thought.rfind("."), cleaned_thought.rfind("!"), cleaned_thought.rfind("?"))
                 if last_punc > 20:
                     cleaned_thought = cleaned_thought[: last_punc + 1].strip()
                 else:
                     cleaned_thought = cleaned_thought + "."
-            if not cleaned_thought:
+            if not cleaned_thought or len(cleaned_thought) < 3:
                 return
 
             print(

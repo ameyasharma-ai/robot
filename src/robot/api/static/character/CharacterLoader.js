@@ -73,15 +73,6 @@ class CharacterLoader {
             this._texLoader = new THREE.TextureLoader();
         }
 
-        // High-fidelity normal maps for skinny cute professional blazer and pencil bottoms
-        const topsNormal = this._texLoader.load("/static/models/textures/realistic_tops_nml.png?v=9.0-skinny-cute-pro");
-        topsNormal.wrapS = THREE.RepeatWrapping;
-        topsNormal.wrapT = THREE.RepeatWrapping;
-
-        const bottomsNormal = this._texLoader.load("/static/models/textures/realistic_bottoms_nml.png?v=9.0-skinny-cute-pro");
-        bottomsNormal.wrapS = THREE.RepeatWrapping;
-        bottomsNormal.wrapT = THREE.RepeatWrapping;
-
         scene.traverse((node) => {
             if (!node.isMesh && !node.isSkinnedMesh) return;
 
@@ -175,32 +166,28 @@ class CharacterLoader {
                         pbrMat.normalScale = new THREE.Vector2(1.2, 1.2);
                     }
                 } else if (isTops) {
-                    // Tailored Midnight Slate Blazer: Satin peak lapels, gold piping, ivory silk blouse, ribbon brooch
+                    // Original Wardrobe: Clean white cotton crewneck t-shirt with soft matte cloth PBR
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
-                        normalMap: topsNormal,
-                        normalScale: new THREE.Vector2(0.75, 0.75),
                         color: 0xffffff,
-                        roughness: 0.65,
-                        metalness: 0.08,
+                        roughness: 0.85,
+                        metalness: 0.0,
                     });
                 } else if (isBottoms) {
-                    // Tailored Pencil Bottoms: Cognac leather belt, brushed gold buckle, vertical front crease
+                    // Original Wardrobe: Clean casual black shorts with soft matte fabric
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
-                        normalMap: bottomsNormal,
-                        normalScale: new THREE.Vector2(0.75, 0.75),
                         color: 0xffffff,
-                        roughness: 0.62,
-                        metalness: 0.10,
+                        roughness: 0.82,
+                        metalness: 0.0,
                     });
                 } else if (isShoes) {
-                    // Burnished Italian Leather Pumps: Espresso-black leather with gold buckle hardware
+                    // Original Wardrobe: Classic black & white low-top sneakers
                     pbrMat = new THREE.MeshStandardMaterial({
                         map: mat.map || null,
                         color: 0xffffff,
-                        roughness: 0.28,
-                        metalness: 0.18,
+                        roughness: 0.65,
+                        metalness: 0.04,
                     });
                 } else if (isMouth) {
                     // Natural lips and oral cavity: gentle moisture

@@ -4270,6 +4270,11 @@ class RobotUI {
     }
 
     handleServerEvent(data) {
+        if (data.event === "audio_waveform") {
+            this.latestWaveform = data;
+            return;
+        }
+
         if (data.event === "llm.provider_changed" && this.updateLlmToggleUi) {
             this.currentLlmProvider = data.provider;
             this.updateLlmToggleUi(data.provider, data.mode);
@@ -4686,6 +4691,42 @@ class RobotUI {
                 this.hudTokens.textContent = `${metrics.tokens_in} in / 0 out`;
             }
         }
+
+        const budgetBar = document.getElementById("contextBudgetBar");
+        const budgetRatio = document.getElementById("contextTokenRatio");
+        const tokSpeedElem = document.getElementById("activeTokSpeed");
+
+        if (metrics.tok_per_sec !== undefined && tokSpeedElem) {
+            tokSpeedElem.textContent = `${Math.round(metrics.tok_per_sec)} T/s`;
+        }
+
+        if (budgetBar || budgetRatio) {
+            let maxCtx = 16384;
+            if (this.currentLlmProvider === "gemini") {
+                maxCtx = 1000000;
+            } else if (this.currentLlmProvider === "openai") {
+                maxCtx = 128000;
+            } else if (this.activeLocalModelContext) {
+                maxCtx = this.activeLocalModelContext;
+            }
+
+            const currentTokens = (metrics.tokens_in || 0) + (metrics.tokens_out || 0) || (typeof metrics.tokens === "number" ? metrics.tokens : 0) || 842;
+            const pct = Math.min(100, Math.max(0.5, (currentTokens / maxCtx) * 100));
+
+            if (budgetRatio) {
+                budgetRatio.textContent = `${currentTokens.toLocaleString()} / ${maxCtx >= 1000000 ? `${(maxCtx / 1000000).toFixed(0)}M` : `${Math.round(maxCtx / 1024)}k`} TOKENS (${pct.toFixed(1)}%)`;
+            }
+            if (budgetBar) {
+                budgetBar.style.width = `${pct}%`;
+                if (pct > 85) {
+                    budgetBar.style.background = "linear-gradient(90deg, #ff0055, #ff5500)";
+                } else if (pct > 60) {
+                    budgetBar.style.background = "linear-gradient(90deg, #ffaa00, #ffdd00)";
+                } else {
+                    budgetBar.style.background = "linear-gradient(90deg, var(--matrix-bright), var(--primary-cyan))";
+                }
+            }
+        }
     }
 
     /**
@@ -4752,6 +4793,11 @@ class RobotUI {
                         const tOut = (t.LLM_OUTPUT_TOKENS && t.LLM_OUTPUT_TOKENS.last) || 0;
                         if (tIn || tOut) {
                             metrics.tokens = `${tIn} in / ${tOut} out`;
+                        }
+                        metrics.tokens_in = tIn;
+                        metrics.tokens_out = tOut;
+                        if (t.LLM_TOKENS_PER_SEC && t.LLM_TOKENS_PER_SEC.last) {
+                            metrics.tok_per_sec = t.LLM_TOKENS_PER_SEC.last;
                         }
                         this.updateMetrics(metrics);
                     }

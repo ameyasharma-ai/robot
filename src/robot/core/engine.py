@@ -11,6 +11,7 @@ The LLM reasons; Robot Core owns the robot.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import time
@@ -116,6 +117,69 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     return cleaned, action_dict
 
 
+def _detect_and_intercept_tool_monologue(
+    text: str, known_tools: set[str]
+) -> tuple[bool, dict[str, Any] | None]:
+    """Detect whether a phrase is an internal LLM monologue describing tool invocation.
+
+    Prevents raw planning thoughts from being read aloud by TTS while recovering
+    and structuring the intended tool call for immediate autonomous execution.
+
+    Args:
+        text: The text clause from the streaming chunker.
+        known_tools: Set of valid registered tool names.
+
+    Returns:
+        A tuple of (is_monologue, structured_tool_call_dict_or_none).
+    """
+    clean = text.strip()
+    if not clean:
+        return False, None
+
+    # Check for inline tag or JSON formats
+    if any(marker in clean for marker in ["<tool_call>", "</tool_call>", "[TOOL_CALL", "[TOOL:", "```tool_call", "```json"]):
+        return True, None
+
+    for t_name in known_tools:
+        # 1. Conversational intent: "Let's call 'tool_name' with a prompt to ..."
+        pat_conversational = (
+            rf"(?:let'?s\s+(?:call|use|run)|i(?:'ll|\s+will|\s+am\s+going\s+to|\s+should|\s+need\s+to)\s+(?:call|use|run|invoke)|calling|invoking|execute|executing|using)\s+"
+            rf"['\"]?{re.escape(t_name)}['\"]?(?:\s+(?:with\s+(?:a\s+)?prompt\s+(?:to\s+)?|with\s+)?['\"]?([^\"']+)['\"]?)?"
+        )
+        m = re.search(pat_conversational, clean, re.IGNORECASE)
+        if m:
+            arg_prompt = (m.group(1) or "").strip().rstrip(".'\"")
+            args_dict: dict[str, Any] = {}
+            if arg_prompt:
+                args_dict["prompt"] = arg_prompt
+            tool_call = {
+                "id": f"call_intercept_{int(time.time()*1000)}",
+                "type": "function",
+                "function": {
+                    "name": t_name,
+                    "arguments": args_dict,
+                },
+            }
+            return True, tool_call
+
+        # 2. Action / Tool prefix patterns: "Action: tool_name" or "Tool: tool_name"
+        pat_action = rf"^(?:action|tool|executing\s+tool):\s*['\"]?{re.escape(t_name)}['\"]?"
+        if re.search(pat_action, clean, re.IGNORECASE):
+            return True, None
+
+        # 3. Function invocation syntax: tool_name(...)
+        pat_syntax = r"\b" + re.escape(t_name) + r"\s*[\(\{]"
+        if re.search(pat_syntax, clean):
+            return True, None
+
+        # 4. Direct mention in an instruction context: "I will now call tool_name"
+        pat_mention = rf"\b(?:call|run|invoke|use)\s+(?:the\s+)?['\"]?{re.escape(t_name)}['\"]?"
+        if re.search(pat_mention, clean, re.IGNORECASE):
+            return True, None
+
+    return False, None
+
+
 class StreamingThoughtParser:
     """Parse streaming model tokens for <thought>...</thought> and <think>...</think> tags.
 
@@ -124,8 +188,14 @@ class StreamingThoughtParser:
     events for real-time frontend and speech consumption.
     """
 
-    OPEN_TAGS: list[str] = ["<thought>", "<think>"]
-    CLOSE_TAGS: list[str] = ["</thought>", "</think>"]
+    OPEN_TAGS: list[str] = [
+        "<thought>", "<think>", "<reasoning>", "[thought]", "[think]", "[reasoning]",
+        "[THINKING]", "<thinking>", "__THOUGHT__"
+    ]
+    CLOSE_TAGS: list[str] = [
+        "</thought>", "</think>", "</reasoning>", "[/thought]", "[/think]", "[/reasoning]",
+        "[/THINKING]", "</thinking>"
+    ]
     MAX_TAG_LEN: int = max(len(t) for t in OPEN_TAGS + CLOSE_TAGS)
 
     def __init__(self) -> None:
@@ -1143,6 +1213,22 @@ class RobotEngine:
                 ref_rms=ref_rms,
             )
 
+            # Rate-limit audio waveform telemetry to ~20Hz for live dashboard oscilloscope
+            now_ts = time.time()
+            if now_ts - getattr(self, "_last_waveform_emit", 0.0) >= 0.05:
+                self._last_waveform_emit = now_ts
+                db = 20.0 * math.log10(max(float(rms), 1e-5))
+                if hasattr(self, "events") and self.events:
+                    await self.events.emit(
+                        "audio_waveform",
+                        rms=round(float(rms), 4),
+                        db=round(float(db), 1),
+                        is_voice=bool(is_voice),
+                        prob=round(float(prob), 3),
+                        is_speaking=bool(self._is_speaking or self.player.is_playing),
+                        ref_rms=round(float(ref_rms), 4),
+                    )
+
             if is_voice:
                 if self._is_speaking or self.player.is_playing:
                     # Barge-in detection (only reached if barge_in_enabled is True)
@@ -1838,6 +1924,7 @@ class RobotEngine:
         # Retain canonical tools schema (~10,280 tokens at Token 0) on every turn in local mode
         # to guarantee 100% KV-cache prefix match (<250ms TTFT) while granting full autonomous agency.
         tools_schema = self.tool_registry.get_schemas() if getattr(self, "tool_registry", None) else None
+        known_tools = set(self.tool_registry.list_tools()) if getattr(self, "tool_registry", None) else set()
 
         try:
             stream_max_tokens = 4096 if is_gemini else (2048 if getattr(self, "thinking_enabled", False) else self.config["llm"].get("max_tokens", 2048))
@@ -1904,6 +1991,13 @@ class RobotEngine:
                             phrase = chunker.feed(ev_val)
                             if phrase and not interrupt.is_set():
                                 clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
+                                is_monologue, intercepted_call = _detect_and_intercept_tool_monologue(clean_phrase, known_tools)
+                                if is_monologue:
+                                    if intercepted_call:
+                                        collected_tool_calls.append(intercepted_call)
+                                        if hasattr(self, "events") and self.events:
+                                            await self.events.emit("thought", token=f" [Tool Call: {intercepted_call['function']['name']}]")
+                                    continue
                                 act_to_sync = inline_act or self._pending_motion
                                 self._pending_motion = None
                                 if clean_phrase:
@@ -1926,6 +2020,13 @@ class RobotEngine:
                         phrase = chunker.feed(ev_val)
                         if phrase and not interrupt.is_set():
                             clean_phrase, inline_act = _extract_motion_from_phrase(phrase)
+                            is_monologue, intercepted_call = _detect_and_intercept_tool_monologue(clean_phrase, known_tools)
+                            if is_monologue:
+                                if intercepted_call:
+                                    collected_tool_calls.append(intercepted_call)
+                                    if hasattr(self, "events") and self.events:
+                                        await self.events.emit("thought", token=f" [Tool Call: {intercepted_call['function']['name']}]")
+                                continue
                             act_to_sync = inline_act or self._pending_motion
                             self._pending_motion = None
                             if clean_phrase:
@@ -1974,6 +2075,22 @@ class RobotEngine:
                                 "function": {"name": t_name, "arguments": args_dict},
                             })
                             logger.info("plaintext_tool_call_intercepted", tool=t_name, arguments=args_dict)
+                            break
+
+                        pat_conv = (
+                            rf"(?:let'?s\s+call|i(?:'ll|\s+will|\s+am\s+going\s+to)\s+call|calling|invoking|execute)\s+"
+                            rf"['\"]?{re.escape(t_name)}['\"]?(?:\s+(?:with\s+(?:a\s+)?prompt\s+(?:to\s+)?|with\s+)?['\"]?([^\"']+)['\"]?)?"
+                        )
+                        m_conv = re.search(pat_conv, full_response, re.IGNORECASE)
+                        if m_conv:
+                            arg_p = (m_conv.group(1) or "").strip().rstrip(".'\"")
+                            args_dict = {"prompt": arg_p} if arg_p else {}
+                            collected_tool_calls.append({
+                                "id": f"call_conv_{int(time.time()*1000)}",
+                                "type": "function",
+                                "function": {"name": t_name, "arguments": args_dict},
+                            })
+                            logger.info("conversational_tool_call_intercepted", tool=t_name, arguments=args_dict)
                             break
 
             if not interrupt.is_set():
