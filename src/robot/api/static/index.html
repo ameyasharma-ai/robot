@@ -10,6 +10,154 @@
     <link rel="stylesheet" href="/static/index.css?v=6.0-pbr">
 </head>
 <body class="mode-dual">
+    <!-- ═══ API AUTH GATE ═══════════════════════════════════════════════════
+         The Robot Core API requires a bearer token on every route except
+         /health and these static assets (see robot.api.create_app). This gate
+         trades the token for an httpOnly SameSite=Lax session cookie via
+         POST /auth/login, which then authenticates the UI's fetch() calls,
+         the EventSource chat stream, the MJPEG camera <img> streams and the
+         /ws/events WebSocket. This gate never writes the token to web storage
+         (a ?token= deep link is handled by app.js's own helper, and this gate
+         only upgrades it into the cookie session).
+         Helper surface for app.js: window.ROBOT_API_AUTH.openGate(reason),
+         .closeGate(), .logout(), .check(), .bootstrap().
+    ══════════════════════════════════════════════════════════════════════ -->
+    <div id="apiAuthGate" class="api-auth-gate" role="dialog" aria-modal="true" aria-labelledby="apiAuthTitle" hidden>
+        <form class="api-auth-card" id="apiAuthForm" autocomplete="off">
+            <div class="api-auth-badge">ROBOT CORE</div>
+            <h2 class="api-auth-title" id="apiAuthTitle">Console locked</h2>
+            <p class="api-auth-hint">
+                Enter the API token to unlock this console. It is printed in the server
+                log at startup and can be pinned by setting <code>ROBOT_API_TOKEN</code>.
+            </p>
+            <label class="sr-only" for="apiAuthTokenInput">API token</label>
+            <input class="api-auth-input" id="apiAuthTokenInput" type="password"
+                   placeholder="API token" autocomplete="off" spellcheck="false" />
+            <button class="api-auth-submit" id="apiAuthSubmit" type="submit">Unlock console</button>
+            <p class="api-auth-error" id="apiAuthError" role="alert" hidden></p>
+        </form>
+    </div>
+
+    <script>
+        /* Minimal auth bootstrap kept in the HTML shell so it installs before app.js. */
+        (function () {
+            var gate = document.getElementById('apiAuthGate');
+            var form = document.getElementById('apiAuthForm');
+            var input = document.getElementById('apiAuthTokenInput');
+            var error = document.getElementById('apiAuthError');
+            var submitting = false;
+
+            function showGate(reason) {
+                if (!gate) { return; }
+                gate.hidden = false;
+                document.body.classList.add('auth-gate-open');
+                if (reason) { showError(reason); }
+                if (input) { input.focus(); }
+            }
+
+            function closeGate() {
+                if (!gate) { return; }
+                gate.hidden = true;
+                document.body.classList.remove('auth-gate-open');
+                hideError();
+            }
+
+            function showError(message) {
+                if (!error) { return; }
+                error.textContent = message;
+                error.hidden = false;
+            }
+
+            function hideError() {
+                if (!error) { return; }
+                error.textContent = '';
+                error.hidden = true;
+            }
+
+            /* Surface the locked state for any 401 the UI hits later on. */
+            if (window.fetch) {
+                var nativeFetch = window.fetch.bind(window);
+                window.fetch = function (resource, init) {
+                    return nativeFetch(resource, init).then(function (response) {
+                        if (response && response.status === 401) {
+                            var url = (response.url || '');
+                            if (url.indexOf('/auth/') === -1) { showGate(); }
+                        }
+                        return response;
+                    });
+                };
+            }
+
+            function check() {
+                return fetch('/auth/status', { credentials: 'same-origin' })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        if (data && data.authenticated) { closeGate(); } else { showGate(); }
+                        return data;
+                    })
+                    .catch(function () { showGate('Cannot reach the Robot Core API.'); });
+            }
+
+            /* A token handed over as ?token= (the only URL parameter the console
+               accepts for deep links / streams) is upgraded to a cookie session by
+               app.js's storage helper, so try that before showing the gate. */
+            function bootstrap() {
+                var stored = '';
+                try { stored = sessionStorage.getItem('robot_auth_token') || ''; } catch (err) { stored = ''; }
+                if (!stored) { return check(); }
+                return fetch('/auth/login', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: stored })
+                }).then(function (r) {
+                    if (r.status === 200) { return check(); }
+                    showGate();
+                }).catch(check);
+            }
+
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+                if (submitting) { return; }
+                submitting = true;
+                hideError();
+                fetch('/auth/login', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token: input ? input.value : '' })
+                }).then(function (r) {
+                    if (r.status === 200) {
+                        submitting = false;
+                        if (input) { input.value = ''; }
+                        closeGate();
+                        document.dispatchEvent(new CustomEvent('robot:auth-ready'));
+                        return check();
+                    }
+                    submitting = false;
+                    showError(r.status === 401 ? 'Invalid token — please try again.' : 'Login failed (HTTP ' + r.status + ').');
+                }).catch(function () {
+                    submitting = false;
+                    showError('Login request failed; is the API reachable?');
+                });
+            });
+
+            window.ROBOT_API_AUTH = {
+                openGate: showGate,
+                closeGate: closeGate,
+                check: check,
+                bootstrap: bootstrap,
+                logout: function () {
+                    return fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' })
+                        .then(function (r) { return r.json(); })
+                        .then(function (body) { showGate(); return body; });
+                }
+            };
+
+            document.addEventListener('DOMContentLoaded', bootstrap);
+        })();
+    </script>
+
     <!-- Matrix Digital Rain Ambient Canvas -->
     <canvas id="matrixRainCanvas" class="matrix-rain-canvas"></canvas>
 
@@ -237,10 +385,11 @@
                                 <div class="radar-label"><span class="radar-dot"></span> SPATIAL RADAR STANDBY</div>
                             </div>
                             <div class="stream-overlay">
-                                <span class="rec-dot"></span> LIVE 60 FPS | YUNET HUD
+                                <span class="rec-dot"></span> LIVE MAX FPS | FACE MESH
                             </div>
                             <div class="stream-ctrls">
                                 <button class="stream-size-btn" id="btnToggleCamera" title="Toggle Camera Hardware (Active: Streaming | Click to Pause)">📷</button>
+                                <button class="stream-size-btn stream-size-btn--mesh" id="btnToggleFaceMesh" title="Toggle Face Mesh (MediaPipe 468-point overlay)">🫥</button>
                                 <button class="stream-size-btn" id="btnStreamReset" title="Reset Camera Stream Size">⤾</button>
                                 <button class="stream-size-btn" id="btnStreamExpand" title="Toggle Expand Stream">⤢</button>
                             </div>

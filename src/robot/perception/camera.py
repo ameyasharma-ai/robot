@@ -22,6 +22,13 @@ from robot.telemetry import get_logger
 logger = get_logger("perception.camera")
 
 
+# fd 2 is process-global, so concurrent silence_c_stderr() calls from
+# different threads would corrupt each other's saved descriptors. Serialize
+# all silences through this module-level lock (not reentrant — never call
+# silence_c_stderr() while already inside another silence block on the same thread).
+_SILENCE_C_STDERR_LOCK = threading.Lock()
+
+
 @contextlib.contextmanager
 def silence_c_stderr() -> Generator[None, None, None]:
     """Temporarily redirect C-level stderr (fd 2) to devnull.
@@ -29,22 +36,46 @@ def silence_c_stderr() -> Generator[None, None, None]:
     Suppresses noisy C++ backend warning spam from OpenCV and ffmpeg
     when probing nonexistent or loopback video capture devices.
 
+    The global redirection is serialized with a module-level lock and every
+    descriptor (saved stderr, devnull) is closed on all paths via finally,
+    so no fd leaks remain if setup or restore partially fails.
+
     Yields:
         None.
     """
-    try:
+    with _SILENCE_C_STDERR_LOCK:
         stderr_fd = 2
-        saved_stderr = os.dup(stderr_fd)
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, stderr_fd)
-        os.close(devnull)
+        saved_stderr: int = -1
+        devnull: int = -1
+        redirected = False
         try:
+            try:
+                saved_stderr = os.dup(stderr_fd)
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, stderr_fd)
+                redirected = True
+            except Exception:
+                # Setup failed: run un-silenced instead of leaving fds corrupted.
+                pass
+            finally:
+                if devnull != -1:
+                    try:
+                        os.close(devnull)
+                    except OSError:
+                        pass
             yield
         finally:
-            os.dup2(saved_stderr, stderr_fd)
-            os.close(saved_stderr)
-    except Exception:
-        yield
+            if redirected:
+                try:
+                    os.dup2(saved_stderr, stderr_fd)
+                finally:
+                    os.close(saved_stderr)
+            elif saved_stderr != -1:
+                # dup succeeded but dup2 failed before redirection.
+                try:
+                    os.close(saved_stderr)
+                except OSError:
+                    pass
 
 
 class CameraCapture:

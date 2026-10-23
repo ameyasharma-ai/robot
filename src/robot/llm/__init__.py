@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import os
 import re
+import signal
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, TextIO
 
 import httpx
 import requests
+
+try:  # Optional dependency: used to terminate tracked PID gracefully.
+    import psutil
+except ImportError:  # pragma: no cover - fallback path exercised without psutil
+    psutil = None  # type: ignore[assignment]
 
 from robot.llm.model_registry import ModelCategory, ModelMetadata, ModelRegistry
 from robot.llm.settings import LlamaServerSettings
@@ -40,7 +49,6 @@ class LLMProvider(ABC):
 
 def parse_qwen_tool_call_block(block: str) -> list[dict]:
     """Parse Qwen-style XML or JSON tool calls from a <tool_call> or [tools] block."""
-    import time as _time
     content = re.sub(r"</?tool_call>", "", block).strip()
     if content.startswith("[tools]"):
         content = content[len("[tools]"):].strip()
@@ -58,7 +66,7 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
                 args = d.get("arguments", {})
                 if fn:
                     parsed_calls.append({
-                        "id": f"call_{int(_time.time()*1000)}_{len(parsed_calls)}",
+                        "id": f"call_{int(time.time()*1000)}_{len(parsed_calls)}",
                         "type": "function",
                         "function": {"name": fn, "arguments": json.dumps(args) if isinstance(args, dict) else str(args)},
                     })
@@ -73,7 +81,7 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
             fn = d.get("name") or d.get("function", "")
             args = d.get("arguments", {})
             return [{
-                "id": f"call_{int(_time.time()*1000)}",
+                "id": f"call_{int(time.time()*1000)}",
                 "type": "function",
                 "function": {"name": fn, "arguments": json.dumps(args) if isinstance(args, dict) else str(args)},
             }]
@@ -93,7 +101,7 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
                 except Exception:
                     args = {"query": raw_arg}
             parsed_calls.append({
-                "id": f"call_{int(_time.time()*1000)}_{len(parsed_calls)}",
+                "id": f"call_{int(time.time()*1000)}_{len(parsed_calls)}",
                 "type": "function",
                 "function": {"name": b_name, "arguments": json.dumps(args)},
             })
@@ -113,7 +121,7 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
             except Exception:
                 params[p_name] = p_val
         return [{
-            "id": f"call_{int(_time.time()*1000)}",
+            "id": f"call_{int(time.time()*1000)}",
             "type": "function",
             "function": {"name": fn_name, "arguments": json.dumps(params)},
         }]
@@ -158,6 +166,37 @@ class LlamaServerLLM(LLMProvider):
         self.use_invariant_tools: bool = use_invariant_tools
         self._last_prompt_tokens: int = 0
         self._last_ttft_ms: float = 0.0
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return a lazily created, cached httpx client reused across requests.
+
+        Mirrors GeminiLLM._get_client: one persistent AsyncClient per instance keeps
+        HTTP keep-alive connections warm instead of paying TLS/connect setup per turn.
+
+        Returns:
+            httpx.AsyncClient: Cached async client bound to this instance.
+        """
+        if self._client is None or self._client.is_closed:
+            limits = httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=120.0)
+            self._client = httpx.AsyncClient(timeout=30.0, limits=limits)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the cached HTTP client (call on engine shutdown)."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+    async def _rebuild_client(self) -> None:
+        """Discard and lazily recreate the cached client after a transport failure."""
+        client = self._client
+        self._client = None
+        if client is not None and not client.is_closed:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
 
     def set_canonical_tools(self, tools: list[dict[str, Any]]) -> None:
         """Set or update the canonical invariant tool schema set.
@@ -175,20 +214,20 @@ class LlamaServerLLM(LLMProvider):
             Dictionary containing slot processing status and prompt token count.
         """
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{self.base_url.rsplit('/v1', 1)[0]}/slots")
-                if resp.status_code == 200:
-                    slots = resp.json()
-                    if slots and isinstance(slots, list):
-                        s0 = slots[0]
-                        return {
-                            "slot_id": s0.get("id", 0),
-                            "n_ctx": s0.get("n_ctx", 16384),
-                            "n_prompt_tokens": s0.get("n_prompt_tokens", 0),
-                            "is_processing": s0.get("is_processing", False),
-                        }
-        except Exception:
-            pass
+            client = self._get_client()
+            resp = await client.get(f"{self.base_url.rsplit('/v1', 1)[0]}/slots", timeout=3.0)
+            if resp.status_code == 200:
+                slots = resp.json()
+                if slots and isinstance(slots, list):
+                    s0 = slots[0]
+                    return {
+                        "slot_id": s0.get("id", 0),
+                        "n_ctx": s0.get("n_ctx", 16384),
+                        "n_prompt_tokens": s0.get("n_prompt_tokens", 0),
+                        "is_processing": s0.get("is_processing", False),
+                    }
+        except Exception as e:
+            logger.debug("llm_slot_metrics_fetch_failed", error=str(e))
         return {}
 
     async def stream_chat(
@@ -208,8 +247,6 @@ class LlamaServerLLM(LLMProvider):
         Yields:
             Generated text tokens or tool call JSON indicators.
         """
-        import time as _time
-
         # Resolve effective tools:
         # Invariant tool set guarantees token 0 (# Tools) stays 100% byte-invariant across turns.
         # Explicit empty list [] or tool response continuation allows opt-out to synthesize text.
@@ -238,178 +275,181 @@ class LlamaServerLLM(LLMProvider):
         max_retries = 2
         for attempt in range(max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{self.base_url}/chat/completions",
-                        json=payload,
-                    ) as response:
-                        if response.status_code != 200:
-                            err_body = await response.aread()
-                            err_str = err_body.decode("utf-8", errors="replace")
-                            logger.error("llm_stream_error", status=response.status_code, body=err_str)
-                            # Auto-recovery for context overflow: prune older messages from middle while preserving system and latest user turn
-                            if response.status_code == 400 and ("exceeds" in err_str or "context" in err_str):
-                                logger.warning("llm_context_overflow_recovery", attempt=attempt)
-                                msgs = payload.get("messages", [])
-                                system_msg = next((m for m in msgs if m.get("role") == "system"), None)
-                                user_msg = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
-                                last_msg = msgs[-1] if msgs else None
-                                pruned: list[dict[str, Any]] = []
-                                if system_msg:
-                                    pruned.append(system_msg)
-                                non_system = [m for m in msgs if m.get("role") != "system"]
-                                if len(non_system) > 2 and attempt == 0:
-                                    pruned.extend(non_system[-2:])
-                                else:
-                                    # Strip bloated environment telemetry/grounding and retain bare user instruction
-                                    if user_msg:
-                                        u_copy = dict(user_msg)
-                                        u_text = str(u_copy.get("content", ""))
-                                        if "[User Instruction]:\n" in u_text:
-                                            u_copy["content"] = u_text.split("[User Instruction]:\n", 1)[1].strip()
-                                        elif "[User Instruction]:" in u_text:
-                                            u_copy["content"] = u_text.split("[User Instruction]:", 1)[1].strip()
-                                        pruned.append(u_copy)
-                                payload["messages"] = pruned or msgs
-                                if attempt < max_retries:
-                                    continue
-                            yield "I encountered an error connecting to my local inference model."
-                            return
-                        tool_calls_acc: dict[int, dict] = {}
-                        in_qwen_tag = False
-                        qwen_tag_buf = ""
-                        pending_text_buf = ""
-
-                        async for line in response.aiter_lines():
-                            if not line or line == "data: [DONE]":
+                client = self._get_client()
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        err_body = await response.aread()
+                        err_str = err_body.decode("utf-8", errors="replace")
+                        logger.error("llm_stream_error", status=response.status_code, body=err_str)
+                        # Auto-recovery for context overflow: prune older messages from middle while preserving system and latest user turn
+                        if response.status_code == 400 and ("exceeds" in err_str or "context" in err_str):
+                            logger.warning("llm_context_overflow_recovery", attempt=attempt)
+                            msgs = payload.get("messages", [])
+                            system_msg = next((m for m in msgs if m.get("role") == "system"), None)
+                            user_msg = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
+                            last_msg = msgs[-1] if msgs else None
+                            pruned: list[dict[str, Any]] = []
+                            if system_msg:
+                                pruned.append(system_msg)
+                            non_system = [m for m in msgs if m.get("role") != "system"]
+                            if len(non_system) > 2 and attempt == 0:
+                                pruned.extend(non_system[-2:])
+                            else:
+                                # Strip bloated environment telemetry/grounding and retain bare user instruction
+                                if user_msg:
+                                    u_copy = dict(user_msg)
+                                    u_text = str(u_copy.get("content", ""))
+                                    if "[User Instruction]:\n" in u_text:
+                                        u_copy["content"] = u_text.split("[User Instruction]:\n", 1)[1].strip()
+                                    elif "[User Instruction]:" in u_text:
+                                        u_copy["content"] = u_text.split("[User Instruction]:", 1)[1].strip()
+                                    pruned.append(u_copy)
+                            payload["messages"] = pruned or msgs
+                            if attempt < max_retries:
                                 continue
-                            if line.startswith("data: "):
-                                try:
-                                    data = json.loads(line[6:])
-                                    choice = data["choices"][0]
-                                    delta = choice.get("delta", {})
+                        yield "I encountered an error connecting to my local inference model."
+                        return
+                    tool_calls_acc: dict[int, dict] = {}
+                    in_qwen_tag = False
+                    qwen_tag_buf = ""
+                    pending_text_buf = ""
 
-                                    # Accumulate native OpenAI tool calls delta chunks
-                                    if "tool_calls" in delta and delta["tool_calls"]:
-                                        for tc in delta["tool_calls"]:
-                                            idx = tc.get("index", 0)
-                                            if idx not in tool_calls_acc:
-                                                tool_calls_acc[idx] = {
-                                                    "id": tc.get("id") or f"call_{idx}_{int(_time.time()*1000)}",
-                                                    "type": "function",
-                                                    "function": {
-                                                        "name": tc.get("function", {}).get("name", ""),
-                                                        "arguments": "",
-                                                    },
-                                                }
-                                            if tc.get("id"):
-                                                tool_calls_acc[idx]["id"] = tc["id"]
-                                            fn = tc.get("function", {})
-                                            if fn.get("name"):
-                                                tool_calls_acc[idx]["function"]["name"] = fn["name"]
-                                            if fn.get("arguments"):
-                                                tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
-                                        continue
+                    async for line in response.aiter_lines():
+                        if not line or line == "data: [DONE]":
+                            continue
+                        if line.startswith("data: "):
+                            try:
+                                data = json.loads(line[6:])
+                                choice = data["choices"][0]
+                                delta = choice.get("delta", {})
 
-                                    token = delta.get("content", "")
-                                    if not token:
-                                        continue
+                                # Accumulate native OpenAI tool calls delta chunks
+                                if "tool_calls" in delta and delta["tool_calls"]:
+                                    for tc in delta["tool_calls"]:
+                                        idx = tc.get("index", 0)
+                                        if idx not in tool_calls_acc:
+                                            tool_calls_acc[idx] = {
+                                                "id": tc.get("id") or f"call_{idx}_{int(time.time()*1000)}",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": tc.get("function", {}).get("name", ""),
+                                                    "arguments": "",
+                                                },
+                                            }
+                                        if tc.get("id"):
+                                            tool_calls_acc[idx]["id"] = tc["id"]
+                                        fn = tc.get("function", {})
+                                        if fn.get("name"):
+                                            tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                        if fn.get("arguments"):
+                                            tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+                                    continue
 
-                                    # Intercept Qwen-style <tool_call> tags embedded in content
-                                    if in_qwen_tag:
-                                        qwen_tag_buf += token
+                                token = delta.get("content", "")
+                                if not token:
+                                    continue
+
+                                # Intercept Qwen-style <tool_call> tags embedded in content
+                                if in_qwen_tag:
+                                    qwen_tag_buf += token
+                                    if "</tool_call>" in qwen_tag_buf:
+                                        parsed = parse_qwen_tool_call_block(qwen_tag_buf)
+                                        for p_tc in parsed:
+                                            tool_calls_acc[len(tool_calls_acc)] = p_tc
+                                        post = qwen_tag_buf.split("</tool_call>", 1)[1]
+                                        in_qwen_tag = False
+                                        qwen_tag_buf = ""
+                                        pending_text_buf += post
+                                else:
+                                    pending_text_buf += token
+                                    if "<tool_call" in pending_text_buf:
+                                        pre, post = pending_text_buf.split("<tool_call", 1)
+                                        if pre:
+                                            yield pre
+                                        qwen_tag_buf = "<tool_call" + post
+                                        in_qwen_tag = True
+                                        pending_text_buf = ""
                                         if "</tool_call>" in qwen_tag_buf:
                                             parsed = parse_qwen_tool_call_block(qwen_tag_buf)
                                             for p_tc in parsed:
                                                 tool_calls_acc[len(tool_calls_acc)] = p_tc
-                                            post = qwen_tag_buf.split("</tool_call>", 1)[1]
+                                            post_close = qwen_tag_buf.split("</tool_call>", 1)[1]
                                             in_qwen_tag = False
                                             qwen_tag_buf = ""
-                                            pending_text_buf += post
+                                            pending_text_buf += post_close
                                     else:
-                                        pending_text_buf += token
-                                        if "<tool_call" in pending_text_buf:
-                                            pre, post = pending_text_buf.split("<tool_call", 1)
-                                            if pre:
-                                                yield pre
-                                            qwen_tag_buf = "<tool_call" + post
-                                            in_qwen_tag = True
-                                            pending_text_buf = ""
-                                            if "</tool_call>" in qwen_tag_buf:
-                                                parsed = parse_qwen_tool_call_block(qwen_tag_buf)
-                                                for p_tc in parsed:
-                                                    tool_calls_acc[len(tool_calls_acc)] = p_tc
-                                                post_close = qwen_tag_buf.split("</tool_call>", 1)[1]
-                                                in_qwen_tag = False
-                                                qwen_tag_buf = ""
-                                                pending_text_buf += post_close
+                                        # Hold back if pending_text_buf ends with an unclosed angle or square bracket
+                                        match = re.search(r"(?:<[^>]*$|\[[^\]]*$)", pending_text_buf)
+                                        if match:
+                                            safe_len = match.start()
+                                            if safe_len > 0:
+                                                yield pending_text_buf[:safe_len]
+                                                pending_text_buf = pending_text_buf[safe_len:]
                                         else:
-                                            # Hold back if pending_text_buf ends with an unclosed angle or square bracket
-                                            match = re.search(r"(?:<[^>]*$|\[[^\]]*$)", pending_text_buf)
-                                            if match:
-                                                safe_len = match.start()
-                                                if safe_len > 0:
-                                                    yield pending_text_buf[:safe_len]
-                                                    pending_text_buf = pending_text_buf[safe_len:]
-                                            else:
-                                                # Check if pending_text_buf contains bracketed tool calls to intercept
-                                                b_tool_match = re.search(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", pending_text_buf)
-                                                if b_tool_match:
-                                                    pre = pending_text_buf[:b_tool_match.start()]
-                                                    if pre:
-                                                        yield pre
-                                                    t_name = b_tool_match.group(1).strip()
-                                                    raw_a = (b_tool_match.group(2) or b_tool_match.group(3) or "").strip()
-                                                    parsed_a = {}
-                                                    if raw_a:
-                                                        try:
-                                                            parsed_a = json.loads(raw_a) if raw_a.startswith("{") else {"query": raw_a}
-                                                        except Exception:
-                                                            parsed_a = {"query": raw_a}
-                                                    tool_calls_acc[len(tool_calls_acc)] = {
-                                                        "id": f"call_{int(_time.time()*1000)}_{len(tool_calls_acc)}",
-                                                        "type": "function",
-                                                        "function": {"name": t_name, "arguments": json.dumps(parsed_a)},
-                                                    }
-                                                    pending_text_buf = pending_text_buf[b_tool_match.end():]
-                                                    continue
+                                            # Check if pending_text_buf contains bracketed tool calls to intercept
+                                            b_tool_match = re.search(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", pending_text_buf)
+                                            if b_tool_match:
+                                                pre = pending_text_buf[:b_tool_match.start()]
+                                                if pre:
+                                                    yield pre
+                                                t_name = b_tool_match.group(1).strip()
+                                                raw_a = (b_tool_match.group(2) or b_tool_match.group(3) or "").strip()
+                                                parsed_a = {}
+                                                if raw_a:
+                                                    try:
+                                                        parsed_a = json.loads(raw_a) if raw_a.startswith("{") else {"query": raw_a}
+                                                    except Exception:
+                                                        parsed_a = {"query": raw_a}
+                                                tool_calls_acc[len(tool_calls_acc)] = {
+                                                    "id": f"call_{int(time.time()*1000)}_{len(tool_calls_acc)}",
+                                                    "type": "function",
+                                                    "function": {"name": t_name, "arguments": json.dumps(parsed_a)},
+                                                }
+                                                pending_text_buf = pending_text_buf[b_tool_match.end():]
+                                                continue
 
-                                                # Strip meta category markers like [conversation] or [tools]
-                                                b_meta_match = re.search(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", pending_text_buf, re.IGNORECASE)
-                                                if b_meta_match:
-                                                    pre = pending_text_buf[:b_meta_match.start()]
-                                                    if pre:
-                                                        yield pre
-                                                    pending_text_buf = pending_text_buf[b_meta_match.end():]
-                                                    continue
+                                            # Strip meta category markers like [conversation] or [tools]
+                                            b_meta_match = re.search(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", pending_text_buf, re.IGNORECASE)
+                                            if b_meta_match:
+                                                pre = pending_text_buf[:b_meta_match.start()]
+                                                if pre:
+                                                    yield pre
+                                                pending_text_buf = pending_text_buf[b_meta_match.end():]
+                                                continue
 
-                                                # Strip internal planning headers e.g. GREETING_HANDLING: ...
-                                                b_plan_match = re.search(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", pending_text_buf, re.MULTILINE)
-                                                if b_plan_match:
-                                                    pre = pending_text_buf[:b_plan_match.start()]
-                                                    if pre:
-                                                        yield pre
-                                                    pending_text_buf = pending_text_buf[b_plan_match.end():]
-                                                    continue
+                                            # Strip internal planning headers e.g. GREETING_HANDLING: ...
+                                            b_plan_match = re.search(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", pending_text_buf, re.MULTILINE)
+                                            if b_plan_match:
+                                                pre = pending_text_buf[:b_plan_match.start()]
+                                                if pre:
+                                                    yield pre
+                                                pending_text_buf = pending_text_buf[b_plan_match.end():]
+                                                continue
 
-                                                yield pending_text_buf
-                                                pending_text_buf = ""
-                                except (json.JSONDecodeError, KeyError, IndexError):
-                                    continue
+                                            yield pending_text_buf
+                                            pending_text_buf = ""
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                continue
 
-                        if in_qwen_tag and qwen_tag_buf:
-                            parsed = parse_qwen_tool_call_block(qwen_tag_buf)
-                            for p_tc in parsed:
-                                tool_calls_acc[len(tool_calls_acc)] = p_tc
+                    if in_qwen_tag and qwen_tag_buf:
+                        parsed = parse_qwen_tool_call_block(qwen_tag_buf)
+                        for p_tc in parsed:
+                            tool_calls_acc[len(tool_calls_acc)] = p_tc
 
-                        if pending_text_buf and not pending_text_buf.startswith("<") and not re.match(r"^\[(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|conversation|tools?)[^\]]*\]", pending_text_buf):
-                            yield pending_text_buf
+                    if pending_text_buf and not pending_text_buf.startswith("<") and not re.match(r"^\[(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|conversation|tools?)[^\]]*\]", pending_text_buf):
+                        yield pending_text_buf
 
-                        if tool_calls_acc:
-                            yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
+                    if tool_calls_acc:
+                        yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
                 return
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                # A stale pooled connection after a transport error can poison retries;
+                # drop the cached client so the next attempt gets a fresh one.
+                await self._rebuild_client()
                 if attempt < max_retries:
                     logger.warning("llm_connection_retry", attempt=attempt, error=str(exc))
                     await asyncio.sleep(0.3)
@@ -419,11 +459,21 @@ class LlamaServerLLM(LLMProvider):
                     return
 
     async def health_check(self) -> bool:
+        """Async, non-blocking llama-server health probe.
+
+        Safe to call from the event-loop HealthMonitor loop (previously used the
+        blocking `requests` API, stalling the loop for up to 3s every 30s).
+
+        Returns:
+            bool: True if /health responds with HTTP 200.
+        """
         try:
             base = self.base_url.rsplit("/v1", 1)[0]
-            resp = requests.get(f"{base}/health", timeout=3)
+            client = self._get_client()
+            resp = await client.get(f"{base}/health", timeout=3.0)
             return resp.status_code == 200
-        except Exception:
+        except Exception as exc:
+            logger.debug("llm_health_check_failed", error=str(exc))
             return False
 
 
@@ -443,7 +493,6 @@ class GeminiLLM(LLMProvider):
         model: str = "gemini-3.1-flash-lite",
         fallback_models: list[str] | None = None,
     ) -> None:
-        import os
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or self.DEFAULT_API_KEY
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -473,8 +522,6 @@ class GeminiLLM(LLMProvider):
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
     ) -> AsyncGenerator[str, None]:
-        import time as _time
-
         # Sanitize messages for Gemini compatibility:
         # Google's OpenAI-compatible endpoint strictly forbids assistant messages containing
         # synthetic tool_calls if they lack a Google-generated thought_signature (HTTP 400).
@@ -503,7 +550,7 @@ class GeminiLLM(LLMProvider):
 
         # Dynamic model routing with circuit-breaker cooldown:
         # Avoid wasting 2-3 seconds querying a model that hit 429 quota or 503 high demand.
-        now = _time.time()
+        now = time.time()
         all_candidates = [self.model] + [m for m in self.fallback_models if m != self.model]
         available_models = [m for m in all_candidates if self._model_cooldown.get(m, 0) < now]
         cooldown_models = [m for m in all_candidates if self._model_cooldown.get(m, 0) >= now]
@@ -555,7 +602,7 @@ class GeminiLLM(LLMProvider):
                                             idx = tc.get("index", 0)
                                             if idx not in tool_calls_acc:
                                                 tool_calls_acc[idx] = {
-                                                    "id": tc.get("id") or f"call_{idx}_{int(_time.time()*1000)}",
+                                                    "id": tc.get("id") or f"call_{idx}_{int(time.time()*1000)}",
                                                     "type": "function",
                                                     "function": {
                                                         "name": tc.get("function", {}).get("name", ""),
@@ -589,7 +636,7 @@ class GeminiLLM(LLMProvider):
                         err_text = err_body.decode(errors="replace")
                         # If model hit 429, 503, or 404, place into 300s cooldown
                         if response.status_code in (429, 503, 404):
-                            self._model_cooldown[model_name] = _time.time() + 300.0
+                            self._model_cooldown[model_name] = time.time() + 300.0
                             logger.warning(
                                 "gemini_model_placed_in_cooldown",
                                 model=model_name,
@@ -661,13 +708,12 @@ class OpenAICompatibleLLM(LLMProvider):
             enable_prompt_caching: Whether to enable prefix prompt caching optimization.
             timeout: HTTP request timeout in seconds.
         """
-        import os as _os
         self.base_url = base_url.rstrip("/")
         if not api_key:
             if "openrouter.ai" in self.base_url:
-                api_key = _os.environ.get("OPENROUTER_API_KEY", "") or _os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
+                api_key = os.environ.get("OPENROUTER_API_KEY", "") or os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
             else:
-                api_key = _os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
+                api_key = os.environ.get("OPENAI_COMPATIBLE_API_KEY", "")
         self.api_key = api_key
         self.model = model
         self.context_window = context_window
@@ -692,7 +738,6 @@ class OpenAICompatibleLLM(LLMProvider):
         Yields:
             str: Generated token fragments or '__TOOL_CALL__{...}' markers.
         """
-        import copy
         headers: dict[str, str] = {
             "Content-Type": "application/json",
         }
@@ -923,6 +968,8 @@ class LlamaServerManager:
     MODEL_PATH = "/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf"
     HEALTH_URL = "http://127.0.0.1:8080/health"
     _active_model_id: str | None = None
+    _process: subprocess.Popen[bytes] | None = None
+    _log_file: TextIO | None = None
 
     @classmethod
     def is_running(cls) -> bool:
@@ -942,18 +989,83 @@ class LlamaServerManager:
             return False
 
     @classmethod
+    def _close_log_file(cls) -> None:
+        """Close the subprocess stdout/stderr log handle if open."""
+        if cls._log_file is not None:
+            try:
+                cls._log_file.close()
+            except Exception as e:
+                logger.warning("llama_server_log_close_failed", error=str(e))
+            cls._log_file = None
+
+    @classmethod
+    def _terminate_tracked(cls, pid: int) -> None:
+        """Send SIGTERM to the tracked llama-server PID (preferring psutil).
+
+        Args:
+            pid: PID of the tracked llama-server process.
+        """
+        if psutil is not None:
+            try:
+                psutil.Process(pid).terminate()
+                return
+            except Exception:
+                return  # Process already exited
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    @classmethod
+    async def _release_tracked_process(cls) -> bool:
+        """Terminate the tracked llama-server (SIGTERM, escalate to SIGKILL) and close fds.
+
+        Returns:
+            bool: True if a tracked process handle existed and was released.
+        """
+        proc = cls._process
+        if proc is None:
+            return False
+        if proc.poll() is None:
+            cls._terminate_tracked(proc.pid)
+            for _ in range(30):  # Up to ~3s grace period for clean shutdown
+                if proc.poll() is not None:
+                    break
+                await asyncio.sleep(0.1)
+            if proc.poll() is None:
+                logger.warning("llama_server_terminate_grace_expired", pid=proc.pid)
+                try:
+                    proc.kill()
+                except Exception as e:
+                    logger.error("llama_server_kill_failed", error=str(e))
+        cls._process = None
+        cls._close_log_file()
+        return True
+
+    @classmethod
     async def stop(cls) -> bool:
-        """Kill the llama-server process to free 100% of GPU VRAM (3.4 GB)."""
-        import subprocess
+        """Stop the llama-server to free 100% of GPU VRAM (3.4 GB).
+
+        Terminates the tracked PID launched by this manager. Falls back to
+        `pkill -f llama-server` only when no tracked handle exists (e.g. a
+        server left over from a previous program run), so unrelated system
+        processes sharing the name are never killed.
+
+        Returns:
+            bool: True if the health endpoint confirmed shutdown, False otherwise.
+        """
         logger.info("stopping_llama_server_freeing_vram")
         try:
-            subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+            if not await cls._release_tracked_process():
+                subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+
             for _ in range(25):
                 if not await cls.is_running_async():
                     logger.info("llama_server_stopped_vram_released")
                     return True
                 await asyncio.sleep(0.1)
-            return True
+            logger.error("llama_server_stop_not_confirmed")
+            return False
         except Exception as e:
             logger.error("llama_server_stop_error", error=str(e))
             return False
@@ -981,9 +1093,6 @@ class LlamaServerManager:
         Returns:
             bool: True if server launched and passed health check, False otherwise.
         """
-        import subprocess
-        from pathlib import Path
-
         if await cls.is_running_async():
             return True
 
@@ -1011,18 +1120,41 @@ class LlamaServerManager:
 
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_dir / "llama-server.log", "a", encoding="utf-8")
+        try:
+            log_file = open(log_dir / "llama-server.log", "a", encoding="utf-8")
+        except OSError as e:
+            logger.error("llama_server_log_open_failed", error=str(e))
+            return False
 
         logger.info("starting_llama_server", cmd=" ".join(cmd))
-        subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
+        try:
+            proc = subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
+        except Exception as e:
+            logger.error("llama_server_spawn_failed", error=str(e))
+            try:
+                log_file.close()
+            except Exception:
+                pass
+            return False
+
+        # Track the handle and its log fd so stop()/start-timeout can reap exactly
+        # this PID instead of leaking an orphan or pkill-ing unrelated processes.
+        cls._process = proc
+        cls._log_file = log_file
 
         for i in range(50):
             await asyncio.sleep(0.2)
+            if proc.poll() is not None:
+                logger.error("llama_server_exited_early", returncode=proc.returncode)
+                await cls.stop()
+                return False
             if await cls.is_running_async():
-                logger.info("llama_server_ready", attempts=i + 1)
+                logger.info("llama_server_ready", attempts=i + 1, pid=proc.pid)
                 return True
 
-        logger.error("llama_server_start_timeout")
+        logger.error("llama_server_start_timeout", pid=proc.pid)
+        # Start failed: terminate the tracked PID (then kill after grace) and close fds.
+        await cls.stop()
         return False
 
     @classmethod
@@ -1128,14 +1260,12 @@ class LlamaServerManager:
                 check=False,
             )
             if res.returncode == 0 and res.stdout:
-                import re
                 m = re.search(r"-m\s+([^\s]+)", res.stdout)
                 if m:
                     stem = Path(m.group(1)).name
                     if stem == "Qwen3.5-4B-Q4_K_M.gguf":
                         return "qwen3.5-4b"
                     # Check registry
-                    from robot.llm.model_registry import ModelRegistry
                     for reg_id, reg_meta in ModelRegistry.CATALOG.items():
                         if reg_meta.filename == stem:
                             return reg_id
@@ -1185,9 +1315,6 @@ class LlamaServerManager:
         Returns:
             dict[str, Any]: Result status dictionary.
         """
-        from pathlib import Path
-        from robot.llm.model_registry import ModelRegistry
-
         logger.info("switching_local_llm_model", target=model_id_or_path)
 
         target_model_path: Path | None = None

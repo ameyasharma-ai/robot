@@ -54,7 +54,7 @@
 This release marks the completed **Month 0 Base Iteration** of Robot Core:
 - **Full-Duplex Voice Engine**: Silero VAD + real-time barge-in cancellation and speaker echo isolation calibrated for physical laptop hardware.
 - **Streaming Sentence TTS Chunker**: Coherent, whole-sentence streaming synthesis via Piper ONNX TTS with minimal TTFT and natural cadence.
-- **Hot-Swappable Multi-Persona System**: Matrix hacker girl **Cypher** (sharp, street-smart operator), **Aria** (empathetic companion), and **GLaDOS** (clinical sarcasm).
+- **Hot-Swappable Multi-Persona System**: Matrix hacker girl **Cypher** (sharp, street-smart operator — shipped as the default `neo` persona), **Aria** (empathetic companion), **GLaDOS** (clinical sarcasm), **Jarvis** (Iron Man-style assistant), and **Luna** (devoted companion).
 - **Physical World State & Perception**: Continuous 60 FPS camera perception with YuNet face tracking and YOLOv8 object recognition with spatial HUD telemetry.
 - **Dual 3D Humanoid Engine & Digital HUD**: WebGL2 humanoid avatar (cyber/anime & realistic portrait modes) with interactive semantic IK actions (wave, kick, raise hand, head tracking) and text/voice dual-mode console.
 - **Proactive Agentic Tools & Memory**: Live DuckDuckGo web search, conversation history FTS, and long-term semantic memory retrieval.
@@ -71,9 +71,9 @@ This release marks the completed **Month 0 Base Iteration** of Robot Core:
 - **Extensible Tool & Skill Ecosystem**: Autonomous agentic tools including `web.search`, `knowledge.wikipedia`, `system.calculate`, `system.hardware`, `system.time`, `music.play`, and `character.execute_action`.
 - **Persistent memory**: Mem0 for semantic recall + SQLite FTS for cross-session history
 - **Streaming pipeline**: LLM tokens → phrase chunker → Piper TTS (< 150ms TTFA)
-- **Personality system**: Hot-swappable YAML-defined personas (Cypher, Aria, GLaDOS, Luna)
+- **Personality system**: Hot-swappable YAML-defined personas (neo/Cypher, aria, glados, jarvis, luna)
 - **FastAPI server & Cyberdeck HUD**: REST + WebSockets + 3D WebGL avatar + Tool Resource Monitor + Image Generation Studio
-- **Health monitoring & Observability**: Graceful degradation, telemetry metrics, and 100% passing test suite (100 unit & synthetic tests)
+- **Health monitoring & Observability**: Graceful degradation, telemetry metrics, and 100% passing test suite (365 tests)
 
 ## Hardware
 
@@ -178,10 +178,15 @@ robot/
 │   ├── llm/                 # LLM providers + clause chunker
 │   ├── memory/              # Mem0 + SQLite FTS
 │   ├── personality/         # Personality loader
+│   ├── perception/          # Camera, face mesh, YOLO world state
+│   ├── expression/          # Lighting (RGB) & face expression backends
+│   ├── image/               # Image generation providers (SD/Flux/unified)
+│   ├── motion/              # Robot motion/servo bridge
+│   ├── observability/       # Traces, resource monitor, health metrics
 │   ├── tools/               # Registry, router, permissions
 │   ├── api/                 # FastAPI server
 │   ├── telemetry/           # Logging + metrics
-│   └── services/            # Health monitoring
+│   └── services/            # Health monitoring & process supervisor
 ├── docs/                    # Architecture whitepaper, tracker, and reports
 │   ├── whitepaper.md        # Architecture specification
 │   └── TRACKER.md           # Roadmap and issue tracker

@@ -388,15 +388,21 @@ class CuriosityEngine:
                 idle_s=idle_s,
             )
 
-            if hasattr(self.engine, "_speech_queue"):
+            # Route the proactive line through the engine's shared speech intake
+            # (_speech_queue → _response_loop), the same path as mic utterances.
+            # Previously this fired a bare asyncio.create_task straight into
+            # _stream_response, racing the active _response_loop turn over
+            # _pending_motion, _interrupt_event and the TTS queues — and the
+            # unreferenced task could even be garbage-collected mid-flight.
+            # submit_proactive_line is a non-blocking drop-oldest enqueue, so it
+            # cannot deadlock against standby gating (the mic loop only discards
+            # audio frames; queue intake and _response_loop keep draining).
+            submit = getattr(self.engine, "submit_proactive_line", None)
+            if callable(submit):
                 self.notify_activity()
-                asyncio.create_task(
-                    self.engine._stream_response(
-                        f"[Proactive check-in]: {cleaned_thought}",
-                        time.time(),
-                        asyncio.Event(),
-                    )
-                )
+                submit(cleaned_thought)
+            else:
+                logger.debug("proactive_speech_intake_unavailable")
 
         except Exception as e:
             logger.error("proactive_thought_failed", error=str(e), reason=reason)

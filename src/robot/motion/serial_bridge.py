@@ -193,6 +193,20 @@ class SerialBridge:
         self._stall_threshold_ma: float = 1200.0  # Milli-amps stall current protection
         self._last_telemetry: dict[str, Any] = {}
 
+        # Minimum-jerk trajectory control loop state.
+        # IMPORTANT CONCURRENCY CONTRACT: self._lock is NON-REENTRANT. Code must
+        # NEVER hold it while calling parse_incoming_line() or emergency_stop(),
+        # because a stall-current telemetry reading inside parse_incoming_line()
+        # invokes emergency_stop(), which re-acquires self._lock and would
+        # permanently deadlock all motor-safety writes. Bytes are collected
+        # under the lock and parsed strictly outside of it.
+        self._trajectory_lock = threading.Lock()
+        self._active_trajectories: dict[str, dict[str, Any]] = {}
+        self._trajectory_thread: Optional[threading.Thread] = None
+        self._trajectory_stop_event = threading.Event()
+        self.trajectory_step_interval_s: float = 0.02  # 50 Hz control-loop cadence
+        self.trajectory_min_duration_s: float = 0.5
+
         # Work package A safety enhancements
         self._command_seq: int = 0
         self._last_command_time: dict[str, float] = {}
@@ -291,12 +305,44 @@ class SerialBridge:
             name="SerialBridgeHeartbeatWorker",
         )
         self._heartbeat_thread.start()
+
+        # 50 Hz minimum-jerk trajectory control loop (software current-shock ramp)
+        self._trajectory_stop_event.clear()
+        with self._trajectory_lock:
+            self._active_trajectories.clear()
+        self._trajectory_thread = threading.Thread(
+            target=self._trajectory_worker,
+            daemon=True,
+            name="SerialBridgeTrajectoryWorker",
+        )
+        self._trajectory_thread.start()
         logger.info("serial_bridge_started", port=self.port, emulated=self._is_emulated)
 
     def stop(self) -> None:
-        """Safely de-energize servos and close serial connections."""
+        """Safely de-energize servos, join background threads, and close serial connections."""
+        # Clearing _running is the stop condition for the heartbeat and reconnect
+        # workers (both check it every iteration / 0.2s sleep slice).
         self._running = False
         self.park_servos()
+
+        # Let in-flight ramp trajectories drain (bounded) before halting the
+        # trajectory control loop, so parking stays smooth on hardware.
+        drain_deadline = time.time() + max(1.0, self.trajectory_min_duration_s + 0.5)
+        while time.time() < drain_deadline:
+            with self._trajectory_lock:
+                if not self._active_trajectories:
+                    break
+            time.sleep(0.02)
+        self._trajectory_stop_event.set()
+
+        # Join all background threads with a timeout before closing the port.
+        for thread in (self._heartbeat_thread, self._reconnect_thread, self._trajectory_thread):
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=2.0)
+        self._heartbeat_thread = None
+        self._reconnect_thread = None
+        self._trajectory_thread = None
+
         with self._lock:
             if self._serial:
                 try:
@@ -429,6 +475,10 @@ class SerialBridge:
     def parse_incoming_line(self, line: str) -> dict[str, Any]:
         """Parse incoming ASCII telemetry or ACK packets from physical microcontroller.
 
+        Note: stall-current telemetry can trigger emergency_stop(), which
+        acquires self._lock. Callers must NEVER invoke this while holding
+        self._lock (non-reentrant) or the bridge will deadlock permanently.
+
         Args:
             line: Raw string received over serial.
 
@@ -485,7 +535,12 @@ class SerialBridge:
                 binary_ping = bytearray([0xAA, 0x55, 0x01, 0x00])
                 binary_ping[3] = (binary_ping[0] ^ binary_ping[1] ^ binary_ping[2]) & 0xFF
 
+                raw_lines = ""
                 try:
+                    # Collect bytes under the lock, but parse strictly OUTSIDE it:
+                    # parse_incoming_line() can invoke emergency_stop(), which
+                    # re-acquires the non-reentrant self._lock. Parsing while
+                    # holding it would permanently deadlock all motor-safety writes.
                     with self._lock:
                         if self._serial:
                             self._serial.write(ascii_ping)
@@ -494,8 +549,9 @@ class SerialBridge:
                             # Read any waiting telemetry bytes
                             if self._serial.in_waiting > 0:
                                 raw_lines = self._serial.read(self._serial.in_waiting).decode("ascii", errors="ignore")
-                                for line in raw_lines.splitlines():
-                                    self.parse_incoming_line(line)
+
+                    for line in raw_lines.splitlines():
+                        self.parse_incoming_line(line)
                 except Exception as e:
                     logger.warning("serial_heartbeat_write_failed", error=str(e))
                     with self._lock:
@@ -521,6 +577,112 @@ class SerialBridge:
             dt = time.time() - t0
             if dt < interval:
                 time.sleep(interval - dt)
+
+    def _write_move_packet(self, joint: ServoJointLimit, angle_deg: float, speed_deg_s: float) -> bool:
+        """Dispatch one ASCII + binary move packet to the physical controller.
+
+        Acquires self._lock only for the serial write; never calls
+        parse_incoming_line()/emergency_stop() while holding it.
+
+        Args:
+            joint: Target joint limit descriptor (provides channel).
+            angle_deg: Position in degrees to dispatch.
+            speed_deg_s: Movement speed limit in degrees/sec.
+
+        Returns:
+            True if the packets were written successfully.
+        """
+        if self._is_emulated or not self._is_connected:
+            return True
+
+        ascii_pkt = self.format_move_packet(joint.name, angle_deg, speed_deg_s)
+
+        angle_val = int(angle_deg * 100)
+        hi = (angle_val >> 8) & 0xFF
+        lo = angle_val & 0xFF
+        chk = (0xAA ^ 0x55 ^ 0x02 ^ joint.channel ^ hi ^ lo) & 0xFF
+        bin_pkt = bytearray([0xAA, 0x55, 0x02, joint.channel, hi, lo, chk])
+
+        try:
+            with self._lock:
+                if self._serial:
+                    self._serial.write(ascii_pkt)
+                    self._serial.write(bin_pkt)
+                    self._serial.flush()
+            return True
+        except Exception as e:
+            logger.warning("serial_joint_write_failed", joint=joint.name, error=str(e))
+            return False
+
+    def _schedule_trajectory(self, joint: ServoJointLimit, target_deg: float, speed_deg_s: float) -> None:
+        """Generate and register a minimum-jerk ramp from the joint's current position.
+
+        Peak velocity of the 5th-order profile is 1.875 * |delta| / T, so the
+        duration is stretched to keep it within the requested speed limit.
+
+        Args:
+            joint: Joint to ramp.
+            target_deg: Already-clamped target angle in degrees.
+            speed_deg_s: Movement speed limit in degrees/sec.
+        """
+        delta = abs(target_deg - joint.current_deg)
+        duration_s = max(self.trajectory_min_duration_s, 1.875 * delta / max(speed_deg_s, 1.0))
+        steps = max(2, min(200, int(duration_s / self.trajectory_step_interval_s) + 1))
+        trajectory = joint.generate_minimum_jerk_trajectory(target_deg, duration_s=duration_s, steps=steps)
+        with self._trajectory_lock:
+            self._active_trajectories[joint.name] = {
+                "steps": trajectory,
+                "index": 0,
+                "speed": speed_deg_s,
+            }
+
+    def _trajectory_worker(self) -> None:
+        """50Hz control loop applying minimum-jerk trajectory steps to servos.
+
+        Each tick advances every registered trajectory one shaped setpoint and
+        hard-caps it with the joint velocity limit via apply_trajectory_step(),
+        then dispatches the resulting position over serial. This is the wiring
+        that makes the documented current-shock protection actually run.
+        """
+        while not self._trajectory_stop_event.is_set():
+            t0 = time.time()
+            try:
+                self._step_trajectories()
+            except Exception as e:
+                logger.warning("trajectory_step_failed", error=str(e))
+            elapsed = time.time() - t0
+            if elapsed < self.trajectory_step_interval_s:
+                self._trajectory_stop_event.wait(self.trajectory_step_interval_s - elapsed)
+
+    def _step_trajectories(self) -> None:
+        """Advance all active ramp trajectories by one control-loop step."""
+        with self._trajectory_lock:
+            active = dict(self._active_trajectories)
+
+        for name, traj in active.items():
+            if self._e_stop:
+                return
+            joint = self.joints.get(name)
+            if joint is None:
+                with self._trajectory_lock:
+                    self._active_trajectories.pop(name, None)
+                continue
+
+            steps: list[float] = traj["steps"]
+            idx = traj["index"]
+            setpoint = steps[idx] if idx < len(steps) else joint.target_deg
+            if idx < len(steps):
+                traj["index"] = idx + 1
+
+            # Velocity-ramp hard cap toward the shaped minimum-jerk setpoint.
+            new_deg = joint.apply_trajectory_step(setpoint, self.trajectory_step_interval_s)
+            self._write_move_packet(joint, new_deg, traj["speed"])
+
+            done = traj["index"] >= len(steps) and abs(joint.current_deg - joint.target_deg) <= 1e-3
+            if done:
+                with self._trajectory_lock:
+                    if self._active_trajectories.get(name) is traj:
+                        self._active_trajectories.pop(name, None)
 
     def validate_kinematics_proposal(
         self,
@@ -578,17 +740,25 @@ class SerialBridge:
         angle_deg: float,
         speed_deg_s: float = 100.0,
         command_time: float | None = None,
+        immediate: bool = False,
     ) -> bool:
         """Move a specific joint to a designated angle within mechanical bounds.
 
         Guards against post-reconnection motion resume, malformed NaN/Inf angles,
         invalid speeds, stale sequence proposals, and serial bus saturation from duplicates.
 
+        On live hardware the move is dispatched through the 50Hz minimum-jerk
+        trajectory control loop (current-shock protection). Pass
+        ``immediate=True`` for the escape hatch that bypasses the ramp and
+        dispatches a single direct packet (emergency/safety flows only;
+        emergency_stop itself never waits for ramps).
+
         Args:
             joint_name: Name of joint (e.g. 'neck_pan', 'neck_tilt').
             angle_deg: Target angle in degrees.
             speed_deg_s: Movement speed limit in degrees/sec.
             command_time: Optional timestamp of proposal generation for freshness check.
+            immediate: If True, skip the minimum-jerk ramp and move instantly.
 
         Returns:
             True if position command was successfully dispatched, filtered as duplicate, or emulated.
@@ -631,31 +801,33 @@ class SerialBridge:
         self._last_command_angle[joint_name] = clamped_deg
         self._last_command_time[joint_name] = now
         joint.target_deg = clamped_deg
-        joint.current_deg = clamped_deg
 
-        if self._is_emulated or not self._is_connected:
+        hardware_live = self._is_connected and not self._is_emulated
+
+        if not hardware_live:
+            # Emulation / offline: no physical actuators, so no current shock —
+            # apply the position instantly (preserves zero-latency state model).
+            with self._trajectory_lock:
+                self._active_trajectories.pop(joint_name, None)
+            joint.current_deg = clamped_deg
             return True
 
-        # Send versioned ASCII motion packet
-        ascii_pkt = self.format_move_packet(joint_name, clamped_deg, speed_deg_s)
+        if immediate:
+            # Escape hatch: cancel any ramp and dispatch a single direct packet.
+            with self._trajectory_lock:
+                self._active_trajectories.pop(joint_name, None)
+            joint.current_deg = clamped_deg
+            return self._write_move_packet(joint, clamped_deg, speed_deg_s)
 
-        # Also send binary packet for low-latency firmware
-        angle_val = int(clamped_deg * 100)
-        hi = (angle_val >> 8) & 0xFF
-        lo = angle_val & 0xFF
-        chk = (0xAA ^ 0x55 ^ 0x02 ^ joint.channel ^ hi ^ lo) & 0xFF
-        bin_pkt = bytearray([0xAA, 0x55, 0x02, joint.channel, hi, lo, chk])
+        traj_worker_running = self._trajectory_thread is not None and self._trajectory_thread.is_alive()
+        if not traj_worker_running:
+            # Control loop not started (bridge never started / thread died):
+            # fall back to a direct dispatch so commands are never silently lost.
+            joint.current_deg = clamped_deg
+            return self._write_move_packet(joint, clamped_deg, speed_deg_s)
 
-        try:
-            with self._lock:
-                if self._serial:
-                    self._serial.write(ascii_pkt)
-                    self._serial.write(bin_pkt)
-                    self._serial.flush()
-            return True
-        except Exception as e:
-            logger.warning("serial_joint_write_failed", joint=joint_name, error=str(e))
-            return False
+        self._schedule_trajectory(joint, clamped_deg, speed_deg_s)
+        return True
 
     def apply_pose(
         self,
@@ -699,6 +871,11 @@ class SerialBridge:
         """
         self._e_stop = True
         logger.critical("emergency_stop_activated", reason=reason)
+
+        # Cancel any in-flight ramp trajectories immediately: E-Stop must be
+        # instantaneous and must not be followed by queued trajectory writes.
+        with self._trajectory_lock:
+            self._active_trajectories.clear()
 
         # 1. Invoke hardware disconnect hook if registered
         if self._e_stop_callback:

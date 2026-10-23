@@ -39,7 +39,7 @@ class ScheduledJob:
     target_timestamp: float
     duration_seconds: float
     recurring: bool
-    status: str  # "pending", "completed", "cancelled"
+    status: str  # "pending", "running", "completed", "cancelled", "failed"
     created_at_iso: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -159,6 +159,25 @@ class TemporalScheduler:
         self._task: asyncio.Task | None = None
         self._running = False
         self._lock = asyncio.Lock()
+        # Retained references for fire-and-forget dispatch tasks (asyncio keeps
+        # only weak refs; unreferenced tasks can be GC'd and cancelled mid-flight).
+        self._bg_tasks: set[asyncio.Task] = set()
+
+    def _spawn_bg_task(self, coro: Any, name: str = "scheduler_bg") -> asyncio.Task:
+        """Create a retained background task whose exceptions are logged on completion."""
+        task = asyncio.create_task(coro, name=name)
+        self._bg_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("scheduler_bg_task_failed", task=name, error=str(exc))
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def setup(self) -> None:
         """Initialize database tables and indexes."""
@@ -212,6 +231,11 @@ class TemporalScheduler:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        # Cancel any dispatch tasks still in flight (at-most-once: a claimed job
+        # interrupted here stays 'running' and is never re-dispatched).
+        for t in list(self._bg_tasks):
+            if not t.done():
+                t.cancel()
         logger.info("temporal_scheduler_stopped")
 
     async def health_check(self) -> bool:
@@ -526,20 +550,54 @@ class TemporalScheduler:
         while self._running:
             try:
                 now_ts = time.time()
-                due_jobs = await self._fetch_and_mark_due_jobs(now_ts)
+                due_jobs = await self._claim_due_jobs(now_ts)
                 for job in due_jobs:
-                    asyncio.create_task(self._trigger_job(job))
+                    # Previously this fired a bare, unreferenced create_task after
+                    # the DB had ALREADY been stamped 'completed', so a crash between
+                    # the two lost the alert silently. Now the job is only claimed
+                    # (pending → running) at fetch and the final status is persisted
+                    # after the dispatch actually returns.
+                    self._spawn_bg_task(
+                        self._dispatch_and_persist(job),
+                        f"scheduler_dispatch_{job.id}",
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("scheduler_loop_iteration_error", error=str(e))
             await asyncio.sleep(1.0)
 
-    async def _fetch_and_mark_due_jobs(self, current_ts: float) -> list[ScheduledJob]:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._fetch_and_mark_due_jobs_sync, current_ts)
+    async def _dispatch_and_persist(self, job: ScheduledJob) -> None:
+        """Dispatch one claimed job, then persist its final outcome.
 
-    def _fetch_and_mark_due_jobs_sync(self, current_ts: float) -> list[ScheduledJob]:
+        Order is dispatch → await → persist, so persistence reflects what really
+        happened. Recurring alarms are rolled to their next occurrence; failures
+        are recorded as 'failed' instead of being hidden behind a premature
+        'completed'.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            await self._trigger_job(job)
+        except Exception as e:
+            logger.error("scheduler_job_dispatch_failed", job_id=job.id, error=str(e))
+            try:
+                await loop.run_in_executor(None, self._mark_job_failed_sync, job.id)
+            except Exception as pe:
+                logger.warning("scheduler_failed_persist_error", job_id=job.id, error=str(pe))
+            return
+        try:
+            if job.recurring and job.job_type == "alarm":
+                await loop.run_in_executor(None, self._reschedule_recurring_sync, job)
+            else:
+                await loop.run_in_executor(None, self._mark_job_completed_sync, job.id)
+        except Exception as pe:
+            logger.warning("scheduler_outcome_persist_error", job_id=job.id, error=str(pe))
+
+    async def _claim_due_jobs(self, current_ts: float) -> list[ScheduledJob]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._claim_due_jobs_sync, current_ts)
+
+    def _claim_due_jobs_sync(self, current_ts: float) -> list[ScheduledJob]:
         with sqlite3.connect(str(self._db_path)) as conn:
             cursor = conn.cursor()
             rows = cursor.execute(
@@ -570,28 +628,62 @@ class TemporalScheduler:
                     created_at_iso=r[8],
                     metadata=json.loads(r[9] or "{}"),
                 )
-                due_jobs.append(job)
-
-                # Mark completed or calculate next recurring timestamp
-                if job.recurring and job.job_type == "alarm":
-                    next_ts = job.target_timestamp + 86400.0  # +24 hours
-                    next_iso = datetime.fromtimestamp(next_ts).isoformat()
-                    cursor.execute(
-                        """
-                        UPDATE scheduled_jobs
-                        SET target_timestamp = ?, target_time_iso = ?
-                        WHERE id = ?
-                        """,
-                        (next_ts, next_iso, job.id),
-                    )
-                else:
-                    cursor.execute(
-                        "UPDATE scheduled_jobs SET status = 'completed' WHERE id = ?",
-                        (job.id,),
-                    )
+                # Atomic claim (pending → running): guarantees at-most-once dispatch
+                # even if the process restarts before the outcome is persisted.
+                cur = cursor.execute(
+                    "UPDATE scheduled_jobs SET status = 'running' WHERE id = ? AND status = 'pending'",
+                    (job.id,),
+                )
+                if cur.rowcount == 1:
+                    due_jobs.append(job)
 
             conn.commit()
             return due_jobs
+
+    def _mark_job_completed_sync(self, job_id: str) -> None:
+        with sqlite3.connect(str(self._db_path)) as conn:
+            conn.execute(
+                "UPDATE scheduled_jobs SET status = 'completed' WHERE id = ?",
+                (job_id,),
+            )
+            conn.commit()
+
+    def _mark_job_failed_sync(self, job_id: str) -> None:
+        with sqlite3.connect(str(self._db_path)) as conn:
+            conn.execute(
+                "UPDATE scheduled_jobs SET status = 'failed' WHERE id = ?",
+                (job_id,),
+            )
+            conn.commit()
+
+    def _next_recurring_timestamp(self, job: ScheduledJob, now_ts: float) -> float:
+        """Next daily occurrence strictly after now_ts, stepped in UTC +1-day increments.
+
+        DST limitation: advancing by fixed 86400s UTC days keeps the instant cadence
+        but drifts ±1h against local wall-clock time across DST transitions (no cron
+        library exists in this codebase for wall-clock recurrence math).
+        """
+        next_ts = job.target_timestamp
+        # Catch-up loop: after a long outage the stored target may be many days old.
+        guard = 0
+        while next_ts <= now_ts and guard < 3660:  # cap at ~10 years of daily steps
+            next_ts = (datetime.fromtimestamp(next_ts, timezone.utc) + timedelta(days=1)).timestamp()
+            guard += 1
+        return next_ts
+
+    def _reschedule_recurring_sync(self, job: ScheduledJob) -> None:
+        next_ts = self._next_recurring_timestamp(job, time.time())
+        next_iso = datetime.fromtimestamp(next_ts).isoformat()
+        with sqlite3.connect(str(self._db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_jobs
+                SET target_timestamp = ?, target_time_iso = ?, status = 'pending'
+                WHERE id = ?
+                """,
+                (next_ts, next_iso, job.id),
+            )
+            conn.commit()
 
     async def _trigger_job(self, job: ScheduledJob) -> None:
         """Dispatch a triggered job via EventBus, WebSocket, and vocal announcement."""
@@ -633,18 +725,25 @@ class TemporalScheduler:
 
                 print(f"\n⏰ \033[1;33m[{job.job_type.upper()} ALERT]\033[0m {spoken_text}\n")
 
-                if hasattr(self._engine, "_stream_response"):
-                    asyncio.create_task(
+                # Prefer the serialized speech intake path (same as mic utterances)
+                # so the alert never races an active _response_loop turn. Fall back
+                # to a retained background task on engines without intake helpers.
+                submit = getattr(self._engine, "submit_control_utterance", None)
+                if callable(submit):
+                    submit(f"[Scheduler alert]: {spoken_text}")
+                elif hasattr(self._engine, "_stream_response"):
+                    self._spawn_bg_task(
                         self._engine._stream_response(
                             f"[Scheduler alert]: {spoken_text}",
                             time.time(),
                             asyncio.Event(),
-                        )
+                        ),
+                        "scheduler_alert_stream",
                     )
                 elif hasattr(self._engine, "_tts_queue"):
                     interrupt = asyncio.Event()
-                    await self._engine._tts_queue.put((spoken_text, interrupt, None))
-                    await self._engine._tts_queue.put(None)
+                    self._engine._tts_queue.put_nowait((spoken_text, interrupt, None))
+                    self._engine._tts_queue.put_nowait(None)
             except Exception as e:
                 logger.warning("failed_to_speak_job_alert", error=str(e))
 

@@ -12,6 +12,7 @@ Architectural Rationale:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import shutil
@@ -324,6 +325,11 @@ class PersonalityManager:
     def get_persona_stats(self, name: str) -> dict[str, Any]:
         """Query statistics from the persona's isolated database.
 
+        The three row counts (conversations / sessions / facts) are fetched with
+        a single UNION ALL query — one connection round-trip per persona instead
+        of three COUNT statements — because list_personas_detailed calls this
+        once per persona.
+
         Args:
             name: Personality identifier.
 
@@ -333,31 +339,36 @@ class PersonalityManager:
         clean = self._resolve_name(name)
         db_path = self.get_database_path(clean)
         size_bytes = db_path.stat().st_size if db_path.exists() else 0
-        turn_count = 0
-        session_count = 0
-        fact_count = 0
+        counts = {"turns": 0, "sessions": 0, "facts": 0}
 
         if db_path.exists():
             try:
                 conn = sqlite3.connect(str(db_path), check_same_thread=False)
-                c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM conversations")
-                turn_count = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM sessions")
-                session_count = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM facts")
-                fact_count = c.fetchone()[0]
-                conn.close()
+                try:
+                    rows = conn.execute(
+                        "SELECT 'turns', COUNT(*) FROM conversations "
+                        "UNION ALL SELECT 'sessions', COUNT(*) FROM sessions "
+                        "UNION ALL SELECT 'facts', COUNT(*) FROM facts"
+                    ).fetchall()
+                finally:
+                    conn.close()
+                for key, value in rows:
+                    if key in counts:
+                        counts[key] = int(value)
             except Exception as e:
                 logger.debug("persona_stats_query_error", persona=clean, error=str(e))
 
         return {
             "database_path": str(db_path),
             "size_bytes": size_bytes,
-            "turns": turn_count,
-            "sessions": session_count,
-            "facts": fact_count,
+            "turns": counts["turns"],
+            "sessions": counts["sessions"],
+            "facts": counts["facts"],
         }
+
+    async def get_persona_stats_async(self, name: str) -> dict[str, Any]:
+        """Async-safe variant of get_persona_stats (SQLite I/O off the event loop)."""
+        return await asyncio.to_thread(self.get_persona_stats, name)
 
     def create_persona(self, data: dict[str, Any]) -> Personality:
         """Create a new persona definition and provision its isolated database.
@@ -446,6 +457,10 @@ class PersonalityManager:
         logger.info("persona_created_successfully", name=name, db=str(db_path))
         return personality
 
+    async def create_persona_async(self, data: dict[str, Any]) -> Personality:
+        """Async-safe variant of create_persona (YAML write + DB provisioning run in a worker thread)."""
+        return await asyncio.to_thread(self.create_persona, data)
+
     def update_persona(self, name: str, data: dict[str, Any]) -> Personality:
         """Update an existing persona definition and model defaults.
 
@@ -503,6 +518,10 @@ class PersonalityManager:
         logger.info("persona_updated", name=clean)
         return pers
 
+    async def update_persona_async(self, name: str, data: dict[str, Any]) -> Personality:
+        """Async-safe variant of update_persona (YAML write runs in a worker thread)."""
+        return await asyncio.to_thread(self.update_persona, name, data)
+
     def delete_persona(self, name: str, delete_database: bool = True, force: bool = False) -> bool:
         """Delete a persona and its isolated database.
 
@@ -547,6 +566,10 @@ class PersonalityManager:
         del self._personalities[clean]
         logger.info("persona_deleted", name=clean)
         return True
+
+    async def delete_persona_async(self, name: str, delete_database: bool = True, force: bool = False) -> bool:
+        """Async-safe variant of delete_persona (rmtree + file unlink run in a worker thread)."""
+        return await asyncio.to_thread(self.delete_persona, name, delete_database, force)
 
     def get_persisted_active(self, default: str = "neo") -> str:
         """Get persisted active personality name from data/active_personality.txt if available."""
@@ -613,6 +636,14 @@ class PersonalityManager:
             d.update(stats)
             result.append(d)
         return result
+
+    async def list_personas_detailed_async(self) -> list[dict[str, Any]]:
+        """Async-safe variant of list_personas_detailed.
+
+        The per-persona SQLite stats are I/O bound; running the whole listing in
+        a worker thread keeps them off the event loop (used by async API routes).
+        """
+        return await asyncio.to_thread(self.list_personas_detailed)
 
     def get(self, name: str) -> Personality | None:
         target = self._resolve_name(name)

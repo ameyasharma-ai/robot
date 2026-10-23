@@ -16,6 +16,7 @@ import colorsys
 import math
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from robot.core.state import RobotMode
@@ -47,6 +48,17 @@ class AsusAuraLighting:
         self._last_set_time: float = 0.0
         self._last_zone_rgb: dict[int, tuple[int, int, int]] = {}
 
+        # asusctl CLI-fallback rate limiting: the animation loop runs at ~26 Hz
+        # across 4 zones, which previously spawned ~100 subprocesses/sec. Now a
+        # minimum inter-dispatch interval coalesces bursts down to <=10 Hz of
+        # latest-wins colors, executed off the event loop via a single-worker
+        # executor so subprocess.run never blocks asyncio.
+        self._cli_min_interval_s: float = 0.1
+        self._color_change_threshold: int = 2  # max per-channel RGB delta treated as "unchanged"
+        self._last_cli_dispatch: float = 0.0
+        self._pending_zone_rgb: dict[int, tuple[int, int, int]] = {}
+        self._cli_executor: ThreadPoolExecutor | None = None
+
         if not self.enabled:
             return
 
@@ -71,9 +83,10 @@ class AsusAuraLighting:
         g = max(0, min(255, int(g)))
         b = max(0, min(255, int(b)))
 
-        # Cache check to avoid redundant DBus / IPC messages
+        # Cache check to avoid redundant DBus / IPC messages (skip when the
+        # computed color is unchanged beyond a small threshold from last send)
         last = self._last_zone_rgb.get(zone)
-        if last and abs(r - last[0]) < 2 and abs(g - last[1]) < 2 and abs(b - last[2]) < 2:
+        if last and abs(r - last[0]) < self._color_change_threshold and abs(g - last[1]) < self._color_change_threshold and abs(b - last[2]) < self._color_change_threshold:
             return
         self._last_zone_rgb[zone] = (r, g, b)
 
@@ -97,13 +110,48 @@ class AsusAuraLighting:
             except Exception as e:
                 logger.debug("dbus_set_color_failed", error=str(e))
 
-        # CLI fallback
+        # CLI fallback: enforce a minimum inter-dispatch interval, coalescing
+        # pending zone colors (latest wins), then dispatch via a single-worker
+        # executor so subprocess.run never blocks the asyncio event loop.
+        now = time.monotonic()
+        self._pending_zone_rgb[zone] = (r, g, b)
+        if now - self._last_cli_dispatch < self._cli_min_interval_s:
+            return
+        self._last_cli_dispatch = now
+        items = self._pending_zone_rgb
+        self._pending_zone_rgb = {}
+        self._submit_cli(items)
+
+    def _submit_cli(self, items: dict[int, tuple[int, int, int]]) -> None:
+        """Run queued asusctl CLI effects off the event loop (or inline if none)."""
+        if not items:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is None:
+            # No event loop (sync caller / tests): dispatch inline.
+            for zone, rgb in items.items():
+                self._run_asusctl(zone, rgb)
+            return
+
+        if self._cli_executor is None:
+            self._cli_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aura-cli")
+        for zone, rgb in items.items():
+            loop.run_in_executor(self._cli_executor, self._run_asusctl, zone, rgb)
+
+    @staticmethod
+    def _run_asusctl(zone: int, rgb: tuple[int, int, int]) -> None:
+        """Execute one asusctl static-effect subprocess call (worker-thread safe)."""
+        r, g, b = rgb
         hex_color = f"{r:02x}{g:02x}{b:02x}"
         cmd = ["asusctl", "aura", "effect", "static", "-c", hex_color]
         if zone > 0:
             cmd.extend(["--zone", str(zone - 1)])
         try:
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.0)
         except Exception:
             pass
 
@@ -164,6 +212,9 @@ class AsusAuraLighting:
                 pass
         self.set_brightness(3)
         self.set_color(0, 160, 255)
+        if self._cli_executor is not None:
+            self._cli_executor.shutdown(wait=False)
+            self._cli_executor = None
 
     async def _animation_loop(self) -> None:
         """Vibrant, multi-zone ROG lighting animation separating keyboard zones from front lightbar."""

@@ -14,14 +14,21 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import signal
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import httpx
 import requests
 import structlog
 import yaml
+
+try:  # Optional dependency: used to terminate the tracked PID gracefully.
+    import psutil
+except ImportError:  # pragma: no cover - fallback path exercised without psutil
+    psutil = None  # type: ignore[assignment]
 
 logger = structlog.get_logger(__name__)
 
@@ -86,6 +93,8 @@ class WhisperServerManager:
     INFERENCE_URL = "http://127.0.0.1:8081/inference"
 
     _active_model_id: str | None = None
+    _process: subprocess.Popen[bytes] | None = None
+    _log_file: TextIO | None = None
 
     BINARY_PATHS = [
         Path("/home/ameya/whisper.cpp/build_vk/bin/whisper-server"),  # Vulkan backend (Radeon 680M)
@@ -260,7 +269,6 @@ class WhisperServerManager:
             )
             if res.returncode == 0 and res.stdout:
                 line = res.stdout.strip()
-                import re
                 match = re.search(r"-m\s+([^\s]+)", line)
                 if match:
                     m_path = Path(match.group(1))
@@ -269,8 +277,8 @@ class WhisperServerManager:
                         name = name[5:]
                     if name in cls.MODELS_CATALOG:
                         return name
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("stt_active_model_process_probe_failed", error=str(e))
 
         # 2. Check persisted state file
         stt_file = Path("data/active_stt_model.txt")
@@ -279,8 +287,8 @@ class WhisperServerManager:
                 saved = stt_file.read_text().strip()
                 if saved in cls.MODELS_CATALOG:
                     return saved
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("stt_active_model_state_read_failed", error=str(e), path=str(stt_file))
 
         # 3. Check config/default.yaml
         cfg_file = Path("config/default.yaml")
@@ -291,8 +299,8 @@ class WhisperServerManager:
                 m = cfg.get("stt", {}).get("model", "")
                 if m in cls.MODELS_CATALOG:
                     return m
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("stt_active_model_config_read_failed", error=str(e), path=str(cfg_file))
 
         return "base.en"
 
@@ -349,21 +357,83 @@ class WhisperServerManager:
             return False
 
     @classmethod
-    async def stop(cls) -> bool:
-        """Terminate any running whisper-server background daemon.
+    def _close_log_file(cls) -> None:
+        """Close the whisper-server stdout/stderr log handle if open."""
+        if cls._log_file is not None:
+            try:
+                cls._log_file.close()
+            except Exception as e:
+                logger.warning("whisper_server_log_close_failed", error=str(e))
+            cls._log_file = None
+
+    @classmethod
+    def _terminate_tracked(cls, pid: int) -> None:
+        """Send SIGTERM to the tracked whisper-server PID (preferring psutil).
+
+        Args:
+            pid: PID of the tracked whisper-server process.
+        """
+        if psutil is not None:
+            try:
+                psutil.Process(pid).terminate()
+            except Exception:
+                pass  # Process already exited
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    @classmethod
+    async def _release_tracked_process(cls) -> bool:
+        """Terminate the tracked whisper-server (SIGTERM, escalate to SIGKILL) and close fds.
 
         Returns:
-            bool: True if process was stopped or already stopped.
+            bool: True if a tracked process handle existed and was released.
+        """
+        proc = cls._process
+        if proc is None:
+            return False
+        if proc.poll() is None:
+            cls._terminate_tracked(proc.pid)
+            for _ in range(30):  # Up to ~3s grace period for clean shutdown
+                if proc.poll() is not None:
+                    break
+                await asyncio.sleep(0.1)
+            if proc.poll() is None:
+                logger.warning("whisper_server_terminate_grace_expired", pid=proc.pid)
+                try:
+                    proc.kill()
+                except Exception as e:
+                    logger.error("whisper_server_kill_failed", error=str(e))
+        cls._process = None
+        cls._close_log_file()
+        return True
+
+    @classmethod
+    async def stop(cls) -> bool:
+        """Terminate the running whisper-server daemon.
+
+        Terminates the tracked PID launched by this manager. Falls back to
+        `pkill -f whisper-server` only when no tracked handle exists, so
+        unrelated system processes sharing the name are never killed.
+
+        Returns:
+            bool: True if the health endpoint confirmed the server is down,
+                False if it could not be stopped or an error occurred.
         """
         logger.info("stopping_whisper_server")
         try:
-            subprocess.run(["pkill", "-9", "-f", "whisper-server"], check=False)
+            if not await cls._release_tracked_process():
+                subprocess.run(["pkill", "-9", "-f", "whisper-server"], check=False)
+
             for _ in range(15):
                 if not await cls.is_running_async():
                     logger.info("whisper_server_stopped_cleanly")
                     return True
                 await asyncio.sleep(0.1)
-            return True
+            logger.error("whisper_server_stop_not_confirmed")
+            return False
         except Exception as e:
             logger.error("whisper_server_stop_error", error=str(e))
             return False
@@ -414,20 +484,42 @@ class WhisperServerManager:
 
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_dir / "whisper-server.log", "a", encoding="utf-8")
+        try:
+            log_file = open(log_dir / "whisper-server.log", "a", encoding="utf-8")
+        except OSError as e:
+            logger.error("whisper_server_log_open_failed", error=str(e))
+            return False
 
         logger.info("starting_whisper_server", model=str(model_file), binary=str(bin_path))
-        subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
+        try:
+            proc = subprocess.Popen(cmd, stdout=log_file, stderr=log_file, start_new_session=True)
+        except Exception as e:
+            logger.error("whisper_server_spawn_failed", error=str(e))
+            try:
+                log_file.close()
+            except Exception:
+                pass
+            return False
+
+        # Track handle + log fd so stop()/start-timeout reaps exactly this PID.
+        cls._process = proc
+        cls._log_file = log_file
 
         for i in range(30):
             await asyncio.sleep(0.3)
+            if proc.poll() is not None:
+                logger.error("whisper_server_exited_early", returncode=proc.returncode)
+                await cls.stop()
+                return False
             if await cls.is_running_async():
-                logger.info("whisper_server_ready", attempts=i + 1, model=str(model_file))
+                logger.info("whisper_server_ready", attempts=i + 1, pid=proc.pid, model=str(model_file))
                 # Persist active model selection
                 cls._persist_model_selection(target_model, model_file)
                 return True
 
-        logger.error("whisper_server_launch_timed_out")
+        logger.error("whisper_server_launch_timed_out", pid=proc.pid)
+        # Start failed: terminate tracked PID and close fds — no orphan, no fd leak.
+        await cls.stop()
         return False
 
     @classmethod

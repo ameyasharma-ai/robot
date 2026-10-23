@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import re
 import wave
+from collections import OrderedDict
 
 import numpy as np
 import piper
@@ -133,9 +134,12 @@ class PiperTTS(TTSProvider):
     analysis, and an in-memory phrase cache for instant 0ms playback.
     """
 
-    def __init__(self, model_path: str, enable_prosody: bool = True) -> None:
+    def __init__(self, model_path: str, enable_prosody: bool = True, cache_size: int = 64) -> None:
         self._voices: dict[str, piper.PiperVoice] = {}
-        self._phrase_cache: dict[str, tuple[np.ndarray, int]] = {}
+        # Bounded LRU phrase cache: OrderedDict, move-to-end on hit, evict
+        # oldest on overflow so long-running synthesis cannot grow memory forever.
+        self._phrase_cache_max = max(1, int(cache_size))
+        self._phrase_cache: OrderedDict[str, tuple[np.ndarray, int]] = OrderedDict()
         self._default_model = self._resolve_model_path(model_path)
         self._active_model = self._default_model
         self.prosody = ProsodyModulator(enabled=enable_prosody)
@@ -198,6 +202,21 @@ class PiperTTS(TTSProvider):
         ns_str = f"{noise_scale:.2f}" if noise_scale is not None else "def"
         nw_str = f"{noise_w:.2f}" if noise_w is not None else "def"
         return f"{voice_key}|{text.strip().lower()}|s={speed:.2f}|p={pitch:.2f}|ns={ns_str}|nw={nw_str}"
+
+    def _cache_get(self, key: str) -> tuple[np.ndarray, int] | None:
+        """LRU read: returns cached entry and marks it most-recently-used."""
+        entry = self._phrase_cache.get(key)
+        if entry is not None:
+            self._phrase_cache.move_to_end(key)
+        return entry
+
+    def _cache_put(self, key: str, value: tuple[np.ndarray, int]) -> None:
+        """LRU write: inserts entry as most-recently-used, evicting the oldest."""
+        self._phrase_cache[key] = value
+        self._phrase_cache.move_to_end(key)
+        while len(self._phrase_cache) > self._phrase_cache_max:
+            evicted_key, _ = self._phrase_cache.popitem(last=False)
+            logger.debug("piper_phrase_cache_evicted", key=evicted_key[:60])
 
     def modulate_prosody(
         self,
@@ -265,8 +284,10 @@ class PiperTTS(TTSProvider):
             clean_text, eff_speed, eff_pitch, target_voice_key, eff_ns, eff_nw
         )
         if norm_key in self._phrase_cache:
-            audio, sr = self._phrase_cache[norm_key]
-            return audio.copy(), sr
+            cached = self._cache_get(norm_key)
+            if cached is not None:
+                audio, sr = cached
+                return audio.copy(), sr
 
         voice = self._load_voice(target_voice_key)
 
@@ -300,9 +321,9 @@ class PiperTTS(TTSProvider):
 
         res = (raw_audio, sr)
 
-        # Cache short phrases (< 120 chars) in memory
+        # Cache short phrases (< 120 chars) in the bounded LRU
         if len(clean_text) < 120:
-            self._phrase_cache[norm_key] = res
+            self._cache_put(norm_key, res)
         return res
 
     def warm_phrase(
@@ -344,8 +365,9 @@ class PiperTTS(TTSProvider):
             norm_key = self._normalize_key(
                 clean_text, speed, pitch, target_voice_key, noise_scale, noise_w
             )
-            if norm_key in self._phrase_cache:
-                audio, sr = self._phrase_cache[norm_key]
+            cached = self._cache_get(norm_key)
+            if cached is not None:
+                audio, sr = cached
                 return audio.copy(), sr
 
         import asyncio

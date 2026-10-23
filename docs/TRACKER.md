@@ -6,6 +6,39 @@
 
 ---
 
+## ✅ Recently Completed (2026-10-23)
+
+### Face Mesh Perception — Full Stack Implementation
+- **`face_mesh.py`** rewritten for MediaPipe Tasks API (mediapipe 1.x)
+  - `FaceLandmarker VIDEO mode` — max per-frame throughput, no async callbacks
+  - 2556 tessellation edges + 160 contours + 8 iris edges + 478 green dots
+  - Model: `models/vision/face_landmarker.task` (float16, 3.6 MB)
+- **Engine**: `FaceMeshOverlay` wired into lifecycle (start/stop/pause)
+- **API**: `/camera/face-mesh` MJPEG, `/api/face-mesh/toggle`, `/api/face-mesh/status`
+- **Camera stream**: Fixed to max hardware FPS (removed artificial 1/60s cap)
+- **UI**: 🫥 face mesh toggle button with green neon glow animation when active
+
+### 🔧 Known Constraints
+- Face mesh is CPU-only (RTX 3050 VRAM saturated by Whisper+LLM+TTS)
+- VideoMode requires monotonic timestamps; synthesised via time.perf_counter()
+
+### Full-Codebase Audit Remediation (2026-10-23)
+365/365 tests green after remediation. Key changes:
+- **Security**: token auth middleware on all API endpoints (bearer / `?token=` / httpOnly cookie; resolution order: `create_app(auth_token=…)` → `ROBOT_API_TOKEN` env → `api.auth_token` config → auto-generated at startup and logged once); `/auth/login` + `/auth/logout` routes; raw API keys no longer returned by `/api/llm/status`; `html.escape()` on Spotify OAuth callback (reflected XSS).
+- **Motion safety**: serial-bridge heartbeat deadlock fixed (parse outside `_lock`); minimum-jerk trajectory ramp now actually applied via 50 Hz trajectory worker (`emergency_stop` stays instantaneous); `stop()` joins all threads; `ActionPriority` walrus typo reverted to real `IntEnum`.
+- **Processes**: llama-server/whisper-server `Popen` handles tracked, log fds closed, `pkill -9 -f` only as last-resort fallback when no tracked handle exists.
+- **Engine**: `_speech_queue` (32) / `_tts_queue` (64) bounded with drop-oldest; all fire-and-forget tasks retained (`_spawn_bg_task`); autonomy/scheduler proactive lines routed through `_speech_queue` (eliminates `_stream_response` race); `chunker.flush()` before tool coordination (trailing phrase no longer dropped); LLM provider captured under `_provider_switch_lock`.
+- **Async hygiene**: blocking I/O moved off event loop (health checks via httpx, personality SQLite/YAML via `to_thread`, MJPEG `cv2.imencode` via executor + 15 FPS cap, mic `start()` via `to_thread`, HF downloader buffered writes, lighting subprocesses via executor + 100 ms coalescing).
+- **Perception**: FaceMesh worker hardened (monotonic timestamps `max(prev+1, now)`, try/except with landmarker recreation, `_running`/`last_error` truthfulness) and drawing vectorized to single `cv2.polylines` per edge set @ 30 FPS cap; YOLO cadence configurable (`ROBOT_YOLO_FPS`, default 3 Hz); `silence_c_stderr` now lock-guarded with leak-free finally.
+- **Audio**: continuous fractional resampler in capture (no per-block linspace clicks); bounded mic queue; earcons resampled to stream rate (no stream reopen churn); barge-in no longer delayed by sleeps under lock; wakeword rejects "so robot"-style false wakes.
+- **State bounds**: TTS phrase caches LRU (64); telemetry samples `deque(maxlen=1000)`; image jobs pruned (100); WS per-client queue bounded (100, drop-oldest); SQLite access serialized behind `RLock`, atomic `add_fact` dedupe, FTS rebuild only on sentinel change; relative DB paths resolved from project root.
+- **Scheduler**: jobs persisted `completed` only after successful dispatch; recurring alarms use UTC day steps.
+- **Frontend**: all `setInterval` tracked + `stopAllTimers()` on pagehide; polling throttled while WebSocket healthy; WS reconnect exponential backoff + offline badge; chat DOM capped at 200 rows; streaming markdown re-render throttled to 100 ms; centralized `apiFetch`/`streamUrl` token plumbing; blob-URL/listener leaks fixed.
+- **Build/config**: undeclared deps added (pillow, tiktoken, kokoro-onnx, pytesseract, playwright, psutil + `[full]` extra for mediapipe/ultralytics/diffusers); Dockerfile genuinely multi-stage with correct COPY order and CPU-only torch; compose host-network cleanup; Makefile gained `docker-build/up/coverage/typecheck` + venv-aware graphify; first real CI workflow (`.github/workflows/ci.yml`); README persona/module/test-count drift corrected; ToDo.txt PENDING/DONE contradictions reconciled.
+- **Still open (user decision)**: committed Gemini key literal in `llm/__init__.py:DEFAULT_API_KEY` and `config/default.yaml` left in place — rotation is manual; absolute paths in config can't be re-rooted without loader changes.
+
+---
+
 ## 1. System Overview & Architecture Snapshot
 
 The robot runs a heterogeneous, real-time distributed architecture designed for low-latency (<800ms) full-duplex conversational and embodied interaction:
@@ -468,6 +501,29 @@ Legend:
 ## 4. Known Issues & Resolved Bugs Tracker
 
 ### 🐛 Resolved Issues
+
+#### Full-codebase audit remediation (2026-10-23) — 365/365 tests green
+1. **Serial-bridge heartbeat deadlock (motor-safety freeze)**:
+   - *Cause*: `_heartbeat_worker` parsed lines while holding the non-reentrant `_lock`; a stall-current reading invoked `emergency_stop()` which re-acquired the same lock → permanent deadlock.
+   - *Fix*: bytes collected under the lock, parsed after release; all reentrant lock paths audited.
+2. **Minimum-jerk motion ramp never applied**:
+   - *Cause*: `generate_minimum_jerk_trajectory` / `apply_trajectory_step` were dead code; `set_joint_angle` jumped straight to the clamped value.
+   - *Fix*: wired into a new 50 Hz trajectory worker; `emergency_stop` and `immediate=True` stay instantaneous.
+3. **Orphaned llama-server / whisper-server processes & leaked log fds**:
+   - *Cause*: `Popen` handles discarded, log files never closed, `stop()` used system-wide `pkill -9 -f`.
+   - *Fix*: tracked PID (psutil/`os.kill` SIGTERM→KILL), fds closed on stop, `pkill` only when no tracked handle exists.
+4. **Event-loop stalls**: blocking `requests` health checks, sync SQLite/YAML persona CRUD, per-frame `cv2.imencode` MJPEG at full speed, mic `start()` pactl subprocesses, HF-downloader chunk writes, ~100 `asusctl` spawns/s for lighting — all moved to executors/`to_thread`; MJPEG capped at 15 FPS; lighting coalesced ≥100 ms with unchanged-color skip.
+5. **Unbounded queues/caches (memory growth + latency)**: `_speech_queue`/`_tts_queue`/mic queue/WS client queue bounded with drop-oldest; TTS phrase caches LRU(64); telemetry samples `deque(maxlen=1000)`; image jobs pruned at 100; HF `_tasks` pruned at 50.
+6. **Fire-and-forget `asyncio.create_task`** (GC-cancellable; autonomy raced `_response_loop` over `_pending_motion`/TTS queues): retained-task set with exception logging; proactive lines routed through `_speech_queue`.
+7. **Lost trailing phrase before tool calls**: `chunker.flush()` now unconditional before tool coordination.
+8. **Provider-switch race**: `self.llm` captured under `_provider_switch_lock` for streaming/warm-up/health.
+9. **FaceMesh worker silent death + overlay cost**: unguarded thread loop died on non-monotonic VIDEO timestamps while `_running` stayed `True`. *Fix*: monotonic `ts=max(prev+1, now)`, try/except with landmarker recreation, truthful `_running`/`last_error`, vectorized `cv2.polylines` drawing @ 30 FPS cap.
+10. **SQLite concurrency corruption risk**: shared `check_same_thread=False` connection touched from multiple threads without a lock; `add_fact` dedupe raced. *Fix*: `RLock` around all execute/commit/fetch sequences; dedupe atomic; FTS rebuild only on sentinel change; CWD-relative DB path resolved from project root.
+11. **API security**: zero auth on ~60 endpoints, raw API keys returned by `/api/llm/status`, reflected XSS in Spotify OAuth callback. *Fix*: bearer/`?token=`/httpOnly-cookie middleware (`ROBOT_API_TOKEN` env → `api.auth_token` config → auto-generated logged token), `/auth/login|logout`, keys replaced by `has_api_key` booleans, `html.escape()` on all request-derived HTML. (Committed Gemini key literal intentionally retained per user decision.)
+12. **Audio glitches**: per-block `np.linspace` resampling clicks → continuous fractional resampler; earcon↔Kokoro sample-rate stream reopens → resample-once with rate cache; barge-in delayed ~300 ms by sleep-under-lock → event-signalled waits; wakeword false positives ("so robot") → boundary/length constraints.
+13. **Scheduler reliability**: jobs persisted `completed` before dispatch (alerts lost on crash) → dispatch, await, then persist; recurring alarms fixed `+86400` → UTC day-stepped helper.
+14. **Frontend leaks/perf**: 8 untracked `setInterval`s, fixed 2 s WS retry, unbounded chat DOM, O(n²) per-token markdown re-render → tracked timers + `stopAllTimers()`, exponential backoff + offline badge, 200-row cap, 100 ms-throttled streaming render, blob-URL/listener cleanup.
+15. **Build/docs drift**: undeclared runtime deps (pillow, tiktoken, kokoro-onnx, pytesseract, playwright, psutil + `[full]` extra), Dockerfile editable install before `COPY src/`, obsolete compose `version:`/dead `ports:`/double `/dev/snd`, empty CI, README persona/module/test-count errors, ToDo.txt PENDING-vs-DONE contradictions, `ActionPriority` walrus typo, `ProcessSupervisor` `sys.exit(0)` in signal handler.
 1. **TTS Output Audio Slowed / Robotic**:
    - *Cause*: Resampling artifact from mismatch between Piper's native 22050Hz output and ALSA's default 44100/48000Hz device clock.
    - *Fix*: Locked `sample_rate: 22050` across `sounddevice.OutputStream` and enforced uniform chunk boundaries.

@@ -7,6 +7,7 @@ import threading
 import time
 import warnings
 from collections import deque
+from typing import Any
 
 import numpy as np
 import sounddevice as sd
@@ -17,6 +18,21 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="sounddevi
 from robot.telemetry import get_logger
 
 logger = get_logger("audio.playback")
+
+# Earcons are synthesized once at a fixed natural rate and resampled to the
+# active output stream rate on demand. Adopting per-file earcon rates forced
+# a close/reopen of the PortAudio OutputStream on every earcon↔Kokoro (22.05k
+# ↔ 24k) transition, producing audible gaps and pops.
+EARCON_SOURCE_SR = 22050
+
+
+def _resample_linear(audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
+    """Resample a 1D float32 waveform with continuous linear interpolation."""
+    if src_sr == dst_sr or len(audio) == 0:
+        return audio.astype(np.float32, copy=False)
+    n_out = max(1, int(round(len(audio) * dst_sr / src_sr)))
+    indices = np.linspace(0, len(audio) - 1, n_out)
+    return np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
 
 
 from dataclasses import dataclass
@@ -63,11 +79,16 @@ class AudioPlayer:
         self._duck_target: float = 1.0
         self._duck_rate: float = 0.15
         self._lock = threading.Lock()
+        # Signaled by stop() to cancel an in-flight stream-open backoff sleep
+        # so barge-in is never delayed by retry backoff.
+        self._open_backoff = threading.Event()
         self._playback_lock: asyncio.Lock | None = None
         # Rolling buffer of recent block RMS values (covers ~320ms acoustic travel & hardware DAC ring buffer)
         self._recent_rms: deque[float] = deque(maxlen=8)
         self._energy_callbacks: list = []
         self._last_play_time: float = 0.0
+        # Bounded cache of earcon waveforms already resampled to target rates.
+        self._earcon_cache: dict[tuple, np.ndarray] = {}
 
         # Work Package B resilience enhancements
         self._state: AudioDeviceState = AudioDeviceState.HEALTHY
@@ -133,6 +154,18 @@ class AudioPlayer:
         """Register callback for each playback audio frame: fn(rms: float)."""
         self._energy_callbacks.append(callback)
 
+    def off_energy(self, callback) -> None:
+        """Unregister a previously registered per-block energy callback.
+
+        Callers that pair ``on_energy()`` (e.g. lighting sync hooks) should
+        call this on teardown so ``_energy_callbacks`` does not grow without
+        bound or hold stale references to disposed objects.
+        """
+        try:
+            self._energy_callbacks.remove(callback)
+        except ValueError:
+            pass
+
     @property
     def is_playing(self) -> bool:
         return self._is_playing
@@ -146,28 +179,36 @@ class AudioPlayer:
     def _ensure_stream(self, sample_rate: int) -> sd.OutputStream | None:
         """Acquire or recreate PortAudio output stream with bounded backoff and error recovery.
 
+        Backoff sleeps happen OUTSIDE ``self._lock`` so a concurrent barge-in
+        ``stop()`` is never blocked behind retry backoff (previously up to
+        ~300ms of added latency). ``stop()`` additionally signals
+        ``self._open_backoff`` to cut the pending sleep short.
+
         Args:
             sample_rate: Required output audio sampling rate in Hz.
 
         Returns:
             sd.OutputStream instance if healthy/recovered, or None if hardware is degraded.
         """
-        with self._lock:
-            needs_new = (
-                self._stream is None
-                or sample_rate != self._stream_sr
-                or getattr(self._stream, "closed", True)
-            )
-            if needs_new:
-                if self._stream is not None:
-                    try:
-                        self._stream.stop()
-                        self._stream.close()
-                    except Exception:
-                        pass
+        max_attempts = self._max_recovery_attempts
+        for attempt in range(1, max_attempts + 1):
+            sleep_delay: float | None = None
+            with self._lock:
+                needs_new = (
+                    self._stream is None
+                    or sample_rate != self._stream_sr
+                    or getattr(self._stream, "closed", True)
+                )
+                if needs_new:
+                    if self._stream is not None:
+                        try:
+                            self._stream.stop()
+                            self._stream.close()
+                        except Exception:
+                            pass
 
-                # Attempt stream instantiation with bounded exponential backoff
-                for attempt in range(1, self._max_recovery_attempts + 1):
+                    # Attempt stream instantiation; failure records metrics and
+                    # schedules a backoff sleep performed without the lock held.
                     try:
                         self._stream = sd.OutputStream(
                             samplerate=sample_rate, channels=1, dtype="float32", latency=0.08
@@ -191,41 +232,48 @@ class AudioPlayer:
                         logger.warning(
                             "audio_output_stream_open_retry",
                             attempt=attempt,
-                            max_attempts=self._max_recovery_attempts,
+                            max_attempts=max_attempts,
                             error=str(e),
                         )
-                        if attempt < self._max_recovery_attempts:
-                            time.sleep(0.04 * (2 ** (attempt - 1)))
+                        if attempt < max_attempts:
+                            sleep_delay = 0.04 * (2 ** (attempt - 1))
 
-                self._state = AudioDeviceState.DEGRADED
-                logger.error("audio_playback_device_degraded_stream_creation_failed")
-                return None
-
-            elif self._stream.stopped or not getattr(self._stream, "active", True):
-                try:
-                    self._stream.start()
-                    lead_in = np.zeros(int(sample_rate * 0.04), dtype=np.float32).reshape(-1, 1)
-                    self._stream.write(lead_in)
-                    self._state = AudioDeviceState.HEALTHY
-                except Exception:
-                    # Cleanly close and recreate if stream failed to restart from abort
+                elif self._stream.stopped or not getattr(self._stream, "active", True):
                     try:
-                        self._stream.close()
-                    except Exception:
-                        pass
-                    try:
-                        self._stream = sd.OutputStream(
-                            samplerate=sample_rate, channels=1, dtype="float32", latency=0.08
-                        )
                         self._stream.start()
-                        self._stream_sr = sample_rate
+                        lead_in = np.zeros(int(sample_rate * 0.04), dtype=np.float32).reshape(-1, 1)
+                        self._stream.write(lead_in)
                         self._state = AudioDeviceState.HEALTHY
-                    except Exception as e:
-                        self._metrics.errors += 1
-                        self._state = AudioDeviceState.DEGRADED
-                        logger.error("audio_output_stream_restart_failed", error=str(e))
-                        return None
-            return self._stream
+                    except Exception:
+                        # Cleanly close and recreate if stream failed to restart from abort
+                        try:
+                            self._stream.close()
+                        except Exception:
+                            pass
+                        try:
+                            self._stream = sd.OutputStream(
+                                samplerate=sample_rate, channels=1, dtype="float32", latency=0.08
+                            )
+                            self._stream.start()
+                            self._stream_sr = sample_rate
+                            self._state = AudioDeviceState.HEALTHY
+                        except Exception as e:
+                            self._metrics.errors += 1
+                            self._state = AudioDeviceState.DEGRADED
+                            logger.error("audio_output_stream_restart_failed", error=str(e))
+                            return None
+                    return self._stream
+                else:
+                    return self._stream
+
+            if sleep_delay is not None:
+                # Sleep outside the lock; stop() can cut this short.
+                self._open_backoff.clear()
+                self._open_backoff.wait(sleep_delay)
+
+        self._state = AudioDeviceState.DEGRADED
+        logger.error("audio_playback_device_degraded_stream_creation_failed")
+        return None
 
     async def play_earcon(
         self,
@@ -237,9 +285,16 @@ class AudioPlayer:
     ) -> bool:
         """Play a synthesized Apple-grade acoustic earcon chime.
 
+        The chime is synthesized once at the fixed natural earcon rate and
+        resampled to the active output stream rate, so earcon playback does
+        not force a close/reopen of the OutputStream when speech synthesis
+        (24 kHz Kokoro) and earcons (22.05 kHz) share the same device.
+        Stream rate switching stays as a last resort inside _ensure_stream.
+
         Args:
             earcon_type: Target earcon signature to synthesize and play.
-            sample_rate: Audio sampling frequency in Hz (defaults to current stream rate or 22050).
+            sample_rate: Optional explicit target rate override (defaults to the
+                active stream rate, else the earcon natural rate).
             volume: Master volume multiplier between 0.0 and 1.0 (default 0.65).
             interrupt: Optional event to interrupt earcon playback.
             generation_id: Optional generation token for barge-in isolation.
@@ -249,10 +304,28 @@ class AudioPlayer:
         """
         from robot.audio.earcon import AcousticEarconEngine
 
-        sr = sample_rate or self._stream_sr or 22050
-        waveform = AcousticEarconEngine.generate(earcon_type, sample_rate=sr, volume=volume)
+        # Prefer the currently open stream's rate to avoid a device reopen gap.
+        with self._lock:
+            active_sr = (
+                self._stream_sr
+                if self._stream is not None and not getattr(self._stream, "closed", True)
+                else None
+            )
+        target_sr = active_sr or sample_rate or EARCON_SOURCE_SR
+
+        cache_key = (getattr(earcon_type, "value", str(earcon_type)), round(float(volume), 3), target_sr)
+        waveform = self._earcon_cache.get(cache_key)
+        if waveform is None:
+            src = AcousticEarconEngine.generate(
+                earcon_type, sample_rate=EARCON_SOURCE_SR, volume=volume
+            )
+            waveform = _resample_linear(np.asarray(src, dtype=np.float32), EARCON_SOURCE_SR, target_sr)
+            if len(self._earcon_cache) > 32:
+                self._earcon_cache.pop(next(iter(self._earcon_cache)))
+            self._earcon_cache[cache_key] = waveform
+
         evt = interrupt or asyncio.Event()
-        return await self.play(waveform, sr, evt, generation_id=generation_id)
+        return await self.play(waveform, target_sr, evt, generation_id=generation_id)
 
     async def play(
         self,
@@ -400,6 +473,8 @@ class AudioPlayer:
         self._recent_rms.clear()
         self._volume = 1.0
         self._duck_target = 1.0
+        # Cut short any pending stream-open backoff sleep in _ensure_stream.
+        self._open_backoff.set()
         with self._lock:
             if self._stream is not None:
                 try:
@@ -425,4 +500,15 @@ class AudioPlayer:
                     pass
 
     def __del__(self) -> None:
-        self.close()
+        """Last-resort GC safety net — NOT the supported teardown path.
+
+        The lifecycle owner (core/engine.py shutdown) calls ``player.close()``
+        explicitly. During interpreter shutdown/__del__ the lock and stream
+        objects may already be partially collected, so we delegate to
+        close() defensively and never raise or block on GC.
+        """
+        try:
+            if getattr(self, "_stream", None) is not None:
+                self.close()
+        except Exception:
+            pass

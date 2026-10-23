@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,7 @@ class KokoroTTS:
         voices_path: str | None = None,
         default_voice: str = "af_heart",
         enable_prosody: bool = True,
+        cache_size: int = 64,
     ) -> None:
         """Initialize Kokoro TTS provider.
 
@@ -134,6 +136,9 @@ class KokoroTTS:
             voices_path: Path to voices-v1.0.bin voice embeddings file.
             default_voice: Default voice identifier (e.g. 'af_heart').
             enable_prosody: Whether to enable dynamic sentiment prosody modulation.
+            cache_size: Maximum number of memoized phrases in the LRU phrase
+                cache (24kHz float32 audio is ~4.3MB per minute of speech, so
+                the cache must stay bounded on long-running robots).
 
         Raises:
             ImportError: If kokoro-onnx package is not installed.
@@ -166,7 +171,10 @@ class KokoroTTS:
             self._voices_list[0] if self._voices_list else "af_heart"
         )
         self.prosody = ProsodyModulator(enabled=enable_prosody)
-        self._phrase_cache: dict[str, tuple[np.ndarray, int]] = {}
+        # Bounded LRU phrase cache: OrderedDict, move-to-end on hit, evict
+        # oldest on overflow so long-running synthesis cannot grow memory forever.
+        self._phrase_cache_max = max(1, int(cache_size))
+        self._phrase_cache: OrderedDict[str, tuple[np.ndarray, int]] = OrderedDict()
 
         logger.info(
             "kokoro_initialized",
@@ -303,6 +311,21 @@ class KokoroTTS:
         """
         return f"kokoro|{voice_key}|{text.strip().lower()}|s={speed:.2f}|p={pitch:.2f}"
 
+    def _cache_get(self, key: str) -> tuple[np.ndarray, int] | None:
+        """LRU read: returns cached entry and marks it most-recently-used."""
+        entry = self._phrase_cache.get(key)
+        if entry is not None:
+            self._phrase_cache.move_to_end(key)
+        return entry
+
+    def _cache_put(self, key: str, value: tuple[np.ndarray, int]) -> None:
+        """LRU write: inserts entry as most-recently-used, evicting the oldest."""
+        self._phrase_cache[key] = value
+        self._phrase_cache.move_to_end(key)
+        while len(self._phrase_cache) > self._phrase_cache_max:
+            evicted_key, _ = self._phrase_cache.popitem(last=False)
+            logger.debug("kokoro_phrase_cache_evicted", key=evicted_key[:60])
+
     def modulate_prosody(
         self,
         text: str,
@@ -381,8 +404,10 @@ class KokoroTTS:
         norm_key = self._normalize_key(clean_text, eff_speed, eff_pitch, target_voice)
 
         if norm_key in self._phrase_cache:
-            audio, sr = self._phrase_cache[norm_key]
-            return audio.copy(), sr
+            cached = self._cache_get(norm_key)
+            if cached is not None:
+                audio, sr = cached
+                return audio.copy(), sr
 
         lang = self._detect_lang(target_voice)
 
@@ -412,9 +437,9 @@ class KokoroTTS:
 
         res = (raw_audio, sr)
 
-        # Cache short phrases (< 120 chars) in memory for instant replay
+        # Cache short phrases (< 120 chars) in the bounded LRU for instant replay
         if len(clean_text) < 120:
-            self._phrase_cache[norm_key] = res
+            self._cache_put(norm_key, res)
 
         return res
 
@@ -484,8 +509,9 @@ class KokoroTTS:
         target_voice = self._resolve_voice(voice_model or self._active_voice)
         if not modulate:
             norm_key = self._normalize_key(clean_text, speed, pitch, target_voice)
-            if norm_key in self._phrase_cache:
-                audio, sr = self._phrase_cache[norm_key]
+            cached = self._cache_get(norm_key)
+            if cached is not None:
+                audio, sr = cached
                 return audio.copy(), sr
 
         return await asyncio.to_thread(

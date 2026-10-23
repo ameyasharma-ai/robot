@@ -4,20 +4,52 @@ Provides:
 - REST endpoints for status, memory, personality
 - WebSocket for real-time event streams
 - Developer console / AI Terminal access
+- Token-based authentication for every non-public route (see
+  :func:`_resolve_auth_token` and :class:`_ApiAuthMiddleware`)
+
+Authentication model
+--------------------
+Every route except a small public allow-list (``/health``, ``/auth/login``,
+``/auth/logout``, ``/auth/status`` and the static UI shell pages/assets) requires
+a valid API token, supplied in any of these ways:
+
+1. ``Authorization: Bearer <token>`` header — the normal path for ``fetch``.
+2. ``?token=<token>`` query parameter — required for ``EventSource``, MJPEG
+   ``<img>`` streams and WebSocket handshakes that cannot set headers.
+3. The ``httpOnly`` session cookie installed by ``POST /auth/login`` with the
+   JSON body ``{"token": "<token>"}`` (SameSite=Lax; ``Secure`` is set
+   automatically when the request arrives over HTTPS).
+
+The token is resolved in this order: the ``auth_token`` argument, the
+``ROBOT_API_TOKEN`` environment variable, ``api.auth_token`` in the engine
+config, and finally a fresh ``secrets.token_urlsafe(24)`` that is logged once at
+startup so the local owner can read it and persist it.
+
+The uvicorn bind host itself is configured by ``RobotEngine._run_api``
+(``api.host`` in ``config/default.yaml`` / ``ROBOT_API_HOST``, default
+``127.0.0.1``). Binding to anything other than loopback is still possible, but
+it is no longer unauthenticated: a non-loopback bind now serves only the public
+allow-list and rejects every other request without a valid token.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
+import json
 import os
 import re
+import secrets
 import time
+import urllib.parse
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
 from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 logger = structlog.get_logger()
@@ -26,6 +58,328 @@ from robot.core.state import RobotMode
 
 if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
+
+
+# ─── Authentication Constants ──────────────────────────────────────────────
+#: Environment variable holding the shared API bearer token.
+AUTH_TOKEN_ENV_VAR = "ROBOT_API_TOKEN"
+#: Name of the httpOnly session cookie written by ``POST /auth/login``.
+AUTH_COOKIE_NAME = "robot_api_session"
+#: Query-parameter fallback for header-less clients (EventSource / MJPEG / WS).
+AUTH_TOKEN_QUERY_PARAM = "token"
+#: Lifetime of the login session cookie in seconds (30 days).
+AUTH_COOKIE_MAX_AGE = 30 * 24 * 3600
+#: Routes that stay reachable without a token (liveness probe + login flow +
+#: the static UI shell that renders the login gate).
+AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/auth/login",
+        "/auth/logout",
+        "/auth/status",
+        "/favicon.ico",
+        "/apple-touch-icon.png",
+        "/",
+        "/contextlayer",
+        "/context-layer",
+        "/inspect",
+    }
+)
+#: Path prefixes that stay reachable without a token (UI assets only — generated
+#: imagery under ``/data/images`` and every API route remain protected).
+AUTH_EXEMPT_PREFIXES: tuple[str, ...] = ("/static/",)
+
+#: Target frame rate per MJPEG stream; encoding is off-loaded to a worker thread.
+MJPEG_TARGET_FPS = 15.0
+#: Upper bound of buffered events per WebSocket client before the oldest is dropped.
+WS_EVENT_QUEUE_MAXSIZE = 100
+
+
+class LoginRequest(BaseModel):
+    """Request model for ``POST /auth/login``."""
+
+    token: str
+
+
+def _extract_bearer_header(authorization: str | None) -> str:
+    """Return the bearer token carried by an ``Authorization`` header value.
+
+    Args:
+        authorization: Raw header value (may be ``None``).
+
+    Returns:
+        str: The token, or an empty string when the header is absent or not a
+            bearer token.
+    """
+    if not authorization:
+        return ""
+    parts = authorization.strip().split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+def _token_from_scope(scope: dict[str, Any]) -> str:
+    """Collect the candidate API token from an ASGI connection scope.
+
+    Checks, in order, the bearer header, the ``token`` query parameter (used by
+    EventSource, MJPEG ``<img>`` streams and WebSockets) and the httpOnly login
+    cookie.
+
+    Args:
+        scope: Starlette ASGI connection scope for an ``http`` or ``websocket``
+            connection.
+
+    Returns:
+        str: The first non-empty candidate token, or ``""`` when there is none.
+    """
+    headers: dict[str, str] = {}
+    for raw_key, raw_value in scope.get("headers") or []:
+        try:
+            key = raw_key.decode("latin-1").lower()
+            headers[key] = raw_value.decode("latin-1")
+        except Exception:
+            continue
+
+    token = _extract_bearer_header(headers.get("authorization"))
+    if token:
+        return token
+
+    query = scope.get("query_string") or b""
+    if isinstance(query, bytes):
+        query = query.decode("latin-1")
+    params = urllib.parse.parse_qs(query)
+    for value in params.get(AUTH_TOKEN_QUERY_PARAM) or []:
+        if value:
+            return value
+
+    cookie_header = headers.get("cookie", "")
+    for chunk in cookie_header.split(";"):
+        name, _, value = chunk.strip().partition("=")
+        if name == AUTH_COOKIE_NAME and value:
+            return urllib.parse.unquote(value)
+
+    return ""
+
+
+def _token_matches(candidate: str, expected: str) -> bool:
+    """Constant-time comparison of a candidate token with the expected token.
+
+    Args:
+        candidate: Token supplied by the client.
+        expected: Token configured for this application instance.
+
+    Returns:
+        bool: ``True`` only when both are non-empty and identical.
+    """
+    if not candidate or not expected:
+        return False
+    return secrets.compare_digest(candidate, expected)
+
+
+def _is_auth_exempt(path: str) -> bool:
+    """Report whether a request path is reachable without a token.
+
+    Args:
+        path: Request/WebSocket path from the ASGI scope.
+
+    Returns:
+        bool: ``True`` when the path is on the public allow-list.
+    """
+    if path in AUTH_EXEMPT_PATHS:
+        return True
+    if path.startswith(AUTH_EXEMPT_PREFIXES):
+        return True
+    # Assets referenced by the UI shell (icons/fonts shipped inside /static).
+    return path in ("/index.html", "/index.css", "/app.js")
+
+
+class _ApiAuthMiddleware:
+    """Pure-ASGI bearer/cookie/query token gate for HTTP and WebSocket traffic.
+
+    A pure ASGI middleware is used instead of ``BaseHTTPMiddleware`` so that
+    ``websocket`` scopes are inspected too: a WebSocket that is not authorized
+    is refused before the handshake is accepted (close code 4401).
+    """
+
+    def __init__(self, app: Any, expected_token: str) -> None:
+        """Store the wrapped ASGI app and the token that clients must present.
+
+        Args:
+            app: The inner ASGI application (the FastAPI middleware stack).
+            expected_token: Shared API token for this application instance.
+        """
+        self.app = app
+        self.expected_token = expected_token or ""
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        """Enforce authentication for ``http``/``websocket`` scopes."""
+        scope_type = scope.get("type")
+        if scope_type not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "") or ""
+        # ``lifespan`` and redirects for the public allow-list pass straight through.
+        if scope.get("method") == "OPTIONS" or _is_auth_exempt(path):
+            await self.app(scope, receive, send)
+            return
+
+        candidate = _token_from_scope(scope)
+        if _token_matches(candidate, self.expected_token):
+            await self.app(scope, receive, send)
+            return
+
+        if scope_type == "websocket":
+            await self._deny_websocket(receive, send)
+        else:
+            await self._deny_http(send, path)
+
+    async def _deny_http(self, send: Any, path: str) -> None:
+        """Send a 401 JSON response asking for a bearer token."""
+        payload = json.dumps(
+            {
+                "detail": "Unauthorized: a valid API token is required.",
+                "hint": (
+                    "Send 'Authorization: Bearer <token>', or '?token=<token>' for "
+                    "EventSource/MJPEG/WebSocket streams, or POST the token to "
+                    "/auth/login to get a session cookie."
+                ),
+                "path": path,
+            }
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode("latin-1")),
+                    (b"www-authenticate", b'Bearer realm="robot-api"'),
+                    (b"cache-control", b"no-store"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
+
+    async def _deny_websocket(self, receive: Any, send: Any) -> None:
+        """Refuse a WebSocket handshake that carries no valid token."""
+        message = await receive()
+        if message.get("type") == "websocket.connect":
+            await send({"type": "websocket.close", "code": 4401, "reason": "Unauthorized"})
+
+
+def _resolve_auth_token(engine: "RobotEngine", auth_token: str | None = None) -> tuple[str, str]:
+    """Determine the API token for an application instance.
+
+    Resolution order: explicit ``auth_token`` argument, the ``ROBOT_API_TOKEN``
+    environment variable, ``api.auth_token`` (or ``api.token``) in the engine
+    configuration, and finally a freshly generated random token.
+
+    Args:
+        engine: Running engine whose ``config`` dict may carry ``api.auth_token``.
+        auth_token: Optional explicit token passed to :func:`create_app`.
+
+    Returns:
+        tuple[str, str]: The token and the label of the source it came from
+            (``"parameter"``, ``"environment"``, ``"config"`` or ``"generated"``).
+    """
+    explicit = (auth_token or "").strip()
+    if explicit:
+        return explicit, "parameter"
+
+    env_token = (os.environ.get(AUTH_TOKEN_ENV_VAR) or "").strip()
+    if env_token:
+        return env_token, "environment"
+
+    config = getattr(engine, "config", None)
+    if isinstance(config, dict):
+        api_cfg = config.get("api")
+        if isinstance(api_cfg, dict):
+            for key in ("auth_token", "api_token", "token"):
+                value = api_cfg.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip(), "config"
+
+    return secrets.token_urlsafe(24), "generated"
+
+
+def _encode_jpeg_frame(frame: Any, quality: int = 80) -> bytes | None:
+    """Encode one BGR frame to JPEG bytes (blocking; run in a worker thread).
+
+    Args:
+        frame: OpenCV image matrix.
+        quality: JPEG quality passed to ``cv2.imencode``.
+
+    Returns:
+        bytes | None: Encoded JPEG payload, or ``None`` when encoding failed.
+    """
+    import cv2
+
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    return encoded.tobytes() if ok else None
+
+
+async def _mjpeg_part_generator(
+    frame_provider: Any,
+    stop_check: Any,
+    *,
+    jpeg_quality: int = 80,
+    target_fps: float = MJPEG_TARGET_FPS,
+    stream_name: str = "mjpeg",
+):
+    """Async generator producing MJPEG multipart chunks off the event loop.
+
+    JPEG encoding is CPU work, so it runs on the default thread executor instead
+    of the asyncio loop, and each stream is paced to ``target_fps`` with
+    drift-corrected sleeps (a slow frame delays the next one rather than causing
+    a catch-up burst).
+
+    Args:
+        frame_provider: Zero-argument callable returning the newest BGR frame or
+            ``None`` when none is ready yet.
+        stop_check: Zero-argument callable; streaming continues while it is true.
+        jpeg_quality: JPEG quality for ``cv2.imencode``.
+        target_fps: Maximum frames emitted per second for this stream.
+        stream_name: Label used in diagnostic log lines.
+
+    Yields:
+        bytes: One ``multipart/x-mixed-replace`` frame part.
+    """
+    loop = asyncio.get_running_loop()
+    interval = 1.0 / max(0.1, float(target_fps))
+    next_deadline = loop.time()
+    try:
+        while stop_check():
+            frame = None
+            try:
+                frame = frame_provider()
+            except Exception as exc:  # camera/perception not ready yet
+                logger.debug("mjpeg_frame_provider_failed", stream=stream_name, error=str(exc))
+
+            if frame is not None:
+                try:
+                    payload = await loop.run_in_executor(None, _encode_jpeg_frame, frame, jpeg_quality)
+                except Exception as exc:
+                    logger.warning("mjpeg_encode_failed", stream=stream_name, error=str(exc))
+                    payload = None
+                if payload:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + payload
+                        + b"\r\n"
+                    )
+
+            # Pace the stream at ~target_fps; never burst to catch up with encoding lag.
+            next_deadline += interval
+            delay = next_deadline - loop.time()
+            if delay <= 0:
+                next_deadline = loop.time()
+            else:
+                await asyncio.sleep(delay)
+    except (asyncio.CancelledError, GeneratorExit):
+        return
 
 
 class ChatRequest(BaseModel):
@@ -134,17 +488,115 @@ class MusicVolumeRequest(BaseModel):
     volume: float
 
 
-def create_app(engine: "RobotEngine") -> FastAPI:
-    """Create the FastAPI application with all routes."""
+def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
+    """Create the FastAPI application with all routes.
+
+    The returned application enforces token authentication on every route except
+    the public allow-list (:data:`AUTH_EXEMPT_PATHS` / :data:`AUTH_EXEMPT_PREFIXES`):
+    a bearer header, a ``?token=`` query parameter (for EventSource, MJPEG and
+    WebSocket clients that cannot set headers) or the httpOnly cookie issued by
+    ``POST /auth/login`` is required.
+
+    Args:
+        engine: The running :class:`~robot.core.engine.RobotEngine`.
+        auth_token: Optional shared API token. When omitted it is read from the
+            ``ROBOT_API_TOKEN`` environment variable, then from ``api.auth_token``
+            in the engine config, then a random token is generated and logged.
+
+    Returns:
+        FastAPI: Configured, authenticated application. The effective token is
+            exposed on ``app.state.auth_token`` (never on any HTTP response).
+
+    Note:
+        The uvicorn bind host comes from ``api.host`` in the engine config
+        (``RobotEngine._run_api``, default ``127.0.0.1``) and is deliberately not
+        changed here. Binding to a non-loopback address is still allowed but is no
+        longer anonymous: without a valid token only the health probe and the
+        static UI shell answer, everything else returns 401.
+    """
+    token, token_source = _resolve_auth_token(engine, auth_token)
+
     app = FastAPI(
         title="Robot Core API",
         description="Local-first humanoid robot brain API",
         version="1.0.0",
     )
+    app.state.auth_token = token
+    app.state.auth_token_source = token_source
+    app.add_middleware(_ApiAuthMiddleware, expected_token=token)
+
+    if token_source == "generated":
+        logger.warning(
+            "api_auth_token_generated",
+            message=(
+                "No API token configured — generated a one-time bearer token. "
+                "Set ROBOT_API_TOKEN (or api.auth_token in config/default.yaml) to keep it stable."
+            ),
+            token=token,
+            login_endpoint="POST /auth/login {\"token\": \"<token>\"}",
+        )
+    else:
+        logger.info("api_auth_token_enabled", token_source=token_source)
 
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    # ─── Authentication Endpoints ──────────────────────────────────────────
+    @app.post("/auth/login")
+    async def auth_login(req: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
+        """Exchange a valid API token for an httpOnly session cookie.
+
+        Browsers cannot attach an ``Authorization`` header to ``EventSource``,
+        MJPEG ``<img>`` or WebSocket streams, so the UI signs in once here and the
+        cookie then authenticates those streams.
+
+        Args:
+            req: Payload containing the shared ``token``.
+            request: Active request, used to detect HTTPS for the ``Secure`` flag.
+            response: FastAPI response used to attach the cookie headers.
+
+        Returns:
+            dict[str, Any]: Status and session lifetime.
+
+        Raises:
+            HTTPException: 401 when the submitted token does not match.
+        """
+        if not _token_matches((req.token or "").strip(), token):
+            logger.warning("api_auth_login_failed", remote=getattr(request.client, "host", None))
+            raise HTTPException(status_code=401, detail="Invalid API token.")
+        response.set_cookie(
+            key=AUTH_COOKIE_NAME,
+            value=token,
+            max_age=AUTH_COOKIE_MAX_AGE,
+            httponly=True,
+            secure=(request.url.scheme == "https"),
+            samesite="lax",
+            path="/",
+        )
+        return {"status": "ok", "authenticated": True, "max_age": AUTH_COOKIE_MAX_AGE}
+
+    @app.post("/auth/logout")
+    async def auth_logout(response: Response) -> dict[str, str]:
+        """Clear the local session cookie (the bearer token itself is unchanged)."""
+        response.delete_cookie(key=AUTH_COOKIE_NAME, path="/")
+        return {"status": "ok"}
+
+    @app.get("/auth/status")
+    async def auth_status(request: Request) -> dict[str, Any]:
+        """Report whether the caller currently presents valid credentials.
+
+        Returns:
+            dict[str, Any]: ``authenticated`` flag and the accepted credential
+                kinds; the token value itself is never returned.
+        """
+        candidate = _token_from_scope(request.scope)
+        return {
+            "status": "ok",
+            "auth_required": True,
+            "authenticated": _token_matches(candidate, token),
+            "accepted": ["authorization_bearer", "query_token", "session_cookie"],
+        }
 
     @app.get("/status", response_model=StatusResponse)
     async def status():
@@ -414,6 +866,8 @@ def create_app(engine: "RobotEngine") -> FastAPI:
         aicredits_key = aicredits_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
         has_aicredits_key = bool(aicredits_key)
 
+        # NOTE: no raw secret is ever returned here — providers are described by
+        # booleans only, and base URLs are non-sensitive.
         return {
             "provider": prov,
             "mode": "high_intelligence" if (is_gemini or is_openai) else "low_latency",
@@ -433,13 +887,11 @@ def create_app(engine: "RobotEngine") -> FastAPI:
                 "base_url": openrouter_cfg.get("base_url", "https://openrouter.ai/api/v1"),
                 "model": openrouter_cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"),
                 "has_api_key": has_openrouter_key,
-                "api_key": openrouter_key,
             },
             "aicredits": {
                 "base_url": aicredits_cfg.get("base_url", "https://aicredits.in/v1"),
                 "model": aicredits_cfg.get("model", "aion-labs/aion-3.0"),
                 "has_api_key": has_aicredits_key,
-                "api_key": aicredits_key,
             },
         }
 
@@ -1244,13 +1696,17 @@ def create_app(engine: "RobotEngine") -> FastAPI:
 
     @app.get("/callback")
     async def spotify_callback(code: str | None = None, error: str | None = None):
-        """Handle Spotify OAuth authorization redirect callback."""
-        from fastapi.responses import HTMLResponse
+        """Handle Spotify OAuth authorization redirect callback.
+
+        Every request-derived value interpolated into the HTML body is escaped
+        with :func:`html.escape` — the ``error`` parameter and the failure
+        message come straight from the attacker-visible query string.
+        """
         if error:
             return HTMLResponse(
                 f"""<html><body style="font-family: sans-serif; background: #121212; color: #fff; padding: 2rem;">
                 <h2 style="color: #ff5555;">Spotify Authorization Error</h2>
-                <p>{error}</p>
+                <p>{html.escape(str(error))}</p>
                 <a href="/" style="color: #1db954;">Return to Dashboard</a>
                 </body></html>""",
                 status_code=400,
@@ -1279,7 +1735,7 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             return HTMLResponse(
                 f"""<html><body style="font-family: sans-serif; background: #121212; color: #fff; padding: 2rem;">
                 <h2 style="color: #ff5555;">Spotify Authorization Failed</h2>
-                <p>{msg}</p>
+                <p>{html.escape(str(msg))}</p>
                 <a href="/" style="color: #1db954;">Return to Dashboard</a>
                 </body></html>""",
                 status_code=500,
@@ -1861,49 +2317,156 @@ def create_app(engine: "RobotEngine") -> FastAPI:
 
     @app.get("/camera/snapshot")
     async def get_camera_snapshot():
-        """Get the latest snapshot from the robot's camera with green perception polygons."""
+        """Get the latest snapshot from the robot's camera with green perception polygons.
+
+        JPEG encoding is off-loaded to a worker thread so a single snapshot
+        request cannot stall the event loop.
+        """
         from fastapi.responses import Response
         if not engine.is_camera_enabled:
             return Response(content=b"Camera paused or disabled", status_code=503)
         if hasattr(engine, "perception") and engine.perception:
-            import cv2
-
             frame = engine.perception.get_annotated_frame()
             if frame is not None:
-                success, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                if success:
-                    return Response(content=enc.tobytes(), media_type="image/jpeg")
+                try:
+                    payload = await asyncio.to_thread(_encode_jpeg_frame, frame, 80)
+                except Exception as exc:
+                    logger.warning("camera_snapshot_encode_failed", error=str(exc))
+                    payload = None
+                if payload:
+                    return Response(
+                        content=payload,
+                        media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+                    )
             return Response(content=b"No frame available", status_code=503)
         return Response(content=b"Camera not available", status_code=503)
 
     @app.get("/camera/stream")
     async def get_camera_stream():
-        """Ultra-low latency continuous MJPEG video stream with green polygons."""
+        """MJPEG stream serving the latest annotated perception frame, capped at ~15 FPS.
+
+        Falls back to the raw camera frame when no annotated frame is ready yet.
+        JPEG encoding runs on a worker thread (never on the event loop) and each
+        client stream is paced to :data:`MJPEG_TARGET_FPS`.
+
+        Returns:
+            StreamingResponse: multipart/x-mixed-replace MJPEG stream.
+        """
         from fastapi.responses import Response, StreamingResponse
         if not engine.is_camera_enabled:
             return Response(content=b"Camera paused or disabled", status_code=503)
 
-        import asyncio
-        import cv2
-
-        async def frame_generator():
-            try:
-                while engine.is_camera_enabled:
-                    if hasattr(engine, "perception") and engine.perception:
-                        frame = engine.perception.get_annotated_frame()
-                        if frame is not None:
-                            success, enc = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-                            if success:
-                                yield (b"--frame\r\n"
-                                       b"Content-Type: image/jpeg\r\n\r\n" + enc.tobytes() + b"\r\n")
-                    await asyncio.sleep(1.0 / 60.0)
-            except (asyncio.CancelledError, GeneratorExit):
-                return
+        def latest_frame():
+            """Return the newest annotated frame, falling back to the raw camera frame."""
+            perception = getattr(engine, "perception", None)
+            if perception is None:
+                return None
+            frame = perception.get_annotated_frame()
+            if frame is None and hasattr(perception, "camera"):
+                frame = perception.camera.get_latest_frame()
+            return frame
 
         return StreamingResponse(
-            frame_generator(),
-            media_type="multipart/x-mixed-replace; boundary=frame"
+            _mjpeg_part_generator(
+                latest_frame,
+                lambda: engine.is_camera_enabled,
+                stream_name="camera_stream",
+            ),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
+
+    @app.get("/camera/face-mesh")
+    async def get_face_mesh_stream():
+        """MJPEG stream with MediaPipe 468-point face mesh overlay, capped at ~15 FPS.
+
+        Served by FaceMeshOverlay's dedicated background thread; the HTTP side
+        encodes on a worker thread and paces output to :data:`MJPEG_TARGET_FPS`.
+        Falls back to the plain camera/stream if face mesh is unavailable.
+
+        Returns:
+            StreamingResponse: multipart/x-mixed-replace MJPEG stream with
+                green face mesh tessellation, contours, and iris rings drawn.
+        """
+        from fastapi.responses import Response, StreamingResponse
+        if not engine.is_camera_enabled:
+            return Response(content=b"Camera paused or disabled", status_code=503)
+
+        face_mesh = getattr(engine, "face_mesh", None)
+        if face_mesh is None or not face_mesh.is_available:
+            # Face mesh not ready: fall back to annotated perception stream
+            return await get_camera_stream()
+
+        def latest_mesh_frame():
+            """Return the newest mesh frame, falling back to the raw camera frame."""
+            frame = face_mesh.get_latest_mesh_frame()
+            if frame is None:
+                perception = getattr(engine, "perception", None)
+                if perception is not None and hasattr(perception, "camera"):
+                    frame = perception.camera.get_latest_frame()
+            return frame
+
+        return StreamingResponse(
+            _mjpeg_part_generator(
+                latest_mesh_frame,
+                lambda: engine.is_camera_enabled,
+                stream_name="face_mesh_stream",
+            ),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
+    @app.get("/api/face-mesh/status")
+    async def get_face_mesh_status() -> dict[str, Any]:
+        """Return current face mesh overlay status and measured FPS.
+
+        Returns:
+            dict[str, Any]: Face mesh availability, running state, and FPS.
+        """
+        fm = getattr(engine, "face_mesh", None)
+        return {
+            "status": "ok",
+            "available": fm is not None and fm.is_available,
+            "running": fm._running if fm else False,
+            "measured_fps": fm.measured_fps if fm else 0.0,
+            "camera_enabled": engine.is_camera_enabled,
+        }
+
+    @app.post("/api/face-mesh/toggle")
+    async def toggle_face_mesh(req: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        """Start or stop the face mesh background thread on demand.
+
+        Args:
+            req: Optional payload with boolean ``enabled`` to set explicitly;
+                if omitted, toggles the current state.
+
+        Returns:
+            dict[str, Any]: Updated face mesh running state.
+        """
+        fm = getattr(engine, "face_mesh", None)
+        if fm is None:
+            return {"status": "error", "message": "Face mesh not initialized (mediapipe may not be installed)"}
+
+        explicit = req.get("enabled")
+        if explicit is None:
+            # Toggle current state
+            if fm._running:
+                fm.stop()
+            else:
+                fm.start()
+        else:
+            if bool(explicit):
+                fm.start()
+            else:
+                fm.stop()
+
+        await engine.events.emit("face_mesh_toggled", running=fm._running)
+        return {
+            "status": "ok",
+            "running": fm._running,
+            "available": fm.is_available,
+        }
 
 
     @app.post("/character/action")
@@ -2203,8 +2766,12 @@ def create_app(engine: "RobotEngine") -> FastAPI:
             return {"status": "success", "briefing": briefing}
         return {"status": "error", "message": "Scheduler service not initialized"}
 
-    # Mount /data/images for generated image previews
-    from pathlib import Path
+    # Mount /data/images for generated image previews.
+    # NOTE: the directory is intentionally resolved relative to the working
+    # directory, exactly like the image service output_dir ("data/images"), so
+    # the gallery listing, the static mount and the writer never disagree.
+    # Absolute paths are never hardcoded here and the mount stays authenticated:
+    # only the UI shell under /static is public (see AUTH_EXEMPT_PATHS).
     from fastapi.staticfiles import StaticFiles
 
     images_dir = Path("data/images")
@@ -2214,15 +2781,69 @@ def create_app(engine: "RobotEngine") -> FastAPI:
     @app.websocket("/ws/events")
     @app.websocket("/ws/observability")
     async def event_stream(websocket: WebSocket):
-        """WebSocket stream for real-time telemetry and observability events."""
-        await websocket.accept()
-        import asyncio
-        import json
+        """WebSocket stream for real-time telemetry and observability events.
 
-        queue: asyncio.Queue = asyncio.Queue()
+        Security: :class:`_ApiAuthMiddleware` already refuses unauthorized
+        upgrades, and the handshake is validated again here (bearer header,
+        ``?token=`` query parameter or the login cookie) before ``accept()`` so a
+        future route/mount change cannot expose an open event firehose.
+
+        Backpressure: each client owns a bounded :class:`asyncio.Queue`
+        (:data:`WS_EVENT_QUEUE_MAXSIZE`). A slow consumer causes the *oldest*
+        buffered event to be dropped — never an unbounded memory climb — and the
+        drop count is logged rather than silently swallowed.
+        """
+        if not _token_matches(_token_from_scope(websocket.scope), token):
+            logger.warning(
+                "ws_handshake_rejected",
+                path=websocket.scope.get("path"),
+                remote=getattr(websocket.client, "host", None),
+            )
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+
+        await websocket.accept()
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=WS_EVENT_QUEUE_MAXSIZE)
+        drops = {"oldest_dropped": 0, "refused": 0}
 
         async def forward_event(**kwargs):
-            await queue.put(kwargs)
+            """Push one bus event into this client's bounded queue."""
+            try:
+                queue.put_nowait(kwargs)
+                return
+            except asyncio.QueueFull:
+                pass
+
+            # Queue is full: drop the oldest buffered event to make room for the
+            # newest one, then retry once.
+            try:
+                queue.get_nowait()
+                drops["oldest_dropped"] += 1
+            except asyncio.QueueEmpty:
+                pass
+
+            try:
+                queue.put_nowait(kwargs)
+            except asyncio.QueueFull:
+                # Another producer won the race for the freed slot; report the loss
+                # instead of dropping the event silently.
+                drops["refused"] += 1
+                logger.warning(
+                    "ws_event_dropped_queue_full",
+                    path=websocket.scope.get("path"),
+                    maxsize=WS_EVENT_QUEUE_MAXSIZE,
+                    refused=drops["refused"],
+                )
+                return
+
+            if drops["oldest_dropped"] == 1 or drops["oldest_dropped"] % 100 == 0:
+                logger.warning(
+                    "ws_event_backpressure_dropped_oldest",
+                    path=websocket.scope.get("path"),
+                    maxsize=WS_EVENT_QUEUE_MAXSIZE,
+                    oldest_dropped=drops["oldest_dropped"],
+                )
 
         engine.events.on("*", forward_event)
 

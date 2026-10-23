@@ -74,12 +74,12 @@ Tool Calls / Answer
  ├─ Image (image.generate, image.cancel via local SD / remote DALL-E) [DONE]
  ├─ Web Search (web.search, web.scrape_page) [DONE]
  ├─ Memory (memory.write, memory.search, memory.all, history.search, notes.vault_search) [DONE]
- ├─ Music Generator (AI generative audio synthesis / procedural sound generator) [PENDING - Phase 5.4]
- ├─ Research (Deep Research Agent — multi-query web scraping & dossier synthesis) [PENDING - Phase 5.2]
- ├─ Screen (Desktop OCR & visual window analysis beyond raw capture) [PENDING - Phase 4.2]
- ├─ Calls & Texts (SMS / voice call integration via Twilio or device bridge) [PENDING - Phase 5.5]
- ├─ Send to Phone (Push alerts via NTFY topic, Telegram bot, or Pushover) [PENDING - Phase 5.1]
- └─ Web Agent (Autonomous Playwright headless browser automation for web tasks) [PENDING - Phase 5.3]
+ ├─ Music Generator (AI generative audio synthesis / procedural sound generator) [DONE - Phase 5.4: music.generate + MusicGenerator]
+ ├─ Research (Deep Research Agent — multi-query web scraping & dossier synthesis) [DONE - Phase 5.2: research.deep_research]
+ ├─ Screen (Desktop OCR & visual window analysis beyond raw capture) [DONE - Phase 4.2: os.capture_screen w/ cropping + OCR]
+ ├─ Calls & Texts (SMS / voice call integration via Twilio or device bridge) [DONE - Phase 5.5: communication.draft_sms/send_sms + Twilio audit path]
+ ├─ Send to Phone (Push alerts via NTFY topic, Telegram bot, or Pushover) [DONE - Phase 5.1: phone.send_notification (NTFY/Telegram)]
+ └─ Web Agent (Autonomous Playwright headless browser automation for web tasks) [DONE - Phase 5.3: web.browser_agent]
  ↓
 Tool-retrieved context → Answer (Pass 2 Speech Synthesis)
  ↓

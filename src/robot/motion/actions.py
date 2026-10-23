@@ -10,11 +10,11 @@ Provides:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Any, Optional
 
 
-class ActionPriority(IntEnum := int):
+class ActionPriority(IntEnum):
     LOW = 0          # Subtle procedural shifts, breathing
     NORMAL = 1       # Idle gestures, looks
     HIGH = 2         # User commands, purposeful gestures

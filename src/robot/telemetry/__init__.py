@@ -6,6 +6,7 @@ Tags: [USER] [STT] [LLM] [MEMORY] [TOOL] [TTS] [SYSTEM] [ERROR]
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -26,12 +27,18 @@ class EventTag(str, Enum):
     ERROR = "ERROR"
 
 
+# Maximum retained latency samples per metric. Percentiles describe the most
+# recent window; an unbounded list grows forever on a 24/7 robot and makes
+# every snapshot() sort the entire history on each ~1s poll.
+LATENCY_SAMPLES_MAXLEN = 1000
+
+
 @dataclass
 class LatencyMetric:
     """Accumulates latency samples for a named metric and computes statistics."""
 
     name: str
-    samples: list[float] = field(default_factory=list)
+    samples: deque[float] = field(default_factory=lambda: deque(maxlen=LATENCY_SAMPLES_MAXLEN))
     target_ms: float | None = None
 
     def record(self, duration_ms: float) -> None:

@@ -8,12 +8,14 @@ Exports:
 
 from robot.perception.camera import CameraCapture
 from robot.perception.engine import PerceptionEngine
+from robot.perception.face_mesh import FaceMeshOverlay
 from robot.perception.vlm import LocalVLMGrounding
 from robot.perception.world import DetectedObject, DetectedPerson, TabletopItem, WorldState
 
 __all__ = [
     "CameraCapture",
     "PerceptionEngine",
+    "FaceMeshOverlay",
     "LocalVLMGrounding",
     "WorldState",
     "DetectedPerson",

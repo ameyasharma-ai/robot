@@ -37,6 +37,7 @@ from robot.observability import ObservabilityHub
 from robot.observability.models import SpanStatus
 from robot.personality import PersonalityManager
 from robot.perception import CameraCapture, PerceptionEngine
+from robot.perception.face_mesh import FaceMeshOverlay
 from robot.services import HealthMonitor
 from robot.services.scheduler import TemporalScheduler
 from robot.stt import StreamingSTT, WhisperServerSTT
@@ -424,9 +425,14 @@ class RobotEngine:
         # Runtime state
         self._session_id = str(uuid.uuid4())[:8]
         self._interrupt_event = asyncio.Event()
-        self._speech_queue: asyncio.Queue[tuple[str, float]] = asyncio.Queue()
-        self._tts_queue: asyncio.Queue[tuple[str, asyncio.Event, dict | None] | None] = asyncio.Queue()
+        # Bounded so barge-in / turn latency stays capped even if a consumer stalls.
+        # Overflow policy: drop OLDEST item (see _enqueue_dropping_oldest).
+        self._speech_queue: asyncio.Queue[tuple[str, float]] = asyncio.Queue(maxsize=32)
+        self._tts_queue: asyncio.Queue[tuple[str, asyncio.Event, dict | None] | None] = asyncio.Queue(maxsize=64)
         self._audio_queue: asyncio.Queue[tuple[Any, ...] | None] = asyncio.Queue(maxsize=16)
+        # Retained references for fire-and-forget tasks (asyncio only holds weak refs;
+        # an unreferenced task can be garbage-collected mid-flight and silently cancelled).
+        self._bg_tasks: set[asyncio.Task] = set()
         self._is_speaking = False
         self._speech_ended_ts = 0.0
         self._entering_standby = False
@@ -484,13 +490,13 @@ class RobotEngine:
         return bool(getattr(self, "camera_enabled", True))
 
     def set_camera_mode(self, enabled: bool) -> bool:
-        """Enable or disable camera capture and perception pipeline.
+        """Enable or disable camera capture, perception pipeline, and face mesh thread.
 
         Args:
             enabled: True to enable camera, False to pause and release hardware.
 
         Returns:
-            bool: Current camera enabled status.
+            bool: Current camera enabled status after applying the change.
         """
         self.camera_enabled = bool(enabled)
         if getattr(self, "perception", None) is not None:
@@ -498,6 +504,11 @@ class RobotEngine:
                 self.perception.resume()
             else:
                 self.perception.pause()
+        # Mirror pause/resume to face mesh thread so it blacks out correctly
+        if getattr(self, "face_mesh", None) is not None:
+            if self.camera_enabled:
+                self.face_mesh.start()  # no-op if already running
+            # Pause is implicit: worker reads camera.is_paused and clears its buffer
         return self.is_camera_enabled
 
     async def setup(self) -> None:
@@ -640,8 +651,18 @@ class RobotEngine:
                 target_fps=vision_cfg.get("perception_fps", 5.0),
                 enable_motion=vision_cfg.get("enable_motion", True),
             )
+            # High-FPS MediaPipe Face Mesh overlay — runs uncapped (max hardware FPS)
+            # Shares the same CameraCapture to avoid a second V4L2 open.
+            self.face_mesh = FaceMeshOverlay(
+                camera=camera,
+                max_fps=0.0,  # uncapped — hardware-limited
+                min_detection_confidence=vision_cfg.get("face_mesh_detection_confidence", 0.5),
+                min_tracking_confidence=vision_cfg.get("face_mesh_tracking_confidence", 0.5),
+                max_num_faces=vision_cfg.get("face_mesh_max_faces", 4),
+            )
         else:
             self.perception = None
+            self.face_mesh = None
 
         # Temporal Scheduler persistence setup
         await self.scheduler.setup()
@@ -873,6 +894,7 @@ class RobotEngine:
                 )
                 self.llm_provider_type = "gemini"
                 self._persist_llm_provider("gemini")
+                self.health.register("llm", self.llm)
                 await self.events.emit("llm.provider_changed", provider="gemini", mode="high_intelligence")
                 return {
                     "status": "ok",
@@ -897,6 +919,7 @@ class RobotEngine:
                 )
                 self.llm_provider_type = "openai_compatible"
                 self._persist_llm_provider("openai_compatible")
+                self.health.register("llm", self.llm)
                 await self.events.emit("llm.provider_changed", provider="openai_compatible", mode="high_intelligence")
                 return {
                     "status": "ok",
@@ -926,9 +949,11 @@ class RobotEngine:
                     self.llm.set_canonical_tools(self.tool_registry.get_schemas())
                 self.llm_provider_type = "local"
                 self._persist_llm_provider("local")
-                # 3. Warm up KV cache slot
+                self.health.register("llm", self.llm)
+                # 3. Warm up KV cache slot. Pass the captured instance: we already
+                # hold _provider_switch_lock here, so warm_up_llm must not re-acquire it.
                 try:
-                    await self.warm_up_llm()
+                    await self.warm_up_llm(llm_instance=self.llm)
                 except Exception as e:
                     logger.warning("warmup_after_switch_failed", error=str(e))
 
@@ -979,6 +1004,7 @@ class RobotEngine:
         self,
         personality_name: str | None = None,
         silent_prompt: str | None = None,
+        llm_instance: Any = None,
     ) -> float:
         """Warm up llama-server slot KV cache with a silent contextually aware prompt.
 
@@ -990,11 +1016,16 @@ class RobotEngine:
             personality_name: Name of the personality to warm up. If None, uses active.
             silent_prompt: Optional custom silent arrival/sync prompt. If None, uses
                 a standard sensory synchronization banner.
+            llm_instance: Pre-captured provider instance for callers that already hold
+                _provider_switch_lock (avoids deadlock re-acquiring it). If None, the
+                active provider is captured under the lock and used throughout.
 
         Returns:
             Duration in milliseconds taken to prime the KV cache slot.
         """
-        if not self.llm:
+        if llm_instance is None:
+            llm_instance = await self._capture_llm()
+        if not llm_instance:
             return 0.0
 
         pers = (
@@ -1054,9 +1085,9 @@ class RobotEngine:
         try:
             reg = getattr(self, "tool_registry", None)
             tools_schema = reg.get_schemas() if reg is not None else None
-            if hasattr(self.llm, "set_canonical_tools") and reg is not None:
-                self.llm.set_canonical_tools(reg.get_schemas())
-            async for _ in self.llm.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
+            if hasattr(llm_instance, "set_canonical_tools") and reg is not None:
+                llm_instance.set_canonical_tools(reg.get_schemas())
+            async for _ in llm_instance.stream_chat(warmup_messages, max_tokens=1, tools=tools_schema):
                 pass
             w_ms = (time.perf_counter() - t0) * 1000
             logger.info("llm_kv_cache_warmed", personality=pers_name, duration_ms=round(w_ms, 1))
@@ -1107,6 +1138,10 @@ class RobotEngine:
         if self.perception is not None:
             tasks.append(asyncio.create_task(self.perception.start()))
 
+        # Start face mesh background thread (daemon, non-blocking)
+        if getattr(self, "face_mesh", None) is not None:
+            self.face_mesh.start()
+
         try:
             await asyncio.gather(*tasks)
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -1127,6 +1162,9 @@ class RobotEngine:
             self.player.close()
             await self.lighting.stop()
             await self.health.stop()
+            # Stop face mesh thread before stopping perception/camera
+            if getattr(self, "face_mesh", None) is not None:
+                self.face_mesh.stop()
             if self.perception is not None:
                 await self.perception.stop()
             if self.memory:
@@ -1143,6 +1181,80 @@ class RobotEngine:
         """Signal user interaction (chat text, voice, or UI action) to reset silence and quiet timers."""
         if hasattr(self, "curiosity") and self.curiosity:
             self.curiosity.notify_activity()
+
+    def _enqueue_dropping_oldest(self, queue: asyncio.Queue, item: Any, name: str) -> None:
+        """Non-blocking enqueue with drop-oldest overflow policy.
+
+        Keeps voice pipeline latency bounded: when a capped queue is full the
+        stalest queued item is discarded (with a warning) so the newest phrase
+        or sentinel is enqueued immediately instead of blocking the producer.
+
+        Args:
+            queue: Target bounded asyncio.Queue.
+            item: Payload to enqueue.
+            name: Human-readable queue name for logging.
+        """
+        while queue.full():
+            try:
+                queue.get_nowait()
+                logger.warning("queue_overflow_dropped_oldest", queue=name, maxsize=queue.maxsize)
+            except asyncio.QueueEmpty:
+                break
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            # Practically unreachable after the drain loop above.
+            logger.warning("queue_overflow_dropped_new", queue=name, maxsize=queue.maxsize)
+
+    def _spawn_bg_task(self, coro: Any, name: str = "bg_task") -> asyncio.Task:
+        """Create a retained fire-and-forget task that logs its own exceptions.
+
+        asyncio only keeps weak references to tasks, so bare create_task results
+        can be garbage-collected (effectively cancelled) mid-flight. The task is
+        held in self._bg_tasks until done; its exception (if any) is logged.
+        """
+        task = asyncio.create_task(coro, name=name)
+        self._bg_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.warning("background_task_failed", task=name, error=str(exc))
+
+        task.add_done_callback(_on_done)
+        return task
+
+    def submit_proactive_line(self, line: str) -> None:
+        """Route an autonomy-generated proactive line through the shared speech intake path.
+
+        Enqueues onto _speech_queue (same path as mic utterances) so responses are
+        serialized by _response_loop and never race _pending_motion, the active
+        turn's interrupt event, or the TTS queues from a concurrent direct
+        _stream_response call. Non-blocking (drop-oldest), so no deadlock with
+        standby gating: the mic loop only discards audio frames, never queue intake.
+        """
+        self._enqueue_dropping_oldest(self._speech_queue, (f"[Proactive check-in]: {line}", time.time()), "speech")
+
+    def submit_control_utterance(self, text: str) -> None:
+        """Enqueue a pre-formatted control utterance (e.g. scheduler alert) for serialized playback."""
+        self._enqueue_dropping_oldest(self._speech_queue, (text, time.time()), "speech")
+
+    async def _capture_llm(self) -> Any:
+        """Return the currently active LLM provider instance under the provider-switch lock.
+
+        Prevents a concurrent switch_llm_provider() from hot-swapping self.llm
+        mid-stream: callers keep using the captured local reference for the whole
+        operation while a switch waits for the lock. Falls back to a plain read
+        when no initialized lock exists (partially constructed engines).
+        """
+        lock = getattr(self, "_provider_switch_lock", None)
+        if isinstance(lock, asyncio.Lock):
+            async with lock:
+                return self.llm
+        return getattr(self, "llm", None)
 
     async def _run_api(self) -> None:
         """Start the FastAPI server."""
@@ -1413,12 +1525,12 @@ class RobotEngine:
                                             )
                                             if hasattr(self, "player") and self.player:
                                                 try:
-                                                    asyncio.create_task(self.player.play_earcon("dismiss", volume=0.55))
+                                                    self._spawn_bg_task(self.player.play_earcon("dismiss", volume=0.55), "earcon_dismiss")
                                                 except Exception:
                                                     pass
                                             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                                                 self.tool_coordinator.reset()
-                                            await self._speech_queue.put(("[Enter standby acknowledge]", end_time))
+                                            self._enqueue_dropping_oldest(self._speech_queue, ("[Enter standby acknowledge]", end_time), "speech")
                                         elif is_wake:
                                             print(f"\n⚡ \033[1;32m[WAKE WORD DETECTED]\033[0m Matched '{matched_word}'!")
                                             self._last_interaction_ts = time.time()
@@ -1426,17 +1538,17 @@ class RobotEngine:
                                             await self.events.emit(Events.WAKE_WORD_DETECTED, wake_word=matched_word, text=text)
                                             if hasattr(self, "player") and self.player:
                                                 try:
-                                                    asyncio.create_task(self.player.play_earcon("wake_detected", volume=0.55))
+                                                    self._spawn_bg_task(self.player.play_earcon("wake_detected", volume=0.55), "earcon_wake")
                                                 except Exception:
                                                     pass
                                             if remainder:
                                                 print(f"\n💬 \033[1;36m[USER]\033[0m {remainder}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                                 self.telemetry.record("STT_FINAL_LATENCY", stt_ms)
                                                 await self.events.emit("user_text", user_text=remainder, stt_ms=stt_ms)
-                                                await self._speech_queue.put((remainder, end_time))
+                                                self._enqueue_dropping_oldest(self._speech_queue, (remainder, end_time), "speech")
                                             else:
                                                 print(f"\n💬 \033[1;36m[USER]\033[0m [Wake word only: '{matched_word}']")
-                                                await self._speech_queue.put(("[Wake word acknowledge]", end_time))
+                                                self._enqueue_dropping_oldest(self._speech_queue, ("[Wake word acknowledge]", end_time), "speech")
                                         elif current_mode == RobotMode.STANDBY:
                                             print(f"💤 \033[90m[STANDBY IGNORED]\033[0m {text}")
                                             self.observability.finish_trace(status=SpanStatus.CANCELLED)
@@ -1450,7 +1562,7 @@ class RobotEngine:
                                                 stt_ms,
                                             )
                                             await self.events.emit("user_text", user_text=text, stt_ms=stt_ms)
-                                            await self._speech_queue.put((text, end_time))
+                                            self._enqueue_dropping_oldest(self._speech_queue, (text, end_time), "speech")
                                         else:
                                             print(f"💤 \033[90m[WAKE WORD REQUIRED IGNORED]\033[0m {text}")
                                             self.observability.finish_trace(status=SpanStatus.CANCELLED)
@@ -1463,11 +1575,21 @@ class RobotEngine:
 
                         audio_buffer = []
 
+    #: Control-utterance prefixes routed through _speech_queue by autonomy/scheduler.
+    #: They are played verbatim via _stream_response's fast paths, so they skip the
+    #: mic-turn side effects (mode churn, turn counter, trace, memory store).
+    _CONTROL_UTTERANCE_PREFIXES = ("[Proactive check-in]: ", "[Scheduler alert]: ")
+
     async def _response_loop(self) -> None:
         """Process transcribed speech and generate responses."""
         while True:
             user_text, end_of_speech_time = await self._speech_queue.get()
             if not user_text:
+                continue
+
+            if user_text.startswith(self._CONTROL_UTTERANCE_PREFIXES):
+                # Serialized proactive/scheduler playback on the shared intake path.
+                await self._stream_response(user_text, end_of_speech_time, asyncio.Event())
                 continue
 
             logger.info("user_speech", text=user_text)
@@ -1610,7 +1732,7 @@ class RobotEngine:
         if hasattr(self, "warm_up_llm") and callable(getattr(self, "warm_up_llm")):
             coro = self.warm_up_llm(active_name)
             if asyncio.iscoroutine(coro):
-                asyncio.create_task(coro)
+                self._spawn_bg_task(coro, "warm_up_llm_after_switch")
 
         disp_title = pers.display_name if pers else active_name.title()
         return {
@@ -1659,25 +1781,25 @@ class RobotEngine:
         # Fast system acknowledgment triggers
         if user_text == "[Wake word acknowledge]":
             ack = "I'm listening."
-            await self._tts_queue.put((ack, interrupt, None))
-            await self._tts_queue.put(None)
+            self._enqueue_dropping_oldest(self._tts_queue, (ack, interrupt, None), "tts")
+            self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
             return ack
         if user_text == "[Enter standby acknowledge]":
             _, pers_title = self._get_active_persona_display_name()
             ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
             standby_interrupt = asyncio.Event()
-            await self._tts_queue.put((ack, standby_interrupt, None))
-            await self._tts_queue.put(None)
+            self._enqueue_dropping_oldest(self._tts_queue, (ack, standby_interrupt, None), "tts")
+            self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
             return ack
         if user_text.startswith("[Proactive check-in]: "):
             proactive_line = user_text[len("[Proactive check-in]: ") :].strip()
-            await self._tts_queue.put((proactive_line, interrupt, None))
-            await self._tts_queue.put(None)
+            self._enqueue_dropping_oldest(self._tts_queue, (proactive_line, interrupt, None), "tts")
+            self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
             return proactive_line
         if user_text.startswith("[Scheduler alert]: "):
             alert_line = user_text[len("[Scheduler alert]: ") :].strip()
-            await self._tts_queue.put((alert_line, interrupt, None))
-            await self._tts_queue.put(None)
+            self._enqueue_dropping_oldest(self._tts_queue, (alert_line, interrupt, None), "tts")
+            self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
             return alert_line
         if (
             hasattr(self, "wakeword")
@@ -1721,15 +1843,15 @@ class RobotEngine:
             )
             if hasattr(self, "player") and self.player:
                 try:
-                    asyncio.create_task(self.player.play_earcon("dismiss", volume=0.55))
+                    self._spawn_bg_task(self.player.play_earcon("dismiss", volume=0.55), "earcon_dismiss")
                 except Exception:
                     pass
             if hasattr(self, "tool_coordinator") and self.tool_coordinator:
                 self.tool_coordinator.reset()
             ack = f"Entering standby mode. Say 'Hey {pers_title}' whenever you need me."
             standby_interrupt = asyncio.Event()
-            await self._tts_queue.put((ack, standby_interrupt, None))
-            await self._tts_queue.put(None)
+            self._enqueue_dropping_oldest(self._tts_queue, (ack, standby_interrupt, None), "tts")
+            self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
             return ack
 
         # Check deterministic Fast-Path Router for sub-millisecond local utility commands (<50ms)
@@ -1745,8 +1867,8 @@ class RobotEngine:
                 )
                 if phrase and not interrupt.is_set():
                     timing_ref = {"end_of_speech": end_of_speech_time, "t_tts_start": time.perf_counter()}
-                    await self._tts_queue.put((phrase, interrupt, timing_ref, None))
-                    await self._tts_queue.put(None)
+                    self._enqueue_dropping_oldest(self._tts_queue, (phrase, interrupt, timing_ref, None), "tts")
+                    self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
                 return phrase
 
 
@@ -1873,14 +1995,15 @@ class RobotEngine:
             estimated_tokens = sum(len(m.get("content", "")) // 4 for m in messages if isinstance(m.get("content"), str))
             self.telemetry.record("CONTEXT_TOKENS", estimated_tokens)
             self.telemetry.record("CONTEXT_INPUT_TOKENS", estimated_tokens)
-            asyncio.create_task(
+            self._spawn_bg_task(
                 self.events.emit(
                     "metrics",
                     metrics={
                         "tokens_in": estimated_tokens,
                         "tokens": f"{estimated_tokens} in / 0 out",
                     },
-                )
+                ),
+                "emit_metrics_context",
             )
         self.observability.finish_span(context_span, metadata={"msg_count": len(messages), "tokens": estimated_tokens})
 
@@ -2027,7 +2150,7 @@ class RobotEngine:
                                 if clean_phrase:
                                     if timing_ref:
                                         timing_ref["t_tts_start"] = time.perf_counter()
-                                    await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
+                                    self._enqueue_dropping_oldest(self._tts_queue, (clean_phrase, interrupt, timing_ref, act_to_sync), "tts")
                                     timing_ref = None
 
             for ev_type, ev_val in voice_thought_parser.finish():
@@ -2056,7 +2179,7 @@ class RobotEngine:
                             if clean_phrase:
                                 if timing_ref:
                                     timing_ref["t_tts_start"] = time.perf_counter()
-                                await self._tts_queue.put((clean_phrase, interrupt, timing_ref, act_to_sync))
+                                self._enqueue_dropping_oldest(self._tts_queue, (clean_phrase, interrupt, timing_ref, act_to_sync), "tts")
                                 timing_ref = None
 
             # Check if model output inline <tool_call> tags or plain syntax e.g. music.play(query="...")
@@ -2123,6 +2246,21 @@ class RobotEngine:
                     llm_span,
                     metadata={"response_len": len(full_response), "gen_ms": round(gen_ms, 1)},
                 )
+
+            # Flush trailing phrase BEFORE tool coordination — unconditionally.
+            # Previously this ran only when no tool call was detected, so text the
+            # model emitted before a tool call (e.g. "Sure! I'll check that.") stayed
+            # in the chunker buffer and never reached TTS.
+            remainder = chunker.flush()
+            if remainder and not interrupt.is_set():
+                clean_rem, in_act = _extract_motion_from_phrase(remainder)
+                act_to_sync = in_act or self._pending_motion
+                self._pending_motion = None
+                if clean_rem:
+                    if timing_ref and "t_tts_start" not in timing_ref:
+                        timing_ref["t_tts_start"] = time.perf_counter()
+                    self._enqueue_dropping_oldest(self._tts_queue, (clean_rem, interrupt, timing_ref, act_to_sync), "tts")
+                    timing_ref = None
 
             # If the model autonomously proposed tool calls, coordinate holding conversation and execution
             if collected_tool_calls and not interrupt.is_set():
@@ -2197,37 +2335,26 @@ class RobotEngine:
                         messages=messages,
                     )
 
-            # Flush remaining tokens only if no tool call pass was executed
-            if not collected_tool_calls:
-                remainder = chunker.flush()
-                if remainder and not interrupt.is_set():
-                    clean_rem, in_act = _extract_motion_from_phrase(remainder)
-                    act_to_sync = in_act or self._pending_motion
-                    self._pending_motion = None
-                    if clean_rem:
-                        if timing_ref and "t_tts_start" not in timing_ref:
-                            timing_ref["t_tts_start"] = time.perf_counter()
-                        await self._tts_queue.put((clean_rem, interrupt, timing_ref, act_to_sync))
-                        timing_ref = None
+            # Trailing phrase was already flushed above (before tool coordination).
 
             if not interrupt.is_set() and full_response:
                 logger.info("bot_response", text=full_response.strip()[:100])
 
             # Sentinel to mark normal end of turn (only if not interrupted)
             if not interrupt.is_set():
-                await self._tts_queue.put(None)
+                self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
 
         except Exception as e:
             logger.error("llm_stream_error", error=str(e))
             if not interrupt.is_set():
-                await self._tts_queue.put(None)
+                self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
 
         e2e = (time.perf_counter() - t_llm_start) * 1000
         self.telemetry.record("LLM_GENERATION_LATENCY", e2e)
 
         output_tokens = max(1, len(full_response.split())) if full_response else 0
         self.telemetry.record("LLM_OUTPUT_TOKENS", output_tokens)
-        asyncio.create_task(
+        self._spawn_bg_task(
             self.events.emit(
                 "metrics",
                 metrics={
@@ -2235,7 +2362,8 @@ class RobotEngine:
                     "tokens_out": output_tokens,
                     "tokens": f"{estimated_tokens} in / {output_tokens} out",
                 },
-            )
+            ),
+            "emit_metrics_turn",
         )
 
         # Clean response from internal brackets, thoughts, and control lines before returning for storage
@@ -2577,7 +2705,17 @@ class RobotEngine:
         - Cognitive thinking and reasoning streams live without speaking thoughts aloud.
         - Saves to SQLite sessions and conversations tables upon completion.
         """
-        if not self.llm:
+        # Capture the provider once under the switch lock and use the local reference
+        # for the entire stream; a concurrent switch_llm_provider() must not swap the
+        # instance mid-generation. Inlined (no self._capture_llm()) so the method also
+        # works when bound to duck-typed engine objects in tests.
+        _lock = getattr(self, "_provider_switch_lock", None)
+        if isinstance(_lock, asyncio.Lock):
+            async with _lock:
+                llm_instance = self.llm
+        else:
+            llm_instance = self.llm
+        if not llm_instance:
             yield {"event": "error", "error": "LLM inference engine not available"}
             return
 
@@ -2659,8 +2797,8 @@ class RobotEngine:
 
         effective_thinking = self.thinking_enabled if thinking is None else thinking
         if effective_thinking:
-            if hasattr(self.llm, "enable_thinking"):
-                self.llm.enable_thinking = True
+            if hasattr(llm_instance, "enable_thinking"):
+                llm_instance.enable_thinking = True
             thought_prompt = (
                 "\n\n[Cognitive Reasoning Mode Active]:\n"
                 "CRITICAL MANDATORY DIRECTIVE:\n"
@@ -2707,7 +2845,7 @@ class RobotEngine:
         if re.match(r"^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|howdy|sup|what's\s+up|yo)[!.,?\s]*$", clean_prompt):
             tools = []
 
-        active_model_name = getattr(self.llm, "model", None)
+        active_model_name = getattr(llm_instance, "model", None)
         if not active_model_name and getattr(self, "llm_provider_type", "local") in ("openai_compatible", "openai"):
             active_model_name = getattr(self, "_get_persisted_openai_model", lambda d: d)("gpt-4o")
 
@@ -2752,14 +2890,14 @@ class RobotEngine:
 
         def _call_llm_stream(msgs, tools=None):
             import inspect
-            sig = inspect.signature(self.llm.stream_chat)
+            sig = inspect.signature(llm_instance.stream_chat)
             accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
             kwargs = {}
             if accepts_kwargs or "tools" in sig.parameters:
                 kwargs["tools"] = tools
             if accepts_kwargs or "max_tokens" in sig.parameters:
                 kwargs["max_tokens"] = dynamic_max_tokens
-            return self.llm.stream_chat(msgs, **kwargs)
+            return llm_instance.stream_chat(msgs, **kwargs)
 
         try:
             # First pass generation
@@ -3126,4 +3264,4 @@ class RobotEngine:
         self.observability.set_pipeline_node("TOOLS", "CANCELLED")
 
         # Emit mode change to IDLE
-        asyncio.create_task(self.state.set_mode(RobotMode.IDLE))
+        self._spawn_bg_task(self.state.set_mode(RobotMode.IDLE), "interrupt_mode_idle")

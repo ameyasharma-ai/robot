@@ -1,12 +1,45 @@
 # ==============================================================================
 # Robot Core — Production Dockerfile
-# Multi-stage optimized build for Python 3.12 with GPU & Audio support
+# Genuine multi-stage build (builder + runtime) for Python 3.12 with Audio support.
+# NOTE: CPU-only inference. The python:3.12-slim base has no CUDA toolkit, so
+# torch/onnxruntime run on CPU here; the optional GPU block in docker-compose.yml
+# is only useful with a CUDA-enabled base image.
 # ==============================================================================
 
-FROM python:3.12-slim AS base
+# ---------- Stage 1: builder — compile/install python wheels ----------
+FROM python:3.12-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1
+
+# Build tools for wheels that need compiling (portaudio bindings etc.)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    portaudio19-dev \
+    libasound2-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Source must exist BEFORE the editable install runs.
+COPY pyproject.toml README.md /app/
+COPY src/ /app/src/
+COPY config/ /app/config/
+
+# Install CPU-only torch first (default PyPI torch wheels bundle multi-GB CUDA
+# libraries); later `pip install -e .` sees the requirement satisfied.
+# Core deps only — add `".[full]"` here to bake in mediapipe/ultralytics/diffusers.
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir "torch>=2.4.0" torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -e .
+
+# ---------- Stage 2: runtime — minimal image, no build toolchain ----------
+FROM python:3.12-slim AS runtime
 
 LABEL maintainer="Ameya Sharma"
-LABEL description="Local-first humanoid robot brain: full-duplex voice, persistent memory, agentic tools"
+LABEL description="Local-first humanoid robot brain: full-duplex voice, persistent memory, agentic tools (CPU-only build)"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -16,16 +49,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PORT=8888 \
     HOST=0.0.0.0
 
-# Install required system packages: audio (ALSA/PortAudio), video/OpenCV, Vulkan, curl, and build tools
+# Runtime system packages only: audio (ALSA/PortAudio), video/OpenCV, Vulkan, curl.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
     curl \
-    git \
     ffmpeg \
     libasound2 \
-    libasound2-dev \
     libportaudio2 \
-    portaudio19-dev \
     libgl1 \
     libglib2.0-0 \
     alsa-utils \
@@ -39,14 +68,11 @@ WORKDIR /app
 # Create necessary runtime directories
 RUN mkdir -p /app/data /app/models /app/logs /app/config /app/src
 
-# Copy dependency specifications first for layer caching
-COPY pyproject.toml README.md /app/
+# Copy the pre-built editable install + site-packages from the builder stage.
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Install python build dependencies and wheels
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -e .
-
-# Copy source code and scripts
+# Copy source code and scripts (already copied in builder for the editable install)
 COPY src/ /app/src/
 COPY config/ /app/config/
 COPY scripts/docker_entrypoint.sh /app/scripts/docker_entrypoint.sh

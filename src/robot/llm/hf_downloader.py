@@ -24,6 +24,14 @@ from robot.llm.model_registry import ModelCategory, ModelMetadata, ModelRegistry
 
 logger = logging.getLogger(__name__)
 
+# Disk write batching for download workers: accumulate chunks in memory and flush
+# to the .part file from a worker thread once this many bytes are buffered, so the
+# event loop is never blocked by synchronous 512 KB f.write() calls.
+DOWNLOAD_FLUSH_THRESHOLD_BYTES = 4 * 1024 * 1024
+
+# Maximum number of finished download tasks retained in history.
+MAX_RETAINED_DOWNLOAD_TASKS = 50
+
 
 @dataclass
 class DownloadTask:
@@ -325,11 +333,13 @@ class HuggingFaceDownloadManager:
 
     _instance: HuggingFaceDownloadManager | None = None
 
-    def __init__(self, base_dir: Path | None = None) -> None:
+    def __init__(self, base_dir: Path | None = None, max_retained_tasks: int = MAX_RETAINED_DOWNLOAD_TASKS) -> None:
         """Initialize the download manager.
 
         Args:
             base_dir: Optional base project directory.
+            max_retained_tasks: Cap for finished task history; active tasks are
+                never pruned. Keeps `_tasks` from growing unboundedly.
         """
         self.base_dir = base_dir or Path.cwd()
         self.llm_dir = self.base_dir / "models" / "llm"
@@ -339,6 +349,7 @@ class HuggingFaceDownloadManager:
 
         self._tasks: dict[str, DownloadTask] = {}
         self._async_tasks: dict[str, asyncio.Task[None]] = {}
+        self._max_retained_tasks = max(1, int(max_retained_tasks))
 
     @classmethod
     def get_instance(cls, base_dir: Path | None = None) -> HuggingFaceDownloadManager:
@@ -373,6 +384,24 @@ class HuggingFaceDownloadManager:
         """
         task = self._tasks.get(download_id)
         return task.to_dict() if task else None
+
+    def _prune_finished_tasks(self) -> None:
+        """Bound task history: drop oldest completed/failed/cancelled entries beyond the cap.
+
+        Active tasks (queued/downloading/verifying) are never removed, so in-progress
+        downloads and the most recent finished history entries remain queryable.
+        """
+        overflow = len(self._tasks) - self._max_retained_tasks
+        if overflow <= 0:
+            return
+        finished = sorted(
+            (task for task in self._tasks.values() if task.status in ("completed", "failed", "cancelled")),
+            key=lambda task: task.updated_at,
+        )
+        for task in finished[:overflow]:
+            self._tasks.pop(task.download_id, None)
+            self._async_tasks.pop(task.download_id, None)
+            logger.debug("download_task_history_pruned", download_id=task.download_id, status=task.status)
 
     async def cancel_download(self, download_id: str) -> bool:
         """Cancel an in-progress download task and clean up temporary partial files.
@@ -457,6 +486,7 @@ class HuggingFaceDownloadManager:
         )
 
         self._tasks[download_id] = task
+        self._prune_finished_tasks()
         coro = self._download_worker(task, dest_path, mmproj_filename)
         self._async_tasks[download_id] = asyncio.create_task(coro)
 
@@ -520,15 +550,31 @@ class HuggingFaceDownloadManager:
                     last_time = time.time()
                     last_bytes = task.downloaded_bytes
 
+                    # Buffer chunks in memory and flush to disk from a worker thread
+                    # every few MB, so 512 KB synchronous f.write() calls never block
+                    # the event loop shared by the whole robot runtime.
+                    write_buf = bytearray()
+
+                    async def _flush_buf() -> None:
+                        nonlocal write_buf
+                        if not write_buf:
+                            return
+                        data = bytes(write_buf)
+                        write_buf = bytearray()
+                        await asyncio.to_thread(f.write, data)
+
                     with open(part_path, mode) as f:
                         async for chunk in resp.aiter_bytes(chunk_size=524288):  # 512 KB chunks
                             if task._cancel_event.is_set():
                                 return
 
-                            f.write(chunk)
+                            write_buf += chunk
                             task.downloaded_bytes += len(chunk)
                             now = time.time()
                             elapsed = now - last_time
+
+                            if len(write_buf) >= DOWNLOAD_FLUSH_THRESHOLD_BYTES:
+                                await _flush_buf()
 
                             # Update metrics every 300ms
                             if elapsed >= 0.3:
@@ -536,7 +582,7 @@ class HuggingFaceDownloadManager:
                                 speed = delta_bytes / elapsed
                                 # Exponential Moving Average smoothing
                                 task.speed_bps = (task.speed_bps * 0.7 + speed * 0.3) if task.speed_bps > 0 else speed
-                                
+
                                 if task.total_bytes > 0:
                                     task.percent = min(100.0, (task.downloaded_bytes / task.total_bytes) * 100.0)
                                     remaining = task.total_bytes - task.downloaded_bytes
@@ -545,6 +591,10 @@ class HuggingFaceDownloadManager:
                                 task.updated_at = now
                                 last_time = now
                                 last_bytes = task.downloaded_bytes
+
+                        # Drain the remaining buffer and durably flush before rename.
+                        await _flush_buf()
+                        await asyncio.to_thread(f.flush)
 
             # Finalize download: rename .part to final file
             task.status = "verifying"
@@ -602,3 +652,6 @@ class HuggingFaceDownloadManager:
             task.status = "failed"
             task.error = str(e)
             task.updated_at = time.time()
+        finally:
+            # Keep `_tasks` bounded once this task reaches a terminal status.
+            self._prune_finished_tasks()

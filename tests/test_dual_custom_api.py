@@ -63,9 +63,12 @@ def test_llm_status_dual_providers(test_engine: MagicMock) -> None:
     assert "openrouter" in data
     assert "aicredits" in data
     assert data["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
-    assert data["openrouter"]["api_key"] == "sk-or-test-123"
+    assert data["openrouter"]["has_api_key"] is True
+    assert "api_key" not in data["openrouter"]
     assert data["aicredits"]["base_url"] == "https://aicredits.in/v1"
-    assert data["aicredits"]["api_key"] == "sk-live-test-456"
+    assert data["aicredits"]["has_api_key"] is True
+    assert "api_key" not in data["aicredits"]
+    assert "api_key" not in data["openai_compatible"]
 
 
 def test_dual_api_config_persistence(test_engine: MagicMock) -> None:

@@ -13,7 +13,6 @@ import asyncio
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -50,6 +49,24 @@ class ProcessSupervisor:
         self._shutdown_callbacks: list[Callable[[], Any]] = []
         self._registered_processes: dict[str, int] = {}
         self._signal_handled: bool = False
+        # Set instead of calling sys.exit() from a signal handler, so a running
+        # asyncio loop can observe the flag and perform its own cleanup
+        # (await wait_for_shutdown() / poll shutdown_requested).
+        self._shutdown_event = asyncio.Event()
+
+    @property
+    def shutdown_event(self) -> asyncio.Event:
+        """Event set once a termination signal has been received."""
+        return self._shutdown_event
+
+    @property
+    def shutdown_requested(self) -> bool:
+        """True when a SIGINT/SIGTERM has been handled and shutdown is requested."""
+        return self._shutdown_event.is_set()
+
+    async def wait_for_shutdown(self) -> None:
+        """Awaitable shutdown gate for asyncio consumers (instead of hard process exit)."""
+        await self._shutdown_event.wait()
 
     def register_process(self, name: str, pid: int) -> None:
         """Register a child daemon process ID for supervision.
@@ -103,14 +120,25 @@ class ProcessSupervisor:
             pass
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
-        """Handle incoming termination signal."""
+        """Handle incoming termination signal.
+
+        Does NOT call sys.exit(): exiting from a signal handler skips asyncio
+        cleanup (pending tasks, transports, embedded API server). Instead the
+        supervisor stops its watchdog, runs teardown hooks, and sets the
+        shutdown event so the running asyncio loop can shut down gracefully.
+        """
         if self._signal_handled:
             return
         self._signal_handled = True
         sig_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
         logger.info("termination_signal_received", signal=sig_name)
         self.stop()
-        sys.exit(0)
+        try:
+            loop = asyncio.get_running_loop()
+            loop.call_soon_threadsafe(self._shutdown_event.set)
+        except RuntimeError:
+            # No running loop in this thread/context: set directly (safe pre-loop).
+            self._shutdown_event.set()
 
     def _execute_shutdown_hooks(self) -> None:
         """Execute registered teardown hooks and terminate child processes."""

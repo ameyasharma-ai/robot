@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 
 import warnings
@@ -20,6 +21,11 @@ from robot.telemetry import get_logger
 
 logger = get_logger("audio.capture")
 
+# Max queued mic blocks (~100 * 512 samples ≈ 3.2s at 16kHz). A stale mic
+# backlog is worse than dropped frames for a live VAD pipeline, so the queue
+# is bounded with explicit drop-oldest policy.
+_MIC_QUEUE_MAX_BLOCKS = 100
+
 
 @dataclass
 class AudioCaptureMetrics:
@@ -30,6 +36,7 @@ class AudioCaptureMetrics:
     dropouts: int = 0
     errors: int = 0
     sample_rate_mismatches: int = 0
+    queue_drops: int = 0
 
 
 class AudioCapture:
@@ -54,6 +61,8 @@ class AudioCapture:
         self._queue: asyncio.Queue[np.ndarray] | None = None
         self._stream: sd.InputStream | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._actual_rate: int = sample_rate
+        self._last_queue_warn_ts: float = 0.0
 
         # Work Package B resilience enhancements
         self._state: AudioDeviceState = AudioDeviceState.HEALTHY
@@ -70,11 +79,6 @@ class AudioCapture:
     def metrics(self) -> AudioCaptureMetrics:
         """Return operational capture telemetry metrics."""
         return self._metrics
-
-    def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
-        """sounddevice callback — runs in audio thread."""
-        if self._loop and self._queue:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, indata.copy())
 
     def _open_stream(self) -> None:
         """Open and start sounddevice InputStream with bounded resilience."""
@@ -145,18 +149,99 @@ class AudioCapture:
         Tries the configured sample rate first (16 kHz), then falls back to
         the device's native rate with software resampling. This prevents
         crashes when PipeWire is down and ALSA rejects non-native rates.
+
+        The whole PortAudio open plus pactl/amixer device-configuration
+        sequence is blocking I/O, so it is offloaded to a worker thread to
+        keep the event loop responsive.
         """
         self._loop = loop
         if self._queue is None:
-            self._queue = asyncio.Queue()
+            self._queue = asyncio.Queue(maxsize=_MIC_QUEUE_MAX_BLOCKS)
 
-        self._open_stream()
+        await asyncio.to_thread(self._open_stream)
         logger.info("capture_started", sample_rate=self._actual_rate, frame_size=self.frame_size)
         return self._queue
 
+    def _offer_frame(self, data: np.ndarray) -> None:
+        """Enqueue a mic frame on the event loop with drop-oldest backpressure.
+
+        Runs on the event loop via call_soon_threadsafe. A bounded queue with
+        explicit drops is safer than an unbounded backlog of stale audio.
+        """
+        if self._queue is None:
+            return
+        try:
+            self._queue.put_nowait(data)
+        except asyncio.QueueFull:
+            # Drop the oldest stale block to make room for live audio.
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            self._metrics.queue_drops += 1
+            self._metrics.dropouts += 1
+            now = time.monotonic()
+            if now - self._last_queue_warn_ts >= 5.0:
+                self._last_queue_warn_ts = now
+                logger.warning(
+                    "capture_queue_overflow_drop_oldest",
+                    max_blocks=_MIC_QUEUE_MAX_BLOCKS,
+                    total_drops=self._metrics.queue_drops,
+                )
+            try:
+                self._queue.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
+
     def _make_callback(self, actual_rate: int):
-        """Create an audio callback, with optional resampling if rates differ."""
+        """Create an audio callback, with optional resampling if rates differ.
+
+        When software resampling is active, a continuous fractional-position
+        resampler keeps phase continuity across 512-sample block boundaries
+        (per-block np.linspace restarts caused clicks and spectral artifacts).
+        """
         need_resample = actual_rate != self.sample_rate
+
+        if need_resample:
+            # Mutable carry state: leftover tail sample for interpolation and
+            # the absolute fractional read position within the input stream.
+            resample_state: dict[str, object] = {
+                "tail": np.zeros(0, dtype=np.float32),
+                "consumed": 0,       # total input samples seen so far
+                "pos_abs": 0.0,      # absolute fractional read index
+            }
+            ratio = float(actual_rate) / float(self.sample_rate)  # input samples per output sample
+
+            def _resample_block(block: np.ndarray) -> np.ndarray:
+                tail = resample_state["tail"]
+                flat = block.astype(np.float32, copy=False).flatten()
+                if tail.size:
+                    buf = np.concatenate((tail, flat))
+                else:
+                    buf = flat
+                n = len(buf)
+                base = int(resample_state["consumed"]) - tail.size  # absolute index of buf[0]
+                rel_pos = float(resample_state["pos_abs"]) - base
+                consumed_next = int(resample_state["consumed"]) + len(flat)
+
+                if n >= 2 and rel_pos <= n - 2:
+                    count = int((n - 1 - rel_pos) / ratio) + 1
+                    indices = rel_pos + ratio * np.arange(count, dtype=np.float64)
+                    out = np.interp(indices, np.arange(n, dtype=np.float64), buf).astype(np.float32)
+                    # Advance fractional position past the last emitted sample
+                    # so the next block continues seamlessly.
+                    resample_state["pos_abs"] = base + rel_pos + ratio * count
+                else:
+                    out = np.zeros(0, dtype=np.float32)
+                    resample_state["pos_abs"] = max(
+                        float(resample_state["pos_abs"]), base + n - 1
+                    )
+
+                # Carry the final input sample so the next block can
+                # interpolate across the block boundary.
+                resample_state["tail"] = buf[-1:].copy()
+                resample_state["consumed"] = consumed_next
+                return out
 
         def _callback(indata: np.ndarray, frames: int, time_info, status) -> None:
             if status:
@@ -169,12 +254,11 @@ class AudioCapture:
             if self._loop and self._queue:
                 data = indata.copy()
                 if need_resample:
-                    # Simple linear interpolation resample (low overhead)
-                    ratio = self.sample_rate / actual_rate
-                    n_out = int(len(data) * ratio)
-                    indices = np.linspace(0, len(data) - 1, n_out)
-                    data = np.interp(indices, np.arange(len(data)), data.flatten()).astype(np.float32).reshape(-1, 1)
-                self._loop.call_soon_threadsafe(self._queue.put_nowait, data)
+                    out = _resample_block(data.flatten())
+                    if out.size == 0:
+                        return
+                    data = out.reshape(-1, 1)
+                self._loop.call_soon_threadsafe(self._offer_frame, data)
 
         return _callback
 
@@ -204,7 +288,7 @@ class AudioCapture:
             except RuntimeError:
                 pass
         if self._queue is None:
-            self._queue = asyncio.Queue()
+            self._queue = asyncio.Queue(maxsize=_MIC_QUEUE_MAX_BLOCKS)
 
         if self._stream is None:
             try:

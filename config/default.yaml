@@ -40,7 +40,7 @@ stt:
   temperature: 0.0
   chunk_seconds: 0.8
 tts:
-  provider: kokoro
+  provider: piper
   model_path: models/tts/en-us-lessac-medium.onnx
   sample_rate: 16000
 audio:
@@ -119,6 +119,7 @@ personality:
 api:
   host: 127.0.0.1
   port: 8888
+  auth_token: ''
 context_budget:
   system_personality: 600
   tool_schemas: 1500

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import re
+import struct
 import wave
 from abc import ABC, abstractmethod
 
@@ -13,6 +15,11 @@ import requests
 from robot.telemetry import get_logger
 
 logger = get_logger("stt")
+
+# Default per-request HTTP timeout (seconds) for whisper-server inference.
+# 5s was too short for long utterances: whisper.cpp transcribes the full WAV in
+# one blocking request, and multi-second audio on the Vulkan iGPU can exceed it.
+DEFAULT_STT_TIMEOUT_S = 20.0
 
 # Hallucination patterns — Whisper commonly generates these on noise/silence
 HALLUCINATION_PATTERNS = [
@@ -74,10 +81,12 @@ class WhisperServerSTT(STTProvider):
         url: str = "http://127.0.0.1:8081/inference",
         language: str = "en",
         temperature: float = 0.0,
+        timeout: float = DEFAULT_STT_TIMEOUT_S,
     ) -> None:
         self.url = url
         self.language = language
         self.temperature = temperature
+        self.timeout = timeout
         self._session = requests.Session()
 
     @staticmethod
@@ -91,8 +100,6 @@ class WhisperServerSTT(STTProvider):
         Returns:
             bytes: Valid 44-byte RIFF/WAVE header followed by raw 16-bit PCM byte stream.
         """
-        import struct
-
         # Peak normalization if signal is low
         peak = float(np.max(np.abs(pcm))) if len(pcm) > 0 else 0.0
         if 1e-4 < peak < 0.7:
@@ -132,9 +139,14 @@ class WhisperServerSTT(STTProvider):
         wav_bytes = self._pcm_to_wav(audio, sample_rate)
         audio_duration = len(audio) / sample_rate
 
+        # Clamp configured temperature into whisper.cpp's accepted [0.0, 1.0]
+        # range; deterministic decoding (0.0) remains the default and is always
+        # accepted by every provider build.
+        temp = min(max(float(self.temperature), 0.0), 1.0)
+
         files = {"file": ("audio.wav", wav_bytes, "audio/wav")}
         data = {
-            "temperature": "0.0",
+            "temperature": f"{temp:.2f}",
             "language": self.language,
             "response_format": "json",
             "best_of": "1",
@@ -142,9 +154,8 @@ class WhisperServerSTT(STTProvider):
         }
 
         try:
-            import asyncio
             def _do_post() -> requests.Response:
-                return self._session.post(self.url, files=files, data=data, timeout=5)
+                return self._session.post(self.url, files=files, data=data, timeout=self.timeout)
 
             resp = await asyncio.to_thread(_do_post)
             if resp.status_code == 200:
@@ -154,13 +165,13 @@ class WhisperServerSTT(STTProvider):
                 if audio_duration < 1.0 and len(cleaned.split()) > 6:
                     return ""
                 return cleaned
+            logger.warning("stt_bad_status", status=resp.status_code, body=resp.text[:200])
         except Exception as e:
-            logger.error("stt_error", error=str(e))
+            logger.warning("stt_error", error=str(e), timeout_s=self.timeout, audio_seconds=round(audio_duration, 2))
         return ""
 
     async def health_check(self) -> bool:
         try:
-            import asyncio
             base = self.url.rsplit("/", 1)[0]
             resp = await asyncio.to_thread(self._session.get, f"{base}/", timeout=2)
             return resp.status_code == 200
@@ -211,7 +222,6 @@ class StreamingSTT:
 
     def _dispatch_chunk(self) -> asyncio.Task[str]:
         """Find a clean energy dip split point and dispatch chunk transcription."""
-        import asyncio
         buf = np.array(self._current_buffer, dtype=np.float32)
         search_window = int(self.sample_rate * 0.4)
         split_idx = len(buf)
@@ -250,7 +260,6 @@ class StreamingSTT:
 
     async def finalize(self, remaining_audio: np.ndarray | None = None) -> str:
         """Finalize the stream when speech ends, await in-flight tasks, transcribe tail, and merge."""
-        import asyncio
         self._is_active = False
         parts: list[str] = list(self._completed_transcripts)
 

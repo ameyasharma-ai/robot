@@ -170,6 +170,10 @@ class FastProceduralImageProvider(ImageProvider):
 class ImageGenerationService:
     """Manages asynchronous background image generation jobs with voice prioritization."""
 
+    # Retain only the most recent N finished jobs in memory; both _jobs and
+    # _interrupt_events otherwise grow without bound on a long-running robot.
+    MAX_RETAINED_JOBS = 100
+
     def __init__(
         self,
         output_dir: str = "data/images",
@@ -203,6 +207,21 @@ class ImageGenerationService:
 
     def on_event(self, cb) -> None:
         self._event_callbacks.append(cb)
+
+    def _finish_job(self, job_id: str) -> None:
+        """Release a finished job's interrupt event and prune job history."""
+        self._interrupt_events.pop(job_id, None)
+        if len(self._jobs) <= self.MAX_RETAINED_JOBS:
+            return
+        # dict order is insertion order: evict oldest finished jobs first.
+        finished = [
+            jid
+            for jid, j in self._jobs.items()
+            if j.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+        ]
+        for jid in finished[: len(self._jobs) - self.MAX_RETAINED_JOBS]:
+            self._jobs.pop(jid, None)
+            self._interrupt_events.pop(jid, None)
 
     async def _emit_job_event(self, event_type: str, job: ImageJob) -> None:
         for cb in self._event_callbacks:
@@ -277,6 +296,7 @@ class ImageGenerationService:
         if job.started_at:
             job.duration_s = job.completed_at - job.started_at
         await self._emit_job_event("image.cancelled", job)
+        self._finish_job(job_id)
         logger.info("image_job_cancelled", job_id=job_id)
         return True
 
@@ -313,6 +333,7 @@ class ImageGenerationService:
                         job.output_path = out_path
                         await self._emit_job_event("image.completed", job)
                         logger.info("image_job_completed_fallback", job_id=job.job_id)
+                        self._finish_job(job.job_id)
                         continue
                     except Exception as fb_err:
                         logger.error("image_fallback_also_failed", error=str(fb_err))
@@ -321,6 +342,9 @@ class ImageGenerationService:
                 job.completed_at = time.time()
                 await self._emit_job_event("image.failed", job)
                 logger.error("image_job_failed", job_id=job.job_id, error=str(e))
+            finally:
+                # Free the per-job interrupt event and prune finished-job history.
+                self._finish_job(job.job_id)
 
 
 from robot.image.gpu_handoff import GpuHandoffState, GpuResourceHandoffManager

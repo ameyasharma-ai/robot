@@ -51,7 +51,6 @@ class LocalVLMGrounding:
         self.enabled: bool = enabled
         self.device: str = device
         self.max_image_dim: int = max_image_dim
-        self._session = None
         self._initialized: bool = False
 
         logger.info(
@@ -69,6 +68,14 @@ class LocalVLMGrounding:
 
         Analyzes color composition, geometric layout, prominent tabletop items,
         estimated positions, and bounding details without consuming CUDA VRAM.
+
+        Threading note: this method runs heavy synchronous OpenCV work
+        (GaussianBlur, Canny, findContours) on the calling thread. Current
+        call sites in robot.tools.builtins.perception (inspect_tabletop,
+        analyze_camera_frame) invoke it directly inside async handlers, i.e.
+        ON the asyncio event loop for the duration of one inspection
+        (typically ~5-50 ms). Callers on a latency-sensitive loop should wrap
+        it with ``asyncio.to_thread(self.inspect_frame, ...)``.
 
         Args:
             frame: Input BGR image from the camera.

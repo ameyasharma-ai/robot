@@ -4,6 +4,8 @@ Features:
 - Decoupled background worker thread with bounded frame queue (size=2) dropping stale frames
 - Fast YuNet INT8 ONNX face detection (people tracking, face position, attention estimate)
 - Real-time YOLOv8 object detection with 3D tabletop spatial mapping and temporal smoothing
+  (inference cadence configurable via ``yolo_fps`` / ROBOT_YOLO_FPS, default 3 Hz so CPU
+  YOLO never starves realtime audio; HUD and WorldState reuse cached detections between ticks)
 - Adaptive frame differencing for physical motion / activity detection
 - Scene ambient illumination / lighting classification (dark, dim, normal, bright)
 - Steady 10 FPS WorldState publishing with CPU throttling (never starves audio playback or STT)
@@ -12,6 +14,7 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
 import threading
 import time
@@ -38,6 +41,7 @@ class PerceptionEngine:
         yolo_model_path: str = "models/vision/yolov8n.pt",
         target_fps: float = 10.0,
         enable_motion: bool = True,
+        yolo_fps: Optional[float] = None,
     ) -> None:
         """Initialize the perception engine with camera and detectors.
 
@@ -47,12 +51,31 @@ class PerceptionEngine:
             yolo_model_path: Path to YOLOv8 object detection weights.
             target_fps: Target inference frequency in FPS (default: 10.0).
             enable_motion: Whether to calculate motion levels via frame differencing.
+            yolo_fps: Independent YOLOv8 cadence in Hz. Defaults to the
+                ROBOT_YOLO_FPS environment value, else 3.0 Hz — running
+                YOLOv8n at the full 10 Hz target_fps on CPU starves realtime
+                audio. A frame-skip counter gates inference; everything else
+                (annotation, WorldState) keeps running at target_fps using the
+                cached detections between YOLO ticks.
         """
         self.camera = camera or CameraCapture()
         self.yunet_model_path = yunet_model_path
         self.yolo_model_path = yolo_model_path
         self.target_fps = target_fps
         self.enable_motion = enable_motion
+
+        if yolo_fps is None:
+            env_val = os.environ.get("ROBOT_YOLO_FPS", "")
+            try:
+                yolo_fps = float(env_val) if env_val else 3.0
+            except ValueError:
+                yolo_fps = 3.0
+        self.yolo_fps = max(0.5, float(yolo_fps))
+
+        # Internal frame-skip counter: run YOLO roughly every target_fps/yolo_fps frames.
+        self._yolo_frame_skip = max(1, int(round(self.target_fps / self.yolo_fps)))
+        self._frame_counter = 0
+        self._last_yolo_objects: list[DetectedObject] = []
 
         self.world_state = WorldState()
         self._running = False
@@ -331,10 +354,16 @@ class PerceptionEngine:
                         )
                     )
 
-        # 4. Object Detection & Tabletop Analysis via YOLOv8
+        # 4. Object Detection & Tabletop Analysis via YOLOv8 (cadence-gated)
         objects: list[DetectedObject] = []
         tabletop_items: list[TabletopItem] = []
+        run_yolo = False
         if self._yolo is not None:
+            skip = max(1, int(round(self.target_fps / self.yolo_fps)))
+            run_yolo = (self._frame_counter % skip) == 0
+        self._frame_counter += 1
+
+        if run_yolo:
             try:
                 results = self._yolo.predict(
                     frame,
@@ -415,9 +444,22 @@ class PerceptionEngine:
                             )
             except Exception as e:
                 logger.debug("yolo_predict_error", error=str(e))
+            self._last_yolo_objects = objects
+        elif self._yolo is not None:
+            # Cadence-skipped frame: reuse the last YOLO detections so HUD
+            # boxes never flicker between YOLO ticks. Tabletop temporal
+            # tracking is only refreshed on YOLO ticks; the 3s expiration
+            # window comfortably covers the ~1/yolo_fps gap.
+            objects = list(self._last_yolo_objects)
 
-        # 5. Generate high-tech HUD annotated visual frame
-        annotated = frame.copy()
+        # 5. Generate high-tech HUD annotated visual frame.
+        # `frame` is a private per-analysis copy pulled from the bounded queue
+        # (CameraCapture.get_latest_frame already returns .copy()); nothing
+        # retains or mutates it elsewhere in this function before this point
+        # (cvtColor/resize allocate new buffers, YOLO predict does not mutate
+        # its input and results.orig_img is never used), so we draw directly
+        # onto it and skip the extra 640x480 copy.
+        annotated = frame
 
         # Render Detected Objects (omit person if already tracked by YuNet)
         for obj in objects:

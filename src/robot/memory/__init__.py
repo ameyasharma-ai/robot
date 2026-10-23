@@ -11,15 +11,21 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from robot.telemetry import get_logger
 
 logger = get_logger("memory")
+
+# Project root (repo root), resolved from this file: <root>/src/robot/memory/__init__.py.
+# Used to anchor CWD-relative default DB paths so a stray 0-byte conversations.db
+# is never created when the process starts from a different working directory.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Mem0Provider:
@@ -226,153 +232,222 @@ class ConversationHistory:
     """
 
     def __init__(self, db_path: str = "data/database/conversations.db") -> None:
-        self.db_path = Path(db_path)
+        p = Path(db_path)
+        if not p.is_absolute():
+            # Anchor relative defaults to the project root, not the process CWD.
+            p = _PROJECT_ROOT / p
+        self.db_path = p
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
+        # Shared connection is used from asyncio.to_thread worker threads and
+        # read on the event loop; every execute/commit/fetch sequence must
+        # hold this lock to serialize access to the single sqlite3 connection.
+        self._db_lock = threading.RLock()
+
+    # ------------------------------------------------------------------
+    # Thread-safe SQLite helpers (all DB I/O goes through these)
+    # ------------------------------------------------------------------
+
+    def _run_locked(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
+        """Run `operation(conn)` atomically under the shared DB lock.
+
+        Call this from a worker thread (asyncio.to_thread) so cursor creation
+        AND row materialization (fetchall/fetchone) happen inside the same
+        locked thread task instead of being consumed on another thread.
+        """
+        with self._db_lock:
+            if self._conn is None:
+                return None
+            return operation(self._conn)
+
+    def _query_rows(self, sql: str, params: tuple = ()) -> list:
+        """Execute a SELECT and materialize all rows in one locked thread task."""
+        def _op(conn: sqlite3.Connection) -> list:
+            return conn.execute(sql, params).fetchall()
+
+        rows = self._run_locked(_op)
+        return rows if rows is not None else []
+
+    def _query_one(self, sql: str, params: tuple = ()) -> Any:
+        """Execute a SELECT and fetch one row in one locked thread task."""
+        def _op(conn: sqlite3.Connection) -> Any:
+            return conn.execute(sql, params).fetchone()
+
+        return self._run_locked(_op)
+
+    def _execute_commit(self, statements: list[tuple[str, tuple]]) -> None:
+        """Execute one or more statements and commit, all under the DB lock."""
+        def _op(conn: sqlite3.Connection) -> None:
+            for sql, params in statements:
+                conn.execute(sql, params)
+            conn.commit()
+
+        self._run_locked(_op)
 
     async def initialize(self) -> None:
-        """Create tables and FTS index."""
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        """Create tables and FTS index (serialized on the DB lock)."""
+        await asyncio.to_thread(self._initialize_sync)
 
-        self._conn.executescript(
+    def _initialize_sync(self) -> None:
+        """Blocking schema setup; runs under the DB lock in a worker thread."""
+        with self._db_lock:
+            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    personality TEXT DEFAULT 'neo',
+                    turn_number INTEGER DEFAULT 0,
+                    tool_name TEXT,
+                    tool_result TEXT,
+                    timestamp TEXT NOT NULL,
+                    metadata TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_session ON conversations(session_id);
+                CREATE INDEX IF NOT EXISTS idx_timestamp ON conversations(timestamp);
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
+                    content,
+                    content=conversations,
+                    content_rowid=id
+                );
+
+                CREATE TRIGGER IF NOT EXISTS conversations_ai AFTER INSERT ON conversations BEGIN
+                    INSERT INTO conversations_fts(rowid, content) VALUES (new.id, new.content);
+                END;
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    personality TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    turn_count INTEGER DEFAULT 0,
+                    title TEXT DEFAULT 'New Chat',
+                    updated_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    key TEXT,
+                    fact TEXT NOT NULL,
+                    user_id TEXT DEFAULT 'user',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+                    fact,
+                    content=facts,
+                    content_rowid=id
+                );
+
+                CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+                    INSERT INTO facts_fts(rowid, fact) VALUES (new.id, new.fact);
+                END;
+
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    user_id TEXT PRIMARY KEY,
+                    durable_preferences TEXT NOT NULL DEFAULT '{}',
+                    temporary_context TEXT NOT NULL DEFAULT '{}',
+                    inferred_facts TEXT NOT NULL DEFAULT '[]',
+                    summary_markdown TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
             """
-            CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                personality TEXT DEFAULT 'neo',
-                turn_number INTEGER DEFAULT 0,
-                tool_name TEXT,
-                tool_result TEXT,
-                timestamp TEXT NOT NULL,
-                metadata TEXT
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_session ON conversations(session_id);
-            CREATE INDEX IF NOT EXISTS idx_timestamp ON conversations(timestamp);
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
-                content,
-                content=conversations,
-                content_rowid=id
-            );
-
-            CREATE TRIGGER IF NOT EXISTS conversations_ai AFTER INSERT ON conversations BEGIN
-                INSERT INTO conversations_fts(rowid, content) VALUES (new.id, new.content);
-            END;
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                personality TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                ended_at TEXT,
-                turn_count INTEGER DEFAULT 0,
-                title TEXT DEFAULT 'New Chat',
-                updated_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS facts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                key TEXT,
-                fact TEXT NOT NULL,
-                user_id TEXT DEFAULT 'user',
-                created_at TEXT NOT NULL
-            );
-
-            CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
-                fact,
-                content=facts,
-                content_rowid=id
-            );
-
-            CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
-                INSERT INTO facts_fts(rowid, fact) VALUES (new.id, new.fact);
-            END;
-
-            CREATE TABLE IF NOT EXISTS user_profiles (
-                user_id TEXT PRIMARY KEY,
-                durable_preferences TEXT NOT NULL DEFAULT '{}',
-                temporary_context TEXT NOT NULL DEFAULT '{}',
-                inferred_facts TEXT NOT NULL DEFAULT '[]',
-                summary_markdown TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL
-            );
-        """
-        )
-        self._conn.commit()
-
-        # Migrate existing sessions table if title or updated_at are missing
-        try:
-            cur = self._conn.execute("PRAGMA table_info(sessions)")
-            existing_cols = {row[1] for row in cur.fetchall()}
-            if "title" not in existing_cols:
-                self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT 'New Chat'")
-            if "updated_at" not in existing_cols:
-                self._conn.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
-            self._conn.commit()
-        except Exception:
-            pass
-
-        # Clean up any legacy system event titles in sessions
-        try:
-            self._conn.execute("UPDATE sessions SET title = 'Voice Chat' WHERE title LIKE '[%'")
-            self._conn.commit()
-        except Exception:
-            pass
-
-        # Backfill any historical voice sessions from conversations into sessions
-        try:
-            self._conn.execute(
-                """
-                INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
-                SELECT 
-                    c.session_id,
-                    COALESCE(MAX(c.personality), 'neo') as pers,
-                    MIN(c.timestamp) as started,
-                    MAX(c.timestamp) as updated,
-                    COUNT(*)/2 as turns,
-                    COALESCE(
-                        (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
-                         FROM conversations
-                         WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
-                         ORDER BY id ASC LIMIT 1),
-                        'Voice Chat'
-                    ) as title
-                FROM conversations c
-                WHERE c.session_id NOT IN (SELECT id FROM sessions)
-                GROUP BY c.session_id;
-                """
             )
             self._conn.commit()
-        except Exception as e:
-            logger.warning("history_backfill_sessions_failed", error=str(e))
 
-        # Clean up poisoned facts (STT song lyric noise, obsolete benchmarks, duplicates)
-        try:
-            poison_clauses = [
-                "fact LIKE '%world would never ever be true%'",
-                "fact LIKE '%never love my whole game%'",
-                "fact LIKE '%point where I love and I hate you%'",
-                "fact LIKE '%my name is logged out in jail%'",
-                "fact LIKE '%current activity: going to school%'",
-                "fact LIKE '%Dove Cameron%'",
-                "fact LIKE '%skip to content%'",
-                "fact LIKE '%openrouter%'",
-                "fact LIKE '%cold.%'",
-                "fact LIKE '%cold,%'",
-            ]
-            delete_sql = f"DELETE FROM facts WHERE {' OR '.join(poison_clauses)}"
-            self._conn.execute(delete_sql)
-            self._conn.execute("DELETE FROM facts_fts")
-            self._conn.execute("INSERT INTO facts_fts (rowid, fact) SELECT id, fact FROM facts")
-            self._conn.commit()
-        except Exception as e:
-            logger.warning("history_facts_cleanup_failed", error=str(e))
+            # Migrate existing sessions table if title or updated_at are missing
+            try:
+                cur = self._conn.execute("PRAGMA table_info(sessions)")
+                existing_cols = {row[1] for row in cur.fetchall()}
+                if "title" not in existing_cols:
+                    self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT 'New Chat'")
+                if "updated_at" not in existing_cols:
+                    self._conn.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
+                self._conn.commit()
+            except Exception:
+                pass
 
-        logger.info("history_initialized", db=str(self.db_path))
+            # Clean up any legacy system event titles in sessions
+            try:
+                self._conn.execute("UPDATE sessions SET title = 'Voice Chat' WHERE title LIKE '[%'")
+                self._conn.commit()
+            except Exception:
+                pass
+
+            # Backfill any historical voice sessions from conversations into sessions
+            try:
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
+                    SELECT 
+                        c.session_id,
+                        COALESCE(MAX(c.personality), 'neo') as pers,
+                        MIN(c.timestamp) as started,
+                        MAX(c.timestamp) as updated,
+                        COUNT(*)/2 as turns,
+                        COALESCE(
+                            (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
+                             FROM conversations
+                             WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
+                             ORDER BY id ASC LIMIT 1),
+                            'Voice Chat'
+                        ) as title
+                    FROM conversations c
+                    WHERE c.session_id NOT IN (SELECT id FROM sessions)
+                    GROUP BY c.session_id;
+                    """
+                )
+                self._conn.commit()
+            except Exception as e:
+                logger.warning("history_backfill_sessions_failed", error=str(e))
+
+            # Clean up poisoned facts (STT song lyric noise, obsolete benchmarks, duplicates)
+            # and rebuild the facts FTS index ONLY when a schema/rowid-count sentinel
+            # changed — a full rebuild every boot on large archives is wasteful.
+            try:
+                poison_clauses = [
+                    "fact LIKE '%world would never ever be true%'",
+                    "fact LIKE '%never love my whole game%'",
+                    "fact LIKE '%point where I love and I hate you%'",
+                    "fact LIKE '%my name is logged out in jail%'",
+                    "fact LIKE '%current activity: going to school%'",
+                    "fact LIKE '%Dove Cameron%'",
+                    "fact LIKE '%skip to content%'",
+                    "fact LIKE '%openrouter%'",
+                    "fact LIKE '%cold.%'",
+                    "fact LIKE '%cold,%'",
+                ]
+                delete_sql = f"DELETE FROM facts WHERE {' OR '.join(poison_clauses)}"
+                deleted = self._conn.execute(delete_sql).rowcount
+                facts_count = int(self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
+                fts_count = int(self._conn.execute("SELECT COUNT(*) FROM facts_fts").fetchone()[0])
+                if deleted > 0 or facts_count != fts_count:
+                    logger.info(
+                        "history_fts_rebuild",
+                        reason="poisoned_deletions" if deleted > 0 else "rowid_count_sentinel_changed",
+                        facts_count=facts_count,
+                        fts_count=fts_count,
+                    )
+                    self._conn.execute("DELETE FROM facts_fts")
+                    self._conn.execute(
+                        "INSERT INTO facts_fts (rowid, fact) SELECT id, fact FROM facts"
+                    )
+                    self._conn.commit()
+                else:
+                    self._conn.commit()
+                    logger.info("history_fts_up_to_date", facts_count=facts_count)
+            except Exception as e:
+                logger.warning("history_facts_cleanup_failed", error=str(e))
+
+            logger.info("history_initialized", db=str(self.db_path))
 
     async def add_message(
         self,
@@ -390,31 +465,34 @@ class ConversationHistory:
             return
         t_res_str = json.dumps(tool_result) if isinstance(tool_result, (dict, list)) else tool_result
         await asyncio.to_thread(
-            self._conn.execute,
-            """INSERT INTO conversations
-               (session_id, role, content, personality, turn_number,
-                tool_name, tool_result, timestamp, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                session_id,
-                role,
-                content,
-                personality,
-                turn_number,
-                tool_name,
-                t_res_str,
-                datetime.now(timezone.utc).isoformat(),
-                json.dumps(metadata) if metadata else None,
-            ),
+            self._execute_commit,
+            [
+                (
+                    """INSERT INTO conversations
+                       (session_id, role, content, personality, turn_number,
+                        tool_name, tool_result, timestamp, metadata)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        content,
+                        personality,
+                        turn_number,
+                        tool_name,
+                        t_res_str,
+                        datetime.now(timezone.utc).isoformat(),
+                        json.dumps(metadata) if metadata else None,
+                    ),
+                )
+            ],
         )
-        await asyncio.to_thread(self._conn.commit)
 
     async def search(self, query: str, limit: int = 10) -> list[dict]:
         """Full-text search across conversation history."""
         if not self._conn:
             return []
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
+        rows = await asyncio.to_thread(
+            self._query_rows,
             """SELECT c.role, c.content, c.timestamp, c.session_id
                FROM conversations_fts f
                JOIN conversations c ON c.id = f.rowid
@@ -423,7 +501,6 @@ class ConversationHistory:
                LIMIT ?""",
             (query, limit),
         )
-        rows = cursor.fetchall()
         return [
             {"role": r[0], "content": r[1], "timestamp": r[2], "session_id": r[3]} for r in rows
         ]
@@ -432,14 +509,13 @@ class ConversationHistory:
         """Get recent messages from current session."""
         if not self._conn:
             return []
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
+        rows = await asyncio.to_thread(
+            self._query_rows,
             """SELECT role, content, timestamp FROM conversations
                WHERE session_id = ?
                ORDER BY id DESC LIMIT ?""",
             (session_id, limit),
         )
-        rows = cursor.fetchall()
         return [
             {"role": r[0], "content": r[1], "timestamp": r[2]}
             for r in reversed(rows)
@@ -451,11 +527,14 @@ class ConversationHistory:
         if not self._conn:
             return
         await asyncio.to_thread(
-            self._conn.execute,
-            "DELETE FROM conversations WHERE session_id = ? AND turn_number = ?",
-            (session_id, turn_number),
+            self._execute_commit,
+            [
+                (
+                    "DELETE FROM conversations WHERE session_id = ? AND turn_number = ?",
+                    (session_id, turn_number),
+                )
+            ],
         )
-        await asyncio.to_thread(self._conn.commit)
 
     async def create_session(
         self, session_id: str | None = None, personality: str = "neo", title: str = "New Chat"
@@ -467,12 +546,15 @@ class ConversationHistory:
             return {"id": session_id, "session_id": session_id, "personality": personality, "title": title}
         now_iso = datetime.now(timezone.utc).isoformat()
         await asyncio.to_thread(
-            self._conn.execute,
-            """INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
-               VALUES (?, ?, ?, ?, 0, ?)""",
-            (session_id, personality, now_iso, now_iso, title),
+            self._execute_commit,
+            [
+                (
+                    """INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
+                       VALUES (?, ?, ?, ?, 0, ?)""",
+                    (session_id, personality, now_iso, now_iso, title),
+                )
+            ],
         )
-        await asyncio.to_thread(self._conn.commit)
         return {
             "id": session_id,
             "session_id": session_id,
@@ -491,33 +573,37 @@ class ConversationHistory:
         # Ensure any orphan conversations have session records
         try:
             await asyncio.to_thread(
-                self._conn.execute,
-                """
-                INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
-                SELECT 
-                    c.session_id,
-                    COALESCE(MAX(c.personality), 'neo'),
-                    MIN(c.timestamp),
-                    MAX(c.timestamp),
-                    COUNT(*)/2,
-                    COALESCE(
-                        (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
-                         FROM conversations
-                         WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
-                         ORDER BY id ASC LIMIT 1),
-                        'Voice Chat'
+                self._execute_commit,
+                [
+                    (
+                        """
+                        INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
+                        SELECT 
+                            c.session_id,
+                            COALESCE(MAX(c.personality), 'neo'),
+                            MIN(c.timestamp),
+                            MAX(c.timestamp),
+                            COUNT(*)/2,
+                            COALESCE(
+                                (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
+                                 FROM conversations
+                                 WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
+                                 ORDER BY id ASC LIMIT 1),
+                                'Voice Chat'
+                            )
+                        FROM conversations c
+                        WHERE c.session_id NOT IN (SELECT id FROM sessions)
+                        GROUP BY c.session_id;
+                        """,
+                        (),
                     )
-                FROM conversations c
-                WHERE c.session_id NOT IN (SELECT id FROM sessions)
-                GROUP BY c.session_id;
-                """
+                ],
             )
-            await asyncio.to_thread(self._conn.commit)
         except Exception:
             pass
 
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
+        rows = await asyncio.to_thread(
+            self._query_rows,
             """SELECT s.id, s.personality, s.started_at, s.updated_at, s.turn_count, s.title,
                       (SELECT content FROM conversations WHERE session_id = s.id AND role = 'assistant' ORDER BY id DESC LIMIT 1) as last_assistant_msg,
                       (SELECT content FROM conversations WHERE session_id = s.id AND role = 'user' AND content NOT LIKE '[%' ORDER BY id ASC LIMIT 1) as first_user_msg
@@ -526,7 +612,6 @@ class ConversationHistory:
                LIMIT ?""",
             (limit,),
         )
-        rows = cursor.fetchall()
         result = []
         for r in rows:
             sid, pers, started, updated, turns, title, last_bot, first_u = r
@@ -552,17 +637,16 @@ class ConversationHistory:
         """Get session metadata by ID, falling back to conversations table if needed."""
         if not self._conn:
             return None
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
+        row = await asyncio.to_thread(
+            self._query_one,
             """SELECT id, personality, started_at, updated_at, turn_count, title
                FROM sessions
                WHERE id = ?""",
             (session_id,),
         )
-        row = cursor.fetchone()
         if not row:
-            cursor_c = await asyncio.to_thread(
-                self._conn.execute,
+            c_row = await asyncio.to_thread(
+                self._query_one,
                 """SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'), MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
                           COALESCE(
                             (SELECT SUBSTR(content, 1, 36) FROM conversations WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%' ORDER BY id ASC LIMIT 1),
@@ -573,7 +657,6 @@ class ConversationHistory:
                    GROUP BY c.session_id""",
                 (session_id,),
             )
-            c_row = cursor_c.fetchone()
             if not c_row:
                 return None
             return {
@@ -603,13 +686,13 @@ class ConversationHistory:
             return {"facts_count": 0, "messages_count": 0, "sessions_count": 0}
 
         def _query() -> dict[str, int]:
-            f_cur = self._conn.execute("SELECT COUNT(*) FROM facts")
-            f_count = int(f_cur.fetchone()[0])
-            m_cur = self._conn.execute("SELECT COUNT(*) FROM conversations")
-            m_count = int(m_cur.fetchone()[0])
-            s_cur = self._conn.execute("SELECT COUNT(*) FROM sessions")
-            s_count = int(s_cur.fetchone()[0])
-            return {"facts_count": f_count, "messages_count": m_count, "sessions_count": s_count}
+            def _op(conn: sqlite3.Connection) -> dict[str, int]:
+                f_count = int(conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
+                m_count = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
+                s_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+                return {"facts_count": f_count, "messages_count": m_count, "sessions_count": s_count}
+
+            return self._run_locked(_op)
 
         return await asyncio.to_thread(_query)
 
@@ -617,8 +700,8 @@ class ConversationHistory:
         """Get all messages for an isolated session, including tool call details and metrics."""
         if not self._conn:
             return []
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
+        rows = await asyncio.to_thread(
+            self._query_rows,
             """SELECT id, role, content, personality, turn_number, tool_name, tool_result, timestamp, metadata
                FROM conversations
                WHERE session_id = ?
@@ -626,7 +709,6 @@ class ConversationHistory:
                LIMIT ?""",
             (session_id, limit),
         )
-        rows = cursor.fetchall()
         msgs = []
         for r in rows:
             mid, role, content, pers, turn_num, t_name, t_res, ts, meta_raw = r
@@ -660,16 +742,12 @@ class ConversationHistory:
         if not self._conn:
             return False
         await asyncio.to_thread(
-            self._conn.execute,
-            "DELETE FROM conversations WHERE session_id = ?",
-            (session_id,),
+            self._execute_commit,
+            [
+                ("DELETE FROM conversations WHERE session_id = ?", (session_id,)),
+                ("DELETE FROM sessions WHERE id = ?", (session_id,)),
+            ],
         )
-        await asyncio.to_thread(
-            self._conn.execute,
-            "DELETE FROM sessions WHERE id = ?",
-            (session_id,),
-        )
-        await asyncio.to_thread(self._conn.commit)
         return True
 
     async def update_session(
@@ -680,30 +758,18 @@ class ConversationHistory:
             return
         now_iso = datetime.now(timezone.utc).isoformat()
         if title is not None and turn_count is not None:
-            await asyncio.to_thread(
-                self._conn.execute,
-                "UPDATE sessions SET title = ?, turn_count = ?, updated_at = ? WHERE id = ?",
-                (title, turn_count, now_iso, session_id),
-            )
+            sql = "UPDATE sessions SET title = ?, turn_count = ?, updated_at = ? WHERE id = ?"
+            params: tuple = (title, turn_count, now_iso, session_id)
         elif title is not None:
-            await asyncio.to_thread(
-                self._conn.execute,
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-                (title, now_iso, session_id),
-            )
+            sql = "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?"
+            params = (title, now_iso, session_id)
         elif turn_count is not None:
-            await asyncio.to_thread(
-                self._conn.execute,
-                "UPDATE sessions SET turn_count = ?, updated_at = ? WHERE id = ?",
-                (turn_count, now_iso, session_id),
-            )
+            sql = "UPDATE sessions SET turn_count = ?, updated_at = ? WHERE id = ?"
+            params = (turn_count, now_iso, session_id)
         else:
-            await asyncio.to_thread(
-                self._conn.execute,
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                (now_iso, session_id),
-            )
-        await asyncio.to_thread(self._conn.commit)
+            sql = "UPDATE sessions SET updated_at = ? WHERE id = ?"
+            params = (now_iso, session_id)
+        await asyncio.to_thread(self._execute_commit, [(sql, params)])
 
     async def update_session_title(self, session_id: str, title: str) -> None:
         """Update session title."""
@@ -714,40 +780,48 @@ class ConversationHistory:
         if not self._conn:
             return
         await asyncio.to_thread(
-            self._conn.execute,
-            """UPDATE sessions 
-               SET title = ? 
-               WHERE id = ? AND (title IN ('New Chat', 'Voice Chat', 'Chat', 'New Conversation', '') OR title LIKE '[%')""",
-            (new_title, session_id),
+            self._execute_commit,
+            [
+                (
+                    """UPDATE sessions 
+                       SET title = ? 
+                       WHERE id = ? AND (title IN ('New Chat', 'Voice Chat', 'Chat', 'New Conversation', '') OR title LIKE '[%')""",
+                    (new_title, session_id),
+                )
+            ],
         )
-        await asyncio.to_thread(self._conn.commit)
 
     async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
-        """Store a durable fact in SQLite, preventing duplicate entries."""
+        """Store a durable fact in SQLite, preventing duplicate entries.
+
+        The dedupe SELECT, the INSERT, and the commit run as one atomic
+        locked unit so concurrent add_fact calls cannot race past the
+        duplicate check.
+        """
         if not self._conn:
             return
         clean_fact = fact.strip()
         if not clean_fact:
             return
 
-        # Prevent exact duplicate insertions for the same user
-        try:
-            cursor = await asyncio.to_thread(
-                self._conn.execute,
-                """SELECT id FROM facts WHERE (user_id = ? OR user_id = 'default') AND LOWER(fact) = LOWER(?) LIMIT 1""",
-                (user_id, clean_fact),
+        def _add_atomic(conn: sqlite3.Connection) -> bool:
+            try:
+                row = conn.execute(
+                    """SELECT id FROM facts WHERE (user_id = ? OR user_id = 'default') AND LOWER(fact) = LOWER(?) LIMIT 1""",
+                    (user_id, clean_fact),
+                ).fetchone()
+                if row:
+                    return False
+            except Exception:
+                pass
+            conn.execute(
+                """INSERT INTO facts (key, fact, user_id, created_at) VALUES (?, ?, ?, ?)""",
+                (key, clean_fact, user_id, datetime.now(timezone.utc).isoformat()),
             )
-            if cursor.fetchone():
-                return
-        except Exception:
-            pass
+            conn.commit()
+            return True
 
-        await asyncio.to_thread(
-            self._conn.execute,
-            """INSERT INTO facts (key, fact, user_id, created_at) VALUES (?, ?, ?, ?)""",
-            (key, clean_fact, user_id, datetime.now(timezone.utc).isoformat()),
-        )
-        await asyncio.to_thread(self._conn.commit)
+        await asyncio.to_thread(self._run_locked, _add_atomic)
 
     async def search_facts(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
         """Search persistent facts for specific user/namespace using FTS5, LIKE fallback, and deduplication.
@@ -807,15 +881,14 @@ class ConversationHistory:
             fts_terms = [f"{w[:4]}*" if len(w) >= 4 else f'"{w}"' for w in words]
             fts_expr = " OR ".join(fts_terms)
             try:
-                cursor = await asyncio.to_thread(
-                    self._conn.execute,
+                rows = await asyncio.to_thread(
+                    self._query_rows,
                     """SELECT f.id, f.fact, f.created_at FROM facts_fts ft
                        JOIN facts f ON f.id = ft.rowid
                        WHERE ft.fact MATCH ? AND (f.user_id = ? OR f.user_id = 'default')
                        ORDER BY f.id DESC LIMIT ?""",
                     (fts_expr, user_id, limit * 3),
                 )
-                rows = cursor.fetchall()
                 if rows:
                     return self._deduplicate_fact_rows(rows, limit)
             except Exception:
@@ -825,14 +898,13 @@ class ConversationHistory:
             like_clauses = " OR ".join("fact LIKE ?" for _ in words)
             params = [f"%{w}%" for w in words] + [user_id, limit * 3]
             try:
-                cursor = await asyncio.to_thread(
-                    self._conn.execute,
+                rows = await asyncio.to_thread(
+                    self._query_rows,
                     f"""SELECT id, fact, created_at FROM facts
                         WHERE ({like_clauses}) AND (user_id = ? OR user_id = 'default')
                         ORDER BY id DESC LIMIT ?""",
-                    params,
+                    tuple(params),
                 )
-                rows = cursor.fetchall()
                 if rows:
                     return self._deduplicate_fact_rows(rows, limit)
             except Exception:
@@ -883,14 +955,13 @@ class ConversationHistory:
         """Retrieve all durable facts for the user/personality across time, deduplicated."""
         if not self._conn:
             return []
-        cursor = await asyncio.to_thread(
-            self._conn.execute,
+        rows = await asyncio.to_thread(
+            self._query_rows,
             """SELECT id, fact, created_at FROM facts
                WHERE user_id = ? OR user_id = 'default'
                ORDER BY id DESC LIMIT ?""",
             (user_id, max(limit * 3, 100)),
         )
-        rows = cursor.fetchall()
         return self._deduplicate_fact_rows(rows, limit)
 
     async def get_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
@@ -917,12 +988,14 @@ class ConversationHistory:
             }
 
         def _get() -> dict[str, Any]:
-            cur = self._conn.execute(
-                "SELECT user_id, durable_preferences, temporary_context, inferred_facts, summary_markdown, updated_at "
-                "FROM user_profiles WHERE user_id = ?",
-                (user_id,),
-            )
-            row = cur.fetchone()
+            def _op(conn: sqlite3.Connection) -> tuple | None:
+                return conn.execute(
+                    "SELECT user_id, durable_preferences, temporary_context, inferred_facts, summary_markdown, updated_at "
+                    "FROM user_profiles WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+
+            row = self._run_locked(_op)
             if not row:
                 return {
                     "user_id": user_id,
@@ -976,27 +1049,30 @@ class ConversationHistory:
         s_md = summary_markdown or current["summary_markdown"]
 
         def _save() -> None:
-            self._conn.execute(
-                """
-                INSERT INTO user_profiles (user_id, durable_preferences, temporary_context, inferred_facts, summary_markdown, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    durable_preferences=excluded.durable_preferences,
-                    temporary_context=excluded.temporary_context,
-                    inferred_facts=excluded.inferred_facts,
-                    summary_markdown=excluded.summary_markdown,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    user_id,
-                    json.dumps(d_pref),
-                    json.dumps(t_ctx),
-                    json.dumps(i_facts),
-                    s_md,
-                    now,
-                ),
-            )
-            self._conn.commit()
+            def _op(conn: sqlite3.Connection) -> None:
+                conn.execute(
+                    """
+                    INSERT INTO user_profiles (user_id, durable_preferences, temporary_context, inferred_facts, summary_markdown, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        durable_preferences=excluded.durable_preferences,
+                        temporary_context=excluded.temporary_context,
+                        inferred_facts=excluded.inferred_facts,
+                        summary_markdown=excluded.summary_markdown,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        user_id,
+                        json.dumps(d_pref),
+                        json.dumps(t_ctx),
+                        json.dumps(i_facts),
+                        s_md,
+                        now,
+                    ),
+                )
+                conn.commit()
+
+            self._run_locked(_op)
 
         await asyncio.to_thread(_save)
         return {
@@ -1013,34 +1089,34 @@ class ConversationHistory:
         if not self._conn:
             return []
         if exclude_session_id:
-            cursor = await asyncio.to_thread(
-                self._conn.execute,
+            rows = await asyncio.to_thread(
+                self._query_rows,
                 """SELECT role, content, timestamp, session_id FROM conversations
                    WHERE session_id != ?
                    ORDER BY id DESC LIMIT ?""",
                 (exclude_session_id, limit),
             )
         else:
-            cursor = await asyncio.to_thread(
-                self._conn.execute,
+            rows = await asyncio.to_thread(
+                self._query_rows,
                 """SELECT role, content, timestamp, session_id FROM conversations
                    ORDER BY id DESC LIMIT ?""",
                 (limit,),
             )
-        rows = cursor.fetchall()
         return [{"role": r[0], "content": r[1], "timestamp": r[2], "session_id": r[3]} for r in reversed(rows)]
 
     async def health_check(self) -> bool:
         return self._conn is not None
 
     async def close(self) -> None:
-        """Close SQLite connection cleanly."""
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
+        """Close SQLite connection cleanly under the DB lock."""
+        with self._db_lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
 
 class MemoryManager:
@@ -1071,8 +1147,9 @@ class MemoryManager:
         target.parent.mkdir(parents=True, exist_ok=True)
         if hasattr(self, "history") and self.history and self.history._conn:
             try:
-                self.history._conn.close()
-                self.history._conn = None
+                with self.history._db_lock:
+                    self.history._conn.close()
+                    self.history._conn = None
             except Exception as e:
                 logger.debug("history_close_error", error=str(e))
         self.history = ConversationHistory(str(target))

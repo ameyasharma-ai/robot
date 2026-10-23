@@ -17,6 +17,22 @@ class RobotUI {
         this.cameraInterval = null;
         this.worldStateInterval = null;
 
+        // ─── Timer / lifecycle hygiene ───────────────────────────────────────
+        // Every interval and tracked timeout created by this instance is recorded
+        // here so it can be torn down in one place (see stopAllTimers()).
+        this._intervals = new Set();
+        this._timeouts = new Set();
+        this._stopped = false;
+        this._pollCounters = { status: 0, traces: 0 };
+
+        this.initAuth();
+
+        // Tear down all timers/streams when the page is hidden or unloaded so
+        // backgrounded tabs do not keep polling or reconnecting.
+        this._onPageLeave = () => this.stopAllTimers();
+        window.addEventListener("pagehide", this._onPageLeave);
+        window.addEventListener("beforeunload", this._onPageLeave);
+
         // DOM Elements
         this.faceStage = document.getElementById("faceStage");
         this.faceCaption = document.getElementById("faceCaption");
@@ -91,6 +107,228 @@ class RobotUI {
         this.fetchThinkingState();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Timer lifecycle helpers
+    //
+    // All recurring/deferred work goes through these helpers so that every id is
+    // recorded in this._intervals / this._timeouts and can be cancelled at once
+    // by stopAllTimers() on pagehide/beforeunload.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Create a tracked interval.
+     * @param {Function} fn - Callback invoked on each tick.
+     * @param {number} ms - Period in milliseconds.
+     * @returns {number} Interval id.
+     */
+    _interval(fn, ms) {
+        const id = setInterval(() => {
+            if (this._stopped) {
+                this._clearIv(id);
+                return;
+            }
+            fn();
+        }, ms);
+        this._intervals.add(id);
+        return id;
+    }
+
+    /**
+     * Clear and untrack an interval id (safe with null/undefined and untracked ids).
+     * @param {number|null} id - Interval id returned by _interval() or setInterval().
+     * @returns {void}
+     */
+    _clearIv(id) {
+        if (id === null || id === undefined) return;
+        clearInterval(id);
+        this._intervals.delete(id);
+    }
+
+    /**
+     * Create a tracked timeout.
+     * @param {Function} fn - Callback invoked once.
+     * @param {number} ms - Delay in milliseconds.
+     * @returns {number} Timeout id.
+     */
+    _timeout(fn, ms) {
+        const id = setTimeout(() => {
+            this._timeouts.delete(id);
+            if (this._stopped) return;
+            fn();
+        }, ms);
+        this._timeouts.add(id);
+        return id;
+    }
+
+    /**
+     * Clear and untrack a timeout id.
+     * @param {number|null} id - Timeout id returned by _timeout().
+     * @returns {void}
+     */
+    _clearTmo(id) {
+        if (id === null || id === undefined) return;
+        clearTimeout(id);
+        this._timeouts.delete(id);
+    }
+
+    /**
+     * Cancel every timer owned by this instance and stop background work.
+     * Bound to pagehide/beforeunload; also stops the WebSocket reconnect loop,
+     * requestAnimationFrame loops and the ambient MatrixRain canvas.
+     * @returns {void}
+     */
+    stopAllTimers() {
+        if (this._stopped) return;
+        this._stopped = true;
+
+        this._intervals.forEach((id) => clearInterval(id));
+        this._intervals.clear();
+        this._timeouts.forEach((id) => clearTimeout(id));
+        this._timeouts.clear();
+
+        this._clearTmo(this._wsConnectTimer);
+        this._wsConnectTimer = null;
+
+        if (this._avatarThoughtTimerInterval) {
+            this._clearIv(this._avatarThoughtTimerInterval);
+            this._avatarThoughtTimerInterval = null;
+        }
+        if (this.chatRecordTimerInterval) {
+            this._clearIv(this.chatRecordTimerInterval);
+            this.chatRecordTimerInterval = null;
+        }
+        if (this.hfDownloadPollInterval) {
+            this._clearIv(this.hfDownloadPollInterval);
+            this.hfDownloadPollInterval = null;
+        }
+        if (this.blinkInterval) {
+            clearTimeout(this.blinkInterval);
+            this.blinkInterval = null;
+        }
+        if (this.chatWaveAnimFrame) {
+            cancelAnimationFrame(this.chatWaveAnimFrame);
+            this.chatWaveAnimFrame = null;
+        }
+        try {
+            this.stopSpeakingMessage();
+        } catch (e) {}
+        try {
+            this._stopTtsPreview();
+        } catch (e) {}
+        try {
+            this.cleanupChatVoiceRecord();
+        } catch (e) {}
+        try {
+            if (this.ws) {
+                this.ws.onclose = null;
+                this.ws.onmessage = null;
+                this.ws.close();
+            }
+        } catch (e) {}
+        // Stop the ambient background canvas loop too.
+        if (window.matrixRain) window.matrixRain._stopped = true;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Auth-aware request helpers
+    //
+    // A bearer token, when present, is kept in sessionStorage and attached to
+    // every request from these two helpers. With no token stored, requests go out
+    // completely unmodified (the backend login page / 401 handles the rest).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Capture a ?token= URL parameter into sessionStorage and strip it from the
+     * browser address bar so it is not left in history or visible in the URL.
+     * @returns {void}
+     */
+    initAuth() {
+        try {
+            const url = new URL(window.location.href);
+            const token = url.searchParams.get("token") || url.searchParams.get("access_token");
+            if (!token) return;
+            sessionStorage.setItem("robot_auth_token", token);
+            url.searchParams.delete("token");
+            url.searchParams.delete("access_token");
+            const query = url.searchParams.toString();
+            history.replaceState(null, "", url.pathname + (query ? `?${query}` : "") + url.hash);
+        } catch (e) {
+            // sessionStorage / history unavailable: requests stay anonymous.
+        }
+    }
+
+    /**
+     * @returns {string} Stored bearer token, or empty string when anonymous.
+     */
+    getAuthToken() {
+        try {
+            return sessionStorage.getItem("robot_auth_token") || "";
+        } catch (e) {
+            return "";
+        }
+    }
+
+    /**
+     * Central fetch wrapper: adds an Authorization: Bearer header when a token is
+     * stored. All API calls in this controller go through here.
+     * @param {string|Request} input - Request URL or Request object.
+     * @param {RequestInit} [init] - Fetch options.
+     * @returns {Promise<Response>}
+     */
+    apiFetch(input, init) {
+        const token = this.getAuthToken();
+        if (!token) return fetch(input, init);
+        const options = init ? { ...init } : {};
+        const headers = new Headers(options.headers || {});
+        if (!headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+        options.headers = headers;
+        return fetch(input, options);
+    }
+
+    /**
+     * Central URL builder for header-less streaming GETs (WebSocket, MJPEG).
+     * Appends ?token= when a bearer token is available.
+     * @param {string} url - Target URL.
+     * @returns {string} URL with token query parameter, if any.
+     */
+    streamUrl(url) {
+        const token = this.getAuthToken();
+        if (!token || !url) return url;
+        return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+    }
+
+    /**
+     * @returns {boolean} True while the /ws/events WebSocket is connected.
+     */
+    _isWsOpen() {
+        return Boolean(this.ws) && this.ws.readyState === WebSocket.OPEN;
+    }
+
+    /**
+     * Show or hide a self-contained "telemetry offline" indicator.
+     * @param {boolean} offline - Whether reconnect attempts have been exhausted.
+     * @param {string} [detail] - Optional detail line.
+     * @returns {void}
+     */
+    _setWsOfflineIndicator(offline, detail) {
+        let el = document.getElementById("wsOfflineBadge");
+        if (offline) {
+            if (!el) {
+                el = document.createElement("div");
+                el.id = "wsOfflineBadge";
+                el.style.cssText =
+                    "position:fixed;top:8px;right:8px;z-index:9999;padding:6px 10px;border-radius:8px;" +
+                    "background:rgba(239,68,68,0.16);border:1px solid #ef4444;color:#fca5a5;" +
+                    "font:11px/1.3 monospace;pointer-events:none;";
+                document.body.appendChild(el);
+            }
+            el.textContent = detail ? `TELEMETRY OFFLINE • ${detail}` : "TELEMETRY OFFLINE (poll fallback active)";
+            el.style.display = "block";
+        } else if (el) {
+            el.style.display = "none";
+        }
+    }
+
     initTextChat() {
         const input = document.getElementById("chatInput");
         const btn = document.getElementById("chatSendBtn");
@@ -121,7 +359,7 @@ class RobotUI {
                 const targetState = !this.voiceEnabled;
                 updateVoiceUI(targetState);
                 try {
-                    const res = await fetch("/voice-mode", {
+                    const res = await this.apiFetch("/voice-mode", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ enabled: targetState }),
@@ -197,7 +435,7 @@ class RobotUI {
             const timeoutId = setTimeout(() => controller.abort(), 20000);
 
             try {
-                const resp = await fetch("/chat", {
+                const resp = await this.apiFetch("/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ 
@@ -628,10 +866,10 @@ class RobotUI {
         island.classList.add("visible");
 
         if (this._islandTimeout) {
-            clearTimeout(this._islandTimeout);
+            this._clearTmo(this._islandTimeout);
         }
 
-        this._islandTimeout = setTimeout(() => {
+        this._islandTimeout = this._timeout(() => {
             island.classList.remove("visible");
             this._islandTimeout = null;
         }, durationMs);
@@ -644,7 +882,7 @@ class RobotUI {
      */
     async fetchThinkingState() {
         try {
-            const res = await fetch("/api/thinking");
+            const res = await this.apiFetch("/api/thinking");
             if (res.ok) {
                 const data = await res.json();
                 this.thinkingEnabled = Boolean(data.thinking_enabled);
@@ -669,7 +907,7 @@ class RobotUI {
         this.updateThinkingUI(target);
 
         try {
-            const res = await fetch("/api/thinking", {
+            const res = await this.apiFetch("/api/thinking", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ enabled: target }),
@@ -755,8 +993,8 @@ class RobotUI {
                 if (timer) timer.textContent = "0.0s";
                 if (title) title.textContent = "NEURAL REASONING MATRIX";
                 this._avatarThoughtStartTime = performance.now();
-                if (this._avatarThoughtTimerInterval) clearInterval(this._avatarThoughtTimerInterval);
-                this._avatarThoughtTimerInterval = setInterval(() => {
+                if (this._avatarThoughtTimerInterval) this._clearIv(this._avatarThoughtTimerInterval);
+                this._avatarThoughtTimerInterval = this._interval(() => {
                     if (timer && this._avatarThoughtStartTime) {
                         const elapsed = (performance.now() - this._avatarThoughtStartTime) / 1000;
                         timer.textContent = `${elapsed.toFixed(1)}s`;
@@ -777,7 +1015,7 @@ class RobotUI {
             }
         } else if (action === "completed") {
             if (this._avatarThoughtTimerInterval) {
-                clearInterval(this._avatarThoughtTimerInterval);
+                this._clearIv(this._avatarThoughtTimerInterval);
                 this._avatarThoughtTimerInterval = null;
             }
             if (data && data.text && data.text.trim()) {
@@ -798,22 +1036,23 @@ class RobotUI {
                 title.textContent = "REASONING CONCLUDED";
             }
             if (badge) {
-                setTimeout(() => {
+                this._timeout(() => {
                     if (badge && !this._avatarThoughtTimerInterval) {
                         badge.style.display = "none";
                     }
                 }, 2500);
             }
             // Auto-collapse the holographic thought matrix after 10s of quiet idle
-            if (this._avatarThoughtHideTimeout) clearTimeout(this._avatarThoughtHideTimeout);
-            this._avatarThoughtHideTimeout = setTimeout(() => {
+            if (this._avatarThoughtHideTimeout) this._clearTmo(this._avatarThoughtHideTimeout);
+            this._avatarThoughtHideTimeout = this._timeout(() => {
+                this._avatarThoughtHideTimeout = null;
                 if (card && !this._avatarThoughtTimerInterval) {
                     card.classList.add("collapsed");
                 }
             }, 10000);
         } else if (action === "hide") {
             if (this._avatarThoughtTimerInterval) {
-                clearInterval(this._avatarThoughtTimerInterval);
+                this._clearIv(this._avatarThoughtTimerInterval);
                 this._avatarThoughtTimerInterval = null;
             }
             if (card) card.style.display = "none";
@@ -883,7 +1122,7 @@ class RobotUI {
         this._forEachEngine((eng) => eng.speakStop());
 
         try {
-            await fetch("/voice-mode", {
+            await this.apiFetch("/voice-mode", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ enabled: false }),
@@ -897,7 +1136,7 @@ class RobotUI {
         }
 
         try {
-            await fetch("/api/view-mode", {
+            await this.apiFetch("/api/view-mode", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ mode: "chat" }),
@@ -918,7 +1157,7 @@ class RobotUI {
     async onExitChatMode() {
         this.stopSpeakingMessage();
         try {
-            const res = await fetch("/voice-mode", {
+            const res = await this.apiFetch("/voice-mode", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ enabled: true }),
@@ -937,7 +1176,7 @@ class RobotUI {
         }
 
         try {
-            await fetch("/api/view-mode", {
+            await this.apiFetch("/api/view-mode", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ mode: "dual" }),
@@ -948,7 +1187,7 @@ class RobotUI {
     async loadChatSessions() {
         if (!this.chatSessionsList) return;
         try {
-            const res = await fetch("/chat/sessions");
+            const res = await this.apiFetch("/chat/sessions");
             if (!res.ok) return;
             const data = await res.json();
             this.chatSessions = data.sessions || [];
@@ -1025,7 +1264,7 @@ class RobotUI {
 
     async createChatSession() {
         try {
-            const res = await fetch("/chat/sessions", {
+            const res = await this.apiFetch("/chat/sessions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ title: "New Conversation" })
@@ -1056,7 +1295,7 @@ class RobotUI {
         }
 
         try {
-            const res = await fetch(`/chat/sessions/${sessionId}`);
+            const res = await this.apiFetch(`/chat/sessions/${sessionId}`);
             if (!res.ok) return;
             const data = await res.json();
 
@@ -1091,7 +1330,7 @@ class RobotUI {
     async deleteChatSession(sessionId) {
         if (!confirm("Are you sure you want to delete this conversation thread?")) return;
         try {
-            const res = await fetch(`/chat/sessions/${sessionId}`, { method: "DELETE" });
+            const res = await this.apiFetch(`/chat/sessions/${sessionId}`, { method: "DELETE" });
             if (res.ok) {
                 if (this.activeChatSessionId === sessionId) {
                     this.activeChatSessionId = null;
@@ -1315,6 +1554,7 @@ class RobotUI {
             </div>
         `;
         this.chatMessagesContainer.appendChild(row);
+        this._pruneChatMessages();
 
         const thoughtHdr = row.querySelector(".chat-thought-header");
         if (thoughtHdr) {
@@ -1373,6 +1613,7 @@ class RobotUI {
             </div>
         `;
         this.chatMessagesContainer.appendChild(userRow);
+        this._pruneChatMessages();
         this.scrollChatToBottom();
 
         // Create Assistant Streaming row
@@ -1402,6 +1643,7 @@ class RobotUI {
             </div>
         `;
         this.chatMessagesContainer.appendChild(assistantRow);
+        this._pruneChatMessages();
         this.scrollChatToBottom();
 
         const textSpan = document.getElementById(`streamText_${streamId}`);
@@ -1444,8 +1686,8 @@ class RobotUI {
                 }
                 thoughtBox.appendChild(thoughtCard);
             }
-            if (thoughtIntervalId) clearInterval(thoughtIntervalId);
-            thoughtIntervalId = setInterval(() => {
+            if (thoughtIntervalId) this._clearIv(thoughtIntervalId);
+            thoughtIntervalId = this._interval(() => {
                 const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
                 if (timerEl && thoughtStartTime) {
                     const el = (performance.now() - thoughtStartTime) / 1000;
@@ -1458,7 +1700,7 @@ class RobotUI {
         }
 
         try {
-            const res = await fetch("/chat/stream", {
+            const res = await this.apiFetch("/chat/stream", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -1550,7 +1792,7 @@ class RobotUI {
                             thoughtBox.appendChild(thoughtCard);
                         }
                         if (!thoughtIntervalId) {
-                            thoughtIntervalId = setInterval(() => {
+                            thoughtIntervalId = this._interval(() => {
                                 const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
                                 if (timerEl && thoughtStartTime) {
                                     const el = (performance.now() - thoughtStartTime) / 1000;
@@ -1602,7 +1844,7 @@ class RobotUI {
                         }
                     } else if (eventType === "thought_completed") {
                         if (thoughtIntervalId) {
-                            clearInterval(thoughtIntervalId);
+                            this._clearIv(thoughtIntervalId);
                             thoughtIntervalId = null;
                         }
                         const finalDurSec = payload.duration_ms ? (payload.duration_ms / 1000).toFixed(1) : ((performance.now() - (thoughtStartTime || streamStartTime)) / 1000).toFixed(1);
@@ -1639,7 +1881,7 @@ class RobotUI {
                         });
                     } else if (eventType === "token") {
                         if (thoughtIntervalId) {
-                            clearInterval(thoughtIntervalId);
+                            this._clearIv(thoughtIntervalId);
                             thoughtIntervalId = null;
                             const finalDurSec = ((performance.now() - (thoughtStartTime || streamStartTime)) / 1000).toFixed(1);
                             const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
@@ -1670,7 +1912,7 @@ class RobotUI {
                             const elapsedSec = (performance.now() - streamStartTime) / 1000;
                             const speed = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : "0.0";
                             if (this.chatLiveSpeed) this.chatLiveSpeed.textContent = `${speed} tok/s`;
-                            if (textSpan) textSpan.innerHTML = this.renderChatMarkdown(streamedRawText);
+                            this._scheduleStreamingRender(textSpan, streamedRawText);
                             if (this.hudTokens) this.hudTokens.textContent = `${tokenCount}`;
                             if (tokenCount === 1 && this.hudTtft) {
                                 const liveTtft = payload.ttft_ms !== undefined ? Math.round(payload.ttft_ms) : Math.round(performance.now() - streamStartTime);
@@ -1681,7 +1923,7 @@ class RobotUI {
                     } else if (eventType === "tool_started") {
                         if (payload.clear_preamble) {
                             streamedRawText = "";
-                            if (textSpan) textSpan.innerHTML = "";
+                            this._flushStreamingRender(textSpan, "");
                         }
                     } else if (eventType === "tool_call") {
                         if (toolBox) {
@@ -1736,7 +1978,7 @@ class RobotUI {
                         }
                     } else if (eventType === "done") {
                         if (thoughtIntervalId) {
-                            clearInterval(thoughtIntervalId);
+                            this._clearIv(thoughtIntervalId);
                             thoughtIntervalId = null;
                             const finalDurSec = ((performance.now() - (thoughtStartTime || streamStartTime)) / 1000).toFixed(1);
                             const timerEl = document.getElementById(`thoughtTimer_${streamId}`);
@@ -1764,10 +2006,9 @@ class RobotUI {
                         isStreamCompleted = true;
                         if (payload.response !== undefined) {
                             streamedRawText = payload.response;
-                            if (textSpan) textSpan.innerHTML = this.renderChatMarkdown(payload.response);
-                        } else if (textSpan && streamedRawText) {
-                            textSpan.innerHTML = this.renderChatMarkdown(streamedRawText);
                         }
+                        // Guaranteed final render (throttled renders are flushed here).
+                        this._flushStreamingRender(textSpan, streamedRawText);
                         if (cursorSpan) cursorSpan.remove();
                         if (toolBox) {
                             toolBox.querySelectorAll(".chat-tool-card.running").forEach(rc => {
@@ -1806,26 +2047,27 @@ class RobotUI {
                         this.loadChatSessions();
                     } else if (eventType === "error") {
                         if (thoughtIntervalId) {
-                            clearInterval(thoughtIntervalId);
+                            this._clearIv(thoughtIntervalId);
                             thoughtIntervalId = null;
                         }
-                        if (textSpan) {
-                            textSpan.innerHTML += `<div class="chat-stream-error">[Error: ${this.escapeHtml(payload.error || "Unknown stream error")}]</div>`;
-                        }
+                        this._appendStreamSuffix(textSpan, `<div class="chat-stream-error">[Error: ${this.escapeHtml(payload.error || "Unknown stream error")}]</div>`);
                     }
                 }
             }
         } catch (err) {
             if (err.name === "AbortError") {
-                if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-stopped">[Generation stopped]</span>`;
+                this._appendStreamSuffix(textSpan, ` <span class="chat-stream-stopped">[Generation stopped]</span>`);
             } else if (!isStreamCompleted) {
-                if (textSpan) textSpan.innerHTML += ` <span class="chat-stream-error">[Error: ${this.escapeHtml(err.message)}]</span>`;
+                this._appendStreamSuffix(textSpan, ` <span class="chat-stream-error">[Error: ${this.escapeHtml(err.message)}]</span>`);
             }
         } finally {
             if (thoughtIntervalId) {
-                clearInterval(thoughtIntervalId);
+                this._clearIv(thoughtIntervalId);
                 thoughtIntervalId = null;
             }
+            // Guarantee one final, unthrottled render so the visible markdown always
+            // matches the complete streamed text even if the stream ended abruptly.
+            this._flushStreamingRender(textSpan, streamedRawText);
             if (cursorSpan) cursorSpan.remove();
             this.chatStreaming = false;
             this.chatAbortController = null;
@@ -1951,6 +2193,9 @@ class RobotUI {
 
             const audio = new Audio(item.audioUrl);
             this.currentAudio = audio;
+            // Track the in-flight blob URL so a mid-phrase stop revokes it too
+            // (it has already been shifted out of this.phraseQueue at this point).
+            this.currentAudioUrl = item.audioUrl;
 
             // Synchronize 3D avatar emotion, lipsync and mouth bars
             this.startMouthSpeaking();
@@ -1966,9 +2211,17 @@ class RobotUI {
                 try {
                     URL.revokeObjectURL(item.audioUrl);
                 } catch (_) {}
+                if (this.currentAudioUrl === item.audioUrl) {
+                    this.currentAudioUrl = null;
+                }
                 if (this.currentAudio === audio) {
                     this.currentAudio = null;
                 }
+                // Drop handlers and release the decoded element for GC.
+                audio.onended = null;
+                audio.onerror = null;
+                audio.src = "";
+                audio.load();
                 playNextPhrase();
             };
 
@@ -1984,7 +2237,7 @@ class RobotUI {
         };
 
         try {
-            const resp = await fetch("/api/chat/speak/stream", {
+            const resp = await this.apiFetch("/api/chat/speak/stream", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 signal: this.speakAbortController.signal,
@@ -2095,6 +2348,31 @@ class RobotUI {
     }
 
     /**
+     * Stop a TTS voice-preview clip and release its blob URL.
+     * Previously paused previews leaked their ObjectURL and kept handlers attached.
+     * @returns {void}
+     */
+    _stopTtsPreview() {
+        const audio = this.ttsPreviewAudio;
+        if (audio) {
+            try {
+                audio.pause();
+                audio.onended = null;
+                audio.onerror = null;
+                audio.src = "";
+                audio.load();
+            } catch (_) {}
+            this.ttsPreviewAudio = null;
+        }
+        if (this.ttsPreviewUrl) {
+            try {
+                URL.revokeObjectURL(this.ttsPreviewUrl);
+            } catch (_) {}
+            this.ttsPreviewUrl = null;
+        }
+    }
+
+    /**
      * Stop currently active message speech playback, abort active streams, and reset button state.
      * Cleans up phrase audio queues, revokes Blob URLs, and returns avatar expressions to neutral.
      */
@@ -2122,6 +2400,11 @@ class RobotUI {
             try {
                 this.currentAudio.pause();
                 this.currentAudio.currentTime = 0;
+                // Detach handlers so a late ended/error event cannot resume playback.
+                this.currentAudio.onended = null;
+                this.currentAudio.onerror = null;
+                this.currentAudio.src = "";
+                this.currentAudio.load();
             } catch (_) {}
             this.currentAudio = null;
         }
@@ -2205,8 +2488,8 @@ class RobotUI {
 
         // Start elapsed timer
         this.chatRecordStartTime = Date.now();
-        if (this.chatRecordTimerInterval) clearInterval(this.chatRecordTimerInterval);
-        this.chatRecordTimerInterval = setInterval(() => {
+        if (this.chatRecordTimerInterval) this._clearIv(this.chatRecordTimerInterval);
+        this.chatRecordTimerInterval = this._interval(() => {
             const elapsed = Math.floor((Date.now() - this.chatRecordStartTime) / 1000);
             const m = Math.floor(elapsed / 60);
             const s = elapsed % 60;
@@ -2249,7 +2532,7 @@ class RobotUI {
             // Animate dynamic waveform bars reacting to real volume
             const waveBars = document.querySelectorAll("#chatRecordWaveform .chat-wave-bar");
             const updateWave = () => {
-                if (!this.chatRecording || !this.chatAnalyser) return;
+                if (this._stopped || !this.chatRecording || !this.chatAnalyser) return;
                 const data = new Uint8Array(this.chatAnalyser.frequencyBinCount);
                 this.chatAnalyser.getByteFrequencyData(data);
                 for (let i = 0; i < waveBars.length; i++) {
@@ -2327,7 +2610,7 @@ class RobotUI {
         if (chunks.length > 0) {
             try {
                 const wavBlob = this.encodePcmToWav(chunks, sampleRate);
-                const res = await fetch("/api/transcribe", {
+                const res = await this.apiFetch("/api/transcribe", {
                     method: "POST",
                     headers: { "Content-Type": "audio/wav" },
                     body: wavBlob,
@@ -2364,7 +2647,7 @@ class RobotUI {
     cleanupChatVoiceRecord() {
         this.chatRecording = false;
         if (this.chatRecordTimerInterval) {
-            clearInterval(this.chatRecordTimerInterval);
+            this._clearIv(this.chatRecordTimerInterval);
             this.chatRecordTimerInterval = null;
         }
         if (this.chatWaveAnimFrame) {
@@ -2462,6 +2745,118 @@ class RobotUI {
         if (this.chatMessagesContainer) {
             this.chatMessagesContainer.scrollTop = this.chatMessagesContainer.scrollHeight;
         }
+    }
+
+    /**
+     * Release per-row resources before a chat row is detached (blob URLs recorded
+     * on the row, plus an optional row-owned cleanup callback). Listeners bound to
+     * the row and its children are dropped together with the detached nodes.
+     * @param {Element} row - Chat message row element.
+     * @returns {void}
+     */
+    _releaseChatRow(row) {
+        if (!row) return;
+        if (typeof row._cleanup === "function") {
+            try {
+                row._cleanup();
+            } catch (e) {}
+            row._cleanup = null;
+        }
+        if (Array.isArray(row._blobUrls)) {
+            row._blobUrls.forEach((u) => {
+                try {
+                    URL.revokeObjectURL(u);
+                } catch (e) {}
+            });
+            row._blobUrls = null;
+        }
+    }
+
+    /**
+     * Keep the chat transcript bounded to CHAT_MAX_ROWS message rows by detaching
+     * the oldest ones in a single Range.deleteContents() DOM operation.
+     * @param {number} [maxRows] - Maximum number of rows to retain.
+     * @returns {void}
+     */
+    _pruneChatMessages(maxRows = RobotUI.CHAT_MAX_ROWS) {
+        const container = this.chatMessagesContainer;
+        if (!container) return;
+        const rows = container.children;
+        if (rows.length <= maxRows) return;
+
+        const excess = rows.length - maxRows;
+        for (let i = 0; i < excess; i++) {
+            this._releaseChatRow(rows[i]);
+        }
+
+        const range = document.createRange();
+        range.setStartBefore(rows[0]);
+        range.setEndAfter(rows[excess - 1]);
+        range.deleteContents();
+        range.detach && range.detach();
+    }
+
+    /**
+     * Coalesce streaming markdown re-renders to at most one per ~100ms.
+     * Renders immediately when the throttle window has elapsed, otherwise schedules
+     * a single trailing render so no token is ever lost.
+     * @param {HTMLElement} el - Target element whose innerHTML is re-rendered.
+     * @param {string} text - Latest raw markdown text.
+     * @returns {void}
+     */
+    _scheduleStreamingRender(el, text) {
+        if (!el) return;
+        el._pendingText = text;
+        if (el._renderTimer) return;
+
+        const since = performance.now() - (el._lastRenderAt || 0);
+        if (since >= RobotUI.STREAM_RENDER_MS) {
+            this._renderStreamingInto(el);
+            return;
+        }
+        el._renderTimer = this._timeout(() => {
+            el._renderTimer = null;
+            this._renderStreamingInto(el);
+        }, RobotUI.STREAM_RENDER_MS - since);
+    }
+
+    /**
+     * Perform one throttled markdown render.
+     * @param {HTMLElement} el - Target element.
+     * @returns {void}
+     */
+    _renderStreamingInto(el) {
+        el._lastRenderAt = performance.now();
+        el.innerHTML = this.renderChatMarkdown(el._pendingText || "") + (el._suffixHtml || "");
+    }
+
+    /**
+     * Cancel throttling and guarantee a final render for the given text.
+     * @param {HTMLElement} el - Target element.
+     * @param {string} [text] - Final raw markdown text (defaults to the pending text).
+     * @returns {void}
+     */
+    _flushStreamingRender(el, text) {
+        if (!el) return;
+        if (el._renderTimer) {
+            this._clearTmo(el._renderTimer);
+            el._renderTimer = null;
+        }
+        if (text !== undefined) el._pendingText = text;
+        this._renderStreamingInto(el);
+    }
+
+    /**
+     * Append trailing markup (error / stopped notices) that must survive later
+     * renders, then guarantee a final render.
+     * @param {HTMLElement} el - Target element.
+     * @param {string} html - Already-escaped HTML to append after the rendered text.
+     * @returns {void}
+     */
+    _appendStreamSuffix(el, html) {
+        if (!el) return;
+        el._suffixHtml = (el._suffixHtml || "") + html;
+        this._flushStreamingRender(el);
     }
 
     cleanHumanText(text) {
@@ -2577,8 +2972,8 @@ class RobotUI {
             });
             this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 
-            // Update debug metrics every 500ms
-            setInterval(() => {
+            // Update debug metrics every 500ms (tracked so it is torn down on unload)
+            this._interval(() => {
                 const eng = this._activeCharEngine();
                 if (eng && this.dbgCharFps) {
                     this.dbgCharFps.textContent = `FPS: ${eng.fps} (${eng.frameTimeMs.toFixed(1)}ms)`;
@@ -2620,7 +3015,7 @@ class RobotUI {
 
         // Also post to REST endpoint
         try {
-            await fetch("/character/action", {
+            await this.apiFetch("/character/action", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(actionObj),
@@ -2638,7 +3033,7 @@ class RobotUI {
         if (btnStop) {
             btnStop.addEventListener("click", async () => {
                 try {
-                    await fetch("/interrupt", { method: "POST" });
+                    await this.apiFetch("/interrupt", { method: "POST" });
                 } catch (e) {}
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({ type: "interrupt" }));
@@ -2692,7 +3087,7 @@ class RobotUI {
                 e.stopPropagation();
                 const targetState = !this.cameraEnabled;
                 try {
-                    const res = await fetch("/camera-mode", {
+                    const res = await this.apiFetch("/camera-mode", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ enabled: targetState }),
@@ -2708,7 +3103,7 @@ class RobotUI {
                             if (radar) radar.style.display = "none";
                             if (this.cameraImg) {
                                 this.cameraImg.style.display = "block";
-                                this.cameraImg.src = `/camera/stream?t=${Date.now()}`;
+                                this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
                             }
                             this.logEvent("PERCEPTION", "Camera stream resumed", "system");
                         } else {
@@ -2759,6 +3154,64 @@ class RobotUI {
             });
         }
 
+        // ─── Face Mesh Toggle ────────────────────────────────────────────────
+        const btnFaceMesh = document.getElementById("btnToggleFaceMesh");
+        /** @type {boolean} Whether the face mesh MJPEG stream is currently active. */
+        this.faceMeshActive = false;
+
+        if (btnFaceMesh) {
+            // Attempt to check initial face mesh status from the server
+            this.apiFetch("/api/face-mesh/status")
+                .then((r) => r.json())
+                .then((d) => {
+                    this.faceMeshActive = d.available && d.running;
+                    this._updateFaceMeshBtn(btnFaceMesh);
+                })
+                .catch(() => {});
+
+            /**
+             * Toggles the camera image source between the raw annotated stream
+             * (/camera/stream) and the MediaPipe 468-point face mesh stream
+             * (/camera/face-mesh), and calls the server toggle endpoint.
+             * @param {MouseEvent} e - Click event.
+             * @returns {Promise<void>}
+             */
+            btnFaceMesh.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                try {
+                    const targetEnabled = !this.faceMeshActive;
+                    const res = await this.apiFetch("/api/face-mesh/toggle", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ enabled: targetEnabled }),
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        this.faceMeshActive = data.running && data.available;
+                        this._updateFaceMeshBtn(btnFaceMesh);
+                        if (this.cameraImg) {
+                            if (this.faceMeshActive) {
+                                this.cameraImg.src = this.streamUrl(`/camera/face-mesh?t=${Date.now()}`);
+                                this.logEvent("PERCEPTION", "Face Mesh stream active — 468-point overlay", "system");
+                            } else {
+                                this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
+                                this.logEvent("PERCEPTION", "Face Mesh disabled — annotated stream", "system");
+                            }
+                        }
+                        // Update stream overlay label
+                        const overlayEl = document.querySelector(".stream-overlay");
+                        if (overlayEl) {
+                            overlayEl.innerHTML = this.faceMeshActive
+                                ? '<span class="rec-dot"></span> LIVE MAX FPS | FACE MESH 🟢'
+                                : '<span class="rec-dot"></span> LIVE MAX FPS | YUNET HUD';
+                        }
+                    }
+                } catch (err) {
+                    console.error("Failed to toggle face mesh:", err);
+                }
+            });
+        }
+
         // Custom mouse drag handle for smooth resizing
         if (resizeHandle && cameraBox) {
             let isDragging = false;
@@ -2791,12 +3244,34 @@ class RobotUI {
         }
     }
 
+    /**
+     * Update the face mesh toggle button appearance to reflect active/inactive state.
+     *
+     * Active state: green glow with "🟢" indicator and MESH label.
+     * Inactive state: neutral ghost style with "🫥" indicator.
+     *
+     * @param {HTMLButtonElement} btn - The face mesh toggle button element.
+     * @returns {void}
+     */
+    _updateFaceMeshBtn(btn) {
+        if (!btn) return;
+        if (this.faceMeshActive) {
+            btn.textContent = "🟢";
+            btn.classList.add("active-mesh");
+            btn.title = "Face Mesh ACTIVE — Click to disable (MediaPipe 468-point overlay)";
+        } else {
+            btn.textContent = "🫥";
+            btn.classList.remove("active-mesh");
+            btn.title = "Toggle Face Mesh (MediaPipe 468-point overlay)";
+        }
+    }
+
     async initPersonalitySelector() {
         if (!this.personaSelect) return;
 
         // Fetch available personalities and current active
         try {
-            const res = await fetch("/api/personas");
+            const res = await this.apiFetch("/api/personas");
             if (res.ok) {
                 const data = await res.json();
                 const personas = data.personas || [];
@@ -2811,7 +3286,7 @@ class RobotUI {
                 }
                 const savedPersona = localStorage.getItem("robot_active_personality");
                 if (savedPersona && savedPersona !== data.active && personas.some(p => p.id === savedPersona)) {
-                    await fetch(`/api/personas/${savedPersona}/activate`, { method: "POST" });
+                    await this.apiFetch(`/api/personas/${savedPersona}/activate`, { method: "POST" });
                     data.active = savedPersona;
                 }
                 if (data.active) {
@@ -2841,13 +3316,13 @@ class RobotUI {
                 document.querySelectorAll(".msg-assistant .chat-msg-sender").forEach((el) => {
                     el.textContent = disp;
                 });
-                const switchRes = await fetch(`/api/personas/${chosen}/activate`, { method: "POST" });
+                const switchRes = await this.apiFetch(`/api/personas/${chosen}/activate`, { method: "POST" });
                 if (switchRes.ok) {
                     this.logEvent("PERSONA", `Personality switched to ${disp} with isolated database`, "system");
                     await this.updateActivePersonaUI(chosen, disp);
                 } else {
                     // Fallback to legacy personality switch
-                    await fetch(`/personality/${chosen}`, { method: "POST" });
+                    await this.apiFetch(`/personality/${chosen}`, { method: "POST" });
                     await this.updateActivePersonaUI(chosen, disp);
                 }
             } catch (err) {
@@ -2874,7 +3349,7 @@ class RobotUI {
     async refreshPersonaSelector() {
         if (!this.personaSelect) return;
         try {
-            const res = await fetch("/api/personas");
+            const res = await this.apiFetch("/api/personas");
             if (!res.ok) return;
             const data = await res.json();
             const personas = data.personas || [];
@@ -2985,7 +3460,7 @@ class RobotUI {
         const renderPersonas = async () => {
             if (!cardsGrid) return;
             try {
-                const res = await fetch("/api/personas");
+                const res = await this.apiFetch("/api/personas");
                 if (!res.ok) throw new Error("Failed to load personas");
                 const data = await res.json();
                 const personas = data.personas || [];
@@ -3051,7 +3526,7 @@ class RobotUI {
                         try {
                             btn.textContent = "Activating...";
                             btn.disabled = true;
-                            const actRes = await fetch(`/api/personas/${targetId}/activate`, { method: "POST" });
+                            const actRes = await this.apiFetch(`/api/personas/${targetId}/activate`, { method: "POST" });
                             if (!actRes.ok) throw new Error(await actRes.text());
                             this.logEvent("PERSONA", `Activated persona ${targetId} with isolated database.`, "system");
                             await this.updateActivePersonaUI(targetId);
@@ -3073,7 +3548,7 @@ class RobotUI {
                         try {
                             btn.textContent = "...";
                             btn.disabled = true;
-                            const delRes = await fetch(`/api/personas/${targetId}?delete_database=true`, { method: "DELETE" });
+                            const delRes = await this.apiFetch(`/api/personas/${targetId}?delete_database=true`, { method: "DELETE" });
                             if (!delRes.ok) {
                                 const errJson = await delRes.json().catch(() => ({}));
                                 throw new Error(errJson.detail || "Deletion failed");
@@ -3191,7 +3666,7 @@ class RobotUI {
                         submitBtn.textContent = "Provisioning Database...";
                         submitBtn.disabled = true;
                     }
-                    const createRes = await fetch("/api/personas", {
+                    const createRes = await this.apiFetch("/api/personas", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(payload),
@@ -3604,7 +4079,7 @@ class RobotUI {
                 if (preset) {
                     url += `?preset=${encodeURIComponent(preset)}`;
                 }
-                const res = await fetch(url);
+                const res = await this.apiFetch(url);
                 const data = await res.json();
                 if (data.status === "ok" && Array.isArray(data.models)) {
                     this.scannedOpenaiModels = data.models;
@@ -3647,7 +4122,7 @@ class RobotUI {
             if (!selectedModel) return;
             this.logEvent("LLM", `Selecting OpenAI model "${selectedModel}"...`, "system");
             try {
-                const res = await fetch("/api/llm/openai/model", {
+                const res = await this.apiFetch("/api/llm/openai/model", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ model: selectedModel })
@@ -3880,7 +4355,7 @@ class RobotUI {
          */
         const openConfigModal = async () => {
             try {
-                const res = await fetch("/api/llm/status");
+                const res = await this.apiFetch("/api/llm/status");
                 if (res.ok) {
                     const data = await res.json();
                     if (data.openrouter) {
@@ -4012,7 +4487,7 @@ class RobotUI {
                 }
 
                 try {
-                    const res = await fetch("/api/llm/openai/config", {
+                    const res = await this.apiFetch("/api/llm/openai/config", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(payload)
@@ -4065,7 +4540,7 @@ class RobotUI {
 
         // Fetch initial status on load
         try {
-            const res = await fetch("/api/llm/status");
+            const res = await this.apiFetch("/api/llm/status");
             if (res.ok) {
                 const data = await res.json();
                 if (data.context_window && data.provider === "local") {
@@ -4112,7 +4587,7 @@ class RobotUI {
             this.logEvent("LLM", `Swapping LLM provider to ${target.toUpperCase()}...`, "system");
 
             try {
-                const res = await fetch("/api/llm/provider", {
+                const res = await this.apiFetch("/api/llm/provider", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ provider: target })
@@ -4174,26 +4649,27 @@ class RobotUI {
     }
 
     initBlinking() {
-        // Humanoid natural asynchronous blinking
+        // Humanoid natural asynchronous blinking (all timers tracked + stopped on teardown)
         const doBlink = () => {
+            if (this._stopped) return;
             const eyes = document.querySelectorAll(".eye");
             eyes.forEach(e => e.classList.add("blink"));
-            setTimeout(() => {
+            this._timeout(() => {
                 eyes.forEach(e => e.classList.remove("blink"));
             }, 120);
 
             // Double blink chance
             if (Math.random() < 0.25) {
-                setTimeout(() => {
+                this._timeout(() => {
                     eyes.forEach(e => e.classList.add("blink"));
-                    setTimeout(() => eyes.forEach(e => e.classList.remove("blink")), 110);
+                    this._timeout(() => eyes.forEach(e => e.classList.remove("blink")), 110);
                 }, 240);
             }
 
             const nextBlink = Math.random() * 3500 + 2000;
-            this.blinkInterval = setTimeout(doBlink, nextBlink);
+            this.blinkInterval = this._timeout(doBlink, nextBlink);
         };
-        this.blinkInterval = setTimeout(doBlink, 2000);
+        this.blinkInterval = this._timeout(doBlink, 2000);
     }
 
     setRobotMode(mode) {
@@ -4262,8 +4738,8 @@ class RobotUI {
     }
 
     startMouthSpeaking() {
-        if (this.mouthInterval) clearInterval(this.mouthInterval);
-        this.mouthInterval = setInterval(() => {
+        if (this.mouthInterval) this._clearIv(this.mouthInterval);
+        this.mouthInterval = this._interval(() => {
             this.mouthBars.forEach((bar, idx) => {
                 const height = Math.floor(Math.random() * 38) + 8;
                 bar.style.height = `${height}px`;
@@ -4273,7 +4749,7 @@ class RobotUI {
 
     stopMouthSpeaking() {
         if (this.mouthInterval) {
-            clearInterval(this.mouthInterval);
+            this._clearIv(this.mouthInterval);
             this.mouthInterval = null;
         }
         this.mouthBars.forEach(b => b.style.height = "10px");
@@ -4298,10 +4774,28 @@ class RobotUI {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         const wsUrl = `${protocol}//${window.location.host}/ws/events`;
 
+        this._wsBackoffMs = RobotUI.WS_BACKOFF_MIN_MS;
+        this._wsFailures = 0;
+        this._wsConnectTimer = null;
+
         const connect = () => {
-            this.ws = new WebSocket(wsUrl);
+            this._wsConnectTimer = null;
+            let socket;
+            try {
+                // streamUrl() appends ?token= when a bearer token is stored.
+                socket = new WebSocket(this.streamUrl(wsUrl));
+            } catch (e) {
+                console.warn("WebSocket construction failed:", e);
+                this._scheduleWsReconnect(connect);
+                return;
+            }
+            this.ws = socket;
 
             this.ws.onopen = () => {
+                // Successful open resets the backoff ladder.
+                this._wsBackoffMs = RobotUI.WS_BACKOFF_MIN_MS;
+                this._wsFailures = 0;
+                this._setWsOfflineIndicator(false);
                 this.logEvent("WS", "Real-time telemetry event stream connected.", "system");
             };
 
@@ -4314,12 +4808,46 @@ class RobotUI {
                 }
             };
 
+            this.ws.onerror = () => {
+                // onclose always follows; reconnection is handled there.
+            };
+
             this.ws.onclose = () => {
-                setTimeout(connect, 2000);
+                this._scheduleWsReconnect(connect);
             };
         };
 
         connect();
+    }
+
+    /**
+     * Exponential-backoff WebSocket reconnect: 1s → 2s → 4s … capped at 30s, with
+     * jitter, reset to 1s on a successful open. After WS_MAX_FAST_RETRIES failures
+     * the UI shows an offline indicator and only a slow probe is kept alive, so a
+     * dead backend is never hammered.
+     * @param {Function} connect - Opens the next WebSocket attempt.
+     * @returns {void}
+     */
+    _scheduleWsReconnect(connect) {
+        if (this._stopped) return;
+        if (this._wsConnectTimer) this._clearTmo(this._wsConnectTimer);
+
+        this._wsFailures++;
+        const exhausted = this._wsFailures >= RobotUI.WS_MAX_FAST_RETRIES;
+        if (exhausted) {
+            this._setWsOfflineIndicator(true, `retries every ${RobotUI.WS_SLOW_RETRY_MS / 1000}s`);
+            this.logEvent("WS", `Telemetry stream offline after ${this._wsFailures} attempts; slow retries only.`, "warning");
+        } else {
+            this.logEvent("WS", `Telemetry stream closed; reconnect attempt ${this._wsFailures}.`, "system");
+        }
+
+        const base = Math.min(RobotUI.WS_BACKOFF_MAX_MS, this._wsBackoffMs || RobotUI.WS_BACKOFF_MIN_MS);
+        // ±25% jitter so many clients do not reconnect in lockstep.
+        const jitter = base * 0.25 * (Math.random() - 0.5) * 2;
+        const delay = exhausted ? RobotUI.WS_SLOW_RETRY_MS : Math.max(500, Math.round(base + jitter));
+        this._wsBackoffMs = Math.min(RobotUI.WS_BACKOFF_MAX_MS, base * 2);
+
+        this._wsConnectTimer = this._timeout(() => connect(), delay);
     }
 
     handleServerEvent(data) {
@@ -4528,8 +5056,9 @@ class RobotUI {
             // Trigger lip-sync on ALL 3D character engines with safe timeout
             const phraseDuration = Math.max(1200, Math.min(10000, data.robot_phrase.length * 80));
             this._forEachEngine((eng) => eng.speakStart());
-            if (this._phraseTimeout) clearTimeout(this._phraseTimeout);
-            this._phraseTimeout = setTimeout(() => {
+            if (this._phraseTimeout) this._clearTmo(this._phraseTimeout);
+            this._phraseTimeout = this._timeout(() => {
+                this._phraseTimeout = null;
                 this._forEachEngine((eng) => {
                     eng.speakStop();
                     eng.setEmotion("neutral");
@@ -4793,10 +5322,14 @@ class RobotUI {
     }
 
     startPollers() {
-        // Poll status every 1.5 seconds for robust state synchronization
-        setInterval(async () => {
+        // Poll status for robust state synchronization. This data also arrives over
+        // /ws/events, so while the socket is OPEN the poll is slowed to a periodic
+        // reconciliation tick; it only runs at full rate as a disconnected fallback.
+        this._interval(async () => {
+            this._pollCounters.status++;
+            if (this._isWsOpen() && this._pollCounters.status % RobotUI.WS_POLL_SLOWDOWN !== 0) return;
             try {
-                const res = await fetch("/status");
+                const res = await this.apiFetch("/status");
                 if (res.ok) {
                     const data = await res.json();
                     if (data.mode) this.setRobotMode(data.mode);
@@ -4858,10 +5391,13 @@ class RobotUI {
             } catch (e) {}
         }, 1200);
 
-        // Poll Traces & Pipeline State every 1.5 seconds if WebSocket drops or during active turn
-        setInterval(async () => {
+        // Poll Traces & Pipeline State. trace_updated / pipeline_updated are also
+        // pushed over /ws/events, so this is throttled while the socket is live.
+        this._interval(async () => {
+            this._pollCounters.traces++;
+            if (this._isWsOpen() && this._pollCounters.traces % RobotUI.WS_POLL_SLOWDOWN !== 0) return;
             try {
-                const res = await fetch("/observability/traces?limit=1");
+                const res = await this.apiFetch("/observability/traces?limit=1");
                 if (res.ok) {
                     const data = await res.json();
                     if (data.traces && data.traces.length > 0) {
@@ -4877,10 +5413,10 @@ class RobotUI {
             } catch (e) {}
         }, 1500);
 
-        // Poll World State & Perception at 4Hz (250ms) for responsive face tracking
-        setInterval(async () => {
+        // Poll World State & Perception (not delivered over /ws/events, so always polled)
+        this._interval(async () => {
             try {
-                const res = await fetch("/world-state");
+                const res = await this.apiFetch("/world-state");
                 if (res.ok) {
                     const ws = await res.json();
                     if (!ws.error) {
@@ -4968,7 +5504,7 @@ class RobotUI {
                 if (this.cameraEnabled) {
                     setTimeout(() => {
                         if (this.cameraEnabled) {
-                            this.cameraImg.src = `/camera/stream?t=${Date.now()}`;
+                            this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
                         }
                     }, 3000);
                 }
@@ -4985,7 +5521,7 @@ class RobotUI {
         // Hardware Observability Telemetry Polling (CPU, System RAM, RTX 3050, AMD 680M)
         const fetchHw = async () => {
             try {
-                const res = await fetch("/observability/hardware");
+                const res = await this.apiFetch("/observability/hardware");
                 if (res.ok) {
                     const hw = await res.json();
                     if (hw.cpu_percent !== undefined) {
@@ -5030,11 +5566,11 @@ class RobotUI {
             } catch (e) {}
         };
         fetchHw();
-        setInterval(fetchHw, 2000);
+        this._interval(fetchHw, 2000);
 
-        setInterval(async () => {
+        this._interval(async () => {
             try {
-                const res = await fetch("/images/jobs");
+                const res = await this.apiFetch("/images/jobs");
                 if (res.ok) {
                     const data = await res.json();
                     if (data.jobs) {
@@ -5166,7 +5702,7 @@ class RobotUI {
             });
 
             // Fetch live model catalog and cached states from backend
-            fetch("/api/images/models")
+            this.apiFetch("/api/images/models")
                 .then(r => r.json())
                 .then(data => {
                     if (data && data.models) {
@@ -5205,7 +5741,7 @@ class RobotUI {
             this.updatePipelineStatus({ IMAGE: "RUNNING" });
 
             try {
-                const res = await fetch("/images/generate", {
+                const res = await this.apiFetch("/images/generate", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -5221,7 +5757,7 @@ class RobotUI {
                     input.value = "";
                     this.logEvent("IMAGE", `Job queued on ${targetModel}: "${prompt}" (${width}x${height}, ${steps} st)`, "system");
                     try {
-                        const pollRes = await fetch("/images/jobs");
+                        const pollRes = await this.apiFetch("/images/jobs");
                         if (pollRes.ok) {
                             const jobsData = await pollRes.json();
                             if (jobsData.jobs) this.updateImageJobsUI(jobsData.jobs);
@@ -5269,7 +5805,7 @@ class RobotUI {
             btnCancel.addEventListener("click", async (e) => {
                 e.preventDefault();
                 if (this.activeImageJob) {
-                    await fetch(`/images/cancel/${this.activeImageJob}`, { method: "POST" });
+                    await this.apiFetch(`/images/cancel/${this.activeImageJob}`, { method: "POST" });
                     this.logEvent("IMAGE", `Cancelled job ${this.activeImageJob}`, "system");
                     this.updatePipelineStatus({ IMAGE: "CANCELLED" });
                 }
@@ -5293,6 +5829,8 @@ class RobotUI {
         const previewImg = document.getElementById("imgPreviewImg");
         if (previewImg) {
             previewImg.style.cursor = "zoom-in";
+            // Mark as bound so updateImageJobsUI() (called on every jobs poll) never adds a second handler.
+            previewImg._boundClick = true;
             previewImg.addEventListener("click", () => {
                 if (previewImg.src) {
                     window.open(previewImg.src, "_blank");
@@ -5521,7 +6059,7 @@ class RobotUI {
                 if (!confirm(`Are you sure you want to permanently delete '${fname}'?`)) return;
 
                 try {
-                    const res = await fetch(`/api/images/gallery/${encodeURIComponent(fname)}`, {
+                    const res = await this.apiFetch(`/api/images/gallery/${encodeURIComponent(fname)}`, {
                         method: "DELETE"
                     });
                     const data = await res.json();
@@ -5548,7 +6086,7 @@ class RobotUI {
      */
     async loadGalleryImages(render = true) {
         try {
-            const res = await fetch("/api/images/gallery?limit=150");
+            const res = await this.apiFetch("/api/images/gallery?limit=150");
             const data = await res.json();
             if (data.status === "ok" && Array.isArray(data.images)) {
                 this.galleryImages = data.images;
@@ -5686,7 +6224,7 @@ class RobotUI {
     initHfDownloadMonitor() {
         const updateDownloadBadges = async () => {
             try {
-                const res = await fetch("/api/llm/hf/downloads");
+                const res = await this.apiFetch("/api/llm/hf/downloads");
                 const data = await res.json();
                 if (data.status === "ok" && Array.isArray(data.downloads)) {
                     const activeDownload = data.downloads.find(d => d.status === "downloading" || d.status === "in_progress");
@@ -5712,7 +6250,7 @@ class RobotUI {
             }
         };
 
-        setInterval(updateDownloadBadges, 4000);
+        this._interval(updateDownloadBadges, 4000);
         updateDownloadBadges();
     }
 
@@ -5737,7 +6275,7 @@ class RobotUI {
                 if (presetBadge) presetBadge.textContent = `EQ: ${preset.toUpperCase()}`;
 
                 try {
-                    const res = await fetch("/api/equalizer", {
+                    const res = await this.apiFetch("/api/equalizer", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ preset: preset })
@@ -5755,7 +6293,7 @@ class RobotUI {
         // 2. Fetch initial music & equalizer state
         const refreshMusicState = async () => {
             try {
-                const res = await fetch("/api/music/status");
+                const res = await this.apiFetch("/api/music/status");
                 const data = await res.json();
                 if (data && data.status) {
                     const st = data.status;
@@ -5787,7 +6325,7 @@ class RobotUI {
             }
         };
         refreshMusicState();
-        setInterval(refreshMusicState, 5000);
+        this._interval(refreshMusicState, 5000);
 
         // 3. Volume slider (Direct REST endpoint)
         if (volSlider) {
@@ -5798,7 +6336,7 @@ class RobotUI {
                 const volPct = parseInt(volSlider.value, 10);
                 if (volVal) volVal.textContent = `${volPct}%`;
                 try {
-                    await fetch("/api/music/volume", {
+                    await this.apiFetch("/api/music/volume", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ volume: volPct / 100.0 })
@@ -5815,7 +6353,7 @@ class RobotUI {
                 btnRestart.classList.add("executing");
                 setTimeout(() => btnRestart.classList.remove("executing"), 400);
                 try {
-                    const res = await fetch("/api/music/restart", { method: "POST" });
+                    const res = await this.apiFetch("/api/music/restart", { method: "POST" });
                     const data = await res.json();
                     if (data && data.status === "ok") {
                         refreshMusicState();
@@ -5831,7 +6369,7 @@ class RobotUI {
                 btnPlay.classList.add("executing");
                 setTimeout(() => btnPlay.classList.remove("executing"), 400);
                 try {
-                    const res = await fetch("/api/music/toggle", { method: "POST" });
+                    const res = await this.apiFetch("/api/music/toggle", { method: "POST" });
                     const data = await res.json();
                     if (data) {
                         btnPlay.textContent = data.is_playing ? "⏸ Pause" : "⏯ Play";
@@ -5882,6 +6420,7 @@ class RobotUI {
             const barTargets = new Float32Array(numBars);
 
             const animateSpectrum = () => {
+                if (this._stopped) return;
                 const w = spectrumCanvas.width = spectrumCanvas.clientWidth || 280;
                 const h = spectrumCanvas.height = 38;
                 ctx.clearRect(0, 0, w, h);
@@ -5935,7 +6474,7 @@ class RobotUI {
         // 1. Fetch live memory & conversation turn stats
         const loadMemoryStats = async () => {
             try {
-                const res = await fetch("/api/memory/stats");
+                const res = await this.apiFetch("/api/memory/stats");
                 const data = await res.json();
                 if (data && data.status === "ok") {
                     if (memCount) memCount.textContent = data.facts_count ?? 0;
@@ -5958,8 +6497,8 @@ class RobotUI {
             try {
                 const searchUrl = q ? `/memory/search?query=${encodeURIComponent(q)}&limit=15` : `/memory/search?query=user&limit=15`;
                 const [memRes, histRes] = await Promise.allSettled([
-                    fetch(searchUrl).then(r => r.json()),
-                    q ? fetch(`/history/search?query=${encodeURIComponent(q)}&limit=6`).then(r => r.json()) : Promise.resolve({ results: [] })
+                    this.apiFetch(searchUrl).then(r => r.json()),
+                    q ? this.apiFetch(`/history/search?query=${encodeURIComponent(q)}&limit=6`).then(r => r.json()) : Promise.resolve({ results: [] })
                 ]);
 
                 const memData = memRes.status === "fulfilled" ? (memRes.value.results || []) : [];
@@ -6060,6 +6599,7 @@ class RobotUI {
         let phase = 0;
 
         const renderWaveform = () => {
+            if (this._stopped) return;
             const w = canvas.width = canvas.clientWidth || 220;
             const h = canvas.height = 36;
             ctx.clearRect(0, 0, w, h);
@@ -6250,7 +6790,7 @@ class RobotUI {
          */
         this.refreshLocalModels = async () => {
             try {
-                const res = await fetch("/api/llm/models");
+                const res = await this.apiFetch("/api/llm/models");
                 if (!res.ok) return;
                 const data = await res.json();
                 this.localModelsList = data.local_models || [];
@@ -6319,7 +6859,7 @@ class RobotUI {
             this.logEvent("LLM", `Hot-swapping local model to ${modelId}...`, "system");
 
             try {
-                const res = await fetch("/api/models/local/switch", {
+                const res = await this.apiFetch("/api/models/local/switch", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ model: modelId })
@@ -6373,7 +6913,7 @@ class RobotUI {
             }
 
             try {
-                const res = await fetch(`/api/llm/hf/search?q=${encodeURIComponent(cleanQuery)}&limit=24`);
+                const res = await this.apiFetch(`/api/llm/hf/search?q=${encodeURIComponent(cleanQuery)}&limit=24`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 const models = data.models || [];
@@ -6473,7 +7013,7 @@ class RobotUI {
             const metaRow = document.getElementById(`hfMetaRow_${safeId}`);
 
             try {
-                const res = await fetch(`/api/llm/hf/files?repo_id=${encodeURIComponent(modelMeta.repo_id)}`);
+                const res = await this.apiFetch(`/api/llm/hf/files?repo_id=${encodeURIComponent(modelMeta.repo_id)}`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
                 const files = (data.files || []).filter(f => !f.is_mmproj);
@@ -6573,7 +7113,7 @@ class RobotUI {
             this.logEvent("HF_HUB", `Enqueuing download for ${filename} from ${repoId}...`, "system");
 
             try {
-                const res = await fetch("/api/llm/hf/download", {
+                const res = await this.apiFetch("/api/llm/hf/download", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -6606,7 +7146,7 @@ class RobotUI {
          */
         this.cancelHfDownload = async (downloadId) => {
             try {
-                const res = await fetch("/api/llm/hf/cancel", {
+                const res = await this.apiFetch("/api/llm/hf/cancel", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ download_id: downloadId }),
@@ -6627,7 +7167,7 @@ class RobotUI {
          */
         this.pollHfDownloads = async () => {
             try {
-                const res = await fetch("/api/llm/hf/downloads");
+                const res = await this.apiFetch("/api/llm/hf/downloads");
                 if (!res.ok) return;
                 const data = await res.json();
                 const downloads = data.downloads || [];
@@ -6660,11 +7200,11 @@ class RobotUI {
                 // Manage polling interval: poll every 700ms while active, otherwise every 5s
                 if (activeCount > 0) {
                     if (!this.hfDownloadPollInterval) {
-                        this.hfDownloadPollInterval = setInterval(() => this.pollHfDownloads(), 750);
+                        this.hfDownloadPollInterval = this._interval(() => this.pollHfDownloads(), 750);
                     }
                 } else {
                     if (this.hfDownloadPollInterval) {
-                        clearInterval(this.hfDownloadPollInterval);
+                        this._clearIv(this.hfDownloadPollInterval);
                         this.hfDownloadPollInterval = null;
                     }
                 }
@@ -6792,7 +7332,7 @@ class RobotUI {
          */
         this.loadLlamaSettings = async () => {
             try {
-                const res = await fetch("/api/llm/settings");
+                const res = await this.apiFetch("/api/llm/settings");
                 if (!res.ok) return;
                 const data = await res.json();
                 const s = data.settings || {};
@@ -6956,7 +7496,7 @@ class RobotUI {
                     btnApply.textContent = "⚡ Restarting llama-server...";
                     showLlamaStatus("Stopping llama-server, applying hardware parameters, and offloading layers to RTX 3050...", "loading");
                     const payload = { settings: collectLlamaSettings(), reload: true };
-                    const res = await fetch("/api/llm/settings", {
+                    const res = await this.apiFetch("/api/llm/settings", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(payload),
@@ -6983,7 +7523,7 @@ class RobotUI {
                 try {
                     btnSave.disabled = true;
                     const payload = { settings: collectLlamaSettings(), reload: false };
-                    const res = await fetch("/api/llm/settings", {
+                    const res = await this.apiFetch("/api/llm/settings", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(payload),
@@ -7007,7 +7547,7 @@ class RobotUI {
                 try {
                     btnReset.disabled = true;
                     showLlamaStatus("Resetting settings to defaults and reloading...", "loading");
-                    const res = await fetch("/api/llm/settings/reset", {
+                    const res = await this.apiFetch("/api/llm/settings/reset", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ reload: true }),
@@ -7102,7 +7642,7 @@ class RobotUI {
          */
         this.refreshSttStatus = async () => {
             try {
-                const res = await fetch("/api/stt/models");
+                const res = await this.apiFetch("/api/stt/models");
                 if (!res.ok) return;
                 const data = await res.json();
                 this.sttModelsList = data.models || [];
@@ -7179,7 +7719,7 @@ class RobotUI {
             this.logEvent("STT", `Hot-swapping Whisper STT to ${modelId} on Vulkan...`, "system");
 
             try {
-                const res = await fetch("/api/stt/switch", {
+                const res = await this.apiFetch("/api/stt/switch", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ model: modelId })
@@ -7266,6 +7806,7 @@ class RobotUI {
         this.ttsActiveFilter = "all";
         this.ttsSearchQuery = "";
         this.ttsPreviewAudio = null;
+        this.ttsPreviewUrl = null;
         this.ttsActivePreviewBtn = null;
 
         /**
@@ -7287,10 +7828,7 @@ class RobotUI {
             if (!modal) return;
             modal.style.display = "none";
             modal.classList.remove("open");
-            if (this.ttsPreviewAudio) {
-                this.ttsPreviewAudio.pause();
-                this.ttsPreviewAudio = null;
-            }
+            this._stopTtsPreview();
             if (this.ttsActivePreviewBtn) {
                 this.ttsActivePreviewBtn.classList.remove("playing");
                 this.ttsActivePreviewBtn.textContent = "🔊 Preview";
@@ -7374,8 +7912,8 @@ class RobotUI {
         this.refreshTtsStatus = async () => {
             try {
                 const [statusRes, voicesRes] = await Promise.all([
-                    fetch("/api/tts/status"),
-                    fetch("/api/tts/voices"),
+                    this.apiFetch("/api/tts/status"),
+                    this.apiFetch("/api/tts/voices"),
                 ]);
 
                 if (statusRes.ok) {
@@ -7488,18 +8026,15 @@ class RobotUI {
          */
         this.previewTtsVoice = async (engine, voiceId, btn) => {
             if (this.ttsPreviewAudio && this.ttsActivePreviewBtn === btn) {
-                this.ttsPreviewAudio.pause();
-                this.ttsPreviewAudio = null;
+                this._stopTtsPreview();
                 btn.classList.remove("playing");
                 btn.textContent = "🔊 Preview";
                 this.ttsActivePreviewBtn = null;
                 return;
             }
 
-            if (this.ttsPreviewAudio) {
-                this.ttsPreviewAudio.pause();
-                this.ttsPreviewAudio = null;
-            }
+            // Switching voices mid-playback: release the old clip (audio + blob URL) first.
+            this._stopTtsPreview();
             if (this.ttsActivePreviewBtn) {
                 this.ttsActivePreviewBtn.classList.remove("playing");
                 this.ttsActivePreviewBtn.textContent = "🔊 Preview";
@@ -7509,12 +8044,26 @@ class RobotUI {
             btn.textContent = "⏳ Generating...";
             this.ttsActivePreviewBtn = btn;
 
+            let url = null;
+            let audio = null;
+            // Releases this clip's blob URL even when play() rejects and no ended/error event fires.
+            const cleanupPreview = () => {
+                if (this.ttsPreviewAudio === audio) {
+                    this._stopTtsPreview();
+                } else if (url) {
+                    try {
+                        URL.revokeObjectURL(url);
+                    } catch (_) {}
+                    if (this.ttsPreviewUrl === url) this.ttsPreviewUrl = null;
+                }
+            };
+
             try {
                 const sampleText = engine === "kokoro"
                     ? "Hello! This is Kokoro, an ultra-realistic neural voice running locally on the robot."
                     : "Hello! This is Piper, a high-speed local speech synthesis voice.";
 
-                const res = await fetch("/api/tts/test", {
+                const res = await this.apiFetch("/api/tts/test", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -7527,8 +8076,9 @@ class RobotUI {
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
                 const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const audio = new Audio(url);
+                url = URL.createObjectURL(blob);
+                this.ttsPreviewUrl = url;
+                audio = new Audio(url);
                 this.ttsPreviewAudio = audio;
 
                 btn.textContent = "⏹️ Stop";
@@ -7537,21 +8087,20 @@ class RobotUI {
                     btn.classList.remove("playing");
                     btn.textContent = "🔊 Preview";
                     if (this.ttsActivePreviewBtn === btn) this.ttsActivePreviewBtn = null;
-                    this.ttsPreviewAudio = null;
-                    URL.revokeObjectURL(url);
+                    cleanupPreview();
                 };
 
                 audio.onerror = () => {
                     btn.classList.remove("playing");
                     btn.textContent = "🔊 Preview";
                     if (this.ttsActivePreviewBtn === btn) this.ttsActivePreviewBtn = null;
-                    this.ttsPreviewAudio = null;
-                    URL.revokeObjectURL(url);
+                    cleanupPreview();
                 };
 
                 await audio.play();
             } catch (err) {
                 console.error("Preview failed:", err);
+                cleanupPreview();
                 btn.classList.remove("playing");
                 btn.textContent = "❌ Failed";
                 setTimeout(() => {
@@ -7570,7 +8119,7 @@ class RobotUI {
             if (modalHint) modalHint.textContent = `Switching TTS to ${engine.toUpperCase()} (${voice || 'default'})...`;
 
             try {
-                const res = await fetch("/api/tts/switch", {
+                const res = await this.apiFetch("/api/tts/switch", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ engine: engine, voice: voice }),
@@ -7649,12 +8198,22 @@ class RobotUI {
     }
 }
 
+// ─── Frontend tuning constants ───────────────────────────────────────────────
+RobotUI.CHAT_MAX_ROWS = 200;   // hard cap on rendered chat message rows
+RobotUI.STREAM_RENDER_MS = 100; // minimum interval between streaming re-renders
+RobotUI.WS_BACKOFF_MIN_MS = 1000;
+RobotUI.WS_BACKOFF_MAX_MS = 30000;
+RobotUI.WS_MAX_FAST_RETRIES = 8;  // then fall back to a slow probe + offline badge
+RobotUI.WS_SLOW_RETRY_MS = 60000;
+RobotUI.WS_POLL_SLOWDOWN = 12;    // poll every Nth tick while /ws/events is connected
+
 /**
  * Matrix Rain Ambient Visual Effect
  */
 class MatrixRain {
     constructor() {
         this.canvas = document.getElementById("matrixRainCanvas");
+        this._stopped = false;
         if (!this.canvas) return;
         this.ctx = this.canvas.getContext("2d");
         this.characters = "0123456789ABCDEFｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ9876543210<>{}[]=/*+~";
@@ -7679,7 +8238,7 @@ class MatrixRain {
     }
 
     render() {
-        if (!this.ctx || !this.canvas) return;
+        if (!this.ctx || !this.canvas || this._stopped) return;
 
         // Dynamically get active theme colors from CSS custom properties on document.body
         const computed = getComputedStyle(document.body);

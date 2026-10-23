@@ -22,6 +22,21 @@ if TYPE_CHECKING:
 
 logger = get_logger("audio.wakeword")
 
+# Tokens that carry no direct-address information on their own. Used to
+# reject trailing bare-name matches like "so robot" / "that's so robot"
+# where the name is just the last word of an ambient sentence.
+_NON_ADDRESS_TOKENS: frozenset[str] = frozenset(
+    {
+        "um", "uh", "so", "well", "please", "and", "but", "or", "like", "just",
+        "the", "a", "an", "this", "that", "thats", "that's", "it", "its", "is",
+        "am", "are", "was", "were", "be", "been", "being", "very", "really",
+        "kind", "sort", "type", "of", "to", "he", "she", "they", "i", "you",
+        "we", "my", "me", "his", "her", "about", "such",
+        # Clitic fragments produced when '\w+' splits apostrophes (that's, it's…)
+        "s", "t", "d", "m", "ll", "ve", "re",
+    }
+)
+
 
 class WakeWordState(str, Enum):
     """Wake-word system states for voice cycle orchestration."""
@@ -241,6 +256,7 @@ class WakeWordDetector:
 
         cleaned = text.strip()
         lower = cleaned.lower()
+        word_count = len(lower.split())
 
         # Sort phrases longest first so "hey cypher" matches before "cypher"
         sorted_phrases = sorted(self.wake_words, key=lambda x: len(x), reverse=True)
@@ -252,8 +268,19 @@ class WakeWordDetector:
             )
             m_start = re.search(pattern_prefix, lower)
             if m_start:
+                # Guard: the matched name must actually start near the top of the
+                # utterance (first ~40% of the text, always allowing the short
+                # single-filler prefix the regex permits).
+                name_pos = m_start.group().find(phrase)
+                if name_pos > 12 and name_pos > 0.4 * len(lower):
+                    continue
                 remainder = cleaned[m_start.end() :].strip()
                 remainder = re.sub(r"^[\s,:\.\?!]+", "", remainder).strip()
+                # A bare single-name wake ("robot") preceded only by a filler and
+                # with no command after it ("so robot") is conversational tail
+                # speech, not a direct-address wake invocation.
+                if " " not in phrase and name_pos > 0 and not remainder:
+                    continue
                 self._last_wake_time = time.time()
                 self.transition_to(
                     WakeWordState.WAKE_DETECTED, reason=f"matched '{phrase}'"
@@ -268,8 +295,23 @@ class WakeWordDetector:
             pattern_suffix = rf"[\s,]+(?:hey|hi|hello)?\s*\b{re.escape(phrase)}\b[\s\.\?!]*$"
             m_suffix = re.search(pattern_suffix, lower)
             if m_suffix:
+                suffix_match = m_suffix.group()
                 remainder = cleaned[: m_suffix.start()].strip()
                 remainder = re.sub(r"[\s,:\.\?!]+$", "", remainder).strip()
+                # A bare single name ending a sentence ("...so robot") is only a
+                # direct address when punctuated (", robot") or greeted ("hey
+                # robot"); otherwise require a short utterance whose remainder
+                # still carries a substantive word beyond fillers/stopwords.
+                has_greeting = bool(re.search(r"\b(?:hey|hi|hello)\b", suffix_match))
+                has_comma = "," in suffix_match
+                if " " not in phrase and not has_greeting and not has_comma:
+                    rem_tokens = [
+                        t
+                        for t in re.findall(r"\w+", remainder.lower())
+                        if t not in _NON_ADDRESS_TOKENS
+                    ]
+                    if word_count > 4 or not rem_tokens:
+                        continue
                 self._last_wake_time = time.time()
                 self.transition_to(
                     WakeWordState.WAKE_DETECTED, reason=f"suffix matched '{phrase}'"

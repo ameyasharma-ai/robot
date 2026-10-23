@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   robot-core:
     build:
@@ -7,10 +5,8 @@ services:
       dockerfile: Dockerfile
     container_name: robot-core
     restart: unless-stopped
-    ports:
-      - "8888:8888" # Web UI / REST / WebSocket API
-      - "8080:8080" # LLM Server
-      - "8081:8081" # Whisper STT Server
+    # network_mode: host (below) shares the host network stack directly, so a
+    # ports: map would be ignored; host mode is required for audio/serial latency.
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONWARNINGS=ignore::DeprecationWarning
@@ -27,8 +23,8 @@ services:
       - ./models:/app/models
       # System logs
       - ./logs:/app/logs
-      # Host ALSA audio pass-through for real-time microphone & speaker access
-      - /dev/snd:/dev/snd
+    # Host ALSA audio pass-through for real-time microphone & speaker access
+    # (exposed once via `devices:`; the former duplicate volumes: entry removed)
     devices:
       - /dev/snd:/dev/snd
     # Optional NVIDIA GPU acceleration (RTX 3050)
