@@ -2346,10 +2346,21 @@ body.mode-chat .chat-workspace-panel { display: flex; }
 .image-controls-row {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 16px;
     font-size: 11px;
     font-family: var(--font-mono);
     color: var(--text-dim);
+}
+
+.image-controls-row > * {
+    min-width: 0;
+}
+
+.card-image-studio .img-gallery-btn {
+    flex: 0 0 auto;
+    margin-left: auto;
+    white-space: nowrap;
 }
 
 .image-controls-row select, .image-controls-row input {
@@ -5543,9 +5554,20 @@ body.mode-chat .chat-workspace-panel { display: flex; }
     background: rgba(0, 0, 0, 0.4);
     border: 1px solid rgba(0, 255, 102, 0.12);
     border-radius: 8px;
+    /* The chain is fixed-order, so narrow cards scroll it instead of beheading the last node. */
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.integrated-pipeline-flow::-webkit-scrollbar {
+    display: none;
 }
 
 .integrated-pipeline-flow .pipe-node {
+    flex: 0 0 auto;
     padding: 3px 6px;
     min-width: 44px;
     border-radius: 5px;
@@ -11194,6 +11216,26 @@ body.auth-gate-open {
         max-height: calc(100dvh - 56px) !important;
         overflow: hidden !important;
     }
+
+    /* Ten wrapped category tabs cost ~45px of thread on a laptop; let the rail
+       scroll sideways instead, and cap the chip grid so the conversation keeps
+       the majority of a short viewport. */
+    .chat-category-tabs {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+        mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+    }
+
+    .chat-category-tabs::-webkit-scrollbar { display: none; }
+
+    .chat-quick-chips {
+        max-height: 26dvh;
+        overflow-y: auto;
+        scrollbar-width: thin;
+    }
 }
 
 /* --- Typography & state polish --------------------------------------- */
@@ -11312,4 +11354,168 @@ body.auth-gate-open {
     .top-nav-tts-picker-btn,
     #btnTopNavHfHub,
     #btnTopNavLlamaSettings { display: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MOBILE PHONE PASS (2026-10-23) — viewports ≤768px
+   ══════════════════════════════════════════════════════════════════════════
+   • Chat mode left a ~126px dead band under the composer: the dual-mode
+     scroller's 120px bottom padding carries !important and also matched chat
+     mode, where the panel is height:100% of the *padded* content box.
+   • The chat viewport was sized for a 56px header; phones get a 44px one.
+   • SYSTEM TOOLS was permanently expanded (283px: ten wrapped category tabs plus
+     a 156px chip grid), squeezing the actual conversation into 193px.
+   • .chat-top-right combined justify-content:flex-end with overflow-x:auto,
+     which pushed its first pill off the start edge where it could not be reached.
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+    .main-viewport,
+    body.mode-dual .main-viewport,
+    body.mode-chat .main-viewport {
+        padding: 8px 8px calc(8px + env(safe-area-inset-bottom)) !important;
+        gap: 8px !important;
+    }
+
+    /* Chat mode owns the whole screen: header is 44px on phones. */
+    body.mode-chat .main-viewport {
+        height: calc(100dvh - 44px) !important;
+        max-height: calc(100dvh - 44px) !important;
+        overflow: hidden !important;
+    }
+
+    body.mode-chat .chat-workspace-panel {
+        flex: 1 1 auto;
+        min-height: 0;
+        height: auto !important;
+        border-radius: 14px;
+    }
+
+    body.mode-chat .chat-main-area,
+    body.mode-chat .chat-messages-container {
+        min-height: 0;
+    }
+
+    /* Dual mode keeps the avatar dominant but leaves the first HUD card peeking. */
+    .face-panel {
+        height: clamp(300px, 48dvh, 420px) !important;
+        min-height: 300px !important;
+    }
+
+    /* HUD card titles: 1.8px tracking wrapped them over four lines on a phone. */
+    .card-header {
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .card-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        line-height: 1.35;
+    }
+
+    .card-badges {
+        flex: 0 1 auto;
+        min-width: 0;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    /* Status pills stacked beside a wrapped title burned three header lines;
+       on a phone they read better as one row under a full-width title. */
+    .card-header {
+        flex-wrap: wrap;
+    }
+
+    .card-header > .card-badges {
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        gap: 4px;
+    }
+
+    /* Toolbar pills scroll from their first item instead of losing it. */
+    .chat-top-right { justify-content: flex-start; }
+
+    /* A faded right edge reads as "more to the right" on a swipeable rail. */
+    .chat-top-right,
+    .chat-category-tabs {
+        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+        mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent);
+    }
+
+    /* ── SYSTEM TOOLS: collapsed strip that opens over the thread ────────── */
+    .chat-input-dock { position: relative; }
+
+    .chat-tools-title {
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+    }
+
+    .chat-tools-title::after {
+        content: "▸";
+        font-size: 10px;
+        color: var(--primary-cyan);
+        transition: transform 0.18s ease;
+    }
+
+    .chat-tools-dock.expanded .chat-tools-title::after { content: "▾"; }
+
+    .chat-tools-dock:not(.expanded) .chat-category-tabs,
+    .chat-tools-dock:not(.expanded) .chat-quick-chips { display: none !important; }
+
+    .chat-tools-dock:not(.expanded) .chat-tools-header {
+        padding-bottom: 0;
+        border-bottom: none;
+    }
+
+    .chat-tools-dock.expanded {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: calc(100% + 6px);
+        z-index: 45;
+        max-height: 46dvh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 10px 12px 12px;
+        background: rgba(6, 12, 9, 0.97);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        border: 1px solid var(--border-card);
+        border-radius: 14px;
+        box-shadow: 0 -14px 44px rgba(0, 0, 0, 0.78);
+    }
+
+    /* Title + category rail stay pinned while the chip list scrolls beneath. */
+    .chat-tools-dock.expanded .chat-tools-header {
+        position: sticky;
+        top: -10px;
+        z-index: 2;
+        flex-wrap: nowrap;
+        margin: -10px -12px 6px;
+        padding: 10px 12px 6px;
+        background: rgba(6, 12, 9, 0.97);
+    }
+
+    .chat-category-tabs {
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .chat-category-tabs::-webkit-scrollbar { display: none; }
+
+    .cat-tab,
+    .chat-chip { flex: 0 0 auto; }
+
+    .chat-quick-chips {
+        max-height: none !important;
+        overflow: visible !important;
+    }
 }

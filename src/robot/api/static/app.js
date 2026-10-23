@@ -700,6 +700,50 @@ class RobotUI {
             initialActiveTab.click();
         }
 
+        // On a phone the tool rail would eat ~280px of an 852px screen, so it
+        // collapses to its title strip and opens as a sheet over the thread.
+        const toolsDock = document.getElementById("chatToolsDock");
+        const toolsTitle = toolsDock ? toolsDock.querySelector(".chat-tools-title") : null;
+        const mobileTools = window.matchMedia("(max-width: 768px)");
+        if (toolsDock && toolsTitle) {
+            const composer = this.chatTextarea;
+            const longPlaceholder = composer ? composer.placeholder : "";
+            const syncToolsDisclosure = () => {
+                const mobile = mobileTools.matches;
+                if (!mobile) toolsDock.classList.remove("expanded");
+                toolsTitle.setAttribute("role", mobile ? "button" : "presentation");
+                toolsTitle.setAttribute("aria-expanded", String(toolsDock.classList.contains("expanded")));
+                toolsTitle.setAttribute("aria-controls", "chatQuickChips");
+                toolsTitle.tabIndex = mobile ? 0 : -1;
+                // The keyboard-shortcut hint cannot fit next to the mic/send buttons.
+                if (composer) {
+                    composer.placeholder = mobile ? "Message the robot…" : longPlaceholder;
+                }
+            };
+            toolsTitle.addEventListener("click", () => {
+                if (!mobileTools.matches) return;
+                toolsDock.classList.toggle("expanded");
+                syncToolsDisclosure();
+            });
+            toolsTitle.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toolsTitle.click();
+                }
+            });
+            // Choosing a tool hands the screen back to the composer.
+            toolsDock.addEventListener("click", (event) => {
+                if (event.target.closest(".chat-chip") && toolsDock.classList.contains("expanded")) {
+                    toolsDock.classList.remove("expanded");
+                    syncToolsDisclosure();
+                }
+            });
+            if (mobileTools.addEventListener) {
+                mobileTools.addEventListener("change", syncToolsDisclosure);
+            }
+            syncToolsDisclosure();
+        }
+
         // Quick available tools chips — insert prefix into chat input without auto-submitting
         chatChips.forEach((chip) => {
             chip.addEventListener("click", () => {
