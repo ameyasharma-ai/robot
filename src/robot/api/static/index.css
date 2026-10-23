@@ -527,11 +527,7 @@ hr {
 .cyber-btn-sm,
 .cyber-btn-ghost,
 .primary-btn,
-.model-sub-btn,
-.model-swap-btn,
-.hud-model-picker-btn,
 .top-nav-model-picker-btn,
-.top-nav-sub-btn,
 .deck-tab-btn,
 .img-gen-btn,
 .img-cancel-btn,
@@ -757,7 +753,6 @@ input[type="radio"]:checked::after {
 /* Badges and pills ------------------------------------------------------- */
 
 .badge,
-.pill,
 .chat-stat-pill,
 .status-pill,
 .mem-result-tag,
@@ -784,8 +779,7 @@ input[type="radio"]:checked::after {
 }
 
 .badge-accent,
-.badge-active,
-.pill-online {
+.badge-active {
     background: var(--tint-accent);
     color: var(--accent-300);
     border-color: rgba(34, 200, 230, 0.26);
@@ -1427,6 +1421,79 @@ input[type="radio"]:checked::after {
 
 .persona-manage-btn { flex: none; }
 
+/* Collapsed suite affordances. Above §11's phone breakpoint the persona and
+   engine controls sit permanently in the bar, so neither the ENGINE trigger nor
+   the suite handle has anything to do; both exist only to run the phone layout. */
+.cluster-toggle-btn {
+    display: none;
+    align-items: center;
+    gap: var(--s-1);
+    min-height: 34px;
+    padding: 0 var(--s-2);
+    background: var(--surface-control);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    font-family: var(--font-mono);
+    font-size: var(--t-2xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text-2);
+}
+
+.cluster-toggle-btn[aria-expanded="true"] {
+    color: var(--accent-200);
+    background: var(--tint-accent);
+    border-color: var(--accent-600);
+}
+
+.cluster-caret {
+    flex: none;
+    font-size: 9px;
+    color: var(--text-3);
+}
+
+/* The handle heads the suite strip and stays pinned while the strip scrolls, so
+   the close control is always under the thumb that opened it. */
+.cluster-handle {
+    display: none;
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    flex: none;
+    align-items: center;
+    gap: var(--s-2);
+    padding-right: var(--s-2);
+    background: linear-gradient(90deg, var(--ink-950) 68%, rgb(3 6 12 / 0));
+}
+
+.cluster-title {
+    font-family: var(--font-mono);
+    font-size: var(--t-2xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    white-space: nowrap;
+}
+
+.cluster-close-btn {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    font-size: var(--t-sm);
+    color: var(--text-2);
+    background: var(--surface-control);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xs);
+}
+
+.cluster-close-btn:hover {
+    color: var(--danger-400);
+    background: var(--tint-danger);
+    border-color: rgb(244 63 94 / 34%);
+}
+
 /* Engine cluster */
 .llm-provider-wrap {
     display: flex;
@@ -1506,11 +1573,7 @@ input[type="radio"]:checked::after {
 .top-nav-local-controls,
 .top-nav-openai-controls,
 .top-nav-whisper-controls,
-.top-nav-tts-controls,
-.chat-local-controls,
-.chat-openai-controls,
-.chat-whisper-controls,
-.chat-tts-controls {
+.top-nav-tts-controls {
     display: flex;
     align-items: center;
     gap: var(--s-1);
@@ -1519,11 +1582,7 @@ input[type="radio"]:checked::after {
 
 .top-nav-model-picker-btn,
 .top-nav-stt-picker-btn,
-.top-nav-tts-picker-btn,
-.hud-model-picker-btn,
-.chat-openai-model-btn,
-.model-sub-btn,
-.model-swap-btn {
+.top-nav-tts-picker-btn {
     display: inline-flex;
     align-items: center;
     gap: var(--s-1);
@@ -1572,14 +1631,14 @@ input[type="radio"]:checked::after {
     letter-spacing: 0.04em;
 }
 
-.top-nav-sub-btn {
-    width: 32px;
-    min-height: 32px;
-    padding: 0;
-    flex: none;
+/* Global status */
+.header-state {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    min-width: 0;
 }
 
-/* Global status */
 .status-pill {
     display: inline-flex;
     align-items: center;
@@ -2516,81 +2575,6 @@ body.mode-dual .chat-workspace-panel { display: none; }
 .h-dot.online { background: var(--tint-ok); color: var(--ok-400); }
 .h-dot.h-down,
 .h-dot.offline { background: var(--tint-danger); color: var(--danger-400); }
-
-/* Active model strip */
-.active-model-strip {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    flex-wrap: wrap;
-    width: 100%;
-    min-width: 0;
-    padding: var(--s-2) var(--s-3);
-    background: var(--surface-sunken);
-    border: 1px solid var(--line-hair);
-    border-radius: var(--r-sm);
-}
-
-.model-info-block {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-.model-type-tag {
-    flex: none;
-    padding: 2px var(--s-2);
-    background: var(--tint-ok);
-    color: var(--ok-400);
-    border: 1px solid rgba(34, 197, 94, 0.26);
-    border-radius: var(--r-xs);
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    font-weight: 700;
-    letter-spacing: 0.05em;
-}
-
-.model-title {
-    min-width: 0;
-    font-family: var(--font-mono);
-    font-size: var(--t-xs);
-    font-weight: 500;
-    color: var(--text-1);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.openai-model-controls {
-    display: flex;
-    align-items: center;
-    gap: var(--s-1);
-    flex: 0 1 auto;
-    min-width: 0;
-}
-
-.model-swap-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-1);
-    min-height: 30px;
-    padding: 0 var(--s-3);
-    background: var(--tint-ai);
-    color: var(--ai-300);
-    border: 1px solid rgba(139, 92, 246, 0.32);
-    border-radius: var(--r-sm);
-    font-size: var(--t-2xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    flex: none;
-}
-
-.model-swap-btn:hover { background: rgba(139, 92, 246, 0.22); }
-
-.swap-icon { font-size: 12px; }
 
 /* Pipeline chain — scrolls sideways in narrow cards rather than losing nodes. */
 .pipeline-flow,
@@ -3664,10 +3648,8 @@ body.mode-dual .chat-workspace-panel { display: none; }
 
 .stt-icon,
 .tts-icon,
-.whisper-icon,
 .voice-icon,
 .mic-icon,
-.model-icon,
 .system-icon,
 .thinking-icon { font-size: 13px; line-height: 1; }
 
@@ -4260,36 +4242,12 @@ button.chat-stat-pill:hover {
     border-color: var(--line-accent);
 }
 
-.chat-stat-pill.pill-local {
-    --pill-fg: var(--ok-400);
-
-    background: var(--tint-ok);
-    border-color: rgb(34 197 94 / 30%);
-}
-
-.pill-dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    background: var(--accent-500);
-    border-radius: 50%;
-}
-
-.pill-local .pill-dot { background: var(--ok-500); }
-
-.model-icon,
-.whisper-icon,
 .tts-icon,
 .mic-icon,
 .model-picker-icon,
 .thinking-glow-icon {
     display: inline-flex;
     align-items: center;
-    color: var(--text-3);
-}
-
-.chat-select-arrow {
-    font-size: var(--t-2xs);
     color: var(--text-3);
 }
 
@@ -4311,42 +4269,6 @@ button.chat-stat-pill:hover {
 
     background: var(--tint-ok);
 }
-
-.chat-local-controls,
-.chat-openai-controls,
-.chat-whisper-controls,
-.chat-tts-controls {
-    display: flex;
-    gap: var(--s-1);
-    align-items: center;
-}
-
-.chat-openai-model-btn,
-.chat-openai-btn {
-    display: inline-flex;
-    gap: 6px;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 var(--s-2);
-    font-family: var(--font-ui);
-    font-size: var(--t-xs);
-    font-weight: 600;
-    color: var(--text-2);
-    white-space: nowrap;
-    cursor: pointer;
-    background: var(--surface-control);
-    border: 1px solid var(--line);
-    border-radius: var(--r-pill);
-    transition: color var(--d-1) var(--ease), border-color var(--d-1) var(--ease);
-}
-
-.chat-openai-model-btn:hover,
-.chat-openai-btn:hover {
-    color: var(--accent-300);
-    border-color: var(--line-accent);
-}
-
-.chat-openai-btn { padding: 0 8px; }
 
 /* -- Thread --------------------------------------------------------------- */
 
@@ -5127,7 +5049,9 @@ button.chat-stat-pill:hover {
 .cyber-modal-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 90;
+    /* Above .top-nav: a full-screen phone modal starts at the viewport top, and a
+       header painting over it clipped its title and hid its close control. */
+    z-index: 130;
     display: none;
     align-items: center;
     justify-content: center;
@@ -6521,7 +6445,8 @@ button.chat-stat-pill:hover {
     color: var(--text-3);
 }
 
-.lightbox-backdrop { z-index: 96; }
+/* Opens from inside the gallery modal, so it sits one layer above it. */
+.lightbox-backdrop { z-index: 135; }
 
 .lightbox-modal {
     display: grid;
@@ -7225,8 +7150,6 @@ button.chat-stat-pill:hover {
 
 .music-vol-slider { flex: 0 1 120px; }
 
-.nav-divider-dim { opacity: .5; }
-
 .field-label-row {
     display: flex;
     gap: var(--s-2);
@@ -7304,6 +7227,9 @@ button.chat-stat-pill:hover {
     .nav-zone-center {
         gap: var(--s-1);
         justify-content: flex-start;
+        /* Centred while it still fits, left-aligned the moment it has to scroll —
+           `safe` is what keeps the overflowing head reachable. */
+        justify-content: safe center;
         overflow-x: auto;
         overflow-y: hidden;
         scrollbar-width: none;
@@ -7320,16 +7246,6 @@ button.chat-stat-pill:hover {
             mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
             -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
         }
-    }
-
-    /* The robot's state is the one thing that must never scroll away. */
-    .status-pill {
-        order: -1;
-        position: sticky;
-        left: 0;
-        z-index: 2;
-        backdrop-filter: blur(14px) saturate(1.2);
-        -webkit-backdrop-filter: blur(14px) saturate(1.2);
     }
 }
 
@@ -7450,17 +7366,21 @@ button.chat-stat-pill:hover {
 
     .main-viewport { padding: var(--s-2); padding-bottom: calc(var(--s-3) + env(safe-area-inset-bottom)); }
 
-    /* Header: one row, thumb-first. The engine cluster turns into a
-       touch-scrollable strip so no control is dropped, and the status pill is
-       reordered to the strip's head and pinned so it never scrolls away. */
+    /* Header: identity, state and actions stay in the bar; the persona and engine
+       suite drops into a second row that ENGINE opens. Every control in that row
+       keeps its label — an unlabelled glyph strip is what made this read as
+       broken, and a scrollable row of labelled pills is not. */
     .top-nav {
-        gap: var(--s-2);
+        flex-wrap: wrap;
+        align-content: center;
+        gap: var(--s-2) var(--s-3);
+        height: auto;
+        min-height: var(--header-h);
         padding: 0 var(--s-2);
     }
 
     .brand-title,
     .brand-ver,
-    .persona-caret,
     .nav-divider,
     .telemetry-pod { display: none; }
 
@@ -7471,21 +7391,39 @@ button.chat-stat-pill:hover {
 
     .nav-zone-left { flex: 0 0 auto; gap: var(--s-1); }
 
-    .persona-selector-wrap { max-width: 116px; }
+    .nav-zone-right {
+        flex: 1 1 auto;
+        gap: var(--s-2);
+    }
 
-    .persona-select { max-width: 82px; }
+    /* The suite strip: hidden until ENGINE opens it, then a full-width second
+       row that scrolls sideways instead of squashing its controls. */
+    .nav-zone-center {
+        display: none;
+        order: 3;
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        gap: var(--s-2);
+    }
 
-    .llm-toggle-info { display: none; }
+    body.engine-cluster-open .nav-zone-center { display: flex; }
+
+    .cluster-toggle-btn { display: inline-flex; }
+
+    /* ENGINE keeps its word where every other button contracts to a glyph: it is
+       the only control that opens something, and a lone ⚡ among glyphs reads as
+       another mode switch. */
+    .cluster-toggle-btn .btn-label { display: inline; }
+
+    .cluster-handle { display: flex; }
+
+    .persona-selector-wrap { max-width: 150px; }
 
     .llm-toggle-btn { padding: 0 var(--s-2); }
 
-    .model-picker-label,
-    .stt-picker-label,
-    .tts-picker-label { display: none; }
-
     .top-nav-model-picker-btn,
     .top-nav-stt-picker-btn,
-    .top-nav-tts-picker-btn { padding: 0 6px; }
+    .top-nav-tts-picker-btn { padding: 0 var(--s-2); }
 
     .stop-btn { padding: 0 var(--s-2); }
 
@@ -7520,14 +7458,6 @@ button.chat-stat-pill:hover {
     .chat-top-right { gap: var(--s-1); }
 
     .chat-session-id { display: none; }
-
-    .chat-thinking-toggle-btn,
-    .chat-mic-pill { display: none; }
-
-    .chat-local-controls,
-    .chat-openai-controls,
-    .chat-whisper-controls,
-    .chat-tts-controls { display: none; }
 
     .chat-messages-container {
         padding: var(--s-3) 0;
@@ -7590,6 +7520,16 @@ button.chat-stat-pill:hover {
     /* Modals occupy the full screen, minus the safe areas. */
     .cyber-modal-backdrop { padding: 0; }
 
+    /* A full-screen sheet has no backdrop left to tap, so its ✕ is the only way
+       out under a thumb; it gets the target size the header controls use. */
+    .modal-close-btn,
+    .lightbox-close-btn,
+    .cluster-close-btn {
+        width: 40px;
+        height: 40px;
+        font-size: var(--t-lg);
+    }
+
     .cyber-modal,
     .cyber-modal-wide {
         width: 100%;
@@ -7651,21 +7591,27 @@ button.chat-stat-pill:hover {
 /* -- 430: small phone ------------------------------------------------------ */
 
 @media (max-width: 430px) {
-    /* Header, tier 4: worded buttons become glyphs and the inline persona
-       switch steps aside — the Vault modal switches personas too, and it keeps
-       the engine strip wide enough to be worth scrolling. */
+    /* Header, tier 4: worded buttons become glyphs. The persona switch lives in
+       the suite strip at this width and keeps its label, and fullscreen is a
+       browser feature a phone does not have. */
     .btn-label { display: none; }
 
-    .persona-selector-wrap { display: none; }
+    .fullscreen-btn { display: none; }
 
-    .stop-btn,
-    .persona-manage-btn { padding: 0 9px; gap: 0; }
+    /* Inside the suite strip there is room to say what a control is — it scrolls
+       rather than squeezes — so only the bar contracts to glyphs. The strip's own
+       label gives that width straight back to the controls. */
+    .nav-zone-center .btn-label { display: inline; }
+
+    .cluster-title { display: none; }
+
+    .stop-btn { padding: 0 9px; gap: 0; }
+
+    /* The chat bar's two live pills (thinking, mic) otherwise wrap under the
+       session title and turn a 46px bar into a 77px one. */
+    .chat-stat-pill { gap: 4px; font-size: var(--t-2xs); }
 
     .brand-title { font-size: var(--t-md); }
-
-    .chat-top-right .chat-stat-pill { display: none; }
-
-    .chat-top-right .chat-stat-pill.pill-local { display: inline-flex; }
 
     .hero-title { font-size: var(--t-xl); }
 
@@ -7728,13 +7674,14 @@ button.chat-stat-pill:hover {
     .session-del-btn { opacity: 1; }
 
     /* The header row is 46px tall on phones, so its controls can be a full
-       36px without pushing the document wider; the engine strip scrolls
+       36px without pushing the document wider; the suite strip scrolls
        instead of shrinking. */
-    .top-nav-sub-btn,
     .view-btn,
     .stop-btn,
     .fullscreen-btn,
     .persona-manage-btn,
+    .cluster-toggle-btn,
+    .cluster-close-btn,
     .top-nav-model-picker-btn,
     .top-nav-stt-picker-btn,
     .top-nav-tts-picker-btn {
@@ -7747,7 +7694,6 @@ button.chat-stat-pill:hover {
     .chat-send-action-btn,
     .img-cancel-btn,
     .img-gen-btn,
-    .model-swap-btn,
     .chain-btn,
     .mem-search-btn,
     .btn-input-action,

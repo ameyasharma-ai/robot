@@ -8,6 +8,12 @@
  * - View switching: Face Only, Dual Mode, Console Only
  */
 
+/** Reconnect delay for the MJPEG camera stream after a failure, and its ceiling. */
+const CAMERA_RETRY_BASE_MS = 1500;
+const CAMERA_RETRY_MAX_MS = 30000;
+/** Give up after this many consecutive failures; the radar standby stays up until the user re-arms. */
+const CAMERA_RETRY_MAX_ATTEMPTS = 6;
+
 class RobotUI {
     constructor() {
         this.ws = null;
@@ -39,7 +45,6 @@ class RobotUI {
         this.statusPill = document.getElementById("globalStatusPill");
         this.statusText = document.getElementById("globalStatusText");
         this.personaSelect = document.getElementById("personaSelect");
-        this.personaName = document.getElementById("chatPersonaLabel") || document.getElementById("personaName");
         this.bubbleTag = document.getElementById("bubbleTag");
         this.bubbleContent = document.getElementById("bubbleContent");
         this.terminalFeed = document.getElementById("terminalFeed");
@@ -86,6 +91,8 @@ class RobotUI {
         this.thinkingEnabled = savedThinking !== null ? (savedThinking === "true") : true;
 
         this.initViewControls();
+        this.initEngineCluster();
+        this.initOverlayCloseControls();
         this.initPersonalitySelector();
         this.initPersonaManager();
         this.initLlmProviderToggle();
@@ -545,9 +552,6 @@ class RobotUI {
         this.chatSessionsList = document.getElementById("chatSessionsList");
         this.chatActiveTitle = document.getElementById("chatActiveTitle");
         this.chatSessionIdPill = document.getElementById("chatSessionIdPill");
-        this.chatPersonaLabel = document.getElementById("chatPersonaLabel");
-        this.chatActiveModelPill = document.getElementById("chatActiveModelPill");
-        this.chatModelLabel = document.getElementById("chatModelLabel");
         this.chatMicPill = document.getElementById("chatMicPill");
         this.chatMicLabel = document.getElementById("chatMicLabel");
         this.chatMessagesContainer = document.getElementById("chatMessagesContainer");
@@ -616,6 +620,9 @@ class RobotUI {
                     if (this.chatSidebarBackdrop) {
                         this.chatSidebarBackdrop.classList.toggle("active", isOpen);
                     }
+                    // The drawer starts under the one-row bar; the opened suite strip
+                    // would cover its header.
+                    if (isOpen) this.setEngineClusterOpen(false);
                 } else {
                     this.chatSidebar.classList.toggle("collapsed");
                 }
@@ -677,8 +684,6 @@ class RobotUI {
             }
             syncPlaceholder();
         }
-
-        this.syncChatTopBar();
     }
 
     /**
@@ -695,7 +700,7 @@ class RobotUI {
 
     /**
      * Resolve the formatted display title of the currently loaded character/persona.
-     * Checks dropdown selector, chat persona label, or active persona property.
+     * Checks the header dropdown selector or the active persona property.
      * @returns {string} Formatted title ('Cypher', 'Luna', 'Aria', 'GLaDOS', or 'Robot').
      */
     getActivePersonaTitle() {
@@ -705,12 +710,6 @@ class RobotUI {
             if (val === "glados") return "GLaDOS";
             return val.charAt(0).toUpperCase() + val.slice(1);
         }
-        if (this.chatPersonaLabel && this.chatPersonaLabel.textContent) {
-            const txt = this.chatPersonaLabel.textContent.trim().toLowerCase();
-            if (txt === "neo" || txt === "cypher") return "Cypher";
-            if (txt === "glados") return "GLaDOS";
-            return txt.charAt(0).toUpperCase() + txt.slice(1);
-        }
         if (this.activePersona) {
             const p = this.activePersona.toLowerCase().trim();
             if (p === "neo" || p === "cypher") return "Cypher";
@@ -718,65 +717,6 @@ class RobotUI {
             return p.charAt(0).toUpperCase() + p.slice(1);
         }
         return "Robot";
-    }
-
-    /**
-     * Synchronize the chat interface top bar indicators (persona label, theme, active model pill, STT and TTS pickers).
-     * @returns {void}
-     */
-    syncChatTopBar() {
-        if (this.chatPersonaLabel && this.personaSelect) {
-            const p = this.personaSelect.value;
-            this.chatPersonaLabel.textContent = this.formatPersonaName(p);
-            this.applyPersonaTheme(p);
-        }
-        const modelPill = document.getElementById("chatActiveModelPill") || this.chatActiveModelPill;
-        const modelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
-        const modelIcon = modelPill ? modelPill.querySelector(".model-icon") : null;
-        const chatOpenaiControls = document.getElementById("chatOpenaiControls");
-        const chatOpenaiSelect = document.getElementById("chatOpenaiModelSelect");
-
-        const chatWhisperLabel = document.getElementById("chatWhisperPickerLabel");
-        if (chatWhisperLabel && this.activeSttModelId) {
-            chatWhisperLabel.textContent = `Whisper: ${this.activeSttModelId}`;
-        }
-        const chatTtsLabel = document.getElementById("chatTtsPickerLabel");
-        if (chatTtsLabel) {
-            const activeVoiceClean = this.activeTtsVoice ? this.activeTtsVoice.replace(".onnx", "").replace("en-us-", "").replace("models/tts/", "") : "af_heart";
-            chatTtsLabel.textContent = `TTS: ${activeVoiceClean}`;
-        }
-
-        const prov = this.currentLlmProvider || "local";
-        const isGemini = prov === "gemini";
-        const isOpenAi = prov === "openai_compatible";
-
-        if (modelLabel) {
-            modelLabel.textContent = this.formatModelBadgeText(prov);
-        }
-        if (modelIcon) {
-            modelIcon.textContent = isOpenAi ? "🌐" : (isGemini ? "✨" : "⚡");
-        }
-        if (chatOpenaiControls) {
-            chatOpenaiControls.style.display = isOpenAi ? "inline-flex" : "none";
-        }
-        if (chatOpenaiSelect && this.activeOpenaiModel) {
-            chatOpenaiSelect.value = this.activeOpenaiModel;
-        }
-
-        if (modelPill) {
-            modelPill.classList.toggle("pill-gemini", isGemini);
-            modelPill.classList.toggle("pill-openai", isOpenAi);
-            modelPill.classList.toggle("pill-local", !isGemini && !isOpenAi);
-            const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
-            if (isOpenAi) {
-                const activeM = this.activeOpenaiModel || "gpt-4o";
-                modelPill.title = `Active AI Model: Custom OpenAI-Compatible (${activeM}, Prompt Caching Active). Click to cycle provider.`;
-            } else if (isGemini) {
-                modelPill.title = "Active AI Model: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence). Click to cycle provider.";
-            } else {
-                modelPill.title = `Active AI Model: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to cycle provider.`;
-            }
-        }
     }
 
     /**
@@ -1019,29 +959,6 @@ class RobotUI {
     }
 
     /**
-     * Return formatted model badge text depending on provider and local context size.
-     * @param {string} [provider] - Active LLM provider ('local', 'gemini', or 'openai_compatible').
-     * @param {string} [modelName] - Optional model identifier override.
-     * @returns {string} Human-readable badge text.
-     */
-    formatModelBadgeText(provider, modelName) {
-        let prov = provider;
-        if (typeof prov !== "string") {
-            prov = prov ? "gemini" : (this.currentLlmProvider || "local");
-        }
-        if (prov === "openai_compatible" || prov === "openai") {
-            const m = modelName || this.activeOpenaiModel || "gpt-4o";
-            return `OPENAI (${m.toUpperCase()})`;
-        }
-        if (prov === "gemini") {
-            const m = modelName || "1M";
-            return `GEMINI (${m.toUpperCase()})`;
-        }
-        const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
-        return `LOCAL QWEN (${ctxK}K)`;
-    }
-
-    /**
      * Get badge configuration (text, CSS class, icon) for a chat message.
      * @param {string} [provider] - Active provider identifier.
      * @param {string} [modelName] - Active model identifier.
@@ -1100,8 +1017,6 @@ class RobotUI {
                 body: JSON.stringify({ mode: "chat" }),
             });
         } catch (e) {}
-
-        this.syncChatTopBar();
 
         if (!this.chatSessions || this.chatSessions.length === 0) {
             await this.loadChatSessions();
@@ -1278,7 +1193,6 @@ class RobotUI {
             data.messages.forEach((msg) => {
                 this.appendHistoricalMessage(msg);
             });
-            this.syncChatTopBar();
             this.scrollChatToBottom();
         } catch (e) {
             console.error("Failed to select chat session:", e);
@@ -1344,12 +1258,6 @@ class RobotUI {
         if (this.personaSelect && this.personaSelect.value !== cleanId) {
             this.personaSelect.value = cleanId;
         }
-        if (this.personaName) {
-            this.personaName.textContent = title;
-        }
-        if (this.chatPersonaLabel) {
-            this.chatPersonaLabel.textContent = title;
-        }
 
         // Dynamically update existing welcome hero in DOM if visible
         const existingHeroTitle = document.querySelector(".chat-welcome-hero .hero-title");
@@ -1363,7 +1271,6 @@ class RobotUI {
         });
 
         this.applyPersonaTheme(cleanId);
-        this.syncChatTopBar();
 
         // Refresh hardware pickers to display newly applied models (TTS, STT, LLM)
         try {
@@ -1721,7 +1628,6 @@ class RobotUI {
                                 badgeEl.className = `chat-msg-badge ${updatedBadge.className}`;
                                 badgeEl.textContent = `${updatedBadge.icon}${updatedBadge.text}`;
                             }
-                            this.syncChatTopBar();
                         }
                     } else if (eventType === "thought_started") {
                         if (!thoughtStartTime) thoughtStartTime = performance.now();
@@ -2980,6 +2886,130 @@ class RobotUI {
         } catch (e) {}
     }
 
+    /**
+     * Point the camera image at an MJPEG endpoint and restart the reconnect budget.
+     * @param {string} path - Stream path, e.g. "/camera/stream".
+     * @returns {void}
+     */
+    armCameraStream(path) {
+        this.clearCameraReconnect();
+        this._cameraRetryAttempts = 0;
+        this._cameraRetryDelay = CAMERA_RETRY_BASE_MS;
+        this.requestCameraStream(path);
+    }
+
+    /**
+     * Request an MJPEG endpoint without touching the reconnect budget.
+     * @param {string} path - Stream path, e.g. "/camera/stream".
+     * @returns {void}
+     */
+    requestCameraStream(path) {
+        if (!this.cameraImg) return;
+        this.cameraImg.style.display = "block";
+        this.cameraImg.src = this.streamUrl(`${path}?t=${Date.now()}`);
+    }
+
+    /**
+     * Cancel a scheduled camera reconnect.
+     * @returns {void}
+     */
+    clearCameraReconnect() {
+        if (this._cameraRetryTimer) {
+            clearTimeout(this._cameraRetryTimer);
+            this._cameraRetryTimer = null;
+        }
+    }
+
+    /**
+     * Back off and retry the camera stream after an error, showing radar standby meanwhile.
+     * Stops retrying after CAMERA_RETRY_MAX_ATTEMPTS so a machine without camera
+     * hardware does not keep the browser tab loading forever.
+     * @returns {void}
+     */
+    onCameraStreamError() {
+        this.cameraImg.style.display = "none";
+        const radar = document.getElementById("radarStandby");
+        const setRadarLabel = (text) => {
+            if (!radar) return;
+            const label = radar.querySelector(".radar-label");
+            if (label) label.innerHTML = `<span class="radar-dot"></span> ${text}`;
+            radar.style.display = "flex";
+        };
+
+        if (!this.cameraEnabled) {
+            setRadarLabel("CAMERA HARDWARE PAUSED");
+            return;
+        }
+
+        this._cameraRetryAttempts = (this._cameraRetryAttempts || 0) + 1;
+        if (this._cameraRetryAttempts >= CAMERA_RETRY_MAX_ATTEMPTS) {
+            setRadarLabel("NO CAMERA HARDWARE — TAP 📷 TO RETRY");
+            this.logEvent("PERCEPTION", "Camera stream unavailable — reconnect attempts stopped", "warning");
+            return;
+        }
+
+        setRadarLabel(`CAMERA OFFLINE — RETRY ${this._cameraRetryAttempts}/${CAMERA_RETRY_MAX_ATTEMPTS}`);
+        const delay = this._cameraRetryDelay || CAMERA_RETRY_BASE_MS;
+        this._cameraRetryDelay = Math.min(delay * 2, CAMERA_RETRY_MAX_MS);
+        this.clearCameraReconnect();
+        this._cameraRetryTimer = setTimeout(() => {
+            this._cameraRetryTimer = null;
+            if (this.cameraEnabled) this.requestCameraStream("/camera/stream");
+        }, delay);
+    }
+
+    /**
+     * Phone header: the persona and engine suite collapses into a second row that
+     * the ENGINE control opens, so the bar never degrades into unlabelled glyphs.
+     * @returns {void}
+     */
+    initEngineCluster() {
+        const btn = document.getElementById("btnEngineCluster");
+        const closeBtn = document.getElementById("btnCloseEngineCluster");
+        if (!btn) return;
+        btn.addEventListener("click", () => {
+            this.setEngineClusterOpen(!document.body.classList.contains("engine-cluster-open"));
+        });
+        if (closeBtn) closeBtn.addEventListener("click", () => this.setEngineClusterOpen(false));
+    }
+
+    /**
+     * @param {boolean} open - Show the persona/engine row under the header bar.
+     * @returns {void}
+     */
+    setEngineClusterOpen(open) {
+        document.body.classList.toggle("engine-cluster-open", open);
+        const btn = document.getElementById("btnEngineCluster");
+        if (btn) btn.setAttribute("aria-expanded", String(open));
+    }
+
+    /**
+     * The single Escape path for every overlay. Each surface closes through its own
+     * close control so its cleanup still runs, topmost layer first.
+     * @returns {void}
+     */
+    initOverlayCloseControls() {
+        document.addEventListener("keydown", (e) => {
+            if (e.key !== "Escape") return;
+            const openModals = [...document.querySelectorAll(".cyber-modal-backdrop")]
+                .filter((m) => m.style.display === "flex");
+            const top = openModals[openModals.length - 1];
+            if (top) {
+                const closeBtn = top.querySelector(".modal-close-btn, .lightbox-close-btn");
+                if (closeBtn) closeBtn.click();
+                return;
+            }
+            if (document.body.classList.contains("engine-cluster-open")) {
+                this.setEngineClusterOpen(false);
+                return;
+            }
+            if (this.chatSidebar && this.chatSidebar.classList.contains("mobile-open")
+                && this.btnToggleChatSidebar) {
+                this.btnToggleChatSidebar.click();
+            }
+        });
+    }
+
     initViewControls() {
         const btnStop = document.getElementById("btnStopExecution");
         const btnDual = document.getElementById("btnViewDual");
@@ -3058,15 +3088,13 @@ class RobotUI {
                             btnToggleCam.title = "Camera Active. Click to pause camera and release hardware.";
                             btnToggleCam.textContent = "📷";
                             if (radar) radar.style.display = "none";
-                            if (this.cameraImg) {
-                                this.cameraImg.style.display = "block";
-                                this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
-                            }
+                            this.armCameraStream("/camera/stream");
                             this.logEvent("PERCEPTION", "Camera stream resumed", "system");
                         } else {
                             btnToggleCam.classList.add("muted");
                             btnToggleCam.title = "Camera Paused. Click to enable camera.";
                             btnToggleCam.textContent = "🚫";
+                            this.clearCameraReconnect();
                             if (this.cameraImg) {
                                 this.cameraImg.src = "";
                                 this.cameraImg.style.display = "none";
@@ -3148,10 +3176,10 @@ class RobotUI {
                         this._updateFaceMeshBtn(btnFaceMesh);
                         if (this.cameraImg) {
                             if (this.faceMeshActive) {
-                                this.cameraImg.src = this.streamUrl(`/camera/face-mesh?t=${Date.now()}`);
+                                this.armCameraStream("/camera/face-mesh");
                                 this.logEvent("PERCEPTION", "Face Mesh stream active — 468-point overlay", "system");
                             } else {
-                                this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
+                                this.armCameraStream("/camera/stream");
                                 this.logEvent("PERCEPTION", "Face Mesh disabled — annotated stream", "system");
                             }
                         }
@@ -3248,9 +3276,6 @@ class RobotUI {
                 }
                 if (data.active) {
                     this.personaSelect.value = data.active;
-                    const activeP = personas.find(p => p.id === data.active);
-                    const activeDisplay = (activeP ? (activeP.display_name || activeP.id) : data.active).toUpperCase();
-                    if (this.personaName) this.personaName.textContent = activeDisplay;
                     this.applyPersonaTheme(data.active);
                 }
             }
@@ -3545,12 +3570,6 @@ class RobotUI {
             if (e.target === modal) closeModal();
         });
 
-        document.addEventListener("keydown", (e) => {
-            if (e.key === "Escape" && modal.style.display !== "none") {
-                closeModal();
-            }
-        });
-
         // Tab Switching
         const switchTab = (tab) => {
             if (tab === "list") {
@@ -3670,31 +3689,12 @@ class RobotUI {
         const storedModel = typeof localStorage !== "undefined" ? localStorage.getItem("active_openai_model") : null;
         this.activeOpenaiModel = storedModel || "deepseek/deepseek-v4.1-flash";
 
-        const panelStrip = document.getElementById("activeModelStrip");
-        const panelBadge = document.getElementById("activeModelBadge");
-        const panelName = document.getElementById("activeModelName");
-        const panelBtn = document.getElementById("btnSwapModelPanel");
-        const panelBtnText = document.getElementById("swapModelBtnText");
-        const panelBtnIcon = document.getElementById("swapBtnIcon");
-
-        // Local GGUF Model switcher controls (Top Nav & Chat mode)
+        // Local GGUF model switcher controls (top header only)
         const topNavLocal = document.getElementById("topNavLocalControls");
-        const chatLocalControls = document.getElementById("chatLocalControls");
 
-        // OpenAI Model scanning controls & modal (Top Nav, HUD, and Chat mode)
+        // OpenAI model scanning controls & modal (top header only)
         const topNavOpenai = document.getElementById("topNavOpenaiControls");
         const btnTopNavModelPicker = document.getElementById("btnTopNavModelPicker");
-        const btnTopNavScanOpenai = document.getElementById("btnTopNavScanOpenai");
-        const btnTopNavOpenaiConfig = document.getElementById("btnTopNavOpenaiConfig");
-
-        const openaiControls = document.getElementById("openaiModelControls");
-        const btnHudModelPicker = document.getElementById("btnHudModelPicker");
-        const btnConfig = document.getElementById("btnOpenaiConfig");
-
-        const chatOpenaiControls = document.getElementById("chatOpenaiControls");
-        const btnChatModelPicker = document.getElementById("btnChatModelPicker");
-        const btnChatConfig = document.getElementById("btnChatOpenaiConfig");
-        const chatActiveModelPill = document.getElementById("chatActiveModelPill");
 
         // Searchable Model Picker Modal Elements
         const modelSearchModal = document.getElementById("openaiModelSearchModal");
@@ -3844,7 +3844,7 @@ class RobotUI {
         this.isModelSearchModalOpen = false;
 
         /**
-         * Update all model display labels across Top Nav, HUD, and Chat mode.
+         * Publish the active OpenAI-compatible model into the top header and provider toggle.
          * @param {string} [modelName] - Model identifier to display.
          * @returns {void}
          */
@@ -3858,29 +3858,14 @@ class RobotUI {
             } catch (e) {}
             const topNavLabel = document.getElementById("topNavModelPickerLabel");
             if (topNavLabel) topNavLabel.textContent = m;
-            const hudLabel = document.getElementById("hudModelPickerLabel");
-            if (hudLabel) hudLabel.textContent = m;
-            const chatLabel = document.getElementById("chatModelPickerLabel");
-            if (chatLabel) chatLabel.textContent = m;
 
-            const chatModelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
-            if (chatModelLabel && this.currentLlmProvider === "openai_compatible") {
-                chatModelLabel.textContent = "CUSTOM API";
-                if (chatActiveModelPill) {
-                    chatActiveModelPill.title = `Current Provider: Custom OpenAI-Compatible API (${m}). Click to cycle provider.`;
-                }
-            }
             if (sub && this.currentLlmProvider === "openai_compatible") {
                 sub.textContent = `${m} • CACHED`;
-            }
-            if (panelName && this.currentLlmProvider === "openai_compatible") {
-                panelName.textContent = "Prompt Caching Active";
-                panelName.title = `Active Model: ${m} (Prompt Caching Active)`;
             }
         };
 
         /**
-         * Update UI indicators across telemetry panel and top header for active LLM provider.
+         * Update the top header provider toggle and its model-suite controls for the active LLM provider.
          * @param {string} prov - 'local', 'gemini', or 'openai_compatible'.
          * @param {string|null} [mode] - Optional mode string from status endpoint.
          * @param {boolean} [isTransitioning=false] - Whether a switch is currently executing.
@@ -3890,31 +3875,22 @@ class RobotUI {
         this.updateLlmToggleUi = (prov, mode, isTransitioning = false, targetProv = null) => {
             if (isTransitioning) {
                 if (btn) btn.classList.add("switching");
-                if (panelBtn) panelBtn.disabled = true;
+                if (badge) badge.textContent = "WAIT";
 
                 if (targetProv === "gemini") {
                     if (label) label.textContent = "CONNECTING GEMINI...";
                     if (sub) sub.textContent = "FREEING 3.4GB VRAM";
-                    if (panelName) panelName.textContent = "Connecting Cloud Gemini (Freeing VRAM)...";
                 } else if (targetProv === "openai_compatible") {
                     if (label) label.textContent = "CONNECTING OPENAI...";
                     if (sub) sub.textContent = "FREEING 3.4GB VRAM";
-                    if (panelName) panelName.textContent = "Connecting OpenAI-Compatible API (Prompt Caching)...";
                 } else {
                     if (label) label.textContent = "STARTING LOCAL...";
                     if (sub) sub.textContent = "ALLOCATING VRAM";
-                    if (panelName) panelName.textContent = "Starting Local Qwen (Allocating VRAM)...";
                 }
-
-                if (badge) badge.textContent = "WAIT";
-                if (panelBtnText) panelBtnText.textContent = "SWAPPING...";
-                const chatModelLabel = document.getElementById("chatModelLabel") || this.chatModelLabel;
-                if (chatModelLabel) chatModelLabel.textContent = "SWAPPING...";
                 return;
             }
 
             if (btn) btn.classList.remove("switching");
-            if (panelBtn) panelBtn.disabled = false;
 
             const safeProv = prov || "local";
             this.currentLlmProvider = safeProv;
@@ -3926,27 +3902,13 @@ class RobotUI {
                     btn.classList.remove("gemini-mode", "local-mode");
                     btn.classList.add("openai-mode");
                 }
-                if (panelStrip) {
-                    panelStrip.classList.remove("gemini-active");
-                    panelStrip.classList.add("openai-active");
-                }
                 if (topNavOpenai) topNavOpenai.style.display = "inline-flex";
-                if (openaiControls) openaiControls.style.display = "flex";
-                if (chatOpenaiControls) chatOpenaiControls.style.display = "inline-flex";
                 if (topNavLocal) topNavLocal.style.display = "none";
-                if (chatLocalControls) chatLocalControls.style.display = "none";
 
                 if (icon) icon.textContent = "🌐";
                 if (label) label.textContent = "OPENAI COMPAT";
                 if (sub) sub.textContent = `${activeM} • CACHED`;
                 if (badge) badge.textContent = "OPENAI";
-                if (panelBadge) panelBadge.textContent = "CUSTOM API";
-                if (panelName) {
-                    panelName.textContent = "Prompt Caching Active";
-                    panelName.title = `Active Model: ${activeM} (Prompt Caching Active)`;
-                }
-                if (panelBtnText) panelBtnText.textContent = "SWAP TO LOCAL";
-                if (panelBtnIcon) panelBtnIcon.textContent = "⚡";
                 if (btn) btn.title = `Active: OpenAI-Compatible API (${activeM}, Prompt Caching). Click to cycle to Local Qwen (RTX 3050).`;
 
                 this.updateOpenaiModelDisplays(activeM);
@@ -3955,60 +3917,35 @@ class RobotUI {
                     btn.classList.remove("local-mode", "openai-mode");
                     btn.classList.add("gemini-mode");
                 }
-                if (panelStrip) {
-                    panelStrip.classList.remove("openai-active");
-                    panelStrip.classList.add("gemini-active");
-                }
                 if (topNavOpenai) topNavOpenai.style.display = "none";
-                if (openaiControls) openaiControls.style.display = "none";
-                if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
                 if (topNavLocal) topNavLocal.style.display = "none";
-                if (chatLocalControls) chatLocalControls.style.display = "none";
 
                 if (icon) icon.textContent = "✨";
                 if (label) label.textContent = "GEMINI (CLOUD)";
                 if (sub) sub.textContent = "1M CONTEXT • HIGH INTEL";
                 if (badge) badge.textContent = "GEMINI";
-                if (panelBadge) panelBadge.textContent = "CLOUD API";
-                if (panelName) panelName.textContent = "Gemini 3.5 Flash Lite • 1M Context";
-                if (panelBtnText) panelBtnText.textContent = "SWAP TO OPENAI";
-                if (panelBtnIcon) panelBtnIcon.textContent = "🌐";
                 if (btn) btn.title = "Active: Cloud Gemini 3.5 Flash Lite (1M Context, High Intelligence). Click to swap to OpenAI API.";
             } else {
                 if (btn) {
                     btn.classList.remove("gemini-mode", "openai-mode");
                     btn.classList.add("local-mode");
                 }
-                if (panelStrip) {
-                    panelStrip.classList.remove("gemini-active", "openai-active");
-                }
                 if (topNavOpenai) topNavOpenai.style.display = "none";
-                if (openaiControls) openaiControls.style.display = "none";
-                if (chatOpenaiControls) chatOpenaiControls.style.display = "none";
                 if (topNavLocal) topNavLocal.style.display = "inline-flex";
-                if (chatLocalControls) chatLocalControls.style.display = "inline-flex";
 
                 const ctxK = Math.round((this.localContextWindow || 16384) / 1024);
                 if (icon) icon.textContent = "⚡";
                 if (label) label.textContent = "LOCAL (RTX 3050)";
                 if (sub) sub.textContent = `LOW LATENCY • ${ctxK}K`;
                 if (badge) badge.textContent = "LOCAL";
-                if (panelBadge) panelBadge.textContent = "LOCAL GPU";
-                if (panelName) panelName.textContent = `Qwen 3.5 4B • RTX 3050 • ${ctxK}K`;
-                if (panelBtnText) panelBtnText.textContent = "SWAP TO GEMINI";
-                if (panelBtnIcon) panelBtnIcon.textContent = "✨";
                 if (btn) btn.title = `Active: Local Qwen 3.5 4B on RTX 3050 (Low Latency, ${ctxK}K Context). Click to swap to Cloud Gemini.`;
                 if (typeof this.updateLocalModelDisplays === "function" && this.activeLocalModelId) {
                     this.updateLocalModelDisplays(this.activeLocalModelId);
                 }
             }
-
-            if (typeof this.syncChatTopBar === "function") this.syncChatTopBar();
         };
 
         /**
-         * Scan available models from the configured OpenAI-compatible endpoint.
-          /**
          * Scan available models from the OpenAI-compatible endpoint.
          * @param {boolean} [autoSelectCurrent=true] - Whether to synchronize active model selection.
          * @param {string|null} [preset=null] - Optional preset target ('openrouter', 'aicredits', etc.).
@@ -4016,17 +3953,11 @@ class RobotUI {
          */
         this.scanOpenaiModels = async (autoSelectCurrent = true, preset = null) => {
             const scanIcons = [
-                document.querySelector("#btnScanOpenaiModels .scan-icon"),
-                document.querySelector("#btnChatScanOpenai .scan-icon"),
-                document.querySelector("#btnTopNavScanOpenai .scan-icon"),
-                document.querySelector("#modalRescanIcon")
+                document.getElementById("modalRescanIcon")
             ].filter(Boolean);
             scanIcons.forEach((ic) => ic.classList.add("spinning"));
 
             const scanButtons = [
-                document.getElementById("btnScanOpenaiModels"),
-                document.getElementById("btnChatScanOpenai"),
-                document.getElementById("btnTopNavScanOpenai"),
                 document.getElementById("btnModalRescanModels")
             ].filter(Boolean);
             scanButtons.forEach((b) => b.disabled = true);
@@ -4243,10 +4174,8 @@ class RobotUI {
             modelSearchModal.style.display = "none";
         };
 
-        // Wire model picker trigger buttons across Top Nav, HUD, and Chat mode
+        // Wire the model picker trigger in the top header
         if (btnTopNavModelPicker) btnTopNavModelPicker.addEventListener("click", () => this.openModelSearchModal());
-        if (btnHudModelPicker) btnHudModelPicker.addEventListener("click", () => this.openModelSearchModal());
-        if (btnChatModelPicker) btnChatModelPicker.addEventListener("click", () => this.openModelSearchModal());
         if (btnModalRescanModels) btnModalRescanModels.addEventListener("click", () => this.scanOpenaiModels());
 
         // Wire search input typing & clear
@@ -4364,9 +4293,6 @@ class RobotUI {
             }
         };
 
-        if (btnTopNavOpenaiConfig) btnTopNavOpenaiConfig.addEventListener("click", openConfigModal);
-        if (btnConfig && configModal) btnConfig.addEventListener("click", openConfigModal);
-        if (btnChatConfig && configModal) btnChatConfig.addEventListener("click", openConfigModal);
         if (btnModalOpenConfig) {
             btnModalOpenConfig.addEventListener("click", () => {
                 this.closeModelSearchModal();
@@ -4573,13 +4499,6 @@ class RobotUI {
         };
 
         if (btn) btn.addEventListener("click", handleSwapAction);
-        if (panelBtn) panelBtn.addEventListener("click", handleSwapAction);
-        if (chatActiveModelPill) {
-            chatActiveModelPill.addEventListener("click", (e) => {
-                if (e.target.closest("#chatOpenaiControls")) return;
-                handleSwapAction();
-            });
-        }
     }
 
     setView(mode) {
@@ -4816,7 +4735,6 @@ class RobotUI {
         if (data.event === "llm.provider_changed" && this.updateLlmToggleUi) {
             this.currentLlmProvider = data.provider;
             this.updateLlmToggleUi(data.provider, data.mode);
-            this.syncChatTopBar();
             this.showDynamicIsland("AI Provider Active", `Switched to ${(data.provider || 'local').toUpperCase()}`, "⚡", "cyan");
         }
 
@@ -5300,10 +5218,8 @@ class RobotUI {
                     }
                     if (data.personality) {
                         const pUpper = this.formatPersonaName(data.personality);
-                        if (this.personaName) this.personaName.textContent = pUpper;
                         if (this.personaSelect && document.activeElement !== this.personaSelect && this.personaSelect.value !== data.personality) {
                             this.personaSelect.value = data.personality;
-                            this.syncChatTopBar();
                             document.querySelectorAll(".msg-assistant .chat-msg-sender").forEach((el) => {
                                 el.textContent = pUpper;
                             });
@@ -5451,33 +5367,20 @@ class RobotUI {
             });
         }
 
-        // Camera Stream Auto-Recovery: /camera/stream provides continuous 60 FPS MJPEG.
-        // If the stream drops or hardware is offline, display high-tech radar standby.
+        // Camera stream recovery: /camera/stream is a continuous MJPEG feed, so a dead
+        // endpoint surfaces as an image error. Back off and give up instead of retrying
+        // forever — an endless retry keeps the browser tab spinning.
         if (this.cameraImg) {
-            this.cameraImg.onerror = () => {
-                this.cameraImg.style.display = "none";
-                const radar = document.getElementById("radarStandby");
-                if (radar) radar.style.display = "flex";
-                if (this.cameraEnabled) {
-                    setTimeout(() => {
-                        if (this.cameraEnabled) {
-                            this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
-                        }
-                    }, 3000);
-                }
-            };
+            this.cameraImg.onerror = () => this.onCameraStreamError();
             this.cameraImg.onload = () => {
-                if (this.cameraEnabled) {
-                    this.cameraImg.style.display = "block";
-                    const radar = document.getElementById("radarStandby");
-                    if (radar) radar.style.display = "none";
-                }
+                if (!this.cameraEnabled) return;
+                this.clearCameraReconnect();
+                this._cameraRetryAttempts = 0;
+                this._cameraRetryDelay = CAMERA_RETRY_BASE_MS;
+                this.cameraImg.style.display = "block";
+                const radar = document.getElementById("radarStandby");
+                if (radar) radar.style.display = "none";
             };
-            // The HTML ships without a src so the stream is only requested with
-            // credentials (cookie/bearer); arm the initial load here.
-            if (!this.cameraImg.getAttribute("src")) {
-                this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
-            }
         }
 
         // Hardware Observability Telemetry Polling (CPU, System RAM, RTX 3050, AMD 680M)
@@ -5989,17 +5892,6 @@ class RobotUI {
             });
         }
 
-        // Escape Key Listener
-        window.addEventListener("keydown", (e) => {
-            if (e.key === "Escape") {
-                if (lightboxModal && lightboxModal.style.display !== "none") {
-                    closeLightbox();
-                } else if (modal && modal.style.display !== "none") {
-                    closeModal();
-                }
-            }
-        });
-
         // Copy Prompt
         if (lbCopyPrompt) {
             lbCopyPrompt.addEventListener("click", () => {
@@ -6190,7 +6082,7 @@ class RobotUI {
                 const data = await res.json();
                 if (data.status === "ok" && Array.isArray(data.downloads)) {
                     const activeDownload = data.downloads.find(d => d.status === "downloading" || d.status === "in_progress");
-                    const hfBtn = document.getElementById("btnTopNavHfHub");
+                    const hfBtn = document.getElementById("btnTopNavLocalPicker");
                     if (activeDownload && hfBtn) {
                         const pct = Math.round(activeDownload.progress_percent || 0);
                         let badge = hfBtn.querySelector(".hf-dl-live-badge");
@@ -6618,12 +6510,6 @@ class RobotUI {
     async initLocalLlmModelControls() {
         const topNavPicker = document.getElementById("btnTopNavLocalPicker");
         const topNavLabel = document.getElementById("topNavLocalPickerLabel");
-        const btnTopNavHfHub = document.getElementById("btnTopNavHfHub");
-        const btnTopNavLlamaSettings = document.getElementById("btnTopNavLlamaSettings");
-        const chatPicker = document.getElementById("btnChatLocalPicker");
-        const chatLabel = document.getElementById("chatLocalPickerLabel");
-        const btnChatHfHub = document.getElementById("btnChatHfHub");
-        const btnChatLlamaSettings = document.getElementById("btnChatLlamaSettings");
         const modal = document.getElementById("localModelModal");
         const btnClose = document.getElementById("btnCloseLocalModelModal");
         const btnCancel = document.getElementById("btnCancelLocalModelModal");
@@ -6733,11 +6619,6 @@ class RobotUI {
         };
 
         if (topNavPicker) topNavPicker.addEventListener("click", () => this.openLocalModelModal("installed"));
-        if (btnTopNavHfHub) btnTopNavHfHub.addEventListener("click", () => this.openLocalModelModal("hf"));
-        if (btnTopNavLlamaSettings) btnTopNavLlamaSettings.addEventListener("click", () => this.openLocalModelModal("settings"));
-        if (chatPicker) chatPicker.addEventListener("click", () => this.openLocalModelModal("installed"));
-        if (btnChatHfHub) btnChatHfHub.addEventListener("click", () => this.openLocalModelModal("hf"));
-        if (btnChatLlamaSettings) btnChatLlamaSettings.addEventListener("click", () => this.openLocalModelModal("settings"));
         if (btnClose) btnClose.addEventListener("click", () => this.closeLocalModelModal());
         if (btnCancel) btnCancel.addEventListener("click", () => this.closeLocalModelModal());
         if (modal) {
@@ -6846,18 +6727,13 @@ class RobotUI {
         };
 
         /**
-         * Update labels and badges across Top Nav, HUD, and Chat view for local models.
+         * Update the top header GGUF model picker label for the active local model.
          * @param {string} modelId - Active local model identifier.
          * @returns {void}
          */
         this.updateLocalModelDisplays = (modelId) => {
             const shortName = (modelId || "").replace(".gguf", "").replace("-Q4_K_M", "").replace("qwen", "Qwen ").replace("llama", "Llama ");
             if (topNavLabel) topNavLabel.textContent = shortName;
-            if (chatLabel) chatLabel.textContent = shortName;
-            const chatModelLabel = document.getElementById("chatModelLabel");
-            if (chatModelLabel && this.currentLlmProvider === "local") {
-                chatModelLabel.textContent = `LOCAL ${shortName.toUpperCase()}`;
-            }
         };
 
         // ─── HuggingFace Hub Search & Downloader Logic ───────────────────────
@@ -7541,8 +7417,6 @@ class RobotUI {
     async initSttModelControls() {
         const topNavPicker = document.getElementById("btnTopNavSttPicker");
         const topNavLabel = document.getElementById("topNavSttPickerLabel");
-        const chatPicker = document.getElementById("btnChatWhisperPicker");
-        const chatLabel = document.getElementById("chatWhisperPickerLabel");
         const deckOpenBtn = document.getElementById("btnOpenSttModalDeck");
         const deckActivePill = document.getElementById("deckSttActivePill");
         const deckEngineState = document.getElementById("deckSttEngineState");
@@ -7579,7 +7453,6 @@ class RobotUI {
         };
 
         if (topNavPicker) topNavPicker.addEventListener("click", () => this.openSttModal());
-        if (chatPicker) chatPicker.addEventListener("click", () => this.openSttModal());
         if (deckOpenBtn) deckOpenBtn.addEventListener("click", () => this.openSttModal());
         if (btnClose) btnClose.addEventListener("click", () => this.closeSttModal());
         if (btnCancel) btnCancel.addEventListener("click", () => this.closeSttModal());
@@ -7708,14 +7581,13 @@ class RobotUI {
         };
 
         /**
-         * Update labels and active chips across Top Nav, Audio Deck, and Chat mode.
+         * Update the top header STT picker label and the audio deck chips for the active Whisper model.
          * @param {string} modelId - Active model ID.
          * @param {number} [sizeMb] - Model file size in MB.
          * @returns {void}
          */
         this.updateSttDisplays = (modelId, sizeMb = null) => {
             if (topNavLabel) topNavLabel.textContent = modelId;
-            if (chatLabel) chatLabel.textContent = `Whisper: ${modelId}`;
             if (deckActivePill) {
                 const sz = sizeMb ? ` (${sizeMb} MB)` : "";
                 deckActivePill.textContent = `${modelId}${sz}`;
@@ -7739,8 +7611,6 @@ class RobotUI {
         const topNavPicker = document.getElementById("btnTopNavTtsPicker");
         const topNavLabel = document.getElementById("topNavTtsPickerLabel");
         const topNavBadge = document.getElementById("topNavTtsBadge");
-        const chatPicker = document.getElementById("btnChatTtsPicker");
-        const chatLabel = document.getElementById("chatTtsPickerLabel");
         const deckOpenBtn = document.getElementById("btnOpenTtsModalDeck");
         const deckActivePill = document.getElementById("deckTtsActivePill");
         const deckEngineState = document.getElementById("deckTtsEngineState");
@@ -7799,7 +7669,6 @@ class RobotUI {
         };
 
         if (topNavPicker) topNavPicker.addEventListener("click", () => this.openTtsModal());
-        if (chatPicker) chatPicker.addEventListener("click", () => this.openTtsModal());
         if (deckOpenBtn) deckOpenBtn.addEventListener("click", () => this.openTtsModal());
         if (btnClose) btnClose.addEventListener("click", () => this.closeTtsModal());
         if (btnCancel) btnCancel.addEventListener("click", () => this.closeTtsModal());
@@ -8120,7 +7989,6 @@ class RobotUI {
 
             if (topNavLabel) topNavLabel.textContent = `${engUpper}: ${cleanVoice}`;
             if (topNavBadge) topNavBadge.textContent = srText;
-            if (chatLabel) chatLabel.textContent = `TTS: ${cleanVoice}`;
 
             if (deckActivePill) {
                 deckActivePill.textContent = `${cleanVoice} (${engUpper})`;
@@ -8245,3 +8113,12 @@ window.addEventListener("DOMContentLoaded", () => {
     window.robotUI = new RobotUI();
     window.app = window.robotUI;
 });
+
+// The HTML ships without a camera src so the stream is only ever requested with
+// credentials (cookie/bearer). Arm it after load, never before first paint.
+window.addEventListener("load", () => {
+    const ui = window.robotUI;
+    if (ui && ui.cameraImg && ui.cameraEnabled && !ui.cameraImg.getAttribute("src")) {
+        ui.armCameraStream("/camera/stream");
+    }
+}, { once: true });

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=7.4-chat">
+    <link rel="stylesheet" href="/static/index.css?v=7.5-header">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23050810'/%3E%3Cpath d='M16 5l3 6 6 1-4.5 4.4L21.6 23 16 19.8 10.4 23l1.1-6.6L7 12l6-1z' fill='%2322c8e6'/%3E%3C/svg%3E">
 </head>
 <body class="mode-dual">
@@ -195,16 +195,27 @@
         <div class="island-status-dot" id="islandStatusDot"></div>
     </div>
 
-    <!-- Top Navigation Header -->
+    <!-- Top Navigation Header.
+         Zone 1 = identity, zone 2 = persona/vault/engine suite, zone 3 = state
+         and view actions. Under 768px only zones 1 and 3 stay in the bar; zone 2
+         collapses into a second row that the ENGINE control opens, so no control
+         is ever reduced to an unlabelled glyph. -->
     <header class="top-nav">
-        <!-- ZONE 1: BRAND & IDENTITY -->
+        <!-- ZONE 1: BRAND -->
         <div class="nav-zone nav-zone-left">
             <div class="brand">
                 <span class="brand-pulse"></span>
                 <span class="brand-title">ROBOT CORE</span>
                 <span class="brand-ver">v2.0-PROD</span>
             </div>
-            <div class="nav-divider"></div>
+        </div>
+
+        <!-- ZONE 2: PERSONA, VAULT & ENGINE SUITE -->
+        <div class="nav-zone nav-zone-center" id="engineCluster">
+            <div class="cluster-handle">
+                <span class="cluster-title">SESSION &amp; ENGINE</span>
+                <button class="cluster-close-btn" id="btnCloseEngineCluster" type="button" aria-label="Collapse engine controls" title="Collapse">✕</button>
+            </div>
             <div class="persona-selector-wrap" id="personaSelectorWrap">
                 <span class="persona-icon">👤</span>
                 <label for="personaSelect" class="sr-only">Personality</label>
@@ -217,10 +228,9 @@
                 <span class="persona-caret">▾</span>
             </div>
             <button class="persona-manage-btn" id="btnOpenPersonaModal" type="button" title="Manage AI Personas, Isolated Databases & Model Defaults">⚙️<span class="btn-label">Vault</span></button>
-        </div>
 
-        <!-- ZONE 2: ENGINE & MODEL SUITE -->
-        <div class="nav-zone nav-zone-center">
+            <div class="nav-divider"></div>
+
             <div class="llm-provider-wrap" id="llmProviderWrap">
                 <button class="llm-toggle-btn local-mode" id="btnLlmToggle" title="Toggle AI Provider: Local (RTX 3050, 16K Context) ⮀ Cloud Gemini (High-Intelligence, 1M Context)">
                     <span class="llm-toggle-icon" id="llmToggleIcon">⚡</span>
@@ -230,29 +240,20 @@
                     </div>
                     <span class="llm-mode-badge" id="llmModeBadge">LOCAL</span>
                 </button>
-                <!-- Top Nav Local Model Picker Trigger -->
+                <!-- Top Nav Local Model Picker Trigger (modal carries the Hub & settings tabs) -->
                 <div class="top-nav-local-controls" id="topNavLocalControls">
                     <button class="top-nav-model-picker-btn local-picker-btn" id="btnTopNavLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
                         <span class="model-picker-icon">📦</span>
                         <span class="model-picker-label" id="topNavLocalPickerLabel">Qwen 3.5 4B</span>
                         <span class="model-picker-caret">▾</span>
                     </button>
-                    <button class="top-nav-sub-btn" id="btnTopNavHfHub" type="button" title="Search & Download LLMs from HuggingFace Hub">
-                        🤗
-                    </button>
-                    <button class="top-nav-sub-btn" id="btnTopNavLlamaSettings" type="button" title="LM Studio & Llama.cpp Loading / Offloading Settings">
-                        ⚙️
-                    </button>
                 </div>
-                <!-- Top Nav OpenAI Model Search Trigger (Avatar Section) -->
+                <!-- Top Nav OpenAI Model Search Trigger (modal carries the endpoint config) -->
                 <div class="top-nav-openai-controls" id="topNavOpenaiControls" style="display: none;">
                     <button class="top-nav-model-picker-btn" id="btnTopNavModelPicker" type="button" title="Search and select OpenAI-compatible model (400+ available)">
                         <span class="model-picker-icon">🔍</span>
                         <span class="model-picker-label" id="topNavModelPickerLabel">Search Model...</span>
                         <span class="model-picker-caret">▾</span>
-                    </button>
-                    <button class="top-nav-sub-btn" id="btnTopNavOpenaiConfig" type="button" title="Configure API Endpoint & Key">
-                        ⚙️
                     </button>
                 </div>
                 <!-- Top Nav Whisper STT Model Picker Trigger -->
@@ -274,38 +275,41 @@
                     </button>
                 </div>
             </div>
-
-            <div class="nav-divider nav-divider-dim"></div>
-
-            <div class="status-pill status-idle" id="globalStatusPill">
-                <span class="status-indicator"></span>
-                <span class="status-text" id="globalStatusText">IDLE</span>
-            </div>
         </div>
 
-        <!-- ZONE 3: TELEMETRY & VIEW CONTROLS -->
+        <!-- ZONE 3: STATE, TELEMETRY & VIEW CONTROLS -->
         <div class="nav-zone nav-zone-right">
-            <!-- Unified Sleek Telemetry Pod -->
-            <div class="telemetry-pod" id="headerTelemetryPod">
-                <div class="telemetry-item">
-                    <span class="telem-label">TTFT</span>
-                    <span class="telem-val" id="hudTtft">-- ms</span>
+            <!-- One seam group: what the robot is doing, and how fast it did it. -->
+            <div class="header-state">
+                <div class="status-pill status-idle" id="globalStatusPill">
+                    <span class="status-indicator"></span>
+                    <span class="status-text" id="globalStatusText">IDLE</span>
                 </div>
-                <span class="telem-sep">•</span>
-                <div class="telemetry-item">
-                    <span class="telem-label">E2E</span>
-                    <span class="telem-val" id="hudE2e">-- ms</span>
-                </div>
-                <span class="telem-sep">•</span>
-                <div class="telemetry-item">
-                    <span class="telem-label">TOK</span>
-                    <span class="telem-val" id="hudTokens">--</span>
+
+                <!-- Unified Sleek Telemetry Pod -->
+                <div class="telemetry-pod" id="headerTelemetryPod">
+                    <div class="telemetry-item">
+                        <span class="telem-label">TTFT</span>
+                        <span class="telem-val" id="hudTtft">-- ms</span>
+                    </div>
+                    <span class="telem-sep">•</span>
+                    <div class="telemetry-item">
+                        <span class="telem-label">E2E</span>
+                        <span class="telem-val" id="hudE2e">-- ms</span>
+                    </div>
+                    <span class="telem-sep">•</span>
+                    <div class="telemetry-item">
+                        <span class="telem-label">TOK</span>
+                        <span class="telem-val" id="hudTokens">--</span>
+                    </div>
                 </div>
             </div>
 
             <div class="nav-divider"></div>
 
             <div class="nav-controls">
+                <!-- Phones only: opens the collapsed persona/engine suite below the bar. -->
+                <button class="cluster-toggle-btn" id="btnEngineCluster" type="button" aria-expanded="false" aria-controls="engineCluster" title="Session &amp; Engine Controls">⚡<span class="btn-label">ENGINE</span><span class="cluster-caret">▾</span></button>
                 <button class="stop-btn" id="btnStopExecution" title="Stop LLM Generation & Speech">🛑<span class="btn-label">STOP</span></button>
                 <div class="view-switcher">
                     <button class="view-btn active" id="btnViewDual" title="Dual Mode (Avatar + Dev HUD)"><span class="view-btn-icon">◫</span><span class="view-btn-label">DUAL</span></button>
@@ -520,27 +524,7 @@
                         </div>
                     </div>
 
-                    <!-- Active AI Model Status & Rapid Toggle -->
-                    <div class="active-model-strip" id="activeModelStrip">
-                        <div class="model-info-block">
-                            <span class="model-type-tag" id="activeModelBadge">LOCAL GPU</span>
-                            <span class="model-title" id="activeModelName">Qwen 3.5 4B • RTX 3050 • 16K</span>
-                        </div>
-                        <div class="openai-model-controls" id="openaiModelControls" style="display: none;">
-                            <button class="hud-model-picker-btn" id="btnHudModelPicker" type="button" title="Search & select from 400+ OpenAI-compatible models">
-                                <span class="model-picker-icon">🔍</span>
-                                <span class="model-picker-label" id="hudModelPickerLabel">Search Model...</span>
-                                <span class="caret">▾</span>
-                            </button>
-                            <button class="model-sub-btn" id="btnOpenaiConfig" title="Configure API Base URL, Key & Prompt Caching">
-                                <span>⚙️</span>
-                            </button>
-                        </div>
-                        <button class="model-swap-btn" id="btnSwapModelPanel" title="Click to cycle AI Provider: Local (RTX 3050) ⮀ Gemini (1M) ⮀ OpenAI-Compatible">
-                            <span class="swap-icon" id="swapBtnIcon">✨</span>
-                            <span id="swapModelBtnText">SWAP TO GEMINI</span>
-                        </button>
-                    </div>
+                    <!-- Active AI model state and provider swap live only in the top header -->
 
                     <!-- Integrated Real-Time Execution Pipeline Flow -->
                     <div class="pipeline-flow integrated-pipeline-flow" id="pipelineFlow">
@@ -992,61 +976,7 @@
                         </div>
                     </div>
                     <div class="chat-top-right">
-                        <div class="chat-stat-pill" id="chatActivePersonaPill" title="Current Active Personality">
-                            <span class="pill-dot"></span>
-                            <span id="chatPersonaLabel">CYPHER</span>
-                        </div>
-                        <div class="chat-stat-pill pill-local" id="chatActiveModelPill" title="Current Active AI Model. Click to switch LLM provider.">
-                            <span class="model-icon">⚡</span>
-                            <span id="chatModelLabel">LOCAL QWEN (16K)</span>
-                        </div>
-                        <!-- Local GGUF Model Selector in Chat Mode -->
-                        <div class="chat-local-controls" id="chatLocalControls">
-                            <button class="chat-stat-pill chat-local-model-btn" id="btnChatLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
-                                <span class="model-icon">⚡</span>
-                                <span id="chatLocalPickerLabel">Qwen 3.5 4B</span>
-                                <span class="chat-select-arrow">▾</span>
-                            </button>
-                            <button class="chat-stat-pill chat-local-model-btn chat-hf-btn" id="btnChatHfHub" type="button" title="Search & Download HuggingFace LLMs">
-                                <span class="model-icon">🤗</span>
-                                <span>HF HUB</span>
-                            </button>
-                            <button class="chat-stat-pill chat-local-model-btn" id="btnChatLlamaSettings" type="button" title="LM Studio & Llama.cpp Loading / Offloading Settings">
-                                <span class="model-icon">⚙️</span>
-                                <span>SETTINGS</span>
-                            </button>
-                        </div>
-                        <!-- OpenAI-Compatible Model Selector in Chat Mode -->
-                        <div class="chat-openai-controls" id="chatOpenaiControls" style="display: none;">
-                            <button class="chat-openai-model-btn" id="btnChatModelPicker" type="button" title="Search & select from 400+ OpenAI-compatible models">
-                                <span class="model-picker-icon">🔍</span>
-                                <span class="model-picker-label" id="chatModelPickerLabel">Search Model...</span>
-                                <span class="chat-select-arrow">▾</span>
-                            </button>
-
-                            <button class="chat-openai-btn" id="btnChatOpenaiConfig" type="button" title="Configure OpenAI API URL and key">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-                                    <circle cx="12" cy="12" r="3"></circle>
-                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                                </svg>
-                            </button>
-                        </div>
-                        <!-- Whisper STT Selector in Chat Mode -->
-                        <div class="chat-whisper-controls" id="chatWhisperControls">
-                            <button class="chat-stat-pill chat-whisper-btn" id="btnChatWhisperPicker" type="button" title="Switch Whisper STT Model (Vulkan AMD Radeon 680M)">
-                                <span class="whisper-icon">🎙️</span>
-                                <span id="chatWhisperPickerLabel">Whisper: base.en</span>
-                                <span class="chat-select-arrow">▾</span>
-                            </button>
-                        </div>
-                        <!-- Text-to-Speech (TTS) Selector in Chat Mode -->
-                        <div class="chat-tts-controls" id="chatTtsControls">
-                            <button class="chat-stat-pill chat-tts-btn" id="btnChatTtsPicker" type="button" title="Switch TTS Voice & Engine (Kokoro Neural / Piper ONNX)">
-                                <span class="tts-icon">🔊</span>
-                                <span id="chatTtsPickerLabel">TTS: af_heart</span>
-                                <span class="chat-select-arrow">▾</span>
-                            </button>
-                        </div>
+                        <!-- Engine/model/persona/STT/TTS controls live only in the top header (nav-zone-center). -->
                         <button class="chat-stat-pill chat-thinking-toggle-btn active" id="btnChatThinkingToggle" type="button" title="Toggle AI Deep Reasoning / Thinking Mode (Local & API models)">
                             <span class="thinking-glow-icon">🧠</span>
                             <span id="chatThinkingLabel">THINKING ON</span>
@@ -2121,6 +2051,6 @@
     <script src="/static/character/AnimationSystem.js?v=9.0-skinny-cute-pro"></script>
     <script src="/static/character/GazeSystem.js?v=9.0-skinny-cute-pro"></script>
     <script src="/static/character/CharacterEngine.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/app.js?v=7.4-chat"></script>
+    <script src="/static/app.js?v=7.5-header"></script>
 </body>
 </html>
