@@ -665,104 +665,18 @@ class RobotUI {
             });
         }
 
-        // Category Tab Filter for Chat System Tools
-        const catTabs = document.querySelectorAll(".cat-tab");
-        const chatChips = document.querySelectorAll(".chat-chip");
-        const countBadge = document.getElementById("chatToolsCount");
-
-        catTabs.forEach((tab) => {
-            tab.addEventListener("click", () => {
-                catTabs.forEach((t) => t.classList.remove("active"));
-                tab.classList.add("active");
-                const chosenCat = tab.getAttribute("data-cat") || "quick";
-                let visibleCount = 0;
-
-                chatChips.forEach((chip) => {
-                    const rawCats = chip.getAttribute("data-cat") || "";
-                    const catList = rawCats.split(/\s+/);
-                    if (chosenCat === "all" || catList.includes(chosenCat)) {
-                        chip.classList.remove("hidden-by-cat");
-                        visibleCount++;
-                    } else {
-                        chip.classList.add("hidden-by-cat");
-                    }
-                });
-
-                if (countBadge) {
-                    countBadge.textContent = `${visibleCount} ACTIVE`;
-                }
-            });
-        });
-
-        // Trigger initial static filtering (defaults to Quick tools with zero scroll)
-        const initialActiveTab = document.querySelector(".cat-tab.active") || catTabs[0];
-        if (initialActiveTab) {
-            initialActiveTab.click();
-        }
-
-        // On a phone the tool rail would eat ~280px of an 852px screen, so it
-        // collapses to its title strip and opens as a sheet over the thread.
-        const toolsDock = document.getElementById("chatToolsDock");
-        const toolsTitle = toolsDock ? toolsDock.querySelector(".chat-tools-title") : null;
-        const mobileTools = window.matchMedia("(max-width: 768px)");
-        if (toolsDock && toolsTitle) {
-            const composer = this.chatTextarea;
-            const longPlaceholder = composer ? composer.placeholder : "";
-            const syncToolsDisclosure = () => {
-                const mobile = mobileTools.matches;
-                if (!mobile) toolsDock.classList.remove("expanded");
-                toolsTitle.setAttribute("role", mobile ? "button" : "presentation");
-                toolsTitle.setAttribute("aria-expanded", String(toolsDock.classList.contains("expanded")));
-                toolsTitle.setAttribute("aria-controls", "chatQuickChips");
-                toolsTitle.tabIndex = mobile ? 0 : -1;
-                // The keyboard-shortcut hint cannot fit next to the mic/send buttons.
-                if (composer) {
-                    composer.placeholder = mobile ? "Message the robot…" : longPlaceholder;
-                }
+        // The keyboard-shortcut hint cannot fit next to the mic/send buttons.
+        if (this.chatTextarea) {
+            const desktopPlaceholder = this.chatTextarea.placeholder;
+            const mobileMedia = window.matchMedia("(max-width: 768px)");
+            const syncPlaceholder = () => {
+                this.chatTextarea.placeholder = mobileMedia.matches ? "Message the robot…" : desktopPlaceholder;
             };
-            toolsTitle.addEventListener("click", () => {
-                if (!mobileTools.matches) return;
-                toolsDock.classList.toggle("expanded");
-                syncToolsDisclosure();
-            });
-            toolsTitle.addEventListener("keydown", (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    toolsTitle.click();
-                }
-            });
-            // Choosing a tool hands the screen back to the composer.
-            toolsDock.addEventListener("click", (event) => {
-                if (event.target.closest(".chat-chip") && toolsDock.classList.contains("expanded")) {
-                    toolsDock.classList.remove("expanded");
-                    syncToolsDisclosure();
-                }
-            });
-            if (mobileTools.addEventListener) {
-                mobileTools.addEventListener("change", syncToolsDisclosure);
+            if (mobileMedia.addEventListener) {
+                mobileMedia.addEventListener("change", syncPlaceholder);
             }
-            syncToolsDisclosure();
+            syncPlaceholder();
         }
-
-        // Quick available tools chips — insert prefix into chat input without auto-submitting
-        chatChips.forEach((chip) => {
-            chip.addEventListener("click", () => {
-                const prefix = chip.getAttribute("data-prefix") || chip.getAttribute("data-prompt") || "";
-                if (this.chatTextarea) {
-                    const currentVal = this.chatTextarea.value.trim();
-                    if (!currentVal) {
-                        this.chatTextarea.value = prefix;
-                    } else if (!currentVal.startsWith(prefix)) {
-                        this.chatTextarea.value = `${prefix}${currentVal}`;
-                    }
-                    this.chatTextarea.style.height = "auto";
-                    this.chatTextarea.style.height = `${Math.min(220, this.chatTextarea.scrollHeight)}px`;
-                    this.chatTextarea.focus();
-                    const len = this.chatTextarea.value.length;
-                    this.chatTextarea.setSelectionRange(len, len);
-                }
-            });
-        });
 
         this.syncChatTopBar();
     }
@@ -1522,7 +1436,6 @@ class RobotUI {
             ? msg.personality
             : ((this.personaSelect && this.personaSelect.value) ? this.personaSelect.value : "neo");
         const senderLabel = isUser ? "YOU" : this.formatPersonaName(activePersona);
-        const avatarIcon = isUser ? "👤" : "🤖";
         const contentHtml = this.renderChatMarkdown(msg.content);
         let badgeHtml = "";
         let telemHtml = "";
@@ -1582,14 +1495,18 @@ class RobotUI {
             `;
         }
 
-        row.innerHTML = `
-            <div class="chat-msg-avatar">${avatarIcon}</div>
-            <div class="chat-msg-content">
+        const headerHtml = isUser
+            ? ""
+            : `
                 <div class="chat-msg-header">
                     <span class="chat-msg-sender">${senderLabel}</span>
                     ${badgeHtml}
                     <span class="chat-msg-time">${timeStr}</span>
-                </div>
+                </div>`;
+
+        row.innerHTML = `
+            <div class="chat-msg-content">
+                ${headerHtml}
                 ${thoughtHtml}
                 ${toolHtml}
                 <div class="chat-msg-body">${contentHtml}</div>
@@ -1647,12 +1564,7 @@ class RobotUI {
         const userRow = document.createElement("div");
         userRow.className = "chat-msg-row msg-user";
         userRow.innerHTML = `
-            <div class="chat-msg-avatar">👤</div>
             <div class="chat-msg-content">
-                <div class="chat-msg-header">
-                    <span class="chat-msg-sender">YOU</span>
-                    <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                </div>
                 <div class="chat-msg-body">${this.renderChatMarkdown(text)}</div>
             </div>
         `;
@@ -1670,7 +1582,6 @@ class RobotUI {
         assistantRow.className = "chat-msg-row msg-assistant";
         assistantRow.id = `row_${streamId}`;
         assistantRow.innerHTML = `
-            <div class="chat-msg-avatar">🤖</div>
             <div class="chat-msg-content">
                 <div class="chat-msg-header">
                     <span class="chat-msg-sender">${currentPersona}</span>

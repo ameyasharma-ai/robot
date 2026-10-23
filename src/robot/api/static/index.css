@@ -166,10 +166,10 @@
     --header-h-phone: 46px;
     --rail-w: 300px;
     --measure: 72ch;
-    /* The chat column is the one surface that has to grow with the window: at
-       72ch on an ultrawide monitor the thread reads as a strip of content lost
-       in a black field. It still caps at a measure you can scan line by line. */
-    --thread-measure: clamp(72ch, 44vw, 100ch);
+    /* How wide the words in a chat row run. The row itself always bleeds to the
+       edges of the window; this only decides where the text stops, and it grows
+       with the monitor until it reaches a measure you can still scan. */
+    --thread-measure: clamp(72ch, 50vw, 100ch);
 
     /* Legacy aliases — app.js and index.html write these into inline styles
        and canvas contexts. They resolve into the new ramp, nothing more. */
@@ -3138,8 +3138,7 @@ body.mode-dual .chat-workspace-panel { display: none; }
 .eq-chip,
 .stt-chip,
 .tts-chip,
-.mem-chip,
-.chat-chip {
+.mem-chip {
     display: inline-flex;
     align-items: center;
     gap: var(--s-1);
@@ -3161,8 +3160,7 @@ body.mode-dual .chat-workspace-panel { display: none; }
 .eq-chip:hover,
 .stt-chip:hover,
 .tts-chip:hover,
-.mem-chip:hover,
-.chat-chip:hover {
+.mem-chip:hover {
     background: var(--surface-control-hover);
     border-color: var(--line-strong);
     color: var(--text-1);
@@ -3177,8 +3175,6 @@ body.mode-dual .chat-workspace-panel { display: none; }
     border-color: rgba(34, 200, 230, 0.4);
     color: var(--accent-300);
 }
-
-.chip-icon { font-size: 12px; line-height: 1; }
 
 /* Image studio */
 .image-input-row {
@@ -3905,8 +3901,15 @@ body.mode-dual .chat-workspace-panel { display: none; }
 
 .chat-workspace-panel {
     display: flex;
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-width: 0;
     min-height: 0;
-    height: calc(100dvh - var(--header-h));
+
+    /* Stretched out of the viewport box rather than recomputed from the header:
+       the box already carries the padding and the safe-area inset, and any
+       height written here has to fight both. */
+    height: auto;
     background: var(--surface-canvas);
 }
 
@@ -4166,7 +4169,10 @@ body.mode-dual .chat-workspace-panel { display: none; }
     min-width: 0;
 }
 
+.chat-top-left { flex: 0 0 auto; }
+
 .chat-top-right {
+    flex: 1 1 auto;
     flex-wrap: wrap;
     justify-content: flex-end;
 }
@@ -4192,7 +4198,13 @@ body.mode-dual .chat-workspace-panel { display: none; }
     border-color: var(--line-accent);
 }
 
-.chat-session-meta { min-width: 0; }
+/* The title block yields to the pill cluster instead of squeezing it, and both
+   lines ellipsize rather than wrapping the bar to three rows. */
+.chat-session-meta {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 24ch;
+}
 
 .chat-active-title {
     overflow: hidden;
@@ -4204,9 +4216,12 @@ body.mode-dual .chat-workspace-panel { display: none; }
 }
 
 .chat-session-id {
+    overflow: hidden;
     font-family: var(--font-mono);
     font-size: var(--t-2xs);
     color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* Pills in the chat top bar share one shape and one accent when interactive. */
@@ -4214,6 +4229,7 @@ body.mode-dual .chat-workspace-panel { display: none; }
     --pill-fg: var(--text-2);
 
     display: inline-flex;
+    flex: 0 0 auto;
     gap: 6px;
     align-items: center;
     min-height: 28px;
@@ -4332,19 +4348,11 @@ button.chat-stat-pill:hover {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--s-5);
     min-height: 0;
-    padding: var(--s-5) var(--s-4);
+    padding: var(--s-4) 0;
     overflow-y: auto;
     overscroll-behavior: contain;
     scroll-behavior: smooth;
-}
-
-/* Keep the thread readable without starving the wide viewport. */
-.chat-messages-container > * {
-    width: 100%;
-    max-width: var(--thread-measure);
-    margin-inline: auto;
 }
 
 /* A short conversation sits next to the composer rather than floating at the
@@ -4354,27 +4362,19 @@ button.chat-stat-pill:hover {
     margin-top: auto;
 }
 
+/* Rows bleed edge to edge; only the words inside them are held to a measure.
+   A capped column suspended in an uncapped black field is what made a wide
+   monitor read as half-finished — the band is what tells you the view is full. */
 .chat-msg-row {
     display: flex;
-    gap: var(--s-3);
     align-items: flex-start;
+    padding-block: var(--s-4);
+    padding-inline: max(var(--s-4), calc((100% - var(--thread-measure)) / 2));
 }
 
-.chat-msg-avatar {
-    display: grid;
-    flex: 0 0 30px;
-    place-items: center;
-    width: 30px;
-    height: 30px;
-    font-size: var(--t-md);
-    background: var(--surface-card);
-    border: 1px solid var(--line);
-    border-radius: var(--r-sm);
-}
-
-.msg-assistant .chat-msg-avatar {
-    color: var(--accent-300);
-    border-color: var(--line-accent);
+/* The robot's turn carries the ground; yours carries only a bubble. */
+.msg-assistant {
+    background: var(--surface-panel);
 }
 
 .chat-msg-content {
@@ -4382,13 +4382,32 @@ button.chat-stat-pill:hover {
     min-width: 0;
 }
 
+.msg-user {
+    justify-content: flex-end;
+}
+
+.msg-user .chat-msg-content {
+    flex: 0 1 auto;
+    max-width: min(100%, 76%);
+}
+
+/* Identity and clock are decoration on an authored turn, so they surface with
+   the actions bar on hover instead of standing above every line of text.
+   A user turn needs neither — the alignment says it. */
 .chat-msg-header {
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-2);
     align-items: baseline;
     margin-bottom: var(--s-1);
+    opacity: 0;
+    transition: opacity var(--d-1) var(--ease);
 }
+
+.msg-user .chat-msg-header { display: none; }
+
+.chat-msg-row:hover .chat-msg-header,
+.chat-msg-header:focus-within { opacity: 1; }
 
 .chat-msg-sender {
     font-size: var(--t-sm);
@@ -4427,13 +4446,15 @@ button.chat-stat-pill:hover {
     background: var(--tint-ai);
 }
 
-/* User turns read as a bounded bubble; assistant turns read as document. */
+/* The user's turn is the only thing in the thread that gets a container, and it
+   is neutral rather than accent-tinted: the accent belongs to the robot. The
+   corner nearest the composer is squared so the bubble reads as anchored to you. */
 .msg-user .chat-msg-body {
-    padding: var(--s-3);
-    background: var(--tint-accent-strong);
-    border: 1px solid var(--line-accent);
+    padding: var(--s-3) var(--s-4);
+    background: var(--surface-card);
+    border: 1px solid var(--line);
     border-radius: var(--r-lg);
-    border-start-start-radius: var(--r-xs);
+    border-end-end-radius: var(--r-xs);
 }
 
 .chat-msg-body {
@@ -4617,7 +4638,12 @@ button.chat-stat-pill:hover {
     flex-wrap: wrap;
     align-items: center;
     margin-block-start: var(--s-2);
+    opacity: 0;
+    transition: opacity var(--d-1) var(--ease);
 }
+
+.chat-msg-row:hover .chat-msg-telemetry,
+.chat-msg-telemetry:focus-within { opacity: 1; }
 
 .telem-item {
     font-family: var(--font-mono);
@@ -4801,6 +4827,8 @@ button.chat-stat-pill:hover {
     align-items: center;
     justify-content: center;
     max-width: 62ch;
+    padding-inline: var(--s-4);
+    margin-inline: auto;
     text-align: center;
 }
 
@@ -4864,90 +4892,6 @@ button.chat-stat-pill:hover {
     gap: var(--s-2);
     padding: var(--s-2) var(--s-4) var(--s-3);
     background: linear-gradient(to top, var(--surface-canvas) 60%, rgb(4 6 10 / 0));
-}
-
-.chat-tools-dock {
-    width: 100%;
-    padding: var(--s-2) var(--s-3);
-    background: var(--surface-panel);
-    border: 1px solid var(--line);
-    border-radius: var(--r-md);
-}
-
-.chat-tools-header {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--s-2);
-    align-items: center;
-    justify-content: space-between;
-}
-
-.chat-tools-title {
-    display: flex;
-    gap: var(--s-2);
-    align-items: center;
-}
-
-.tools-title-text {
-    font-size: var(--t-2xs);
-    font-weight: 700;
-    letter-spacing: .1em;
-    color: var(--text-3);
-    text-transform: uppercase;
-}
-
-.chat-tools-count {
-    padding: 1px 7px;
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    color: var(--accent-300);
-    background: var(--tint-accent);
-    border-radius: var(--r-pill);
-}
-
-.chat-category-tabs {
-    display: flex;
-    gap: var(--s-1);
-    overflow-x: auto;
-    scrollbar-width: none;
-}
-
-.chat-category-tabs::-webkit-scrollbar { display: none; }
-
-.cat-tab {
-    flex: 0 0 auto;
-    padding: 4px 10px;
-    font-family: var(--font-ui);
-    font-size: var(--t-xs);
-    font-weight: 600;
-    white-space: nowrap;
-    color: var(--text-3);
-    cursor: pointer;
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: var(--r-pill);
-    transition: color var(--d-1) var(--ease), background var(--d-1) var(--ease), border-color var(--d-1) var(--ease);
-}
-
-.cat-tab:hover {
-    color: var(--text-1);
-    background: var(--surface-control-hover);
-}
-
-.cat-tab.active {
-    color: var(--accent-on);
-    background: var(--accent-500);
-    border-color: var(--accent-500);
-}
-
-.chat-quick-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--s-1);
-    max-height: 168px;
-    margin-block-start: var(--s-2);
-    overflow-y: auto;
-    scrollbar-width: thin;
 }
 
 /* -- Composer -------------------------------------------------------------- */
@@ -7552,9 +7496,7 @@ button.chat-stat-pill:hover {
 
     .stop-btn { padding: 0 var(--s-2); }
 
-    /* Chat workspace: sidebar and tool rail become overlays. */
-    .chat-workspace-panel { height: calc(100dvh - var(--header-h-phone)); }
-
+    /* Chat workspace: the session sidebar becomes an overlay drawer. */
     .chat-sidebar {
         position: fixed;
         top: var(--header-h-phone);
@@ -7595,64 +7537,21 @@ button.chat-stat-pill:hover {
     .chat-tts-controls { display: none; }
 
     .chat-messages-container {
-        gap: var(--s-4);
-        padding: var(--s-3) var(--s-2);
+        padding: var(--s-3) 0;
     }
-
-    .chat-msg-avatar { flex-basis: 26px; width: 26px; height: 26px; font-size: var(--t-sm); }
 
     .chat-messages-container,
     .chat-box-wrapper,
     .chat-record-dock { max-width: 100%; }
 
     .chat-actions-row,
-    .chat-msg-actions { opacity: 1; }
+    .chat-msg-actions,
+    .chat-msg-telemetry { opacity: 1; }
 
     .chat-input-dock {
         gap: var(--s-1);
         padding: var(--s-1) var(--s-2) calc(var(--s-2) + env(safe-area-inset-bottom));
     }
-
-    /* The tool rail is a disclosure sheet so the thread keeps the screen. */
-    .chat-tools-dock {
-        position: relative;
-        padding: var(--s-1) var(--s-2);
-    }
-
-    .chat-tools-header { flex-wrap: nowrap; }
-
-    .chat-category-tabs { display: none; }
-
-    .chat-quick-chips {
-        display: none;
-        max-height: none;
-        margin-top: var(--s-2);
-    }
-
-    .chat-tools-dock.expanded {
-        position: fixed;
-        inset: auto 0 0 0;
-        z-index: 84;
-        max-height: 62dvh;
-        padding: var(--s-2);
-        overflow-y: auto;
-        background: var(--surface-panel);
-        border-radius: var(--r-xl) var(--r-xl) 0 0;
-        box-shadow: var(--e-4);
-    }
-
-    .chat-tools-dock.expanded .chat-category-tabs {
-        display: flex;
-        margin-top: var(--s-2);
-    }
-
-    .chat-tools-dock.expanded .chat-quick-chips {
-        display: flex;
-        max-height: 46dvh;
-        overflow-y: auto;
-    }
-
-    .chat-tools-title { cursor: pointer; }
 
     .chat-box-wrapper {
         gap: var(--s-1);
@@ -7801,11 +7700,9 @@ button.chat-stat-pill:hover {
 @media (pointer: coarse) {
     .btn,
     .cyber-btn,
-    .cat-tab,
     .vendor-tab,
     .gallery-filter-chip,
     .tts-filter-chip,
-    .chat-chip,
     .deck-tab-btn {
         min-height: 40px;
     }
@@ -7870,10 +7767,6 @@ button.chat-stat-pill:hover {
     .cyber-accordion-toggle,
     .lt-chip-go {
         min-width: 36px;
-        min-height: 36px;
-    }
-
-    .chat-tools-title {
         min-height: 36px;
     }
 
