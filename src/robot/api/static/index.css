@@ -11091,3 +11091,225 @@ body.auth-gate-open {
         transition: none;
     }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   UI POLISH LAYER (2026-10-23) — appended last so these rules win the
+   cascade. Fixes found in the browser audit:
+   • HUD content trapped in a nested 454px scroller below 1200px
+   • top-nav controls overlapping / intercepting each other's clicks
+   • chat toolbar collapsed to 0 width, pills overflowing the viewport
+   • truncated labels without ellipsis, serif fallbacks, missing states
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* --- Top navigation: no overlap at any width ------------------------ */
+.top-nav {
+    min-width: 0;
+    container-type: inline-size;
+}
+
+.nav-zone-center {
+    overflow: hidden;
+}
+
+.nav-zone-center > * {
+    flex-shrink: 0;
+}
+
+.top-nav select,
+.persona-selector-wrap select,
+.chat-select,
+.top-nav-model-picker-btn,
+.top-nav-stt-picker-btn,
+.top-nav-tts-picker-btn {
+    min-width: 0;
+}
+
+/* Hide the secondary readouts before they can collide with controls. */
+@media (max-width: 1560px) {
+    .telemetry-pod,
+    .telemetry-pill { display: none !important; }
+}
+
+@media (max-width: 1360px) {
+    #btnViewDual .view-btn-label { display: none; }
+    .llm-toggle-label { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+/* --- Chat workspace toolbar ----------------------------------------- */
+.chat-top-left { flex: 0 0 auto; }
+.chat-top-right { flex-shrink: 0; }
+
+.chat-top-bar {
+    flex-wrap: wrap;
+    height: auto !important;
+    min-height: 56px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+    row-gap: 8px;
+}
+
+.chat-session-id { white-space: nowrap; }
+
+@media (max-width: 1360px) {
+    .chat-mic-pill { display: none !important; }
+}
+
+/* --- Below 1200px: the page scrolls, not a nested scroller ----------- */
+@media (max-width: 1200px) {
+    .main-viewport,
+    body.mode-dual .main-viewport,
+    body.mode-face .main-viewport,
+    body.mode-dev .main-viewport {
+        display: flex !important;
+        flex-direction: column !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+    }
+
+    .dev-panel {
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+    }
+
+    .face-panel {
+        height: clamp(380px, 55vh, 560px) !important;
+        min-height: 320px;
+        flex-shrink: 0;
+    }
+
+    .hud-top-row,
+    .hud-bottom-split {
+        height: auto !important;
+    }
+}
+
+/* Chat mode keeps its fixed app layout but must not clip on short screens. */
+@media (max-width: 1200px) {
+    body.mode-chat .main-viewport {
+        height: calc(100dvh - 56px) !important;
+        max-height: calc(100dvh - 56px) !important;
+        overflow: hidden !important;
+    }
+}
+
+/* --- Typography & state polish --------------------------------------- */
+.chat-bubble,
+.chat-msg-bubble,
+.speech-bubble p,
+#speechText {
+    font-family: var(--font-ui);
+}
+
+::selection {
+    background: rgba(16, 185, 129, 0.35);
+}
+
+.card-metric-value:empty::after,
+.hud-value:empty::after { content: "—"; }
+
+.chat-input,
+#chatInput,
+.chat-workspace-panel textarea {
+    min-width: 0;
+}
+
+/* Touch targets on coarse pointers */
+@media (pointer: coarse) {
+    .top-nav button,
+    .view-btn,
+    .chat-sidebar-toggle {
+        min-height: 40px;
+    }
+}
+
+/* Scrollbar consistency across panels */
+.main-viewport::-webkit-scrollbar,
+.dev-panel::-webkit-scrollbar {
+    width: 8px;
+}
+.main-viewport::-webkit-scrollbar-thumb,
+.dev-panel::-webkit-scrollbar-thumb {
+    background: rgba(16, 185, 129, 0.25);
+    border-radius: 4px;
+}
+
+/* Header left zone may shrink; persona select truncates instead of
+   overflowing into the provider controls (audit: Vault ⇄ LLM overlap). */
+.nav-zone-left {
+    flex-shrink: 1;
+}
+
+.persona-selector-wrap {
+    min-width: 0;
+    max-width: 210px;
+}
+
+.persona-selector-wrap select,
+.persona-selector-wrap .persona-select {
+    min-width: 0;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+    .persona-selector-wrap { max-width: 150px; }
+    .persona-selector-wrap select,
+    .persona-selector-wrap .persona-select { max-width: 84px; }
+    .brand-title { font-size: 14px; letter-spacing: 1px; }
+}
+
+/* Center zone overflow grows both ways with justify-content:center, which
+   made provider controls sit on top of the persona/Vault buttons. */
+.nav-zone-left { flex-shrink: 0; }
+.nav-zone-center { justify-content: flex-start; }
+@media (min-width: 1201px) {
+    .nav-zone-center { justify-content: center; }
+    .nav-zone-center { margin-inline: auto; }
+}
+
+/* Chat input on the HUD: truncate placeholder/value instead of clipping. */
+#chatInput.chat-input {
+    min-width: 0;
+    text-overflow: ellipsis;
+}
+
+/* Camera overlay badge: keep legible over bright video frames. */
+.camera-stream-box .cam-badge,
+.camera-stream-box .live-fps-badge {
+    background: rgba(2, 6, 12, 0.72);
+    backdrop-filter: blur(6px);
+}
+
+/* Chat toolbar right cluster: scroll instead of overflowing the viewport. */
+.chat-top-right {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    justify-content: flex-end;
+}
+.chat-top-right::-webkit-scrollbar { display: none; }
+
+/* Provider chip: the sub-caption duplicated the label and collided with it. */
+.llm-toggle-info .llm-toggle-sub { display: none; }
+
+/* Center zone must reserve only its real content width, otherwise its
+   overflowing pill slides underneath the right-zone buttons. */
+.nav-zone-center {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+/* Header density: the STT/TTS pickers and icon buttons duplicate the chat
+   toolbar controls; drop them before they collide with the persona zone. */
+@media (max-width: 1500px) {
+    .top-nav-stt-picker-btn,
+    .top-nav-tts-picker-btn,
+    #btnTopNavHfHub,
+    #btnTopNavLlamaSettings { display: none !important; }
+}

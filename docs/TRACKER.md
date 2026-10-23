@@ -22,9 +22,17 @@
 - Face mesh is CPU-only (RTX 3050 VRAM saturated by Whisper+LLM+TTS)
 - VideoMode requires monotonic timestamps; synthesised via time.perf_counter()
 
+### Web UI Responsive Overhaul & Auth-Gate Fixes (2026-10-23)
+Verified in headless Chrome at 1440/1280/1024/768/390 px — zero header-control overlaps at every width, zero console errors.
+- **`scripts/ui_dev.py`** (new): stubbed-backend dev server so the UI runs in a browser without llama/whisper/TTS/camera; mirrors production token auth (bearer/cookie/`?token=`), MJPEG, SSE and WebSocket shapes.
+- **Auth gate**: `?token=` deep links now unlock the console on first load (previously the gate ignored the URL token and locked users out); camera `<img>` no longer requests `/camera/stream` before auth (was a guaranteed 401 on every load) — app.js arms the src after the session exists.
+- **Layout**: below 1200px the HUD page scrolls as one document instead of trapping 1,700px of panels inside a 454px nested scroller; chat mode uses `100dvh`.
+- **Header**: center zone reserves real content width (was sliding status pills under STOP), persona selector truncates instead of overflowing, STT/TTS/HF/settings pickers collapse below 1500px (duplicated in the chat toolbar), LLM chip sub-caption double-text removed.
+- **Chat workspace**: toolbar left cluster no longer crushed to 0 width; pill cluster wraps and scrolls instead of overflowing the viewport; mic pill hidden under 1360px.
+- Polish layer appended at end of `index.css` (cascade-safe), cache-bust bumped to `v=6.1-polish`.
+
 ### Full-Codebase Audit Remediation (2026-10-23)
-365/365 tests green after remediation. Key changes:
-- **Security**: token auth middleware on all API endpoints (bearer / `?token=` / httpOnly cookie; resolution order: `create_app(auth_token=…)` → `ROBOT_API_TOKEN` env → `api.auth_token` config → auto-generated at startup and logged once); `/auth/login` + `/auth/logout` routes; raw API keys no longer returned by `/api/llm/status`; `html.escape()` on Spotify OAuth callback (reflected XSS).
+365/365 tests green after remediation. Key changes:- **Security**: token auth middleware on all API endpoints (bearer / `?token=` / httpOnly cookie; resolution order: `create_app(auth_token=…)` → `ROBOT_API_TOKEN` env → `api.auth_token` config → auto-generated at startup and logged once); `/auth/login` + `/auth/logout` routes; raw API keys no longer returned by `/api/llm/status`; `html.escape()` on Spotify OAuth callback (reflected XSS).
 - **Motion safety**: serial-bridge heartbeat deadlock fixed (parse outside `_lock`); minimum-jerk trajectory ramp now actually applied via 50 Hz trajectory worker (`emergency_stop` stays instantaneous); `stop()` joins all threads; `ActionPriority` walrus typo reverted to real `IntEnum`.
 - **Processes**: llama-server/whisper-server `Popen` handles tracked, log fds closed, `pkill -9 -f` only as last-resort fallback when no tracked handle exists.
 - **Engine**: `_speech_queue` (32) / `_tts_queue` (64) bounded with drop-oldest; all fire-and-forget tasks retained (`_spawn_bg_task`); autonomy/scheduler proactive lines routed through `_speech_queue` (eliminates `_stream_response` race); `chunker.flush()` before tool coordination (trailing phrase no longer dropped); LLM provider captured under `_provider_switch_lock`.

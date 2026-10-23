@@ -5516,6 +5516,11 @@ class RobotUI {
                     if (radar) radar.style.display = "none";
                 }
             };
+            // The HTML ships without a src so the stream is only requested with
+            // credentials (cookie/bearer); arm the initial load here.
+            if (!this.cameraImg.getAttribute("src")) {
+                this.cameraImg.src = this.streamUrl(`/camera/stream?t=${Date.now()}`);
+            }
         }
 
         // Hardware Observability Telemetry Polling (CPU, System RAM, RTX 3050, AMD 680M)

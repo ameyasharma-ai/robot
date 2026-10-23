@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;600;700;800&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=6.0-pbr">
+    <link rel="stylesheet" href="/static/index.css?v=6.1-polish">
 </head>
 <body class="mode-dual">
     <!-- ═══ API AUTH GATE ═══════════════════════════════════════════════════
@@ -101,7 +101,22 @@
             /* A token handed over as ?token= (the only URL parameter the console
                accepts for deep links / streams) is upgraded to a cookie session by
                app.js's storage helper, so try that before showing the gate. */
+            function consumeUrlToken() {
+                try {
+                    var params = new URLSearchParams(window.location.search);
+                    var tok = params.get('token') || params.get('access_token');
+                    if (tok) {
+                        sessionStorage.setItem('robot_auth_token', tok);
+                        params.delete('token');
+                        params.delete('access_token');
+                        var q = params.toString();
+                        history.replaceState(null, '', window.location.pathname + (q ? '?' + q : '') + window.location.hash);
+                    }
+                } catch (err) { /* storage unavailable: requests stay anonymous */ }
+            }
+
             function bootstrap() {
+                consumeUrlToken();
                 var stored = '';
                 try { stored = sessionStorage.getItem('robot_auth_token') || ''; } catch (err) { stored = ''; }
                 if (!stored) { return check(); }
@@ -369,7 +384,7 @@
                     </div>
                     <div class="vision-grid">
                         <div class="camera-stream-box" id="cameraBox">
-                            <img id="cameraImg" src="/camera/stream" alt="Live Camera 60 FPS Stream" onerror="this.style.display='none'; document.getElementById('radarStandby').style.display='flex';">
+                            <img id="cameraImg" alt="Live Camera Stream">
                             <!-- High-Tech Cyber Radar Standby HUD (when camera hardware is offline) -->
                             <div class="radar-standby" id="radarStandby" style="display: none;">
                                 <div class="radar-sweep-circle">
