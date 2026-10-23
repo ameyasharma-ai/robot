@@ -58,10 +58,14 @@ Thumbs.db
 # Graphify output
 graphify-out/
 
+# Scratch / experimentation (not part of the deliverable)
+/scratch/
+
 # Qdrant data
 qdrant_storage/
 .aider*
 .cache
+conversations.db
 
 # Web
 web/node_modules/
