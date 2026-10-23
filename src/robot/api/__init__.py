@@ -114,6 +114,9 @@ LOOPBACK_HOST_NAMES: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"
 MJPEG_TARGET_FPS = 15.0
 #: Upper bound of buffered events per WebSocket client before the oldest is dropped.
 WS_EVENT_QUEUE_MAXSIZE = 100
+#: How often an idle WebSocket client re-checks whether the engine is still running.
+#: The send loop has no data to observe the shutdown with, so it polls on this beat.
+WS_SHUTDOWN_POLL_S = 0.5
 
 
 class LoginRequest(BaseModel):
@@ -785,6 +788,18 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
                 "are served without a token (set api.trust_loopback: false to require it)."
             ),
         )
+
+    def _streaming_open() -> bool:
+        """Return True while the engine is live and streams should keep producing.
+
+        Uvicorn's graceful shutdown waits for in-flight responses before it will
+        send the lifespan shutdown event, and an MJPEG or WebSocket route only
+        ends when its generator returns. Without this gate Ctrl+C has to be
+        resolved by cancelling the server task from outside, which Starlette
+        reports as a CancelledError traceback rather than a clean stop. Engines
+        without the flag (test doubles) are treated as running.
+        """
+        return bool(getattr(engine, "_running", True))
 
     @app.get("/health")
     async def health():
@@ -2624,7 +2639,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return StreamingResponse(
             _mjpeg_part_generator(
                 latest_frame,
-                lambda: engine.is_camera_enabled,
+                lambda: _streaming_open() and engine.is_camera_enabled,
                 stream_name="camera_stream",
             ),
             media_type="multipart/x-mixed-replace; boundary=frame",
@@ -2664,7 +2679,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return StreamingResponse(
             _mjpeg_part_generator(
                 latest_mesh_frame,
-                lambda: engine.is_camera_enabled,
+                lambda: _streaming_open() and engine.is_camera_enabled,
                 stream_name="face_mesh_stream",
             ),
             media_type="multipart/x-mixed-replace; boundary=frame",
@@ -3104,8 +3119,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         engine.events.on("*", forward_event)
 
         try:
-            while True:
-                event = await queue.get()
+            while _streaming_open():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=WS_SHUTDOWN_POLL_S)
+                except asyncio.TimeoutError:
+                    continue
                 await websocket.send_text(json.dumps(event))
         except (WebSocketDisconnect, asyncio.CancelledError):
             pass
@@ -3113,6 +3131,10 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             pass
         finally:
             engine.events.off("*", forward_event)
+            try:
+                await websocket.close(code=1012, reason="Server shutting down")
+            except Exception:
+                pass  # the client is already gone, or the loop is being torn down
 
     # Static UI Files & Web HUD Display
     from fastapi.responses import FileResponse

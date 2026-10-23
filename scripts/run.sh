@@ -20,7 +20,11 @@ echo "🤖 Robot Core — Starting up..."
 pkill -9 -f "python.*-m robot" 2>/dev/null || true
 fuser -k 8888/tcp 2>/dev/null || true
 
+_cleanup_done=0
 cleanup() {
+    # INT and EXIT both fire on Ctrl+C; the banner is a summary, not a log line.
+    [ "$_cleanup_done" = 1 ] && return 0
+    _cleanup_done=1
     echo ""
     echo "🛑 Shutting down Robot Core and child servers..."
     kill $(jobs -p) 2>/dev/null || true

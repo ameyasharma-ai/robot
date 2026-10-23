@@ -57,6 +57,17 @@ from robot.tts import KokoroTTS, PiperTTS, TTSManager
 
 logger = get_logger("engine")
 
+#: Seconds the embedded API server gets to close its own sockets and streams.
+#: Long-lived SSE/MJPEG/WebSocket connections only end when they are told to, so
+#: without a bounded window uvicorn waits on them forever and the caller gives up
+#: and cancels the server task mid-shutdown, which surfaces as CancelledError
+#: tracebacks from Starlette rather than a real fault. Kept above uvicorn's own
+#: :data:`API_GRACEFUL_TIMEOUT_S` so the server always force-closes first.
+API_SHUTDOWN_GRACE_S = 3.0
+
+#: Seconds uvicorn waits for in-flight connections after ``should_exit``.
+API_GRACEFUL_TIMEOUT_S = 2
+
 
 def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     """Extract and strip predefined motion markers from LLM output for synchronized audio-motion execution.
@@ -1099,6 +1110,7 @@ class RobotEngine:
 
     async def run(self) -> None:
         """Start the full-duplex voice loop and API server."""
+        self._running = True
         await self.setup()
 
         loop = asyncio.get_running_loop()
@@ -1131,9 +1143,13 @@ class RobotEngine:
             asyncio.create_task(self._tts_synthesizer_loop()),
             asyncio.create_task(self._tts_player_loop()),
             asyncio.create_task(self.health.start()),
-            asyncio.create_task(self._run_api()),
             asyncio.create_task(self.lighting.start()),
         ]
+
+        # Deliberately outside `tasks`: cancelling this task would abort
+        # server.serve() inside its own shutdown, before uvicorn has closed the
+        # streams it is still waiting on. It is drained by _stop_api() instead.
+        self._api_task = asyncio.create_task(self._run_api(), name="api_server")
 
         if self.perception is not None:
             tasks.append(asyncio.create_task(self.perception.start()))
@@ -1147,12 +1163,15 @@ class RobotEngine:
         except (asyncio.CancelledError, KeyboardInterrupt):
             logger.info("engine_shutting_down")
         finally:
+            self._running = False
             self.curiosity.stop()
             self.image_service.stop()
             await self.scheduler.stop()
 
-            if hasattr(self, "_api_server") and self._api_server:
-                self._api_server.should_exit = True
+            # The API goes down first: _running is what tells its MJPEG and
+            # WebSocket generators to return, and they have to return before
+            # uvicorn will finish closing its own connections.
+            await self._stop_api()
             for t in tasks:
                 if not t.done():
                     t.cancel()
@@ -1174,8 +1193,45 @@ class RobotEngine:
         """Signal the engine and embedded API server to gracefully shut down."""
         logger.info("engine_stop_signaled")
         self._running = False
-        if hasattr(self, "_api_server") and self._api_server:
-            self._api_server.should_exit = True
+        server = getattr(self, "_api_server", None)
+        if server is not None:
+            server.should_exit = True
+
+    async def _stop_api(self, grace_s: float = API_SHUTDOWN_GRACE_S) -> None:
+        """Let the embedded API server close its own connections, then stop waiting.
+
+        Args:
+            grace_s: Seconds to wait for uvicorn to return from its shutdown.
+
+        Returns:
+            None
+        """
+        server = getattr(self, "_api_server", None)
+        task = getattr(self, "_api_task", None)
+        if server is not None:
+            server.should_exit = True
+        if task is None:
+            return
+
+        drained = False
+        if not task.done():
+            try:
+                done, _ = await asyncio.wait({task}, timeout=grace_s)
+                drained = bool(done)
+            except asyncio.CancelledError:
+                # A second interrupt: force the server down rather than leak it.
+                drained = False
+
+        if not drained:
+            logger.warning("api_server_shutdown_timeout", grace_s=grace_s)
+            task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("api_server_stopped_with_error", error=str(exc))
 
     def notify_user_activity(self) -> None:
         """Signal user interaction (chat text, voice, or UI action) to reset silence and quiet timers."""
@@ -1257,7 +1313,11 @@ class RobotEngine:
         return getattr(self, "llm", None)
 
     async def _run_api(self) -> None:
-        """Start the FastAPI server."""
+        """Start the FastAPI server and run it until it is asked to exit.
+
+        Returns:
+            None
+        """
         try:
             import uvicorn
 
@@ -1270,13 +1330,14 @@ class RobotEngine:
                 host=api_cfg.get("host", "127.0.0.1"),
                 port=api_cfg.get("port", 8888),
                 log_level="warning",
+                # Backstop for a stream that ignores the stop signal: without it
+                # uvicorn waits for its connections forever and Ctrl+C has to be
+                # resolved by cancelling this task from outside.
+                timeout_graceful_shutdown=API_GRACEFUL_TIMEOUT_S,
             )
             server = uvicorn.Server(config)
             self._api_server = server
             await server.serve()
-        except asyncio.CancelledError:
-            if hasattr(self, "_api_server") and self._api_server:
-                self._api_server.should_exit = True
         except Exception as e:
             logger.error("api_server_error", error=str(e))
 
