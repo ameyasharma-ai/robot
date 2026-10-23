@@ -166,10 +166,10 @@
     --header-h-phone: 46px;
     --rail-w: 300px;
     --measure: 72ch;
-    /* How wide the words in a chat row run. The row itself always bleeds to the
-       edges of the window; this only decides where the text stops, and it grows
-       with the monitor until it reaches a measure you can still scan. */
-    --thread-measure: clamp(72ch, 50vw, 100ch);
+    /* How wide the words in a chat row run. The thread fills the window and
+       only stops when a line would exceed a length you can track with your
+       eyes, so a large monitor gets a genuinely wide conversation. */
+    --thread-measure: min(1700px, 100%);
 
     /* Legacy aliases — app.js and index.html write these into inline styles
        and canvas contexts. They resolve into the new ramp, nothing more. */
@@ -1775,8 +1775,14 @@ body.mode-chat .main-viewport {
     height: calc(100dvh - var(--header-h));
     max-height: calc(100dvh - var(--header-h));
     overflow: hidden;
-    padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom));
+
+    /* Flush. Any gutter here uncovers the fixed matrix-rain canvas behind the
+       page, which reads as stray lines of glyphs around the conversation. The
+       composer's own safe-area padding keeps the phone layout clear. */
+    padding: 0;
 }
+
+body.mode-chat .matrix-rain-canvas { display: none; }
 
 body.mode-dual .chat-workspace-panel { display: none; }
 
@@ -4355,26 +4361,21 @@ button.chat-stat-pill:hover {
     scroll-behavior: smooth;
 }
 
-/* A short conversation sits next to the composer rather than floating at the
-   top of an empty column. Auto margin, not justify-content: once the thread
-   scrolls it collapses to zero instead of clipping the first message. */
-.chat-messages-container > :first-child:not(.chat-welcome-hero) {
-    margin-top: auto;
+/* The global prose measure stops at the edge of a chat row. A conversation is
+   not an article: the row's gutter is what bounds it, so a wide window gets a
+   wide answer instead of a 72ch column stranded in the middle of the thread. */
+.chat-msg-body :is(p, li) {
+    max-width: none;
 }
 
-/* Rows bleed edge to edge; only the words inside them are held to a measure.
-   A capped column suspended in an uncapped black field is what made a wide
-   monitor read as half-finished — the band is what tells you the view is full. */
+/* The thread fills the window; the gutter only widens once the line would grow
+   past --thread-measure, so a 1920 console gets a full-width conversation and an
+   ultrawide one still gets a column you can read. */
 .chat-msg-row {
     display: flex;
     align-items: flex-start;
     padding-block: var(--s-4);
-    padding-inline: max(var(--s-4), calc((100% - var(--thread-measure)) / 2));
-}
-
-/* The robot's turn carries the ground; yours carries only a bubble. */
-.msg-assistant {
-    background: var(--surface-panel);
+    padding-inline: max(var(--s-8), calc((100% - var(--thread-measure)) / 2));
 }
 
 .chat-msg-content {
@@ -4388,26 +4389,20 @@ button.chat-stat-pill:hover {
 
 .msg-user .chat-msg-content {
     flex: 0 1 auto;
-    max-width: min(100%, 76%);
+    max-width: min(100%, 68%);
 }
 
-/* Identity and clock are decoration on an authored turn, so they surface with
-   the actions bar on hover instead of standing above every line of text.
-   A user turn needs neither — the alignment says it. */
+.msg-user .chat-msg-header { justify-content: flex-end; }
+
+/* Identity, provider and clock stay on the record: which model answered and
+   when is part of the conversation, not decoration to hunt for on hover. */
 .chat-msg-header {
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-2);
     align-items: baseline;
     margin-bottom: var(--s-1);
-    opacity: 0;
-    transition: opacity var(--d-1) var(--ease);
 }
-
-.msg-user .chat-msg-header { display: none; }
-
-.chat-msg-row:hover .chat-msg-header,
-.chat-msg-header:focus-within { opacity: 1; }
 
 .chat-msg-sender {
     font-size: var(--t-sm);
@@ -4638,12 +4633,7 @@ button.chat-stat-pill:hover {
     flex-wrap: wrap;
     align-items: center;
     margin-block-start: var(--s-2);
-    opacity: 0;
-    transition: opacity var(--d-1) var(--ease);
 }
-
-.chat-msg-row:hover .chat-msg-telemetry,
-.chat-msg-telemetry:focus-within { opacity: 1; }
 
 .telem-item {
     font-family: var(--font-mono);
@@ -4890,7 +4880,10 @@ button.chat-stat-pill:hover {
     flex: 0 0 auto;
     flex-direction: column;
     gap: var(--s-2);
-    padding: var(--s-2) var(--s-4) var(--s-3);
+
+    /* Same gutter as a thread row, so the composer's edges line up with the
+       first and last character of the conversation above it. */
+    padding: var(--s-2) var(--s-8) var(--s-3);
     background: linear-gradient(to top, var(--surface-canvas) 60%, rgb(4 6 10 / 0));
 }
 

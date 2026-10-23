@@ -1495,14 +1495,12 @@ class RobotUI {
             `;
         }
 
-        const headerHtml = isUser
-            ? ""
-            : `
-                <div class="chat-msg-header">
-                    <span class="chat-msg-sender">${senderLabel}</span>
-                    ${badgeHtml}
-                    <span class="chat-msg-time">${timeStr}</span>
-                </div>`;
+        const headerHtml = `
+            <div class="chat-msg-header">
+                <span class="chat-msg-sender">${senderLabel}</span>
+                ${badgeHtml}
+                <span class="chat-msg-time">${timeStr}</span>
+            </div>`;
 
         row.innerHTML = `
             <div class="chat-msg-content">
@@ -1565,6 +1563,10 @@ class RobotUI {
         userRow.className = "chat-msg-row msg-user";
         userRow.innerHTML = `
             <div class="chat-msg-content">
+                <div class="chat-msg-header">
+                    <span class="chat-msg-sender">YOU</span>
+                    <span class="chat-msg-time">${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
                 <div class="chat-msg-body">${this.renderChatMarkdown(text)}</div>
             </div>
         `;
