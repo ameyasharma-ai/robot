@@ -8,6 +8,15 @@
 
 ## ✅ Recently Completed (2026-10-23)
 
+### Console Frontend — 100% Redesign
+`index.css` was rewritten end to end as an ordered design system (§1 tokens → §11 responsive) against the existing DOM, with `index.html` reworked for semantics and `app.js` touched only where markup contracts had to change. Cache-bust is now `v=7.1-redesign`.
+- **Tokens**: one type ramp (`--t-2xs` 10.5px is the floor; no glyph below it), one four-step text ramp annotated with the contrast each step guarantees *on the lightest surface in the system*, one accent that alone carries interactivity, and a single spacing/radius/easing set. 30 micro-label rules raised off sub-readable sizes; `--text-3` re-derived to `#7d8da2` so labels clear 4.5:1 on `--surface-control` (they previously measured 4.45:1 there).
+- **Header**: three fixed zones that never squash (`flex: 0 0 auto` on both ends) with the engine cluster as the only flexible region. Below 1800px that cluster stops truncating "KOKORO: af_heart" to "KOK…" and becomes a swipeable strip with a masked trailing edge and a sticky status pill; progressive disclosure then folds labels, then the persona selector, at 768/430.
+- **Layout hazards fixed**: canvases that `app.js` sizes from `clientWidth` are now out of flow (an in-flow one fed its own pixel width back and grew the audio spectrum wrap to 33M px); `.deck-pane` carries its column geometry on the base rule because `app.js` switches panes with an inline `display: flex`; short threads use `margin-top: auto` rather than `justify-content: flex-end` so bottom-alignment never clips the first message.
+- **Semantics/a11y**: unclosed `.chain-buttons`/`.chained-tasks-bar` divs fixed (STT/TTS cards were nesting inside a flex row), all inline styles replaced by classes, 7 modals given `role="dialog"` + `aria-labelledby`, inputs and icon-only controls labelled, viewport no longer blocks zoom, font payloads trimmed to the two families actually used.
+- **Touch**: `@media (pointer: coarse)` now lifts every chip, icon button and header control to 36px (40px for primary tabs); the local model picker's ⚡ became 📦 because two identical lightning glyphs were indistinguishable once labels hide; camera controls moved to the stream's bottom-right corner, where they no longer sit under the "LIVE MAX FPS | FACE MESH" badge; the matrix-rain canvas is dropped on phones, where it could only show as a band of noise in the page gutter.
+- **Verified** in real Chrome (Playwright): 0 clipped/overflowing elements across 20 surface×viewport combinations, 0 unnamed controls, 0 alt-less images, 0 unlabelled inputs, 0 sub-threshold tap targets at 24px (desktop) / 36px (touch), 0 console errors, and no document overflow at 1920/1800/1600/1440/1366/1100/1024/900/768/430/393. 374/374 tests green.
+
 ### Face Mesh Perception — Full Stack Implementation
 - **`face_mesh.py`** rewritten for MediaPipe Tasks API (mediapipe 1.x)
   - `FaceLandmarker VIDEO mode` — max per-frame throughput, no async callbacks

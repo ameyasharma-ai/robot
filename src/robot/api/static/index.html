@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Robot Core — HUD & Face System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;600;700;800&family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=6.3-mobile">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/index.css?v=7.1-redesign">
 </head>
 <body class="mode-dual">
     <!-- ═══ API AUTH GATE ═══════════════════════════════════════════════════
@@ -215,7 +215,7 @@
                 </select>
                 <span class="persona-caret">▾</span>
             </div>
-            <button class="persona-manage-btn" id="btnOpenPersonaModal" type="button" title="Manage AI Personas, Isolated Databases & Model Defaults">⚙️ Vault</button>
+            <button class="persona-manage-btn" id="btnOpenPersonaModal" type="button" title="Manage AI Personas, Isolated Databases & Model Defaults">⚙️<span class="btn-label">Vault</span></button>
         </div>
 
         <!-- ZONE 2: ENGINE & MODEL SUITE -->
@@ -232,7 +232,7 @@
                 <!-- Top Nav Local Model Picker Trigger -->
                 <div class="top-nav-local-controls" id="topNavLocalControls">
                     <button class="top-nav-model-picker-btn local-picker-btn" id="btnTopNavLocalPicker" type="button" title="Switch Local GGUF Model (RTX 3050 CUDA)">
-                        <span class="model-picker-icon">⚡</span>
+                        <span class="model-picker-icon">📦</span>
                         <span class="model-picker-label" id="topNavLocalPickerLabel">Qwen 3.5 4B</span>
                         <span class="model-picker-caret">▾</span>
                     </button>
@@ -305,10 +305,10 @@
             <div class="nav-divider"></div>
 
             <div class="nav-controls">
-                <button class="stop-btn" id="btnStopExecution" title="Stop LLM Generation & Speech">🛑 STOP</button>
+                <button class="stop-btn" id="btnStopExecution" title="Stop LLM Generation & Speech">🛑<span class="btn-label">STOP</span></button>
                 <div class="view-switcher">
-                    <button class="view-btn active" id="btnViewDual" title="Dual Mode (Avatar + Dev HUD)">DUAL</button>
-                    <button class="view-btn" id="btnViewChat" title="ChatGPT-Like AI Workspace (Mic Unloaded / Real-Time Streaming)">💬 CHAT</button>
+                    <button class="view-btn active" id="btnViewDual" title="Dual Mode (Avatar + Dev HUD)"><span class="view-btn-icon">◫</span><span class="view-btn-label">DUAL</span></button>
+                    <button class="view-btn" id="btnViewChat" title="ChatGPT-Like AI Workspace (Mic Unloaded / Real-Time Streaming)"><span class="view-btn-icon">💬</span><span class="view-btn-label">CHAT</span></button>
                 </div>
                 <button class="fullscreen-btn" id="btnFullscreen" title="Toggle Fullscreen">⛶</button>
             </div>
@@ -331,7 +331,7 @@
                     <span class="char-hud-badge" id="charStateBadge"><span class="hud-status-dot"></span> STATE: IDLE</span>
                     <span class="char-hud-badge" id="charGazeBadge">👁️ GAZE: CAMERA</span>
                     <span class="char-hud-badge" id="charActionBadge">⚡ MOTION: BASE IDLE</span>
-                    <span class="char-hud-badge" id="charToolBadge" style="display: none; border-color: var(--primary-cyan); color: #00f2fe;">🛠️ TOOL: IDLE</span>
+                    <span class="char-hud-badge char-hud-tool" id="charToolBadge" style="display: none;">🛠️ TOOL: IDLE</span>
                     <span class="char-hud-badge char-hud-thinking" id="charThinkingBadge" style="display: none;"><span class="hud-thinking-dot"></span> 🧠 REASONING...</span>
                 </div>
             </div>
@@ -367,7 +367,7 @@
                     <span class="thinking-icon" id="avatarThinkingIcon">🧠</span>
                     <span class="thinking-label" id="avatarThinkingLabel">THINKING</span>
                 </button>
-                <input type="text" class="chat-input" id="chatInput" placeholder="Type a message (Enter or click send)..." autocomplete="off" />
+                <input type="text" class="chat-input" id="chatInput" aria-label="Message the robot" placeholder="Type a message (Enter or click send)..." autocomplete="off" />
                 <button type="button" class="chat-send-btn" id="chatSendBtn" title="Send message">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                 </button>
@@ -678,7 +678,7 @@
                                     <span class="lt-chip" title="Fast FP16 CUDA Tensor Engine">RTX 3050 FP16</span>
                                     <span class="lt-chip" id="ttftTargetChip" title="Time to first audio token">&lt;150ms TTFT</span>
                                     <span class="lt-chip" id="streamHealthChip" title="Concurrent audio stream guarantee">ZERO DROP</span>
-                                    <a href="/contextlayer" target="_blank" class="lt-chip lt-chip-link" style="text-decoration: none; color: #00ff66; border-color: rgba(0, 255, 102, 0.4); display: inline-flex; align-items: center; gap: 4px;" title="Open Context Layer & Prompt Cache Inspector">🔍 CONTEXT INSPECTOR ↗</a>
+                                    <a href="/contextlayer" target="_blank" rel="noopener" class="lt-chip lt-chip-link lt-chip-go" title="Open Context Layer & Prompt Cache Inspector">🔍 CONTEXT INSPECTOR ↗</a>
                                 </div>
                             </div>
                         </div>
@@ -718,7 +718,7 @@
                                 <button class="img-style-chip" data-style="photorealistic futuristic robotic laboratory, octanerender, ultra high definition" title="Photoreal style">📸 Photoreal</button>
                             </div>
                             <div class="image-input-row">
-                                <input type="text" class="img-prompt-input" id="imgPromptInput" placeholder="Prompt (e.g. Cyberpunk robot in neon rain)..." autocomplete="off" />
+                                <input type="text" class="img-prompt-input" id="imgPromptInput" aria-label="Image generation prompt" placeholder="Prompt (e.g. Cyberpunk robot in neon rain)..." autocomplete="off" />
                                 <button class="img-gen-btn" id="btnGenImage">Generate</button>
                                 <button class="img-cancel-btn" id="btnCancelImage" disabled>Cancel</button>
                             </div>
@@ -837,6 +837,9 @@
                                     <button class="chain-btn macro-btn" data-prompt="Check what you see and then play some music and set volume to 50%" title="Execute vision inspection followed by music playback">👁️ Check & 🎵 Play</button>
                                     <button class="chain-btn macro-btn" data-prompt="Set equalizer to bass boost and restart music at 40% volume" title="Switch to Bass+ and restart track at 40%">💥 Bass+ 40%</button>
                                     <button class="chain-btn macro-btn" data-prompt="Look around, introduce yourself, and wave your hand" title="Inspect scene, speak greeting, and trigger gesture">👋 Look & Wave</button>
+                                </div>
+                            </div>
+
                             <!-- Whisper STT Engine & Hardware Offload Card -->
                             <div class="stt-section-card" id="sttDeckCard">
                                 <div class="stt-card-header">
@@ -1048,7 +1051,7 @@
                             <span id="chatThinkingLabel">THINKING ON</span>
                         </button>
                         <div class="chat-stat-pill chat-mic-pill" id="chatMicPill" title="Microphone is automatically unloaded/paused in text chat mode">
-                            <span class="mic-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -1px;"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></span>
+                            <span class="mic-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"></line><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></span>
                             <span id="chatMicLabel">MIC UNLOADED</span>
                         </div>
                     </div>
@@ -1183,7 +1186,8 @@
                     <div class="chat-box-wrapper" id="chatBoxWrapper">
                         <textarea 
                             class="chat-textarea" 
-                            id="chatTextarea" 
+                            id="chatTextarea"
+                            aria-label="Message the robot"
                             rows="1" 
                             placeholder="Message the robot... (Enter to send, Shift+Enter for newline)"
                             autocomplete="off"
@@ -1246,11 +1250,11 @@
 
     <!-- Searchable Model Selector Popover / Modal -->
     <div class="cyber-modal-backdrop model-search-modal-backdrop" id="openaiModelSearchModal" style="display: none;">
-        <div class="cyber-modal model-search-modal">
+        <div class="cyber-modal model-search-modal" role="dialog" aria-modal="true" aria-labelledby="openaiModelSearchModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="openaiModelSearchModalTitle">
                     <span class="modal-icon">🌐</span>
                     <span>CUSTOM API MODEL SELECTOR</span>
                 </div>
@@ -1265,9 +1269,9 @@
                 <!-- Quick Vendor Filters -->
                 <div class="model-vendor-tabs" id="modelVendorTabs">
                     <button class="vendor-tab active" data-vendor="all" type="button">All (<span id="countAllModels">0</span>)</button>
-                    <button class="vendor-tab" data-vendor="free" type="button" style="color: #10b981; font-weight: 700;">⚡ Free Models</button>
+                    <button class="vendor-tab" data-vendor="free" type="button">⚡ Free Models</button>
                     <button class="vendor-tab" data-vendor="openrouter" type="button">🌐 OpenRouter</button>
-                    <button class="vendor-tab" data-vendor="aicredits" type="button" style="color: #f59e0b; font-weight: 700;">⚡ AI Credits</button>
+                    <button class="vendor-tab" data-vendor="aicredits" type="button">⚡ AI Credits</button>
                     <button class="vendor-tab" data-vendor="openai" type="button">OpenAI</button>
                     <button class="vendor-tab" data-vendor="anthropic" type="button">Claude</button>
                     <button class="vendor-tab" data-vendor="google" type="button">Gemini / Gemma</button>
@@ -1302,11 +1306,11 @@
 
     <!-- OpenAI-Compatible API Configuration Cyberdeck Modal -->
     <div class="cyber-modal-backdrop" id="openaiConfigModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide">
+        <div class="cyber-modal cyber-modal-wide" role="dialog" aria-modal="true" aria-labelledby="openaiConfigModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="openaiConfigModalTitle">
                     <span class="modal-icon">🌐</span>
                     <span>CUSTOM API ENDPOINTS & MODEL SELECTORS</span>
                 </div>
@@ -1456,11 +1460,11 @@
 
     <!-- Local LLM Model Selector Modal with HuggingFace Hub Search & Downloader -->
     <div class="cyber-modal-backdrop" id="localModelModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide local-model-cyber-modal">
+        <div class="cyber-modal cyber-modal-wide local-model-cyber-modal" role="dialog" aria-modal="true" aria-labelledby="localModelModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="localModelModalTitle">
                     <span class="modal-icon">⚡</span>
                     <span>LOCAL LLM MANAGER & HUGGINGFACE HUB (RTX 3050 CUDA)</span>
                 </div>
@@ -1494,7 +1498,7 @@
             </div>
 
             <!-- Tab 1: Installed & Registered Local Models -->
-            <div class="modal-body local-tab-content" id="tabContentLocalInstalled" style="max-height: 60vh; overflow-y: auto; padding: 16px;">
+            <div class="modal-body local-tab-content" id="tabContentLocalInstalled">
                 <div class="installed-banner">
                     <div class="banner-text">
                         <span class="banner-icon">⚡</span>
@@ -1911,11 +1915,11 @@
 
     <!-- Whisper STT Model Catalog & Switcher Modal -->
     <div class="cyber-modal-backdrop" id="whisperModelModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide">
+        <div class="cyber-modal cyber-modal-wide" role="dialog" aria-modal="true" aria-labelledby="whisperModelModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="whisperModelModalTitle">
                     <span class="modal-icon">🎙️</span>
                     <span>WHISPER STT MODEL PROFILES (VULKAN)</span>
                 </div>
@@ -1926,7 +1930,7 @@
                 <span class="engine-pill">0 MB VRAM on RTX 3050 • Local Port 8081</span>
                 <span class="stt-live-indicator" id="whisperModalRunningStatus">● ONLINE</span>
             </div>
-            <div class="modal-body" style="max-height: 60vh; overflow-y: auto; padding: 16px;">
+            <div class="modal-body">
                 <div class="model-cards-grid" id="whisperModelCardsGrid">
                     <!-- Populated dynamically via /api/stt/models -->
                 </div>
@@ -1940,11 +1944,11 @@
 
     <!-- Text-to-Speech (TTS) Engine & Voice Catalog Modal -->
     <div class="cyber-modal-backdrop" id="ttsModelModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide">
+        <div class="cyber-modal cyber-modal-wide" role="dialog" aria-modal="true" aria-labelledby="ttsModelModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="ttsModelModalTitle">
                     <span class="modal-icon">🔊</span>
                     <span>TEXT-TO-SPEECH ENGINES & VOICES</span>
                 </div>
@@ -1987,7 +1991,7 @@
                     <input type="text" id="ttsVoiceSearchInput" placeholder="Search voice or accent (e.g. Heart, Adam, Emma, Ryan)..." autocomplete="off" />
                 </div>
             </div>
-            <div class="modal-body" style="max-height: 52vh; overflow-y: auto; padding: 16px;">
+            <div class="modal-body">
                 <div class="model-cards-grid tts-cards-grid" id="ttsVoiceCardsGrid">
                     <!-- Populated dynamically via /api/tts/voices -->
                 </div>
@@ -2001,11 +2005,11 @@
 
     <!-- AI Persona Architect, Vault & Isolated Database Modal -->
     <div class="cyber-modal-backdrop" id="personaModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide persona-modal-container">
+        <div class="cyber-modal cyber-modal-wide persona-modal-container" role="dialog" aria-modal="true" aria-labelledby="personaModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="personaModalTitle">
                     <span class="modal-icon">🎭</span>
                     <span>AI PERSONA VAULT & ISOLATED DATABASES</span>
                 </div>
@@ -2147,11 +2151,11 @@
 
     <!-- Image Studio Artwork Gallery Modal -->
     <div class="cyber-modal-backdrop" id="imageGalleryModal" style="display: none;">
-        <div class="cyber-modal cyber-modal-wide gallery-modal-content">
+        <div class="cyber-modal cyber-modal-wide gallery-modal-content" role="dialog" aria-modal="true" aria-labelledby="imageGalleryModalTitle">
             <div class="modal-corner tl"></div><div class="modal-corner tr"></div>
             <div class="modal-corner bl"></div><div class="modal-corner br"></div>
             <div class="modal-header">
-                <div class="modal-title">
+                <div class="modal-title" id="imageGalleryModalTitle">
                     <span class="modal-icon">🖼️</span>
                     <span>AI IMAGE STUDIO GALLERY</span>
                     <span class="badge badge-accent" id="modalGalleryCountBadge">0 ARTWORKS</span>
@@ -2199,7 +2203,7 @@
 
     <!-- Gallery Lightbox Viewer Modal -->
     <div class="cyber-modal-backdrop lightbox-backdrop" id="galleryLightboxModal" style="display: none;">
-        <div class="lightbox-modal">
+        <div class="lightbox-modal" role="dialog" aria-modal="true" aria-label="Artwork preview">
             <button class="lightbox-close-btn" id="btnCloseLightbox" title="Close Preview (Esc)">✕</button>
             <div class="lightbox-image-wrap">
                 <img id="lightboxImage" src="" alt="Artwork Preview" />
@@ -2235,6 +2239,6 @@
     <script src="/static/character/AnimationSystem.js?v=9.0-skinny-cute-pro"></script>
     <script src="/static/character/GazeSystem.js?v=9.0-skinny-cute-pro"></script>
     <script src="/static/character/CharacterEngine.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/app.js?v=9.2-mobile"></script>
+    <script src="/static/app.js?v=7.1-redesign"></script>
 </body>
 </html>

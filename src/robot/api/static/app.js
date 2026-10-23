@@ -3336,7 +3336,7 @@ class RobotUI {
                 if (data.active) {
                     this.personaSelect.value = data.active;
                     const activeP = personas.find(p => p.id === data.active);
-                    const activeDisplay = activeP ? activeP.display_name.toUpperCase() : (data.active === "neo" ? "CYPHER" : data.active.toUpperCase());
+                    const activeDisplay = (activeP ? (activeP.display_name || activeP.id) : data.active).toUpperCase();
                     if (this.personaName) this.personaName.textContent = activeDisplay;
                     this.applyPersonaTheme(data.active);
                 }
@@ -3513,7 +3513,7 @@ class RobotUI {
                 if (totalCount) totalCount.textContent = personas.length;
                 if (activeBadge) {
                     const activeP = personas.find(p => p.id === activeKey);
-                    activeBadge.textContent = `ACTIVE: ${(activeP ? activeP.display_name : activeKey).toUpperCase()}`;
+                    activeBadge.textContent = `ACTIVE: ${(activeP ? (activeP.display_name || activeP.id) : activeKey).toUpperCase()}`;
                 }
 
                 cardsGrid.innerHTML = "";
@@ -3609,7 +3609,7 @@ class RobotUI {
                 });
 
             } catch (err) {
-                cardsGrid.innerHTML = `<div class="persona-load-error" style="color: #ef4444; font-family: var(--font-mono); padding: 20px;">Failed to load personas: ${err.message}</div>`;
+                cardsGrid.innerHTML = `<div class="persona-load-error">Failed to load personas: ${this.escapeHtml(err.message)}</div>`;
             }
         };
 
