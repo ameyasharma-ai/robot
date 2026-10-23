@@ -163,6 +163,20 @@ curl -X POST http://127.0.0.1:8888/chat \
 curl "http://127.0.0.1:8888/memory/search?query=favorite+color"
 ```
 
+### Console access & API token
+
+Opening `http://127.0.0.1:8888` from this machine needs no token — the API only
+treats a caller as local when it arrives on the loopback interface *and* names the
+server with a loopback `Host` *and* (for browsers) refers to its own origin, so a
+rebound domain or a page on another site cannot reach it.
+
+Any other client (LAN, another host) must present the API token as
+`Authorization: Bearer <token>`, `?token=<token>` (EventSource / MJPEG / WebSocket)
+or the session cookie from `POST /auth/login {"token": "…"}`. The token is
+`ROBOT_API_TOKEN` if set, else `api.auth_token` in `config/default.yaml`, else the
+value remembered in `data/.api_token` — generated once and reused across restarts.
+Set `api.trust_loopback: false` to require the token from localhost too.
+
 ## Project Structure
 
 ```

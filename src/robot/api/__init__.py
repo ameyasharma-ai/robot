@@ -22,20 +22,32 @@ a valid API token, supplied in any of these ways:
 
 The token is resolved in this order: the ``auth_token`` argument, the
 ``ROBOT_API_TOKEN`` environment variable, ``api.auth_token`` in the engine
-config, and finally a fresh ``secrets.token_urlsafe(24)`` that is logged once at
-startup so the local owner can read it and persist it.
+config, a token previously saved in ``data/.api_token``, and finally a fresh
+``secrets.token_urlsafe(24)`` that is written to that file so it stays the same
+across restarts.
+
+**Trusted local access.** A request that arrives on a loopback peer address,
+names the server with a loopback ``Host`` header and (for browser requests whose
+``Origin``/``Referer`` is set) refers to its own host is treated as the owner
+sitting at this machine and is served without a token. That triple check is what
+makes it safe: a page on another origin cannot reach the console because rebinding
+its ``Host`` to ``127.0.0.1`` fails the host/origin checks, and the gate closes
+itself if the client is not literally on the loopback interface. Set
+``api.trust_loopback: false`` in the config (or ``ROBOT_API_TRUST_LOOPBACK=0``) to
+require the token even from localhost.
 
 The uvicorn bind host itself is configured by ``RobotEngine._run_api``
 (``api.host`` in ``config/default.yaml`` / ``ROBOT_API_HOST``, default
 ``127.0.0.1``). Binding to anything other than loopback is still possible, but
-it is no longer unauthenticated: a non-loopback bind now serves only the public
-allow-list and rejects every other request without a valid token.
+it is no longer anonymous: a non-loopback client now gets only the public
+allow-list and every other request is rejected without a valid token.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import ipaddress
 import json
 import os
 import re
@@ -89,6 +101,15 @@ AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
 #: imagery under ``/data/images`` and every API route remain protected).
 AUTH_EXEMPT_PREFIXES: tuple[str, ...] = ("/static/",)
 
+#: Environment variable that overrides the on/off switch for trusted local access.
+TRUST_LOOPBACK_ENV_VAR = "ROBOT_API_TRUST_LOOPBACK"
+#: Environment variable naming the file the API token is read from / written to.
+AUTH_TOKEN_FILE_ENV_VAR = "ROBOT_API_TOKEN_FILE"
+#: Default location of the persisted API token (``data/`` is git-ignored).
+AUTH_TOKEN_FILE_DEFAULT: str = "data/.api_token"
+#: Host names that identify the machine itself, used for the rebinding check.
+LOOPBACK_HOST_NAMES: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+
 #: Target frame rate per MJPEG stream; encoding is off-loaded to a worker thread.
 MJPEG_TARGET_FPS = 15.0
 #: Upper bound of buffered events per WebSocket client before the oldest is dropped.
@@ -119,6 +140,28 @@ def _extract_bearer_header(authorization: str | None) -> str:
     return ""
 
 
+def _headers_from_scope(scope: dict[str, Any]) -> dict[str, str]:
+    """Decode the raw ASGI header list into a lower-cased mapping.
+
+    Args:
+        scope: Starlette ASGI connection scope for an ``http`` or ``websocket``
+            connection.
+
+    Returns:
+        dict[str, str]: Header names (lower-case) to values; a repeated header is
+            joined with ``, `` the way HTTP requires.
+    """
+    headers: dict[str, str] = {}
+    for raw_key, raw_value in scope.get("headers") or []:
+        try:
+            key = raw_key.decode("latin-1").lower()
+            value = raw_value.decode("latin-1")
+        except Exception:
+            continue
+        headers[key] = f"{headers[key]}, {value}" if key in headers else value
+    return headers
+
+
 def _token_from_scope(scope: dict[str, Any]) -> str:
     """Collect the candidate API token from an ASGI connection scope.
 
@@ -133,13 +176,7 @@ def _token_from_scope(scope: dict[str, Any]) -> str:
     Returns:
         str: The first non-empty candidate token, or ``""`` when there is none.
     """
-    headers: dict[str, str] = {}
-    for raw_key, raw_value in scope.get("headers") or []:
-        try:
-            key = raw_key.decode("latin-1").lower()
-            headers[key] = raw_value.decode("latin-1")
-        except Exception:
-            continue
+    headers = _headers_from_scope(scope)
 
     token = _extract_bearer_header(headers.get("authorization"))
     if token:
@@ -194,23 +231,202 @@ def _is_auth_exempt(path: str) -> bool:
     return path in ("/index.html", "/index.css", "/app.js")
 
 
+def _is_loopback_address(host: str | None) -> bool:
+    """Report whether a peer address string is a loopback address.
+
+    Args:
+        host: Peer host from the ASGI ``scope["client"]`` tuple, or ``None``.
+
+    Returns:
+        bool: ``True`` for ``127.0.0.1``, ``::1`` and any other address the
+            standard library classifies as loopback.
+    """
+    if not host:
+        return False
+    candidate = host.strip().strip("[]")
+    if candidate in LOOPBACK_HOST_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _host_authority(header_value: str | None) -> str:
+    """Return the lower-cased host name of a ``Host``/origin value with the port removed.
+
+    Args:
+        header_value: Raw ``Host`` header, or a full ``Origin``/``Referer`` URL.
+
+    Returns:
+        str: The bare host name, or ``""`` when the value is missing or unparsable.
+    """
+    if not header_value:
+        return ""
+    value = header_value.strip().lower()
+    if "://" in value:
+        value = urllib.parse.urlsplit(value).netloc
+    value = value.rsplit("@", 1)[-1]
+    if value.startswith("["):  # IPv6 literal: [::1]:8888
+        end = value.find("]")
+        return value[: end + 1] if end != -1 else value
+    return value.split(":", 1)[0]
+
+
+def _is_trusted_local_scope(scope: dict[str, Any]) -> bool:
+    """Decide whether a connection is the machine's own owner using no token.
+
+    Three independent facts must hold, which is what makes bypassing the token
+    safe enough for a local-first console:
+
+    * the peer address is loopback, so the client is literally this machine;
+    * the ``Host`` header names a loopback authority, so a DNS-rebound external
+      domain cannot reach the API through the local socket;
+    * when the client is a browser (``Origin``/``Referer`` set) that origin is
+      this same host, so a page on another site cannot drive the console.
+
+    Args:
+        scope: Starlette ASGI connection scope for an ``http`` or ``websocket``
+            connection.
+
+    Returns:
+        bool: ``True`` only when every check above succeeds.
+    """
+    client = scope.get("client") or ("", 0)
+    if not _is_loopback_address(str(client[0])):
+        return False
+
+    headers = _headers_from_scope(scope)
+    request_host = _host_authority(headers.get("host"))
+    if request_host not in LOOPBACK_HOST_NAMES:
+        return False
+
+    for name in ("origin", "referer", "sec-fetch-site"):
+        value = headers.get(name)
+        if not value:
+            continue
+        if name == "sec-fetch-site":
+            if value.strip().lower() not in ("same-origin", "none"):
+                return False
+            continue
+        if _host_authority(value) != request_host:
+            return False
+
+    return True
+
+
+def _trust_loopback_enabled(engine: "RobotEngine") -> bool:
+    """Read the ``api.trust_loopback`` switch (default on) for this engine.
+
+    ``ROBOT_API_TRUST_LOOPBACK`` overrides the config; values ``0``, ``false``,
+    ``no`` and ``off`` disable trusted local access.
+
+    Args:
+        engine: Running engine whose ``config`` dict may carry ``api.trust_loopback``.
+
+    Returns:
+        bool: ``True`` when loopback clients may skip the token.
+    """
+    raw: str | None = None
+    config = getattr(engine, "config", None)
+    if isinstance(config, dict):
+        api_cfg = config.get("api")
+        if isinstance(api_cfg, dict) and "trust_loopback" in api_cfg:
+            value = api_cfg["trust_loopback"]
+            if isinstance(value, bool):
+                return value
+            raw = str(value)
+    env_value = (os.environ.get(TRUST_LOOPBACK_ENV_VAR) or "").strip()
+    if env_value:
+        raw = env_value
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _api_token_file() -> Path:
+    """Locate the file that caches the generated API token across restarts.
+
+    ``ROBOT_API_TOKEN_FILE`` overrides it; otherwise the token lives next to the
+    other runtime state under ``data/`` (a git-ignored directory).
+
+    Returns:
+        Path: Absolute path of the token file; it may not exist yet.
+    """
+    override = (os.environ.get(AUTH_TOKEN_FILE_ENV_VAR) or "").strip()
+    if override:
+        return Path(override).expanduser()
+    from robot.config import get_project_root
+
+    return get_project_root() / AUTH_TOKEN_FILE_DEFAULT
+
+
+def _read_persisted_token(path: Path) -> str:
+    """Read a previously persisted API token from ``path``.
+
+    Args:
+        path: Candidate token file.
+
+    Returns:
+        str: The token, or ``""`` when the file is missing, unreadable or empty.
+    """
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _persist_token(path: Path, token: str) -> bool:
+    """Write ``token`` to ``path`` with owner-only permissions.
+
+    Args:
+        path: Destination token file.
+        token: Generated API token to remember for the next start.
+
+    Returns:
+        bool: ``True`` when the token is now on disk; failures are logged and
+            reported rather than raised — a read-only ``data/`` directory must not
+            stop the API from starting.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with open(existing, "w", encoding="utf-8") as handle:
+            handle.write(token)
+        os.chmod(path, 0o600)
+        return True
+    except OSError as exc:
+        logger.warning("api_auth_token_persist_failed", path=str(path), error=str(exc))
+        return False
+
+
 class _ApiAuthMiddleware:
     """Pure-ASGI bearer/cookie/query token gate for HTTP and WebSocket traffic.
 
     A pure ASGI middleware is used instead of ``BaseHTTPMiddleware`` so that
     ``websocket`` scopes are inspected too: a WebSocket that is not authorized
     is refused before the handshake is accepted (close code 4401).
+
+    When ``trust_loopback`` is set, connections that :func:`_is_trusted_local_scope`
+    recognizes as this machine's own owner pass through without a token, and the
+    scope is stamped with ``robot_local_trusted`` so route-level re-checks (the
+    WebSocket handshake) agree with the gate.
     """
 
-    def __init__(self, app: Any, expected_token: str) -> None:
+    #: Scope key stamped ``True`` when a request was admitted as a trusted local client.
+    TRUSTED_LOCAL_SCOPE_KEY = "robot_local_trusted"
+
+    def __init__(self, app: Any, expected_token: str, trust_loopback: bool = True) -> None:
         """Store the wrapped ASGI app and the token that clients must present.
 
         Args:
             app: The inner ASGI application (the FastAPI middleware stack).
             expected_token: Shared API token for this application instance.
+            trust_loopback: Admit verified loopback clients without a token.
         """
         self.app = app
         self.expected_token = expected_token or ""
+        self.trust_loopback = trust_loopback
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         """Enforce authentication for ``http``/``websocket`` scopes."""
@@ -227,6 +443,11 @@ class _ApiAuthMiddleware:
 
         candidate = _token_from_scope(scope)
         if _token_matches(candidate, self.expected_token):
+            await self.app(scope, receive, send)
+            return
+
+        if self.trust_loopback and _is_trusted_local_scope(scope):
+            scope[self.TRUSTED_LOCAL_SCOPE_KEY] = True
             await self.app(scope, receive, send)
             return
 
@@ -274,7 +495,10 @@ def _resolve_auth_token(engine: "RobotEngine", auth_token: str | None = None) ->
 
     Resolution order: explicit ``auth_token`` argument, the ``ROBOT_API_TOKEN``
     environment variable, ``api.auth_token`` (or ``api.token``) in the engine
-    configuration, and finally a freshly generated random token.
+    configuration, the token persisted from an earlier start in ``data/.api_token``,
+    and finally a freshly generated random token that is written back to that file
+    so it survives restarts instead of locking the owner out of a bookmarked
+    console.
 
     Args:
         engine: Running engine whose ``config`` dict may carry ``api.auth_token``.
@@ -282,7 +506,8 @@ def _resolve_auth_token(engine: "RobotEngine", auth_token: str | None = None) ->
 
     Returns:
         tuple[str, str]: The token and the label of the source it came from
-            (``"parameter"``, ``"environment"``, ``"config"`` or ``"generated"``).
+            (``"parameter"``, ``"environment"``, ``"config"``, ``"token-file"``
+            or ``"generated"``).
     """
     explicit = (auth_token or "").strip()
     if explicit:
@@ -301,7 +526,14 @@ def _resolve_auth_token(engine: "RobotEngine", auth_token: str | None = None) ->
                 if isinstance(value, str) and value.strip():
                     return value.strip(), "config"
 
-    return secrets.token_urlsafe(24), "generated"
+    token_file = _api_token_file()
+    persisted = _read_persisted_token(token_file)
+    if persisted:
+        return persisted, "token-file"
+
+    generated = secrets.token_urlsafe(24)
+    _persist_token(token_file, generated)
+    return generated, "generated"
 
 
 def _encode_jpeg_frame(frame: Any, quality: int = 80) -> bytes | None:
@@ -501,7 +733,8 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         engine: The running :class:`~robot.core.engine.RobotEngine`.
         auth_token: Optional shared API token. When omitted it is read from the
             ``ROBOT_API_TOKEN`` environment variable, then from ``api.auth_token``
-            in the engine config, then a random token is generated and logged.
+            in the engine config, then from the token file written by an earlier
+            start, and only then is a random token generated and saved there.
 
     Returns:
         FastAPI: Configured, authenticated application. The effective token is
@@ -511,10 +744,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         The uvicorn bind host comes from ``api.host`` in the engine config
         (``RobotEngine._run_api``, default ``127.0.0.1``) and is deliberately not
         changed here. Binding to a non-loopback address is still allowed but is no
-        longer anonymous: without a valid token only the health probe and the
-        static UI shell answer, everything else returns 401.
+        longer anonymous: a client that is not on the loopback interface can reach
+        only the health probe and the static UI shell without a valid token.
     """
     token, token_source = _resolve_auth_token(engine, auth_token)
+    trust_loopback = _trust_loopback_enabled(engine)
 
     app = FastAPI(
         title="Robot Core API",
@@ -523,20 +757,34 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     )
     app.state.auth_token = token
     app.state.auth_token_source = token_source
-    app.add_middleware(_ApiAuthMiddleware, expected_token=token)
+    app.state.trust_loopback = trust_loopback
+    app.add_middleware(_ApiAuthMiddleware, expected_token=token, trust_loopback=trust_loopback)
 
     if token_source == "generated":
         logger.warning(
             "api_auth_token_generated",
             message=(
-                "No API token configured — generated a one-time bearer token. "
-                "Set ROBOT_API_TOKEN (or api.auth_token in config/default.yaml) to keep it stable."
+                "No API token configured — generated one and saved it so it stays "
+                "stable across restarts. Local browsers at 127.0.0.1 need no token; "
+                "remote clients must present this value."
             ),
             token=token,
+            token_file=str(_api_token_file()),
             login_endpoint="POST /auth/login {\"token\": \"<token>\"}",
         )
+    elif token_source == "token-file":
+        logger.info("api_auth_token_restored", token_file=str(_api_token_file()))
     else:
         logger.info("api_auth_token_enabled", token_source=token_source)
+
+    if trust_loopback:
+        logger.info(
+            "api_auth_loopback_trusted",
+            message=(
+                "Requests arriving on the loopback interface with a loopback Host "
+                "are served without a token (set api.trust_loopback: false to require it)."
+            ),
+        )
 
     @app.get("/health")
     async def health():
@@ -588,13 +836,19 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
         Returns:
             dict[str, Any]: ``authenticated`` flag and the accepted credential
-                kinds; the token value itself is never returned.
+                kinds; the token value itself is never returned. ``auth_required``
+                is ``False`` for a caller admitted as a trusted local client, which
+                is what lets the UI shell skip its token gate on this machine.
         """
         candidate = _token_from_scope(request.scope)
+        local = bool(request.scope.get(_ApiAuthMiddleware.TRUSTED_LOCAL_SCOPE_KEY)) or (
+            trust_loopback and _is_trusted_local_scope(request.scope)
+        )
         return {
             "status": "ok",
-            "auth_required": True,
-            "authenticated": _token_matches(candidate, token),
+            "auth_required": not local,
+            "authenticated": local or _token_matches(candidate, token),
+            "via": "trusted_loopback" if local and not _token_matches(candidate, token) else "token",
             "accepted": ["authorization_bearer", "query_token", "session_cookie"],
         }
 
@@ -2785,15 +3039,17 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
         Security: :class:`_ApiAuthMiddleware` already refuses unauthorized
         upgrades, and the handshake is validated again here (bearer header,
-        ``?token=`` query parameter or the login cookie) before ``accept()`` so a
-        future route/mount change cannot expose an open event firehose.
+        ``?token=`` query parameter, the login cookie, or the trusted-local stamp
+        the middleware leaves for this machine's own owner) before ``accept()`` so
+        a future route/mount change cannot expose an open event firehose.
 
         Backpressure: each client owns a bounded :class:`asyncio.Queue`
         (:data:`WS_EVENT_QUEUE_MAXSIZE`). A slow consumer causes the *oldest*
         buffered event to be dropped — never an unbounded memory climb — and the
         drop count is logged rather than silently swallowed.
         """
-        if not _token_matches(_token_from_scope(websocket.scope), token):
+        trusted_local = bool(websocket.scope.get(_ApiAuthMiddleware.TRUSTED_LOCAL_SCOPE_KEY))
+        if not trusted_local and not _token_matches(_token_from_scope(websocket.scope), token):
             logger.warning(
                 "ws_handshake_rejected",
                 path=websocket.scope.get("path"),

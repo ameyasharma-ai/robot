@@ -2,8 +2,9 @@
 
 Lets browser-based UI work iterate without running llama-server, whisper, piper,
 the camera or the engine. Run: ``.venv/bin/python scripts/ui_dev.py [port]``
-then open ``http://127.0.0.1:8901/?token=uidev`` (the token populates
-sessionStorage via the frontend's own auth plumbing).
+then open ``http://127.0.0.1:8901/`` — like the real API it admits loopback
+clients without a token. Set ``ROBOT_API_TRUST_LOOPBACK=0`` to exercise the
+"Console locked" gate instead, and use ``?token=uidev`` for a non-loopback bind.
 """
 
 from __future__ import annotations
@@ -25,7 +26,29 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "src", "robot", "api"
 
 app = FastAPI()
 
+from robot.api import _is_trusted_local_scope, _trust_loopback_enabled  # noqa: E402
+
 _PUBLIC_PREFIXES = ("/health", "/auth/", "/static/", "/favicon")
+
+
+class _StubEngine:
+    """Engine-shaped object so the dev harness reads the same trust switch as prod."""
+
+    config: dict = {}
+
+
+def _is_trusted_local(request: Request) -> bool:
+    """Mirror production exactly: reuse the API's own trusted-local predicate."""
+    return _trust_loopback_enabled(_StubEngine()) and _is_trusted_local_scope(request.scope)
+
+
+def _presents_token(request: Request) -> bool:
+    """True when the request carries the dev token in a header, cookie or query."""
+    return (
+        request.headers.get("authorization", "") == "Bearer uidev"
+        or request.cookies.get("robot_api_session") == "uidev"
+        or request.query_params.get("token") == "uidev"
+    )
 
 
 @app.middleware("http")
@@ -33,13 +56,11 @@ async def fake_auth(request: Request, call_next):
     """Mirror the production API: reject unauthenticated calls so the UI's
     cookie/bearer plumbing is exercised identically in dev."""
     path = request.url.path
-    auth = request.headers.get("authorization", "")
     ok = (
         path == "/"
         or path.startswith(_PUBLIC_PREFIXES)
-        or auth == "Bearer uidev"
-        or request.cookies.get("robot_api_session") == "uidev"
-        or request.query_params.get("token") == "uidev"
+        or _presents_token(request)
+        or _is_trusted_local(request)
     )
     if not ok:
         return JSONResponse({"detail": "Invalid API token."}, status_code=401)
@@ -99,10 +120,15 @@ async def health() -> dict:
 
 @app.get("/auth/status")
 async def auth_status(request: Request) -> dict:
-    auth = request.headers.get("authorization", "")
-    cookie = request.cookies.get("robot_api_session", "")
-    ok = auth == "Bearer uidev" or cookie == "uidev" or request.query_params.get("token") == "uidev"
-    return {"status": "ok", "auth_required": True, "authenticated": ok, "accepted": ["authorization_bearer", "query_token", "session_cookie"]}
+    local = _is_trusted_local(request)
+    ok = local or _presents_token(request)
+    return {
+        "status": "ok",
+        "auth_required": not local,
+        "authenticated": ok,
+        "via": "trusted_loopback" if local else "token",
+        "accepted": ["authorization_bearer", "query_token", "session_cookie"],
+    }
 
 
 @app.post("/auth/login")

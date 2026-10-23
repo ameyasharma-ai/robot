@@ -1,15 +1,21 @@
-"""Tests for the token-auth layer, XSS escaping and secret redaction in robot.api."""
+"""Tests for the token-auth layer, trusted local access, XSS escaping and secret redaction."""
 
 from __future__ import annotations
 
 import asyncio
+import stat
 from unittest.mock import MagicMock
 
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from robot.api import AUTH_COOKIE_NAME, AUTH_TOKEN_QUERY_PARAM, create_app
+from robot.api import (
+    AUTH_COOKIE_NAME,
+    AUTH_TOKEN_QUERY_PARAM,
+    TRUST_LOOPBACK_ENV_VAR,
+    create_app,
+)
 
 
 @pytest.fixture
@@ -24,9 +30,22 @@ def api_engine() -> MagicMock:
     return engine
 
 
-def _bare_client(app) -> TestClient:
+def _bare_client(app, **kwargs) -> TestClient:
     """A client that presents no credentials at all."""
-    return TestClient(app, headers={"Authorization": ""})
+    kwargs["headers"] = {**(kwargs.get("headers") or {}), "Authorization": ""}
+    return TestClient(app, **kwargs)
+
+
+def _local_client(app, **kwargs) -> TestClient:
+    """A client that looks exactly like a browser on this machine: loopback peer
+    address and a loopback ``Host``."""
+    kwargs["headers"] = {**(kwargs.get("headers") or {}), "Authorization": ""}
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:8888",
+        client=("127.0.0.1", 54321),
+        **kwargs,
+    )
 
 
 def test_status_requires_token(api_engine: MagicMock) -> None:
@@ -36,6 +55,121 @@ def test_status_requires_token(api_engine: MagicMock) -> None:
     assert client.get("/status").status_code == 401
     assert client.get("/health").status_code == 200
     assert client.get("/").status_code in (200, 404)  # 404 only when static UI is absent
+
+
+def test_loopback_client_needs_no_token(api_engine: MagicMock) -> None:
+    """The owner's own browser on 127.0.0.1 opens the console without a token."""
+    app = create_app(api_engine, auth_token="tok-local")
+    client = _local_client(app)
+    status = client.get("/auth/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["authenticated"] is True
+    assert body["auth_required"] is False
+    assert body["via"] == "trusted_loopback"
+
+
+def test_trusted_local_never_leaks_the_token(api_engine: MagicMock) -> None:
+    """The trusted-local response carries no token value."""
+    app = create_app(api_engine, auth_token="tok-local-secret")
+    assert "tok-local-secret" not in _local_client(app).get("/auth/status").text
+
+
+def test_non_loopback_peer_is_still_locked_out(api_engine: MagicMock) -> None:
+    """A client arriving on another interface cannot use the local trust path."""
+    app = create_app(api_engine, auth_token="tok-lan")
+    client = TestClient(
+        app,
+        base_url="http://127.0.0.1:8888",
+        client=("192.168.1.50", 54321),
+        headers={"Authorization": ""},
+    )
+    assert client.get("/auth/status").json()["authenticated"] is False
+    assert client.get("/status").status_code == 401
+
+
+def test_rebound_host_is_denied(api_engine: MagicMock) -> None:
+    """DNS rebinding: a loopback peer naming an external Host is refused."""
+    app = create_app(api_engine, auth_token="tok-rebind")
+    client = TestClient(
+        app,
+        base_url="http://evil.example",
+        client=("127.0.0.1", 54321),
+        headers={"Authorization": ""},
+    )
+    assert client.get("/status").status_code == 401
+
+
+def test_cross_origin_loopback_request_is_denied(api_engine: MagicMock) -> None:
+    """A page on another site cannot drive the local console."""
+    app = create_app(api_engine, auth_token="tok-cors")
+    client = _local_client(app, headers={"Authorization": "", "Origin": "http://evil.example"})
+    assert client.get("/status").status_code == 401
+
+
+def test_same_origin_loopback_fetch_is_trusted(api_engine: MagicMock) -> None:
+    """An ``Origin`` that matches the loopback Host keeps the local trust."""
+    app = create_app(api_engine, auth_token="tok-same")
+    client = TestClient(
+        app,
+        base_url="http://127.0.0.1:8888",
+        client=("127.0.0.1", 54321),
+        headers={"Authorization": "", "Origin": "http://127.0.0.1:8888"},
+    )
+    assert client.get("/auth/status").json()["via"] == "trusted_loopback"
+
+
+def test_trust_loopback_can_be_disabled(
+    api_engine: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``api.trust_loopback: false`` and the env override both re-lock localhost."""
+    engine = api_engine
+    engine.config = {"api": {"trust_loopback": False}}
+    assert _local_client(create_app(engine)).get("/status").status_code == 401
+
+    engine.config = {}
+    monkeypatch.setenv(TRUST_LOOPBACK_ENV_VAR, "0")
+    assert _local_client(create_app(engine)).get("/status").status_code == 401
+
+    monkeypatch.setenv(TRUST_LOOPBACK_ENV_VAR, "1")
+    assert _local_client(create_app(engine)).get("/auth/status").json()["authenticated"] is True
+
+
+def test_loopback_websocket_is_accepted_without_token(api_engine: MagicMock) -> None:
+    """The middleware's trusted-local stamp also unlocks the WebSocket route."""
+    engine = api_engine
+    registered: list = []
+    engine.events.on = lambda event, handler: registered.append((event, handler))
+    engine.events.off = lambda event, handler: None
+
+    app = create_app(engine, auth_token="tok-ws-local")
+    # TestClient's WebSocket session hardcodes ``host: testserver``, so the local
+    # Host has to be restated for the handshake like a real browser would send it.
+    with _local_client(app).websocket_connect(
+        "/ws/events", headers={"Host": "127.0.0.1:8888"}
+    ):
+        assert registered and registered[0][0] == "*"
+
+
+def test_generated_token_is_reused_across_restarts(
+    api_engine: MagicMock, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A token generated on first start is persisted and read back, so the console
+    never changes the value the owner has bookmarked."""
+    token_file = tmp_path / "api_token"
+    monkeypatch.delenv("ROBOT_API_TOKEN", raising=False)
+    monkeypatch.setenv("ROBOT_API_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv(TRUST_LOOPBACK_ENV_VAR, "0")
+
+    first = create_app(api_engine)
+    token = first.state.auth_token
+    assert first.state.auth_token_source == "generated"
+    assert token_file.read_text(encoding="utf-8").strip() == token
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+    second = create_app(api_engine)
+    assert second.state.auth_token == token
+    assert second.state.auth_token_source == "token-file"
 
 
 def test_bearer_header_authenticates(api_engine: MagicMock) -> None:

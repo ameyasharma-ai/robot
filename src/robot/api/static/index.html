@@ -12,13 +12,17 @@
 <body class="mode-dual">
     <!-- ═══ API AUTH GATE ═══════════════════════════════════════════════════
          The Robot Core API requires a bearer token on every route except
-         /health and these static assets (see robot.api.create_app). This gate
-         trades the token for an httpOnly SameSite=Lax session cookie via
-         POST /auth/login, which then authenticates the UI's fetch() calls,
-         the EventSource chat stream, the MJPEG camera <img> streams and the
-         /ws/events WebSocket. This gate never writes the token to web storage
-         (a ?token= deep link is handled by app.js's own helper, and this gate
-         only upgrades it into the cookie session).
+         /health and these static assets (see robot.api.create_app). Requests
+         that arrive from this machine's own loopback address are admitted as
+         trusted local access, so opening http://127.0.0.1:8888 needs no token;
+         the gate below only appears for remote clients (or when
+         api.trust_loopback is disabled). It trades the token for an httpOnly
+         SameSite=Lax session cookie via POST /auth/login, which then
+         authenticates the UI's fetch() calls, the EventSource chat stream, the
+         MJPEG camera <img> streams and the /ws/events WebSocket. This gate never
+         writes the token to web storage (a ?token= deep link is handled by
+         app.js's own helper, and this gate only upgrades it into the cookie
+         session).
          Helper surface for app.js: window.ROBOT_API_AUTH.openGate(reason),
          .closeGate(), .logout(), .check(), .bootstrap().
     ══════════════════════════════════════════════════════════════════════ -->
@@ -27,8 +31,9 @@
             <div class="api-auth-badge">ROBOT CORE</div>
             <h2 class="api-auth-title" id="apiAuthTitle">Console locked</h2>
             <p class="api-auth-hint">
-                Enter the API token to unlock this console. It is printed in the server
-                log at startup and can be pinned by setting <code>ROBOT_API_TOKEN</code>.
+                This console is being reached from outside the robot's own machine, so it
+                needs the API token. It is printed once in the server log at startup, saved
+                in <code>data/.api_token</code>, and pinned by <code>ROBOT_API_TOKEN</code>.
             </p>
             <label class="sr-only" for="apiAuthTokenInput">API token</label>
             <input class="api-auth-input" id="apiAuthTokenInput" type="password"
@@ -127,7 +132,9 @@
                     body: JSON.stringify({ token: stored })
                 }).then(function (r) {
                     if (r.status === 200) { return check(); }
-                    showGate();
+                    // A stale stored token is not proof that access is denied: the
+                    // server may admit this client as its trusted local owner.
+                    return check();
                 }).catch(check);
             }
 
@@ -163,9 +170,10 @@
                 check: check,
                 bootstrap: bootstrap,
                 logout: function () {
+                    // Clear the session, then ask the server what it thinks of us: a
+                    // remote caller gets the gate back, a local one stays unlocked.
                     return fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' })
-                        .then(function (r) { return r.json(); })
-                        .then(function (body) { showGate(); return body; });
+                        .then(check);
                 }
             };
 
