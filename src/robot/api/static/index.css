@@ -166,6 +166,10 @@
     --header-h-phone: 46px;
     --rail-w: 300px;
     --measure: 72ch;
+    /* The chat column is the one surface that has to grow with the window: at
+       72ch on an ultrawide monitor the thread reads as a strip of content lost
+       in a black field. It still caps at a measure you can scan line by line. */
+    --thread-measure: clamp(72ch, 44vw, 100ch);
 
     /* Legacy aliases — app.js and index.html write these into inline styles
        and canvas contexts. They resolve into the new ramp, nothing more. */
@@ -4339,7 +4343,7 @@ button.chat-stat-pill:hover {
 /* Keep the thread readable without starving the wide viewport. */
 .chat-messages-container > * {
     width: 100%;
-    max-width: var(--measure);
+    max-width: var(--thread-measure);
     margin-inline: auto;
 }
 
@@ -4952,7 +4956,7 @@ button.chat-stat-pill:hover {
     display: flex;
     align-items: flex-end;
     width: 100%;
-    max-width: var(--measure);
+    max-width: var(--thread-measure);
     padding: var(--s-2);
     margin-inline: auto;
     background: var(--surface-card);
@@ -5088,7 +5092,7 @@ button.chat-stat-pill:hover {
     gap: var(--s-2);
     align-items: center;
     width: 100%;
-    max-width: var(--measure);
+    max-width: var(--thread-measure);
     padding: var(--s-2) var(--s-3);
     margin-inline: auto;
     background: var(--surface-card);
