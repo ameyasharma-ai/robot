@@ -1193,7 +1193,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
     @app.get("/personalities")
     async def list_personalities():
-        engine.personalities.load_all()
+        await asyncio.to_thread(engine.personalities.load_all)
         return {
             "personalities": engine.personalities.list_personalities(),
             "active": engine.state.state.active_personality,
@@ -1202,8 +1202,8 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     @app.get("/api/personas")
     async def list_personas():
         """List all personas with complete metadata, isolated database statistics, and model defaults."""
-        engine.personalities.load_all()
-        personas = engine.personalities.list_personas_detailed()
+        await asyncio.to_thread(engine.personalities.load_all)
+        personas = await engine.personalities.list_personas_detailed_async()
         active_p = getattr(getattr(getattr(engine, "state", None), "state", None), "active_personality", None)
         if not active_p:
             active_p = getattr(engine, "active_personality", "neo")
@@ -1219,7 +1219,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         """Create a new persona and provision its dedicated isolated database."""
         try:
             raw_data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
-            pers = engine.personalities.create_persona(raw_data)
+            pers = await engine.personalities.create_persona_async(raw_data)
             return {
                 "status": "created",
                 "persona": pers.to_dict(),
@@ -1239,7 +1239,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"Persona '{persona_id}' not found")
         data = pers.to_dict()
         data["is_active"] = (engine.personalities.active_name == pers.name)
-        data.update(engine.personalities.get_persona_stats(pers.name))
+        data.update(await engine.personalities.get_persona_stats_async(pers.name))
         return data
 
     @app.put("/api/personas/{persona_id}")
@@ -1247,7 +1247,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         """Update an existing persona definition and default model configurations."""
         try:
             update_data = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
-            pers = engine.personalities.update_persona(persona_id, update_data)
+            pers = await engine.personalities.update_persona_async(persona_id, update_data)
             return {
                 "status": "updated",
                 "persona": pers.to_dict(),
@@ -1266,7 +1266,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     ):
         """Delete a persona definition and optionally delete its isolated database."""
         try:
-            ok = engine.personalities.delete_persona(persona_id, delete_database=delete_database, force=force)
+            ok = await engine.personalities.delete_persona_async(persona_id, delete_database=delete_database, force=force)
             return {"status": "deleted", "id": persona_id, "deleted_database": delete_database}
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -1304,7 +1304,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         mgr = getattr(engine, "personalities", None)
         if not mgr:
             return {"error": f"Personality manager unavailable"}
-        success = mgr.set_active(name)
+        success = await asyncio.to_thread(mgr.set_active, name)
         if success:
             if hasattr(engine, "state") and hasattr(engine.state, "state"):
                 engine.state.state.active_personality = name

@@ -89,6 +89,29 @@ def test_persona_manager_initialization_and_db_path(temp_persona_env: tuple[Path
     assert "sessions" in tables
 
 
+def test_persona_reload_drops_deleted_yaml(temp_persona_env: tuple[Path, Path]) -> None:
+    """Reloading must not keep serving a persona whose YAML was removed from disk."""
+    config_dir, memory_dir = temp_persona_env
+    mgr = PersonalityManager(config_dir=config_dir, memory_base_dir=memory_dir)
+    mgr.load_all()
+    assert "test_bot" in mgr.list_personalities()
+
+    (config_dir / "test_bot.yaml").unlink()
+    mgr.load_all()
+    assert "test_bot" not in mgr.list_personalities()
+    assert mgr.get("test_bot") is None
+
+
+def test_persona_names_cannot_escape_memory_directory(temp_persona_env: tuple[Path, Path]) -> None:
+    """A persona identifier becomes a directory name, so traversal must be rejected."""
+    config_dir, memory_dir = temp_persona_env
+    mgr = PersonalityManager(config_dir=config_dir, memory_base_dir=memory_dir)
+    with pytest.raises(ValueError):
+        mgr.get_database_path("../../etc")
+    with pytest.raises(ValueError):
+        mgr.ensure_isolated_database("evil/name")
+
+
 def test_persona_creation_and_database_isolation(temp_persona_env: tuple[Path, Path]) -> None:
     """Verify creating a new persona creates an isolated database with zero cross-talk.
 

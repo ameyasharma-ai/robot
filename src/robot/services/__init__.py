@@ -44,6 +44,8 @@ class HealthMonitor:
 
     async def start(self) -> None:
         """Start periodic health monitoring."""
+        if self._task and not self._task.done():
+            return
         self._task = asyncio.create_task(self._monitor_loop())
         logger.info("health_monitor_started", interval_s=self._interval)
 
@@ -54,10 +56,17 @@ class HealthMonitor:
                 await self._task
             except asyncio.CancelledError:
                 pass
+            self._task = None
 
     async def _monitor_loop(self) -> None:
         while True:
-            await self.check_all()
+            try:
+                await self.check_all()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # One bad cycle must never kill health monitoring permanently.
+                logger.error("health_monitor_cycle_failed", error=str(e))
             await asyncio.sleep(self._interval)
 
 

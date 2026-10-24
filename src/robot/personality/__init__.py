@@ -17,7 +17,8 @@ import os
 import re
 import shutil
 import sqlite3
-from dataclasses import asdict, dataclass, field
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,26 @@ logger = get_logger("personality")
 
 # Protected system personas that cannot be deleted without explicit force override
 PROTECTED_SYSTEM_PERSONAS: set[str] = {"neo", "luna", "aria", "glados"}
+# Persona identifiers double as directory names, so they must never contain separators.
+_SAFE_PERSONA_NAME = re.compile(r"[a-z0-9_-]+")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically so a crash cannot leave a truncated persona file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def init_isolated_database(db_path: Path | str) -> Path:
@@ -201,9 +222,12 @@ class PersonalityManager:
                 logger.warning("personality_dir_missing", path=str(self._dir))
                 return
 
-        for yaml_file in self._dir.glob("*.yaml"):
+        # A reload must drop personas whose YAML no longer exists on disk.
+        self._personalities.clear()
+
+        for yaml_file in sorted(self._dir.glob("*.yaml")):
             try:
-                with open(yaml_file) as f:
+                with open(yaml_file, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 name = data.get("name", yaml_file.stem)
                 clean_name = self._resolve_name(name)
@@ -278,6 +302,9 @@ class PersonalityManager:
             except Exception as e:
                 logger.error("personality_load_failed", file=str(yaml_file), error=str(e))
 
+        if self._active and self._active not in self._personalities:
+            self._active = ""
+
     def _resolve_name(self, name: str) -> str:
         """Normalize personality name via alias mapping and case-insensitivity."""
         clean = (name or "").strip().lower()
@@ -293,6 +320,8 @@ class PersonalityManager:
             Path: Path to the persona's isolated conversations.db file.
         """
         clean = self._resolve_name(name)
+        if not _SAFE_PERSONA_NAME.fullmatch(clean):
+            raise ValueError(f"Invalid persona identifier: {name!r}")
         return self._memory_base_dir / "personas" / clean / "conversations.db"
 
     def ensure_isolated_database(self, name: str) -> Path:
@@ -433,9 +462,7 @@ class PersonalityManager:
         }
 
         yaml_file = self._dir / f"{name}.yaml"
-        self._dir.mkdir(parents=True, exist_ok=True)
-        with open(yaml_file, "w") as f:
-            yaml.safe_dump(yaml_data, f, sort_keys=False)
+        _atomic_write_text(yaml_file, yaml.safe_dump(yaml_data, sort_keys=False))
 
         personality = Personality(
             name=name,
@@ -512,8 +539,7 @@ class PersonalityManager:
             "memory_namespace": pers.memory_namespace or clean,
             "is_system": pers.is_system,
         }
-        with open(yaml_file, "w") as f:
-            yaml.safe_dump(yaml_data, f, sort_keys=False)
+        _atomic_write_text(yaml_file, yaml.safe_dump(yaml_data, sort_keys=False))
 
         logger.info("persona_updated", name=clean)
         return pers
@@ -591,8 +617,7 @@ class PersonalityManager:
             self._active = target
             try:
                 p_file = Path("data/active_personality.txt")
-                p_file.parent.mkdir(parents=True, exist_ok=True)
-                p_file.write_text(target)
+                _atomic_write_text(p_file, target)
             except Exception as e:
                 logger.debug("persist_personality_failed", error=str(e))
             logger.info("personality_switched", name=target)

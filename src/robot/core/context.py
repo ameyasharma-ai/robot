@@ -24,6 +24,9 @@ logger = get_logger("context")
 import re
 import time
 
+#: Per-entry cap for archived turns; one giant row must not evict the whole archive.
+MAX_ARCHIVE_ENTRY_CHARS = 4_000
+
 try:
     import tiktoken
 
@@ -138,9 +141,11 @@ def format_situation_banner(situation: dict | None = None) -> str:
             if music.get("is_playing")
             else ("Paused" if music.get("is_paused") else "Idle")
         )
-        vol_pct = int(music.get("volume", 0.8) * 100)
-        parts.append(
-            f"• Music Player: {status} | Track: {music.get('current_track', 'None')} | Vol: {vol_pct}%"
+        try:
+            vol_pct = int(float(music.get("volume", 0.8)) * 100)
+        except (TypeError, ValueError):
+            vol_pct = 80
+        parts.append(            f"• Music Player: {status} | Track: {music.get('current_track', 'None')} | Vol: {vol_pct}%"
         )
     else:
         parts.append("• Music Player: Idle")
@@ -312,12 +317,14 @@ class ContextEngine:
         - Clean balanced allocation (up to 18-20 turns history, persistent facts & semantic recall).
         - Preserves KV cache slot invariance for <250ms TTFT.
         """
-        resolved_system = system_prompt or kwargs.get("personality_prompt") or ""
-        resolved_user = user_text or kwargs.get("user_input") or ""
+        resolved_system = system_prompt if system_prompt is not None else (kwargs.get("personality_prompt") or "")
+        resolved_user = user_text if user_text is not None else (kwargs.get("user_input") or "")
         resolved_recent = recent_conversation if recent_conversation is not None else kwargs.get("history")
         resolved_memories = memories if memories is not None else kwargs.get("retrieved_memories")
-        resolved_situation = situation or kwargs.get("situation")
-        resolved_profile = user_profile or kwargs.get("user_profile")
+        resolved_situation = situation if situation is not None else kwargs.get("situation")
+        # An explicit "" means "no profile" (isolated persona) and must not fall back
+        # to the default operator profile; only an absent argument may fall back.
+        resolved_profile = user_profile if user_profile is not None else kwargs.get("user_profile")
 
         messages = []
 
@@ -381,12 +388,12 @@ class ContextEngine:
             if world_str:
                 grounding_parts.append(f"[Physical World State]:\n{world_str}")
 
-        music_state = kwargs.get("music_state")
+        music_state = kwargs.get("music_state") or (resolved_situation or {}).get("music_state")
         if not music_state:
             try:
                 from robot.tools.builtins.music import MusicPlayerService
-                ms = MusicPlayerService.get_instance()
-                music_state = ms.get_status()
+                # Playback snapshot only: get_status() scans the library and must stay off this path.
+                music_state = MusicPlayerService.get_instance().get_playback_state()
             except Exception:
                 pass
         music_str = ""
@@ -400,6 +407,13 @@ class ContextEngine:
                 f"  volume: {int(music_state.get('volume', 0.8) * 100)}%"
             )
             grounding_parts.append(music_str)
+
+        # 3b. Robot internal state (mode, persona, health) — compact, per-turn.
+        robot_str = ""
+        if robot_state:
+            robot_str = _format_state(robot_state)
+            if robot_str:
+                grounding_parts.append(f"[Robot Internal State]:\n{robot_str}")
 
         # 4. Multi-Session Conversation Archive (Gemini only)
         archive_str = ""
@@ -466,14 +480,25 @@ class ContextEngine:
 
         if high_intelligence and token_estimate > 800000:
             logger.info("enforcing_80pct_context_cap", estimated_tokens=token_estimate, target_cap=800000)
-            excess = token_estimate - 800000
-            chars_to_trim = excess * 4
-            if len(user_content) > chars_to_trim:
-                trimmed_content = user_content[chars_to_trim:]
+            excess_chars = (token_estimate - 800000) * 4
+            u_text = str(messages[-1].get("content") or "")
+            if "[User Instruction]:\n" in u_text:
+                # Trim grounding from the tail, never the front: front-slicing would
+                # destroy the profile/facts prefix and the KV-cache invariant.
+                grounding, instruction = u_text.split("[User Instruction]:\n", 1)
+                trimmed_grounding = grounding[:-excess_chars] if len(grounding) > excess_chars else ""
+                trimmed_content = f"{trimmed_grounding}[User Instruction]:\n{instruction}"
                 if image_data_url:
                     messages[-1]["content"][0]["text"] = trimmed_content
                 else:
                     messages[-1]["content"] = trimmed_content
+                tail_grounding_trimmed = True
+            token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
+
+            # Grounding alone may not cover the excess: drop oldest history next.
+            while len(messages) > 2 and token_estimate > 800000:
+                popped = messages.pop(1)
+                token_estimate -= _estimate_tokens(str(popped.get("content") or ""))
             token_estimate = sum(_estimate_tokens(m.get("content", "")) for m in messages if isinstance(m.get("content"), str))
 
         # Safeguard for Local Mode (RTX 3050 16K context limit):
@@ -743,29 +768,25 @@ def _trim_and_compact_conversation(
     if total_tokens <= budget_tokens:
         return clean_msgs, None, 0
 
-    # Walk backwards to collect turns within budget
-    result: list[dict[str, Any]] = []
+    # Walk backwards to collect turns within budget. Indices travel with their
+    # messages so duplicate contents can never detach a retained turn from its index.
+    retained: list[tuple[int, dict[str, Any]]] = []
     total = 0
-    retained_indices: set[int] = set()
 
     for idx in range(len(clean_msgs) - 1, -1, -1):
         msg = clean_msgs[idx]
-        content_str = str(msg.get("content") or "")
-        tokens = _estimate_tokens(content_str)
+        tokens = _estimate_tokens(str(msg.get("content") or ""))
         if total + tokens > budget_tokens:
             break
-        result.insert(0, msg)
-        retained_indices.add(idx)
+        retained.insert(0, (idx, msg))
         total += tokens
 
     # Ensure valid turn boundary (must start with user turn)
-    while result and result[0].get("role") in ("tool", "assistant"):
-        popped = result.pop(0)
-        for idx in sorted(retained_indices):
-            if clean_msgs[idx] == popped:
-                retained_indices.remove(idx)
-                break
+    while retained and retained[0][1].get("role") in ("tool", "assistant"):
+        retained.pop(0)
 
+    retained_indices = {idx for idx, _ in retained}
+    result = [msg for _, msg in retained]
     dropped_turns = [clean_msgs[i] for i in range(len(clean_msgs)) if i not in retained_indices]
     compacted_summary = summarize_conversation_turns(dropped_turns) if dropped_turns else None
 
@@ -809,8 +830,12 @@ def _format_archive(archive: list[dict], budget_tokens: int) -> str:
     turns = []
     total = 0
     for msg in reversed(archive):
-        role = msg.get("role", "user").capitalize()
-        content = msg.get("content", "").strip()
+        role = str(msg.get("role") or "user").capitalize()
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > MAX_ARCHIVE_ENTRY_CHARS:
+            content = content[:MAX_ARCHIVE_ENTRY_CHARS] + "…"
         session = msg.get("session_id", "")
         prefix = f"[{session[:6]}] " if session else ""
         line = f"{prefix}{role}: {content}"

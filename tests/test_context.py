@@ -184,6 +184,44 @@ def test_dynamic_rolling_context_budget_trimmer_and_compaction():
     assert rb["compacted_summary_tokens"] > 0
 
 
+def test_explicit_empty_profile_never_leaks_default_operator_profile():
+    """An isolated persona passes '' to mean no profile; it must not fall back to Ameya's."""
+    engine = ContextEngine()
+    messages = engine.build_messages(
+        system_prompt="You are Ruby.",
+        user_text="Who am I?",
+        user_profile="",
+    )
+    assert "USER CORE IDENTITY PROFILE" not in messages[-1]["content"]
+    assert "User Name: Ameya" not in messages[-1]["content"]
+
+
+def test_robot_state_is_injected_into_grounding():
+    """Robot state is an explicit build_messages input and must not be silently dropped."""
+    engine = ContextEngine()
+    messages = engine.build_messages(
+        system_prompt="You are Neo.",
+        user_text="Give me a status report",
+        robot_state={"mode": "IDLE", "personality": "neo", "turn": 3},
+    )
+    user_turn = messages[-1]["content"]
+    assert "[Robot Internal State]" in user_turn
+    assert "mode: IDLE" in user_turn
+    assert "turn: 3" in user_turn
+
+
+def test_context_never_scans_music_library(monkeypatch):
+    """Context assembly must use the playback snapshot, never the disk-scanning status."""
+    from robot.tools.builtins.music import MusicPlayerService
+
+    service = MusicPlayerService.get_instance()
+    scans: list[int] = []
+    monkeypatch.setattr(service, "list_local_tracks", lambda *a, **k: scans.append(1) or [])
+
+    ContextEngine().build_messages(system_prompt="You are Neo.", user_text="Hello")
+    assert scans == []
+
+
 def test_summarize_conversation_turns_helper():
     """Verify summarize_conversation_turns produces concise digest with user and assistant highlights."""
     from robot.core.context import summarize_conversation_turns

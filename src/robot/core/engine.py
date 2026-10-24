@@ -623,14 +623,16 @@ class RobotEngine:
         await self.memory.initialize()
 
         # Personalities & Isolated Memory Databases
-        self.personalities.load_all()
+        await asyncio.to_thread(self.personalities.load_all)
         default_personality = self.personalities.get_persisted_active(
             self.config.get("personality", {}).get("default", "neo")
         )
-        self.personalities.set_active(default_personality)
+        await asyncio.to_thread(self.personalities.set_active, default_personality)
         self.state.state.active_personality = default_personality
         # Ensure active personality has its isolated database provisioned and connected
-        isolated_db = self.personalities.ensure_isolated_database(default_personality)
+        isolated_db = await asyncio.to_thread(
+            self.personalities.ensure_isolated_database, default_personality
+        )
         if hasattr(self, "memory") and self.memory:
             await self.memory.switch_persona_database(isolated_db)
 
@@ -1036,14 +1038,15 @@ class RobotEngine:
         try:
             from robot.tools.builtins.system import get_system_battery_status
 
-            situation["battery"] = get_system_battery_status()
+            situation["battery"] = await asyncio.to_thread(get_system_battery_status)
         except Exception:
             pass
 
         try:
             from robot.tools.builtins.music import MusicPlayerService
 
-            situation["music_state"] = MusicPlayerService.get_instance().get_status()
+            # Playback snapshot only: the full status scans the local library on disk.
+            situation["music_state"] = MusicPlayerService.get_instance().get_playback_state()
         except Exception:
             pass
 
@@ -1795,17 +1798,19 @@ class RobotEngine:
             ValueError: If personality is not found in the personality manager.
         """
         if not self.personalities.get(personality):
-            self.personalities.load_all()
+            await asyncio.to_thread(self.personalities.load_all)
         if not self.personalities.get(personality):
             raise ValueError(f"Personality '{personality}' not found. Available: {self.personalities.list_personalities()}")
 
-        self.personalities.set_active(personality)
+        await asyncio.to_thread(self.personalities.set_active, personality)
         active_name = self.personalities.active_name
         self.state.state.active_personality = active_name
         pers = self.personalities.active
 
         # 1. Hot-swap memory archive to persona's isolated database
-        isolated_db = self.personalities.ensure_isolated_database(active_name)
+        isolated_db = await asyncio.to_thread(
+            self.personalities.ensure_isolated_database, active_name
+        )
         if hasattr(self, "memory") and self.memory:
             await self.memory.switch_persona_database(isolated_db)
 

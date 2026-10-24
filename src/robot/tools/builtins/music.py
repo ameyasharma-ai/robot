@@ -145,13 +145,15 @@ class MusicPlayerService:
         self._track_cache = (time.monotonic(), results)
         return results
 
-    def get_status(self) -> dict[str, Any]:
-        """Return the current live music playback state, history, and last played song."""
+    def get_playback_state(self) -> dict[str, Any]:
+        """Return a lightweight playback snapshot without scanning the local library.
+
+        Context assembly calls this on every turn, so it must never touch disk.
+        """
         active = self.is_playing
         last = self._history[0] if self._history else None
         current = self._current_track if (active or self._is_paused) else (last["resolved_name"] if last else "None")
         source = self._current_source if (active or self._is_paused) else (last["source"] if last else "None")
-        local_tracks = self.list_local_tracks()
         return {
             "is_playing": active,
             "is_paused": self._is_paused,
@@ -159,11 +161,22 @@ class MusicPlayerService:
             "source": source,
             "volume": self._volume,
             "equalizer_preset": getattr(self, "_active_preset", "robot"),
-            "history": self.get_history(5),
-            "last_played": last,
-            "local_collection": local_tracks[:30],
-            "total_local_songs": len(local_tracks),
         }
+
+    def get_status(self) -> dict[str, Any]:
+        """Return the current live music playback state, history, and last played song."""
+        status = self.get_playback_state()
+        last = self._history[0] if self._history else None
+        local_tracks = self.list_local_tracks()
+        status.update(
+            {
+                "history": self.get_history(5),
+                "last_played": last,
+                "local_collection": local_tracks[:30],
+                "total_local_songs": len(local_tracks),
+            }
+        )
+        return status
 
     def _load_config(self) -> None:
         self.config = {

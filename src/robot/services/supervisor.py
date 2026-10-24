@@ -23,6 +23,10 @@ from robot.telemetry import get_logger
 
 logger = get_logger("services.supervisor")
 
+#: A full GC is stop-the-world; while RSS stays above the ceiling, collecting
+#: every watchdog tick (15s) would repeatedly stall the audio/LLM event loop.
+_GC_COOLDOWN_S = 300.0
+
 
 class ProcessSupervisor:
     """Centralized process supervisor and health watchdog."""
@@ -53,6 +57,7 @@ class ProcessSupervisor:
         # asyncio loop can observe the flag and perform its own cleanup
         # (await wait_for_shutdown() / poll shutdown_requested).
         self._shutdown_event = asyncio.Event()
+        self._last_gc_ts: float = 0.0
 
     @property
     def shutdown_event(self) -> asyncio.Event:
@@ -180,8 +185,11 @@ class ProcessSupervisor:
                     current_mb=round(rss_mb, 1),
                     threshold_mb=self.max_cpu_rss_mb,
                 )
-                import gc
-                gc.collect()
+                now = time.time()
+                if now - self._last_gc_ts >= _GC_COOLDOWN_S:
+                    self._last_gc_ts = now
+                    import gc
+                    gc.collect()
         except Exception as e:
             logger.debug("memory_check_failed", error=str(e))
 

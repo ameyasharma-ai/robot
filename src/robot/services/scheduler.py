@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import re
@@ -217,6 +217,14 @@ class TemporalScheduler:
                 ON scheduled_jobs(status, target_timestamp);
                 """
             )
+            # Jobs left 'running' belong to a previous process that died mid-dispatch.
+            # They are never re-fired (at-most-once), so surface them as failed
+            # instead of letting them linger invisibly forever.
+            recovered = conn.execute(
+                "UPDATE scheduled_jobs SET status = 'failed' WHERE status = 'running'"
+            ).rowcount
+            if recovered:
+                logger.warning("scheduler_recovered_interrupted_jobs", count=recovered)
             conn.commit()
 
     async def start(self) -> None:
@@ -239,9 +247,11 @@ class TemporalScheduler:
             self._task = None
         # Cancel any dispatch tasks still in flight (at-most-once: a claimed job
         # interrupted here stays 'running' and is never re-dispatched).
-        for t in list(self._bg_tasks):
-            if not t.done():
-                t.cancel()
+        pending = [t for t in self._bg_tasks if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         logger.info("temporal_scheduler_stopped")
 
     async def health_check(self) -> bool:
@@ -383,6 +393,7 @@ class TemporalScheduler:
         Returns:
             List of ScheduledJob instances matching query.
         """
+        limit = max(1, min(int(limit), 500))
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._list_jobs_sync, job_type, status, limit)
 
@@ -463,6 +474,12 @@ class TemporalScheduler:
 
     def _cancel_job_sync(self, identifier: str) -> list[str]:
         clean_id = identifier.strip()
+        # An empty identifier would turn the fuzzy match into LIKE '%%' and
+        # cancel every pending job in one call.
+        if not clean_id:
+            return []
+        # Escape LIKE metacharacters so a label like "100% done" matches literally.
+        escaped = clean_id.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with sqlite3.connect(str(self._db_path)) as conn:
             cursor = conn.cursor()
             # 1. Exact ID match
@@ -470,8 +487,8 @@ class TemporalScheduler:
             if not rows:
                 # 2. Fuzzy label match
                 rows = cursor.execute(
-                    "SELECT id FROM scheduled_jobs WHERE status = 'pending' AND LOWER(label) LIKE ?",
-                    (f"%{clean_id.lower()}%",),
+                    "SELECT id FROM scheduled_jobs WHERE status = 'pending' AND LOWER(label) LIKE ? ESCAPE '\\'",
+                    (f"%{escaped}%",),
                 ).fetchall()
 
             if not rows:
@@ -663,19 +680,18 @@ class TemporalScheduler:
             conn.commit()
 
     def _next_recurring_timestamp(self, job: ScheduledJob, now_ts: float) -> float:
-        """Next daily occurrence strictly after now_ts, stepped in UTC +1-day increments.
+        """Next daily occurrence strictly after now_ts, preserving local wall-clock time.
 
-        DST limitation: advancing by fixed 86400s UTC days keeps the instant cadence
-        but drifts ±1h against local wall-clock time across DST transitions (no cron
-        library exists in this codebase for wall-clock recurrence math).
+        Stepping a naive local datetime by one calendar day keeps the alarm at the
+        same local time across DST transitions; UTC 86400s arithmetic drifts ±1h.
         """
-        next_ts = job.target_timestamp
+        next_dt = datetime.fromtimestamp(job.target_timestamp)
         # Catch-up loop: after a long outage the stored target may be many days old.
         guard = 0
-        while next_ts <= now_ts and guard < 3660:  # cap at ~10 years of daily steps
-            next_ts = (datetime.fromtimestamp(next_ts, timezone.utc) + timedelta(days=1)).timestamp()
+        while next_dt.timestamp() <= now_ts and guard < 3660:  # cap at ~10 years of daily steps
+            next_dt += timedelta(days=1)
             guard += 1
-        return next_ts
+        return next_dt.timestamp()
 
     def _reschedule_recurring_sync(self, job: ScheduledJob) -> None:
         next_ts = self._next_recurring_timestamp(job, time.time())

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -250,3 +253,73 @@ async def test_scheduler_on_complete_autonomous_tool_execution() -> None:
         # Verify music.play handler was executed automatically
         mock_music_handler.assert_called_once_with(query="Juice WRLD acapella")
 
+
+
+@pytest.mark.asyncio
+async def test_cancel_identifier_cannot_cancel_everything(tmp_path: Path) -> None:
+    """An empty identifier is a no-op; LIKE metacharacters match literally."""
+    scheduler = TemporalScheduler(db_path=str(tmp_path / "cancel.db"))
+    await scheduler.setup()
+    percent_job = await scheduler.add_timer(300, label="100% focus block")
+    other_job = await scheduler.add_timer(300, label="100 focus block")
+
+    assert await scheduler.cancel_job("") is False
+    assert len(await scheduler.list_jobs(status="pending")) == 2
+
+    assert await scheduler.cancel_job("100%") is True
+    cancelled = await scheduler.get_job(percent_job.id)
+    untouched = await scheduler.get_job(other_job.id)
+    assert cancelled is not None and cancelled.status == "cancelled"
+    assert untouched is not None and untouched.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_setup_recovers_interrupted_running_jobs(tmp_path: Path) -> None:
+    """A job claimed by a process that died mid-dispatch must not linger as 'running'."""
+    db_path = tmp_path / "recover.db"
+    scheduler = TemporalScheduler(db_path=str(db_path))
+    await scheduler.setup()
+    job = await scheduler.add_timer(300, label="Interrupted")
+
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("UPDATE scheduled_jobs SET status = 'running' WHERE id = ?", (job.id,))
+        conn.commit()
+
+    await scheduler.setup()
+    recovered = await scheduler.get_job(job.id)
+    assert recovered is not None
+    assert recovered.status == "failed"
+
+
+def test_recurring_alarm_preserves_wall_clock_across_dst() -> None:
+    """Daily recurrence must keep the local hour when DST shifts the UTC offset."""
+    if not hasattr(time, "tzset"):
+        pytest.skip("tzset unavailable on this platform")
+    previous_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "America/New_York"
+    time.tzset()
+    try:
+        anchor = datetime(2026, 3, 7, 7, 30)  # day before US DST begins
+        job = ScheduledJob(
+            id="alarm_dst",
+            job_type="alarm",
+            label="DST alarm",
+            target_time_iso=anchor.isoformat(),
+            target_timestamp=anchor.timestamp(),
+            duration_seconds=0,
+            recurring=True,
+            status="running",
+            created_at_iso=anchor.isoformat(),
+        )
+        now_ts = datetime(2026, 3, 8, 7, 31).timestamp()
+        next_dt = datetime.fromtimestamp(
+            TemporalScheduler()._next_recurring_timestamp(job, now_ts)
+        )
+        assert (next_dt.hour, next_dt.minute) == (7, 30)
+        assert next_dt.date() == datetime(2026, 3, 9).date()
+    finally:
+        if previous_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous_tz
+        time.tzset()
