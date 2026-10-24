@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Any
 
 from robot.telemetry import get_logger
+from robot.concurrency import spawn
 
 logger = get_logger("state")
 
@@ -96,7 +97,7 @@ class StateManager:
                 for listener in self._listeners:
                     try:
                         if asyncio.iscoroutinefunction(listener):
-                            asyncio.create_task(listener(old, mode))
+                            spawn(listener(old, mode), name="state_listener")
                         else:
                             listener(old, mode)
                     except Exception as e:

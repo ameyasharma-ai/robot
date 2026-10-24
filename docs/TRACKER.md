@@ -8,6 +8,16 @@
 
 ## ✅ Recently Completed (2026-10-24)
 
+### Backend production pass
+Comprehensive runtime hardening campaign across event loop I/O offloading, process daemon bounds, memory concurrency, and tool context safety.
+
+- **API**: every blocking Spotify/equalizer/music/metrics/LLM-settings call moved off the event loop via `asyncio.to_thread`; new production middleware module (`robot/api/production.py`).
+- **Process I/O**: daemon log rotation (5 MB cap, 1 MB retained backup) for `llama-server` and `whisper-server` via `robot/daemon_log.py`.
+- **Concurrency**: `robot/concurrency.py::spawn` retains detached tasks and logs their exceptions.
+- **Memory**: persona-scoped archive queries, hard row caps (2000), `mem0` client calls made mutually exclusive with fail-fast timeout, expression indexes matching the persona query.
+- **Tools**: screenshot OCR/PIL/base64 work moved off-loop, base64 removed from model context, screenshot folder bounded to 24 files; music library scan TTL-cached and file-capped, EasyEffects launch subprocess cooldown; `sd_provider` payload/download size caps.
+- **Observability**: hardware metrics TTL-cached (2 s) and serialized.
+
 ### Frontend — production polish pass across every surface
 This campaign treated the console as a shipped product rather than a demo: states, focus, form semantics, dead space, and the phone layout were audited surface by surface at 360 / 393 / 768 / 1024 / 1280 / 1440 / 1920 / 2560.
 

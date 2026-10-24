@@ -7,8 +7,10 @@ A model-generated tool call is a REQUEST, not authorization.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Callable, Coroutine
@@ -33,14 +35,116 @@ from robot.tools.hardening import (
     ParameterConstraint,
     ToolOutcomeStatus,
     ToolValidationError,
+    classify_tool_result,
     coerce_value,
     harden_tool_arguments,
     harden_tool_inputs,
+    redact_secrets,
+    redact_tool_arguments,
 )
 
 logger = get_logger("tools")
 
 ToolHandler = Callable[..., Coroutine[Any, Any, Any]]
+
+# Default wall-clock budget granted to a single tool invocation.  Individual
+# ToolDefinitions may set a smaller or larger budget; only genuinely
+# interactive/browser tools receive a floor above this default.
+DEFAULT_TOOL_TIMEOUT_S: float = 30.0
+#: Hard upper bound on any single tool budget. A per-tool value above this is
+#: clamped down: during a live voice turn an unbounded tool is indistinguishable
+#: from a hung process, and the whole pipeline waits on it.
+MAX_TOOL_TIMEOUT_S: float = 45.0
+TOOL_TIMEOUT_FLOORS: dict[str, float] = {
+    # Headless navigation needs time for browser launch, JS hydration, and
+    # screenshot capture.  The legacy 3 s web-family cap made this impossible.
+    "web.browser_agent": 30.0,
+}
+
+# Search result fan-out bound.  Handlers (and their caches) must never be
+# allowed to request or return an unbounded number of results.
+MIN_SEARCH_RESULTS: int = 1
+MAX_SEARCH_RESULTS: int = 10
+
+
+class BoundedTTLCache:
+    """Small LRU cache with a hard size ceiling and per-entry TTL.
+
+    Used for framework-level bookkeeping (duplicate side-effect suppression,
+    search result reuse) so long-running robot processes cannot accumulate an
+    unbounded number of keys.
+    """
+
+    def __init__(self, maxsize: int = 128, ttl_s: float = 60.0) -> None:
+        """Initialize the cache.
+
+        Args:
+            maxsize: Maximum number of retained entries.
+            ttl_s: Entry time-to-live in seconds.
+        """
+        self.maxsize: int = max(1, int(maxsize))
+        self.ttl_s: float = max(0.0, float(ttl_s))
+        self._data: OrderedDict[Any, tuple[float, Any]] = OrderedDict()
+
+    def get(self, key: Any) -> Any | None:
+        """Return a live cached value, evicting it when expired.
+
+        Args:
+            key: Cache key.
+
+        Returns:
+            Cached value, or None when absent/expired.
+        """
+        entry = self._data.get(key)
+        if entry is None:
+            return None
+        created_at, value = entry
+        if time.monotonic() - created_at > self.ttl_s:
+            self._data.pop(key, None)
+            return None
+        self._data.move_to_end(key)
+        return value
+
+    def set(self, key: Any, value: Any) -> None:
+        """Insert or refresh a value, evicting the least-recently-used entry.
+
+        Args:
+            key: Cache key.
+            value: Value to retain.
+        """
+        self._data[key] = (time.monotonic(), value)
+        self._data.move_to_end(key)
+        while len(self._data) > self.maxsize:
+            self._data.popitem(last=False)
+
+    def pop(self, key: Any, default: Any = None) -> Any:
+        """Remove and return a key, mirroring ``dict.pop``."""
+        entry = self._data.pop(key, None)
+        return default if entry is None else entry[1]
+
+    def clear(self) -> None:
+        """Remove all entries."""
+        self._data.clear()
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+def effective_tool_timeout(tool: "ToolDefinition") -> float:
+    """Return the per-tool wall-clock budget, honoring floors and the hard cap.
+
+    Args:
+        tool: Tool definition under execution.
+
+    Returns:
+        Timeout in seconds.  A missing/non-positive per-tool value falls back
+        to :data:`DEFAULT_TOOL_TIMEOUT_S`; named floors (for example the
+        browser agent) raise the budget to their minimum, and every budget is
+        then clamped to :data:`MAX_TOOL_TIMEOUT_S`.
+    """
+    budget = float(tool.timeout_s) if tool.timeout_s and tool.timeout_s > 0 else DEFAULT_TOOL_TIMEOUT_S
+    floor = TOOL_TIMEOUT_FLOORS.get(tool.name, 0.0)
+    return min(max(budget, floor), MAX_TOOL_TIMEOUT_S)
 
 
 class PermissionLevel(IntEnum):
@@ -64,7 +168,7 @@ class ToolDefinition:
     parameters: dict[str, Any]         # JSON Schema
     handler: ToolHandler
     permission_level: PermissionLevel = PermissionLevel.READ_ONLY
-    timeout_s: float = 10.0
+    timeout_s: float = DEFAULT_TOOL_TIMEOUT_S
     risk_level: str = "low"
     provider: str = ""
     family: str = ""                   # e.g., "memory", "music", "system"
@@ -485,6 +589,11 @@ class PermissionManager:
     The LLM proposes; the PermissionManager decides.
     """
 
+    # Confirmations are single-use and short-lived.  A new request supersedes
+    # every older in-flight confirmation so a late/stale "yes" from the user
+    # can never authorize a different action.
+    CONFIRMATION_TTL_S: float = 120.0
+
     def __init__(
         self,
         max_auto_level: PermissionLevel = PermissionLevel.HARMLESS_LOCAL,
@@ -492,7 +601,13 @@ class PermissionManager:
     ) -> None:
         self._max_auto = max_auto_level
         self._events = event_bus
-        self._execution_history: dict[str, tuple[float, dict[str, Any]]] = {}
+        # Bounded TTL-LRU, not an unbounded dict: a 24/7 robot may execute an
+        # arbitrary number of distinct non-idempotent calls.
+        self._execution_history: BoundedTTLCache = BoundedTTLCache(maxsize=256, ttl_s=60.0)
+        self._search_cache: BoundedTTLCache = BoundedTTLCache(maxsize=128, ttl_s=120.0)
+        self._confirmation_seq = itertools.count(1)
+        self._active_confirmation_id: str | None = None
+        self._pending_confirmations: dict[str, dict[str, Any]] = {}
 
     def check(self, tool: ToolDefinition) -> bool:
         """Check if a tool can be auto-executed without user confirmation."""
@@ -506,20 +621,125 @@ class PermissionManager:
         )
         return False
 
+    # ─── Confirmation lifecycle ─────────────────────────────────────────────
+
+    @property
+    def active_confirmation_id(self) -> str | None:
+        """Return the currently valid in-flight confirmation id, if any."""
+        return self._active_confirmation_id
+
+    def request_confirmation(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any] | None = None,
+        ttl_s: float | None = None,
+    ) -> str:
+        """Create a new single-use, monotonically identified confirmation.
+
+        Any previously pending confirmation is invalidated immediately.  This
+        prevents a stale response for an earlier question from satisfying a
+        newly requested action.
+
+        Args:
+            tool: Tool awaiting authorization.
+            arguments: Arguments to associate with the request (log-redacted).
+            ttl_s: Optional lifetime override in seconds.
+
+        Returns:
+            Monotonically increasing confirmation identifier.
+        """
+        self._pending_confirmations.clear()
+        confirmation_id = f"confirm_{next(self._confirmation_seq)}"
+        ttl = self.CONFIRMATION_TTL_S if ttl_s is None else max(0.0, float(ttl_s))
+        self._pending_confirmations[confirmation_id] = {
+            "tool": tool.name,
+            "arguments": redact_tool_arguments(arguments or {}),
+            "expires_at": time.monotonic() + ttl,
+        }
+        self._active_confirmation_id = confirmation_id
+        logger.info(
+            "confirmation_requested",
+            confirmation_id=confirmation_id,
+            tool=tool.name,
+            ttl_s=ttl,
+        )
+        return confirmation_id
+
+    def is_confirmation_valid(self, confirmation_id: str | None) -> bool:
+        """Return whether a confirmation id is current, pending, and unexpired."""
+        if not confirmation_id:
+            return False
+        entry = self._pending_confirmations.get(str(confirmation_id))
+        if entry is None:
+            return False
+        if time.monotonic() > float(entry["expires_at"]):
+            self._pending_confirmations.pop(str(confirmation_id), None)
+            if self._active_confirmation_id == str(confirmation_id):
+                self._active_confirmation_id = None
+            return False
+        return self._active_confirmation_id == str(confirmation_id)
+
+    def resolve_confirmation(self, confirmation_id: str, approved: bool = True) -> bool:
+        """Resolve a pending confirmation exactly once.
+
+        Args:
+            confirmation_id: Identifier returned by :meth:`request_confirmation`.
+            approved: Whether the user authorized the action.
+
+        Returns:
+            True only when the id was the single active, unexpired confirmation
+            and ``approved`` is True.  Unknown, superseded, or expired ids are
+            rejected with a warning and return False.
+        """
+        cid = str(confirmation_id)
+        entry = self._pending_confirmations.get(cid)
+        if entry is None or self._active_confirmation_id != cid:
+            logger.warning(
+                "confirmation_rejected",
+                confirmation_id=cid,
+                reason="unknown_or_superseded",
+            )
+            return False
+        if time.monotonic() > float(entry["expires_at"]):
+            self._pending_confirmations.pop(cid, None)
+            self._active_confirmation_id = None
+            logger.warning("confirmation_rejected", confirmation_id=cid, reason="expired")
+            return False
+
+        # Consume the confirmation: it can never authorize a second action.
+        self._pending_confirmations.pop(cid, None)
+        self._active_confirmation_id = None
+        logger.info("confirmation_resolved", confirmation_id=cid, approved=bool(approved))
+        return bool(approved)
+
+    def reject_confirmation(self, confirmation_id: str) -> bool:
+        """Explicitly reject/consume a pending confirmation id."""
+        return self.resolve_confirmation(confirmation_id, approved=False)
+
     async def execute(
         self,
         tool: ToolDefinition,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        """Execute a tool with permission checking, robust argument normalization, retries, and timeout.
+        """Execute a tool with permission checking, validation, retries, and timeout.
 
-        Returns structured outcomes:
-            status: "success" | "failure" | "denial" | "timeout" | "cancelled"
-            tool: tool.name
-            result: tool handler output on success, or None
-            error: descriptive error string if not successful
-            duration_ms: execution time in milliseconds
-            retries: number of retry attempts made
+        Returned envelopes always carry ``success`` (bool).  A handler-returned
+        dict with a failure ``status`` (error/failed/timeout/denied/not_sent/
+        cancelled) or a non-empty ``error`` field is converted into a failure
+        envelope while retaining the original payload in ``result``.
+
+        Args:
+            tool: Registered tool definition to execute.
+            arguments: Raw model/user supplied arguments.
+
+        Returns:
+            Structured outcome with keys ``status``, ``tool``, ``result``,
+            ``error``, ``duration_ms``, ``retries``, and ``success``.
+
+        Raises:
+            asyncio.CancelledError: If the caller cancels the execution.  The
+                cancellation is propagated (after telemetry) so task owners can
+                perform deterministic cleanup.
         """
         if not self.check(tool):
             return {
@@ -529,14 +749,18 @@ class PermissionManager:
                 "error": f"Permission denied: {tool.name} requires level {tool.permission_level.name}",
                 "duration_ms": 0.0,
                 "retries": 0,
+                "success": False,
             }
 
         # Guard non-idempotent tools against duplicate side-effects
-        exec_key = f"{tool.name}:{json.dumps(arguments or {}, sort_keys=True, default=str)}"
-        now_mono = time.perf_counter()
-        if not tool.is_idempotent and exec_key in self._execution_history:
-            last_ts, last_outcome = self._execution_history[exec_key]
-            if now_mono - last_ts < 5.0 and last_outcome.get("status") == ToolOutcomeStatus.SUCCESS.value:
+        try:
+            args_json = json.dumps(arguments or {}, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            args_json = repr(arguments)
+        exec_key = f"{tool.name}:{args_json}"
+        if not tool.is_idempotent:
+            last_outcome = self._execution_history.get(exec_key)
+            if isinstance(last_outcome, dict) and last_outcome.get("status") == ToolOutcomeStatus.SUCCESS.value:
                 logger.warning("duplicate_side_effect_prevented", tool=tool.name)
                 return {
                     "status": ToolOutcomeStatus.DENIED.value,
@@ -545,27 +769,23 @@ class PermissionManager:
                     "error": f"Duplicate side-effect prevented: {tool.name} was already executed within 5.0s window.",
                     "duration_ms": 0.0,
                     "retries": 0,
+                    "success": False,
                 }
 
         if self._events:
-            await self._events.emit("tool_executing", tool=tool.name, arguments=arguments)
+            await self._events.emit(
+                "tool_executing",
+                tool=tool.name,
+                arguments=redact_tool_arguments(arguments),
+            )
 
-        # Apply strict schema hardening, alias resolution, and conflict detection
-        try:
-            normalized_args = harden_tool_arguments(arguments or {}, schema=tool.parameters)
-        except ToolValidationError as err:
-            logger.warning("tool_validation_failed", tool=tool.name, error=str(err))
-            if self._events:
-                await self._events.emit("tool_error", tool=tool.name, error=str(err))
-            res = err.to_dict()
-            res.update({
-                "status": "failure",
-                "tool": tool.name,
-                "result": None,
-                "duration_ms": 0.0,
-                "retries": 0,
-            })
-            return res
+        import inspect
+
+        sig = inspect.signature(tool.handler)
+        handler_params = sig.parameters
+        accepts_kwargs = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in handler_params.values()
+        )
 
         param_aliases = {
             "fact": ["text", "memory", "content", "note", "information", "info", "data", "message", "value"],
@@ -598,44 +818,136 @@ class PermissionManager:
             "domain": ["type", "filter", "category", "scope"],
         }
 
+        # Resolve handler-level aliases *before* schema hardening.  Anything the
+        # framework injects (aliases or the single-string fallback) must still
+        # pass enum/range/type validation below.
+        mapped_args: dict[str, Any] = dict(arguments or {})
+        schema_properties: set[str] = set(
+            (tool.parameters or {}).get("properties", {}).keys()
+        )
+        for target_param, aliases in param_aliases.items():
+            if target_param in handler_params and target_param not in mapped_args:
+                for alias in aliases:
+                    if alias in mapped_args and alias not in schema_properties:
+                        # Pop the alias so it cannot survive as an unknown key.
+                        mapped_args[target_param] = mapped_args.pop(alias)
+                        break
+
         # Handle composite artist + title for music tools
-        if "artist" in normalized_args and "query" not in normalized_args:
-            other_title = normalized_args.get("track") or normalized_args.get("song") or normalized_args.get("title") or ""
+        if "artist" in mapped_args and "query" not in mapped_args:
+            other_title = (
+                mapped_args.get("track")
+                or mapped_args.get("song")
+                or mapped_args.get("title")
+                or ""
+            )
             if other_title:
-                normalized_args["query"] = f"{normalized_args['artist']} - {other_title}"
+                mapped_args["query"] = f"{mapped_args['artist']} - {other_title}"
             else:
-                normalized_args["query"] = str(normalized_args["artist"])
+                mapped_args["query"] = str(mapped_args["artist"])
 
-        import inspect
-        sig = inspect.signature(tool.handler)
-        handler_params = sig.parameters
+        # Universal single-string fallback: bind an unknown string argument to
+        # a required handler parameter that is still missing.  The value is
+        # validated against the schema immediately afterwards.
+        for p_name, p_param in handler_params.items():
+            if p_name in ("self", "args", "kwargs"):
+                continue
+            if p_param.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+            if p_param.default == inspect.Parameter.empty and p_name not in mapped_args:
+                for key, value in list(mapped_args.items()):
+                    if isinstance(value, str) and value.strip() and key not in handler_params:
+                        mapped_args[p_name] = mapped_args.pop(key)
+                        break
 
-        # Check if handler accepts **kwargs
-        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in handler_params.values())
+        def _validation_failure(err: ToolValidationError) -> dict[str, Any]:
+            safe_error = redact_secrets(str(err))
+            logger.warning("tool_validation_failed", tool=tool.name, error=safe_error)
+            return err.to_dict()
 
-        # Map aliases if target parameter is missing in provided arguments
+        # Apply strict schema hardening, alias resolution, and conflict detection.
+        try:
+            normalized_args = harden_tool_arguments(mapped_args, schema=tool.parameters)
+        except ToolValidationError as err:
+            if self._events:
+                await self._events.emit("tool_error", tool=tool.name, error=redact_secrets(str(err)))
+            res = _validation_failure(err)
+            res.update(
+                {
+                    "status": "failure",
+                    "tool": tool.name,
+                    "result": None,
+                    "duration_ms": 0.0,
+                    "retries": 0,
+                    "success": False,
+                }
+            )
+            return res
+
+        # Clamp search fan-out even when the schema forgot to declare bounds.
+        if "max_results" in normalized_args:
+            try:
+                requested = int(normalized_args["max_results"])
+                normalized_args["max_results"] = max(
+                    MIN_SEARCH_RESULTS, min(MAX_SEARCH_RESULTS, requested)
+                )
+            except (TypeError, ValueError):
+                # Leave non-numeric values for the schema validator to reject.
+                pass
+
+        # Any post-hardening mapping (declared-property aliases) is revalidated.
         for target_param, aliases in param_aliases.items():
             if target_param in handler_params and target_param not in normalized_args:
                 for alias in aliases:
-                    if alias in normalized_args:
-                        normalized_args[target_param] = normalized_args[alias]
+                    if alias in normalized_args and alias != target_param:
+                        normalized_args[target_param] = normalized_args.pop(alias)
                         break
+        try:
+            normalized_args = harden_tool_arguments(
+                normalized_args,
+                schema=tool.parameters,
+            )
+        except ToolValidationError as err:
+            if self._events:
+                await self._events.emit("tool_error", tool=tool.name, error=redact_secrets(str(err)))
+            res = _validation_failure(err)
+            res.update(
+                {
+                    "status": "failure",
+                    "tool": tool.name,
+                    "result": None,
+                    "duration_ms": 0.0,
+                    "retries": 0,
+                    "success": False,
+                }
+            )
+            return res
 
-        # Universal single-string fallback:
-        # If the handler expects a required parameter without default that is still missing,
-        # and normalized_args contains string values, bind the first available string value.
-        for p_name, p_param in handler_params.items():
-            if p_param.default == inspect.Parameter.empty and p_name not in normalized_args:
-                for k, v in list(normalized_args.items()):
-                    if isinstance(v, str) and v.strip() and k not in handler_params:
-                        normalized_args[p_name] = v
-                        break
-
-        # If handler does not accept **kwargs, prune unknown keys so invocation does not raise TypeError
+        # If handler does not accept **kwargs, prune unaccepted keys so
+        # invocation cannot raise TypeError.  Schema-declared unknowns were
+        # already rejected above.
         if not accepts_kwargs:
             filtered_args = {k: v for k, v in normalized_args.items() if k in handler_params}
         else:
             filtered_args = normalized_args
+
+        # Bounded framework-level search reuse.  The handler still enforces
+        # its own cache; this guarantees the framework's cache cannot grow
+        # without bound either.
+        cacheable_search = (
+            tool.is_idempotent
+            and "search" in tool.name
+            and tool.family in ("web", "news", "finance", "knowledge", "network")
+        )
+        if cacheable_search:
+            cached_outcome = self._search_cache.get(exec_key)
+            if isinstance(cached_outcome, dict):
+                cached_copy = dict(cached_outcome)
+                cached_copy["cached"] = True
+                return cached_copy
 
         t_start = time.perf_counter()
         max_attempts = 1 + (tool.max_retries if tool.is_idempotent else 0)
@@ -643,10 +955,10 @@ class PermissionManager:
         status = ToolOutcomeStatus.FAILURE.value
         err_msg: str | None = None
 
-        # Enforce 3.0s hard ceiling for network and external web tools
-        effective_timeout = tool.timeout_s
-        if tool.family in ("web", "weather", "news", "finance", "knowledge", "network") or "search" in tool.name or "scrape" in tool.name:
-            effective_timeout = min(tool.timeout_s, 3.0)
+        # Per-tool budget.  Do not globally flatten web tools to 3 s: each
+        # ToolDefinition declares its own budget and browser tools get a floor.
+        effective_timeout = effective_tool_timeout(tool)
+        deadline = time.perf_counter() + effective_timeout
 
         for attempt in range(max_attempts):
             if attempt > 0:
@@ -654,15 +966,60 @@ class PermissionManager:
                 logger.info("tool_retry_attempt", tool=tool.name, attempt=attempt)
                 await asyncio.sleep(0.1)
 
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                status = ToolOutcomeStatus.TIMEOUT.value
+                err_msg = f"Tool timed out after {effective_timeout}s"
+                logger.warning(
+                    "tool_timeout",
+                    tool=tool.name,
+                    timeout=effective_timeout,
+                    attempt=attempt,
+                )
+                break
+
             try:
                 result = await asyncio.wait_for(
                     tool.handler(**filtered_args),
-                    timeout=effective_timeout,
+                    timeout=remaining,
                 )
                 dur_ms = (time.perf_counter() - t_start) * 1000
+
+                # A returned failure dictionary must never become success.
+                is_failure, failure_status, failure_error = classify_tool_result(result)
+                if is_failure:
+                    logger.warning(
+                        "tool_handler_reported_failure",
+                        tool=tool.name,
+                        status=failure_status,
+                        duration_ms=round(dur_ms, 2),
+                    )
+                    if self._events:
+                        await self._events.emit(
+                            "tool_error",
+                            tool=tool.name,
+                            error=redact_secrets(failure_error or "Tool reported failure"),
+                        )
+                    return {
+                        "status": failure_status or ToolOutcomeStatus.FAILURE.value,
+                        "tool": tool.name,
+                        "result": result,
+                        "error": failure_error,
+                        "duration_ms": round(dur_ms, 2),
+                        "retries": retries_done,
+                        "success": False,
+                        "handler_status": (
+                            result.get("status") if isinstance(result, dict) else None
+                        ),
+                    }
+
                 logger.info("tool_executed", tool=tool.name, duration_ms=round(dur_ms, 2))
                 if self._events:
-                    await self._events.emit("tool_completed", tool=tool.name, result=str(result)[:100])
+                    await self._events.emit(
+                        "tool_completed",
+                        tool=tool.name,
+                        result=redact_secrets(str(result))[:100],
+                    )
 
                 outcome = {
                     "status": ToolOutcomeStatus.SUCCESS.value,
@@ -670,39 +1027,46 @@ class PermissionManager:
                     "result": result,
                     "duration_ms": round(dur_ms, 2),
                     "retries": retries_done,
+                    "success": True,
                 }
                 if not tool.is_idempotent:
-                    self._execution_history[exec_key] = (time.perf_counter(), outcome)
-                    if len(self._execution_history) > 100:
-                        cur_m = time.perf_counter()
-                        self._execution_history = {k: v for k, v in self._execution_history.items() if cur_m - v[0] < 60.0}
+                    self._execution_history.set(exec_key, outcome)
+                if cacheable_search:
+                    self._search_cache.set(exec_key, outcome)
                 return outcome
 
             except asyncio.CancelledError:
                 dur_ms = (time.perf_counter() - t_start) * 1000
                 logger.warning("tool_cancelled", tool=tool.name)
                 if self._events:
-                    await self._events.emit("tool_error", tool=tool.name, error="Cancelled")
-                return {
-                    "status": ToolOutcomeStatus.CANCELLED.value,
-                    "tool": tool.name,
-                    "result": None,
-                    "error": "Tool execution cancelled",
-                    "duration_ms": round(dur_ms, 2),
-                    "retries": retries_done,
-                }
+                    try:
+                        await self._events.emit(
+                            "tool_error", tool=tool.name, error="Cancelled"
+                        )
+                    except Exception:
+                        pass
+                # Re-raise: swallowing cancellation hides barge-in from the
+                # task owner and leaks half-cancelled work.
+                raise
             except asyncio.TimeoutError:
                 status = ToolOutcomeStatus.TIMEOUT.value
                 err_msg = f"Tool timed out after {effective_timeout}s"
-                logger.warning("tool_timeout", tool=tool.name, timeout=effective_timeout, attempt=attempt)
+                logger.warning(
+                    "tool_timeout",
+                    tool=tool.name,
+                    timeout=effective_timeout,
+                    attempt=attempt,
+                )
             except Exception as e:
                 status = ToolOutcomeStatus.FAILURE.value
-                err_msg = str(e)
+                err_msg = redact_secrets(str(e))
                 logger.error("tool_error", tool=tool.name, error=err_msg, attempt=attempt)
 
         dur_ms = (time.perf_counter() - t_start) * 1000
         if self._events:
-            await self._events.emit("tool_error", tool=tool.name, error=err_msg)
+            await self._events.emit(
+                "tool_error", tool=tool.name, error=err_msg
+            )
 
         return {
             "status": status,
@@ -711,5 +1075,6 @@ class PermissionManager:
             "error": err_msg or "Unknown execution failure",
             "duration_ms": round(dur_ms, 2),
             "retries": retries_done,
+            "success": False,
         }
 

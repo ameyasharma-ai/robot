@@ -7,9 +7,10 @@ Wi-Fi scanning via nmcli, and data-safe network status checks.
 from __future__ import annotations
 
 import asyncio
-import base64
 import os
 import re
+import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -24,6 +25,222 @@ if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
 
 logger = get_logger("tools.system_extended")
+
+_SHOTS_DIR = Path("data/images/screenshots")
+#: URL prefix the API serves :data:`_SHOTS_DIR` under.
+SHOTS_URL_PREFIX = "/data/images/screenshots"
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+#: Newest screenshots kept on disk; one PNG is written per capture call.
+MAX_SHOT_FILES = 24
+#: Screen text is untrusted and page-length; a spoken answer never needs all of it.
+MAX_OCR_CHARS = 2_000
+#: Text-region boxes handed back to the model; beyond this it is context noise.
+MAX_OCR_BOXES = 40
+
+
+def resolve_screenshot_path(filename: str | None) -> Path:
+    """Resolve a screenshot filename safely under the screenshots directory.
+
+    Directory components are discarded (``Path(filename).name``), control
+    characters are stripped, and the resolved path must remain inside the
+    output root.  Absolute paths and ``../`` traversal therefore cannot write
+    outside ``data/images/screenshots``.
+
+    Args:
+        filename: User/model supplied filename or path.
+
+    Returns:
+        Absolute path inside the screenshots directory.
+
+    Raises:
+        ValueError: If the resolved path escapes the output root.
+    """
+    shots_dir = _SHOTS_DIR.resolve()
+    shots_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_name = Path(filename).name if filename else ""
+    raw_name = _CONTROL_RE.sub("", raw_name).strip()
+    if not raw_name or raw_name in {".", ".."}:
+        raw_name = f"screenshot_{int(time.time())}.png"
+    if not raw_name.lower().endswith(".png"):
+        raw_name += ".png"
+
+    candidate = (shots_dir / raw_name).resolve(strict=False)
+    if not candidate.is_relative_to(shots_dir):
+        raise ValueError("Screenshot path escapes the output directory.")
+    return candidate
+
+
+async def _run_capture_command(argv: list[str], timeout: float = 10.0) -> bool:
+    """Run a local capture command (argv only) with a timeout.
+
+    Args:
+        argv: Command and arguments; never interpreted by a shell.
+        timeout: Wall-clock limit in seconds.
+
+    Returns:
+        True when the command exited successfully.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:  # pragma: no cover - non-POSIX fallback
+                proc.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:  # pragma: no cover
+            pass
+        return False
+    return proc.returncode == 0
+
+
+def _ocr_image(target_path: Path) -> tuple[str, list[dict[str, Any]]]:
+    """Extract screen text and word boxes from a screenshot.
+
+    Tesseract is the primary path. When it is unavailable, report where
+    text-like regions are (OpenCV contours) instead of pretending the page is
+    blank.
+
+    Args:
+        target_path: Screenshot to read.
+
+    Returns:
+        Tuple of bounded OCR text and bounded bounding boxes.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+
+        with Image.open(target_path) as img:
+            text = pytesseract.image_to_string(img).strip()
+            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+
+        boxes: list[dict[str, Any]] = []
+        for index, raw in enumerate(data["text"]):
+            word = str(raw or "").strip()
+            if not word:
+                continue
+            try:
+                confidence = float(data["conf"][index])
+            except (TypeError, ValueError, IndexError):
+                continue
+            boxes.append({
+                "text": word[:80],
+                "box": [
+                    int(data["left"][index]),
+                    int(data["top"][index]),
+                    int(data["width"][index]),
+                    int(data["height"][index]),
+                ],
+                "confidence": confidence,
+            })
+            if len(boxes) >= MAX_OCR_BOXES:
+                break
+        return text[:MAX_OCR_CHARS], boxes
+    except Exception as exc:
+        logger.debug("screenshot_ocr_unavailable", error=str(exc))
+
+    try:
+        import cv2
+
+        img_cv = cv2.imread(str(target_path))
+        if img_cv is None:
+            return "", []
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
+        )
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        boxes = []
+        for contour in contours[: MAX_OCR_BOXES * 4]:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w > 15 and h > 8:
+                boxes.append({
+                    "text": "contour_region",
+                    "box": [int(x), int(y), int(w), int(h)],
+                    "confidence": 0.5,
+                })
+            if len(boxes) >= MAX_OCR_BOXES:
+                break
+        return f"Extracted {len(boxes)} visual text/interface regions.", boxes
+    except Exception as exc:
+        logger.debug("screenshot_contour_fallback_failed", error=str(exc))
+        return "", []
+
+
+def _prune_screenshots(shots_dir: Path) -> None:
+    """Keep only the newest screenshots so the folder cannot grow without bound."""
+    try:
+        shots = sorted(shots_dir.glob("*.png"), key=lambda p: p.name, reverse=True)
+    except OSError:  # pragma: no cover - directory vanished mid-call
+        return
+    for stale in shots[MAX_SHOT_FILES:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def _finish_capture(
+    target_path: Path, region: list[int] | None, run_ocr: bool
+) -> dict[str, Any]:
+    """Crop, OCR and measure a captured PNG entirely off the event loop.
+
+    Args:
+        target_path: File written by the capture command.
+        region: Optional crop rectangle [x, y, width, height].
+        run_ocr: Whether to extract screen text.
+
+    Returns:
+        Model-safe metadata: OCR text, boxes, dimensions, size, path and URL.
+    """
+    if region and len(region) == 4:
+        try:
+            from PIL import Image
+
+            rx, ry, rw, rh = (max(0, int(value)) for value in region)
+            with Image.open(target_path) as img:
+                if rw > 0 and rh > 0:
+                    img.crop((rx, ry, rx + rw, ry + rh)).save(target_path)
+        except Exception as exc:
+            logger.warning("screenshot_crop_failed", error=str(exc), region=region)
+
+    width = height = 0
+    try:
+        from PIL import Image
+
+        with Image.open(target_path) as img:
+            width, height = img.size
+    except Exception as exc:
+        logger.warning("screenshot_measure_failed", error=str(exc))
+
+    detected_text, bounding_boxes = _ocr_image(target_path) if run_ocr else ("", [])
+    _prune_screenshots(target_path.parent)
+
+    return {
+        "detected_text": detected_text,
+        "bounding_boxes": bounding_boxes,
+        "width": width,
+        "height": height,
+        "size_bytes": target_path.stat().st_size,
+        "image_path": str(target_path.resolve()),
+        "url": f"{SHOTS_URL_PREFIX}/{target_path.name}",
+    }
 
 
 async def os_capture_screen(
@@ -43,55 +260,68 @@ async def os_capture_screen(
 
     Returns:
         Structured result dict with status, timestamp, window_title, detected_text,
-        bounding_boxes, image_path, and data_url.
+        bounding_boxes, image_path, url, width, height and size_bytes.
     """
-    shots_dir = Path("data/images/screenshots")
-    shots_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_path = resolve_screenshot_path(filename)
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
+    shots_dir = target_path.parent
 
     timestamp_iso = datetime.now(timezone.utc).isoformat()
-    fname = filename or f"screenshot_{int(time.time())}.png"
-    if not fname.endswith(".png"):
-        fname += ".png"
-    target_path = shots_dir / fname
 
     # Query active window title
     detected_win_title = window_title or "Desktop Display"
-    try:
-        proc_win = await asyncio.create_subprocess_shell(
-            "xdotool getactivewindow getwindowname",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_w, _ = await proc_win.communicate()
-        if proc_win.returncode == 0 and stdout_w:
-            detected_win_title = stdout_w.decode("utf-8").strip() or detected_win_title
-    except Exception:
-        pass
+    if shutil.which("xdotool"):
+        try:
+            proc_win = await asyncio.create_subprocess_exec(
+                "xdotool",
+                "getactivewindow",
+                "getwindowname",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            stdout_w, _ = await asyncio.wait_for(proc_win.communicate(), timeout=3.0)
+            if proc_win.returncode == 0 and stdout_w:
+                detected_win_title = stdout_w.decode("utf-8").strip() or detected_win_title
+        except (asyncio.TimeoutError, OSError, FileNotFoundError):
+            pass
 
-    # Try standard Linux screenshot tools in order: maim -> scrot -> import -> xwd
-    cmds = [
-        f"maim '{target_path}'",
-        f"scrot '{target_path}'",
-        f"import -window root '{target_path}'",
-        f"xwd -root -silent | convert xwd:- '{target_path}'",
-    ]
+    # Try standard Linux screenshot tools in order: maim -> scrot -> import -> xwd.
+    # Every command is an argv array; the model-controlled filename is never
+    # interpolated into a shell string.
+    candidates: list[tuple[str, list[str]]] = []
+    if shutil.which("maim"):
+        candidates.append(("maim", ["maim", str(target_path)]))
+    if shutil.which("scrot"):
+        candidates.append(("scrot", ["scrot", str(target_path)]))
+    if shutil.which("import"):
+        candidates.append(("import", ["import", "-window", "root", str(target_path)]))
 
     success = False
     used_cmd = ""
-    for cmd in cmds:
+    for tool_name, argv in candidates:
+        if await _run_capture_command(argv) and target_path.exists() and target_path.stat().st_size > 0:
+            success = True
+            used_cmd = tool_name
+            break
+
+    # xwd pipeline without a shell: write XWD to a temp file, then convert.
+    if not success and shutil.which("xwd") and shutil.which("convert"):
+        temp_xwd = shots_dir / f".capture_{os.getpid()}_{int(time.time())}.xwd"
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.wait()
-            if proc.returncode == 0 and target_path.exists() and target_path.stat().st_size > 0:
-                success = True
-                used_cmd = cmd
-                break
-        except Exception:
-            pass
+            if await _run_capture_command(["xwd", "-root", "-silent", "-out", str(temp_xwd)]):
+                if await _run_capture_command(["convert", str(temp_xwd), str(target_path)]):
+                    if target_path.exists() and target_path.stat().st_size > 0:
+                        success = True
+                        used_cmd = "xwd"
+        finally:
+            try:
+                temp_xwd.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     if not success:
         return {
@@ -103,88 +333,30 @@ async def os_capture_screen(
             "error": "Failed to capture screenshot. Install 'scrot' or 'maim' (e.g. sudo apt install scrot maim).",
         }
 
-    # Region cropping if region [x, y, w, h] is specified
-    if region and len(region) == 4:
-        try:
-            from PIL import Image
+    # Cropping, OCR and image measurement all block for seconds: keep them off
+    # the event loop, and never hand the model a base64 blob it cannot read.
+    processed = await asyncio.to_thread(_finish_capture, target_path, region, run_ocr)
 
-            with Image.open(target_path) as img:
-                rx, ry, rw, rh = region
-                cropped = img.crop((rx, ry, rx + rw, ry + rh))
-                cropped.save(target_path)
-        except Exception as e:
-            logger.warning("screenshot_crop_failed", error=str(e), region=region)
-
-    # Local OCR extraction
-    detected_text = ""
-    bounding_boxes: list[dict[str, Any]] = []
-    if run_ocr:
-        try:
-            import pytesseract
-            from PIL import Image
-
-            with Image.open(target_path) as img:
-                detected_text = pytesseract.image_to_string(img).strip()
-                data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-                n_boxes = len(data["text"])
-                for i in range(n_boxes):
-                    txt = data["text"][i].strip()
-                    if txt:
-                        bounding_boxes.append({
-                            "text": txt,
-                            "box": [data["left"][i], data["top"][i], data["width"][i], data["height"][i]],
-                            "confidence": float(data["conf"][i]),
-                        })
-        except Exception:
-            # Lightweight OpenCV edge/contour text bounding box fallback
-            try:
-                import cv2
-
-                img_cv = cv2.imread(str(target_path))
-                if img_cv is not None:
-                    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-                    thresh = cv2.adaptiveThreshold(
-                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2
-                    )
-                    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    for c in contours[:30]:
-                        x, y, w, h = cv2.boundingRect(c)
-                        if w > 15 and h > 8:
-                            bounding_boxes.append({
-                                "text": "contour_region",
-                                "box": [x, y, w, h],
-                                "confidence": 0.5,
-                            })
-                    detected_text = f"Extracted {len(bounding_boxes)} visual text/interface regions."
-            except Exception:
-                detected_text = ""
-
-    # Generate base64 data URL for VLM multimodal processing
-    try:
-        raw_bytes = target_path.read_bytes()
-        b64_str = base64.b64encode(raw_bytes).decode("utf-8")
-        data_url = f"data:image/png;base64,{b64_str}"
-        logger.info(
-            "screenshot_captured",
-            path=str(target_path),
-            size_bytes=len(raw_bytes),
-            window=detected_win_title,
-            ocr_text_len=len(detected_text),
-        )
-        return {
-            "status": "success",
-            "timestamp": timestamp_iso,
-            "window_title": detected_win_title,
-            "detected_text": detected_text,
-            "bounding_boxes": bounding_boxes,
-            "image_path": str(target_path.resolve()),
-            "data_url": data_url[:100] + "...",
-            "full_data_url": data_url,
-            "size_bytes": len(raw_bytes),
-            "tool_used": used_cmd.split()[0] if used_cmd else "unknown",
-        }
-    except Exception as e:
-        return {"status": "error", "error": f"Screenshot saved but base64 encoding failed: {e}"}
+    logger.info(
+        "screenshot_captured",
+        path=str(target_path),
+        size_bytes=processed["size_bytes"],
+        window=detected_win_title,
+        ocr_text_len=len(processed["detected_text"]),
+    )
+    return {
+        "status": "success",
+        "timestamp": timestamp_iso,
+        "window_title": detected_win_title,
+        "detected_text": processed["detected_text"],
+        "bounding_boxes": processed["bounding_boxes"],
+        "image_path": processed["image_path"],
+        "url": processed["url"],
+        "width": processed["width"],
+        "height": processed["height"],
+        "size_bytes": processed["size_bytes"],
+        "tool_used": used_cmd or "unknown",
+    }
 
 
 async def os_display_brightness(
@@ -213,7 +385,7 @@ async def os_display_brightness(
             target_pct = max(1, min(100, int(eff_pct)))
             # Try brightnessctl first
             try:
-                res = subprocess.run(["brightnessctl", "set", f"{target_pct}%"], capture_output=True, text=True)
+                res = subprocess.run(["brightnessctl", "set", f"{target_pct}%"], capture_output=True, text=True, timeout=5.0)
                 if res.returncode == 0:
                     return {"status": "success", "action": "set", "brightness_percent": target_pct}
             except Exception:
@@ -233,7 +405,7 @@ async def os_display_brightness(
 
             # ddcutil fallback for external monitors
             try:
-                res_d = subprocess.run(["ddcutil", "setvcp", "10", str(target_pct)], capture_output=True, text=True)
+                res_d = subprocess.run(["ddcutil", "setvcp", "10", str(target_pct)], capture_output=True, text=True, timeout=5.0)
                 if res_d.returncode == 0:
                     return {"status": "success", "action": "set", "brightness_percent": target_pct, "method": "ddcutil"}
             except Exception:
@@ -242,14 +414,14 @@ async def os_display_brightness(
             # xrandr gamma/brightness fallback for X11 displays
             try:
                 import re as _re
-                res_q = subprocess.run(["xrandr", "-q"], capture_output=True, text=True)
+                res_q = subprocess.run(["xrandr", "-q"], capture_output=True, text=True, timeout=5.0)
                 if res_q.returncode == 0:
                     displays = _re.findall(r"^(\S+)\s+connected", res_q.stdout, _re.MULTILINE)
                     if displays:
                         factor = round(target_pct / 100.0, 2)
                         success_count = 0
                         for disp in displays:
-                            res_xr = subprocess.run(["xrandr", "--output", disp, "--brightness", str(factor)], capture_output=True, text=True)
+                            res_xr = subprocess.run(["xrandr", "--output", disp, "--brightness", str(factor)], capture_output=True, text=True, timeout=5.0)
                             if res_xr.returncode == 0:
                                 success_count += 1
                         if success_count > 0:
@@ -261,9 +433,9 @@ async def os_display_brightness(
 
         # Query brightness
         try:
-            res = subprocess.run(["brightnessctl", "g"], capture_output=True, text=True)
+            res = subprocess.run(["brightnessctl", "g"], capture_output=True, text=True, timeout=5.0)
             if res.returncode == 0:
-                res_m = subprocess.run(["brightnessctl", "m"], capture_output=True, text=True)
+                res_m = subprocess.run(["brightnessctl", "m"], capture_output=True, text=True, timeout=5.0)
                 try:
                     cur = int(res.stdout.strip())
                     max_b = int(res_m.stdout.strip())
@@ -362,6 +534,7 @@ async def network_speedtest() -> dict[str, Any]:
             ["ping", "-c", "1", "-W", "2", "8.8.8.8"],
             capture_output=True,
             text=True,
+            timeout=5.0,
         )
         online = res.returncode == 0
         ping_ms = None
@@ -371,7 +544,7 @@ async def network_speedtest() -> dict[str, Any]:
                 ping_ms = float(m.group(1))
 
         # 3. Active connection name
-        res_nm = subprocess.run(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"], capture_output=True, text=True)
+        res_nm = subprocess.run(["nmcli", "-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"], capture_output=True, text=True, timeout=5.0)
         active_conn = res_nm.stdout.strip().splitlines() if res_nm.returncode == 0 else []
 
         return {
@@ -438,7 +611,7 @@ def register_system_extended_tools(engine: RobotEngine) -> None:
             handler=_capture_screen,
             permission_level=PermissionLevel.SYSTEM,
             family="system",
-            timeout_s=10.0,
+            timeout_s=30.0,
         )
     )
 

@@ -108,4 +108,10 @@ async def test_audio_player_soft_limiter_and_anti_pop() -> None:
             interrupt = asyncio.Event()
             res = await player.play(harsh_audio, sample_rate=24000, interrupt=interrupt)
             assert res is True
-            assert mock_thread.call_count == 1
+            # play() offloads two blocking steps: the PortAudio open and the writer.
+            writer_calls = [
+                call.args[0]
+                for call in mock_thread.call_args_list
+                if getattr(call.args[0], "__name__", "") == "_play_blocking"
+            ]
+            assert len(writer_calls) == 1

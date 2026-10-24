@@ -31,6 +31,52 @@ _WEATHER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _NEWS_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _FINANCE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
+#: Upper bound on distinct query keys held per feed. Keys come from model or
+#: user text (every unique location, topic and ticker), so without a cap the
+#: caches would grow for the whole life of the process.
+_CACHE_MAX_ENTRIES = 128
+
+
+def _cache_get(cache: "dict[str, tuple[float, Any]]", key: str, ttl_s: float) -> Any:
+    """Return a live cached value, dropping the entry once it has expired.
+
+    Args:
+        cache: Module-level ``{key: (stored_ts, value)}`` mapping.
+        key: Cache key.
+        ttl_s: Maximum acceptable entry age in seconds.
+
+    Returns:
+        The cached value, or ``None`` on a miss or expired entry.
+    """
+    entry = cache.get(key)
+    if entry is None:
+        return None
+    stored_ts, value = entry
+    if time.time() - stored_ts >= ttl_s:
+        cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_put(cache: "dict[str, tuple[float, Any]]", key: str, value: Any, ttl_s: float) -> None:
+    """Store a value after pruning expired keys, keeping the cache bounded.
+
+    Args:
+        cache: Module-level ``{key: (stored_ts, value)}`` mapping.
+        key: Cache key.
+        value: Value to store.
+        ttl_s: TTL used to identify expired entries.
+    """
+    now_ts = time.time()
+    for stale in [k for k, (ts, _) in cache.items() if now_ts - ts >= ttl_s]:
+        cache.pop(stale, None)
+    cache[key] = (now_ts, value)
+    overflow = len(cache) - _CACHE_MAX_ENTRIES
+    if overflow > 0:
+        for oldest in sorted(cache, key=lambda k: cache[k][0])[:overflow]:
+            cache.pop(oldest, None)
+
+
 # WMO Weather interpretation codes (WW)
 WMO_WEATHER_CODES: dict[int, str] = {
     0: "Clear sky",
@@ -151,10 +197,9 @@ async def fetch_weather(location: str = "Pune") -> dict[str, Any]:
     now_ts = time.time()
 
     # Check cache (15 min TTL)
-    if clean_loc.lower() in _WEATHER_CACHE:
-        cached_time, cached_data = _WEATHER_CACHE[clean_loc.lower()]
-        if now_ts - cached_time < 900:
-            return cached_data
+    cached_weather = _cache_get(_WEATHER_CACHE, clean_loc.lower(), 900)
+    if cached_weather is not None:
+        return cached_weather
 
     headers = {"User-Agent": "RobotCore/2.0 (Open-Source AI Assistant)"}
 
@@ -233,7 +278,7 @@ async def fetch_weather(location: str = "Pune") -> dict[str, Any]:
                 "forecast_3day": daily_forecast,
                 "summary": summary,
             }
-            _WEATHER_CACHE[clean_loc.lower()] = (now_ts, result)
+            _cache_put(_WEATHER_CACHE, clean_loc.lower(), result, 900)
             return result
 
     except Exception as e:
@@ -257,10 +302,9 @@ async def fetch_news_headlines(category: str = "top", limit: int = 5) -> list[di
 
     now_ts = time.time()
     cache_key = f"{clean_cat}_{limit}"
-    if cache_key in _NEWS_CACHE:
-        cached_time, cached_items = _NEWS_CACHE[cache_key]
-        if now_ts - cached_time < 600:
-            return cached_items
+    cached_items = _cache_get(_NEWS_CACHE, cache_key, 600)
+    if cached_items is not None:
+        return cached_items
 
     urls = NEWS_FEEDS[clean_cat]
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -305,7 +349,7 @@ async def fetch_news_headlines(category: str = "top", limit: int = 5) -> list[di
                     break
 
         if headlines:
-            _NEWS_CACHE[cache_key] = (now_ts, headlines[:limit])
+            _cache_put(_NEWS_CACHE, cache_key, headlines[:limit], 600)
             return headlines[:limit]
         return [{"status": "empty", "message": f"No recent headlines available for category '{clean_cat}'."}]
 
@@ -326,10 +370,9 @@ async def fetch_finance_quote(symbol: str = "bitcoin") -> dict[str, Any]:
     clean_sym = symbol.strip().lower()
     now_ts = time.time()
 
-    if clean_sym in _FINANCE_CACHE:
-        cached_time, cached_data = _FINANCE_CACHE[clean_sym]
-        if now_ts - cached_time < 180:
-            return cached_data
+    cached_quote = _cache_get(_FINANCE_CACHE, clean_sym, 180)
+    if cached_quote is not None:
+        return cached_quote
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
@@ -361,7 +404,7 @@ async def fetch_finance_quote(symbol: str = "bitcoin") -> dict[str, Any]:
                             "change_24h_percent": round(change_24h, 2),
                             "summary": summary,
                         }
-                        _FINANCE_CACHE[clean_sym] = (now_ts, res)
+                        _cache_put(_FINANCE_CACHE, clean_sym, res, 180)
                         return res
         except Exception:
             pass
@@ -395,7 +438,7 @@ async def fetch_finance_quote(symbol: str = "bitcoin") -> dict[str, Any]:
                         "change_percent": round(change_pct, 2),
                         "summary": summary,
                     }
-                    _FINANCE_CACHE[clean_sym] = (now_ts, res)
+                    _cache_put(_FINANCE_CACHE, clean_sym, res, 180)
                     return res
     except Exception:
         pass

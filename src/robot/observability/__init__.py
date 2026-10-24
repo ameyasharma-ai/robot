@@ -13,6 +13,7 @@ from robot.core.events import EventBus
 from robot.observability.models import ObservabilityEvent, Span, SpanStatus, Trace
 from robot.observability.resources import SystemMetricsCollector
 from robot.telemetry import get_logger
+from robot.concurrency import spawn
 
 logger = get_logger("observability")
 
@@ -75,7 +76,7 @@ class ObservabilityHub:
             try:
                 loop = asyncio.get_running_loop()
                 if loop and loop.is_running():
-                    asyncio.create_task(
+                    spawn(
                         self.events.emit(
                             "pipeline_updated",
                             pipeline=dict(self.pipeline_state),
@@ -205,7 +206,7 @@ class ObservabilityHub:
         try:
             loop = asyncio.get_running_loop()
             if loop and loop.is_running():
-                asyncio.create_task(
+                spawn(
                     self.events.emit(
                         "pipeline_updated",
                         pipeline=dict(self.pipeline_state),

@@ -143,3 +143,97 @@ async def test_memory_all_and_search_tool_execution(tmp_db):
     res_search = await tool_search.handler(query="all")
     assert len(res_search) == 2
 
+
+
+@pytest.mark.asyncio
+async def test_archive_is_scoped_to_one_persona(tmp_db):
+    """The conversation archive must not leak another persona's history."""
+    history = ConversationHistory(tmp_db)
+    await history.initialize()
+
+    await history.add_message("s-neo", "user", "neo private note", personality="neo")
+    await history.add_message("s-luna", "user", "luna private note", personality="luna")
+
+    luna = await history.get_archive(personality="luna")
+    assert [row["content"] for row in luna] == ["luna private note"]
+
+    neo = await history.get_archive(personality="neo")
+    assert [row["content"] for row in neo] == ["neo private note"]
+
+
+@pytest.mark.asyncio
+async def test_archive_row_limit_is_bounded(tmp_db):
+    """A hostile limit cannot pull the entire history into one context build."""
+    history = ConversationHistory(tmp_db)
+    await history.initialize()
+    for i in range(5):
+        await history.add_message("s-1", "user", f"note {i}", personality="neo")
+
+    capped = await history.get_archive(limit=10**9, personality="neo")
+    assert len(capped) == 5
+
+
+@pytest.mark.asyncio
+async def test_persona_expression_indexes_exist(tmp_db):
+    """Persona predicates are expression-based, so they need expression indexes."""
+    import sqlite3
+
+    history = ConversationHistory(tmp_db)
+    await history.initialize()
+
+    conn = sqlite3.connect(tmp_db)
+    try:
+        names = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+    finally:
+        conn.close()
+
+    assert "idx_conversations_persona_norm" in names
+    assert "idx_conversations_session_persona_norm" in names
+    assert "idx_sessions_persona_norm" in names
+    # Superseded plain-column composites must not survive: they cost writes, serve no read.
+    assert "idx_conversations_session_persona" not in names
+
+
+def test_mem0_client_calls_are_exclusive():
+    """Timed-out mem0 calls keep talking to the client, so access is serialized."""
+    import threading
+    import time
+
+    from robot.memory import Mem0Provider
+
+    provider = Mem0Provider({"timeout_seconds": 5.0})
+    active = []
+    peak = []
+
+    def work():
+        active.append(1)
+        peak.append(len(active))
+        time.sleep(0.01)
+        active.pop()
+        return "done"
+
+    threads = [threading.Thread(target=provider._call_client, args=(work,)) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert max(peak) == 1
+
+
+def test_mem0_client_call_fails_fast_when_backend_is_busy():
+    """A busy store cannot queue threads without bound; it reports a timeout."""
+    from robot.memory import Mem0Provider
+
+    provider = Mem0Provider({"timeout_seconds": 0.05})
+    assert provider._client_lock.acquire()
+    try:
+        with pytest.raises(TimeoutError):
+            provider._call_client(lambda: "unreachable")
+    finally:
+        provider._client_lock.release()
+
+    assert provider._call_client(lambda: "value") == "value"

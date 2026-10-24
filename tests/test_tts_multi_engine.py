@@ -127,12 +127,10 @@ def test_tts_manager_switching_and_persistence(tmp_path: Path) -> None:
     """Verify TTSManager hot-swapping between Kokoro and Piper and persisting state."""
     active_engine_file = tmp_path / "active_tts_engine.txt"
     active_voice_file = tmp_path / "active_tts_voice.txt"
-    config_file = tmp_path / "default.yaml"
-    config_file.write_text("tts:\n  provider: kokoro\n  model_path: models/tts/en-us-lessac-medium.onnx\n")
 
     with patch("robot.tts.manager.ACTIVE_ENGINE_FILE", active_engine_file), \
          patch("robot.tts.manager.ACTIVE_VOICE_FILE", active_voice_file), \
-         patch("robot.tts.manager.CONFIG_FILE", config_file):
+         patch("robot.tts.manager.DATA_DIR", tmp_path):
 
         mgr = TTSManager({"tts": {"provider": "kokoro"}})
         assert mgr.get_active_engine_name() == "kokoro"
@@ -157,6 +155,29 @@ def test_tts_manager_switching_and_persistence(tmp_path: Path) -> None:
         assert res2["engine"] == "kokoro"
         assert mgr.get_active_engine_name() == "kokoro"
         assert active_engine_file.read_text().strip() == "kokoro"
+
+    # State lives only in the runtime files; the hand-edited YAML is untouched.
+    assert not (tmp_path / "default.yaml").exists()
+
+
+def test_tts_switch_never_rewrites_system_config(tmp_path: Path) -> None:
+    """Verify engine switching leaves config/default.yaml byte-for-byte unchanged.
+
+    A load/dump cycle silently destroys the comments and layout of the main
+    hand-maintained config file, so the manager must persist to ``data/`` only.
+    """
+    config_file = tmp_path / "default.yaml"
+    original = "# Speaking voice — pick kokoro or piper\ntts:\n  provider: kokoro  # keep me\n"
+    config_file.write_text(original)
+
+    with patch("robot.tts.manager.DATA_DIR", tmp_path / "data"), \
+         patch("robot.tts.manager.ACTIVE_ENGINE_FILE", tmp_path / "data" / "active_tts_engine.txt"), \
+         patch("robot.tts.manager.ACTIVE_VOICE_FILE", tmp_path / "data" / "active_tts_voice.txt"):
+        mgr = TTSManager({"tts": {"provider": "kokoro"}})
+        mgr.switch_engine("piper", voice="en-us-lessac-medium")
+
+    assert config_file.read_text() == original
+    assert (tmp_path / "data" / "active_tts_engine.txt").read_text().strip() == "piper"
 
 
 @pytest.mark.asyncio

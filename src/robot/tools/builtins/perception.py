@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import base64
+import asyncio
+import threading
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import cv2
@@ -12,9 +15,80 @@ from robot.tools import PermissionLevel, ToolDefinition
 if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
 
+#: Where camera snapshots are persisted for the vision tooling and the gallery.
+SNAPSHOT_DIR = Path("data/images/camera")
+#: URL prefix the API serves :data:`SNAPSHOT_DIR` under.
+SNAPSHOT_URL_PREFIX = "/data/images/camera"
+#: Newest snapshots kept on disk; the tool writes one per call.
+MAX_SNAPSHOT_FILES = 24
+#: OCR text is untrusted, page-length output: keep only what a spoken answer needs.
+MAX_OCR_CHARS = 2_000
+
+
+def _store_snapshot(encoded: bytes, width: int, height: int) -> dict[str, Any]:
+    """Write an encoded JPEG frame to disk and return model-safe metadata.
+
+    Raw base64 is never returned: a camera JPEG is tens of kilobytes of text
+    that the language model cannot read, and injecting it wastes the entire
+    context window. Callers get a path the vision pipeline or UI can use.
+
+    Args:
+        encoded: JPEG-encoded frame bytes.
+        width: Frame width in pixels.
+        height: Frame height in pixels.
+
+    Returns:
+        dict[str, Any]: Path, URL, byte size and dimensions of the snapshot.
+    """
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"snapshot_{int(time.time() * 1000)}.jpg"
+    path = SNAPSHOT_DIR / filename
+    path.write_bytes(encoded)
+
+    # Only keep the newest frames; the robot takes snapshots on demand.
+    snapshots = sorted(SNAPSHOT_DIR.glob("snapshot_*.jpg"), key=lambda p: p.name, reverse=True)
+    for stale in snapshots[MAX_SNAPSHOT_FILES:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+    return {
+        "width": width,
+        "height": height,
+        "format": "jpeg",
+        "size_bytes": len(encoded),
+        "image_path": str(path.resolve()),
+        "url": f"{SNAPSHOT_URL_PREFIX}/{filename}",
+    }
+
 
 def register_perception_tools(engine: "RobotEngine") -> None:
     """Register camera and perception tools with the engine's tool registry."""
+
+    vlm_holder: dict[str, Any] = {}
+    vlm_lock = threading.Lock()
+
+    def _resolve_vlm() -> Any:
+        """Return a single shared VLM instance for standalone inspection.
+
+        Loading a vision model costs seconds and hundreds of megabytes, so the
+        fallback instance is created once per registration instead of once per
+        tool call.
+
+        Returns:
+            Any: The engine's VLM, or a cached standalone instance.
+        """
+        perception = getattr(engine, "perception", None)
+        vlm = getattr(perception, "vlm", None) if perception else None
+        if vlm is not None:
+            return vlm
+        with vlm_lock:
+            if "vlm" not in vlm_holder:
+                from robot.perception.vlm import LocalVLMGrounding
+
+                vlm_holder["vlm"] = LocalVLMGrounding(enabled=True, device="amd_igpu")
+            return vlm_holder["vlm"]
 
     async def get_world_state(**kwargs) -> dict[str, Any]:
         """Return the current continuous perception world state."""
@@ -33,7 +107,7 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         )
     )
 
-    async def capture_snapshot(format: str = "base64", quality: int = 80, **kwargs) -> dict[str, Any]:
+    async def capture_snapshot(quality: int = 80, **kwargs) -> dict[str, Any]:
         """Capture a snapshot from the robot's camera for inspection or visual reasoning."""
         if not hasattr(engine, "perception") or not engine.perception or not engine.perception.camera:
             return {"error": "Camera not available"}
@@ -42,37 +116,30 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         if frame is None:
             return {"error": "No frame captured from camera yet"}
 
-        h, w = frame.shape[:2]
-        # Encode as JPEG
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), max(10, min(100, quality))]
-        success, encimg = cv2.imencode(".jpg", frame, encode_param)
-        if not success:
-            return {"error": "Failed to encode frame"}
+        try:
+            level = max(10, min(100, int(quality)))
+        except (TypeError, ValueError):
+            level = 80
 
-        b64_str = base64.b64encode(encimg.tobytes()).decode("utf-8")
-        eff_format = format or kwargs.get("encoding", "base64")
-        return {
-            "width": w,
-            "height": h,
-            "format": "jpeg",
-            "image_base64": b64_str if eff_format == "base64" else None,
-            "data_url": f"data:image/jpeg;base64,{b64_str}" if eff_format == "data_url" else None,
-            "size_bytes": len(encimg),
-        }
+        def _encode() -> dict[str, Any]:
+            # JPEG encoding a full frame is CPU-bound work for hundreds of
+            # milliseconds; it must not run on the event loop.
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), level]
+            success, encimg = cv2.imencode(".jpg", frame, encode_param)
+            if not success:
+                return {"error": "Failed to encode frame"}
+            h, w = frame.shape[:2]
+            return _store_snapshot(encimg.tobytes(), w, h)
+
+        return await asyncio.to_thread(_encode)
 
     engine.tool_registry.register(
         ToolDefinition(
             name="camera.capture_snapshot",
-            description="Capture a current frame snapshot from the robot's physical camera for visual reasoning.",
+            description="Capture a current frame snapshot from the robot's physical camera and return its stored path and dimensions.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "format": {
-                        "type": "string",
-                        "enum": ["base64", "data_url"],
-                        "default": "base64",
-                        "description": "Encoding format for the captured image",
-                    },
                     "quality": {
                         "type": "integer",
                         "default": 80,
@@ -152,16 +219,11 @@ def register_perception_tools(engine: "RobotEngine") -> None:
     async def inspect_tabletop(query: str = "Describe all items on the table", **kwargs) -> dict[str, Any]:
         """Perform deep visual inspection of tabletop objects via AMD iGPU VLM."""
         target_query = (query or kwargs.get("text") or kwargs.get("prompt") or kwargs.get("question") or "Describe all items on the table").strip()
-        
+
         # Check perception engine and camera
         frame = None
         if hasattr(engine, "perception") and engine.perception and engine.perception.camera:
             frame = engine.perception.camera.get_latest_frame()
-        
-        from robot.perception.vlm import LocalVLMGrounding
-        vlm = getattr(engine.perception, "vlm", None) if hasattr(engine, "perception") and engine.perception else None
-        if vlm is None:
-            vlm = LocalVLMGrounding(enabled=True, device="amd_igpu")
 
         if frame is None:
             # Fallback when physical camera is in standby or offline
@@ -172,7 +234,9 @@ def register_perception_tools(engine: "RobotEngine") -> None:
                 "device": "amd_igpu",
             }
 
-        return vlm.inspect_frame(frame, query=target_query)
+        # Model construction and inference both block; run them off the loop so
+        # a spoken "what's on my table" never stalls audio or the API.
+        return await asyncio.to_thread(lambda: _resolve_vlm().inspect_frame(frame, query=target_query))
 
     engine.tool_registry.register(
         ToolDefinition(
@@ -205,7 +269,7 @@ def register_perception_tools(engine: "RobotEngine") -> None:
 
         Returns:
             Structured dictionary with analysis summary, detected objects, extracted text,
-            spatial layout, lighting conditions, and base64 data URL.
+            spatial layout, lighting conditions, and the stored snapshot path.
         """
         target_prompt = (
             prompt
@@ -220,12 +284,6 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         frame = None
         if hasattr(engine, "perception") and engine.perception and engine.perception.camera:
             frame = engine.perception.camera.get_latest_frame()
-
-        from robot.perception.vlm import LocalVLMGrounding
-
-        vlm = getattr(engine.perception, "vlm", None) if hasattr(engine, "perception") and engine.perception else None
-        if vlm is None:
-            vlm = LocalVLMGrounding(enabled=True, device="amd_igpu")
 
         if frame is None or getattr(frame, "size", 0) == 0:
             return {
@@ -242,65 +300,73 @@ def register_perception_tools(engine: "RobotEngine") -> None:
                 "spatial_layout": "standby",
                 "lighting": "unknown",
                 "dominant_color": "unknown",
-                "image_data_url": None,
+                "image_path": None,
                 "device": "amd_igpu",
             }
 
-        # 1. Encode image to JPEG / base64 data URL
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-        success, encimg = cv2.imencode(".jpg", frame, encode_param)
-        data_url = None
-        if success:
-            b64_str = base64.b64encode(encimg.tobytes()).decode("utf-8")
-            data_url = f"data:image/jpeg;base64,{b64_str}"
+        def _analyze() -> dict[str, Any]:
+            """Encode, ground, and OCR the frame entirely off the event loop."""
+            # 1. Encode and persist the exact analysed frame
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            success, encimg = cv2.imencode(".jpg", frame, encode_param)
+            stored: dict[str, Any] = {}
+            if success:
+                stored = _store_snapshot(encimg.tobytes(), frame.shape[1], frame.shape[0])
 
-        # 2. Local VLM Grounding Analysis (geometric, color, spatial layout)
-        vlm_res = vlm.inspect_frame(frame, query=target_prompt)
+            # 2. Local VLM Grounding Analysis (geometric, color, spatial layout)
+            vlm_res = _resolve_vlm().inspect_frame(frame, query=target_prompt)
 
-        # 3. Optional local OCR extraction
-        detected_text = ""
-        if do_ocr:
-            try:
-                import io
-                import pytesseract
-                from PIL import Image
+            # 3. Optional local OCR extraction
+            detected_text = ""
+            if do_ocr and success:
+                try:
+                    import io
+                    import pytesseract
+                    from PIL import Image
 
-                pil_img = Image.open(io.BytesIO(encimg.tobytes()))
-                detected_text = pytesseract.image_to_string(pil_img).strip()
-            except Exception:
-                detected_text = ""
+                    pil_img = Image.open(io.BytesIO(encimg.tobytes()))
+                    detected_text = pytesseract.image_to_string(pil_img).strip()
+                except Exception:
+                    detected_text = ""
+            detected_text = detected_text[:MAX_OCR_CHARS]
 
-        # 4. Synthesize natural language result
-        base_summary = vlm_res.get("summary", "")
-        summary_parts = [base_summary]
-        if detected_text:
-            clean_snippet = detected_text.replace("\n", " ").strip()
-            if len(clean_snippet) > 160:
-                clean_snippet = clean_snippet[:160] + "..."
-            summary_parts.append(f"Readable text extracted from camera: '{clean_snippet}'.")
-
-        if eff_detail == "concise" and vlm_res.get("items"):
-            items = vlm_res.get("items", [])
-            summary_parts = [f"Camera view: {len(items)} item(s) present ({', '.join(i.get('color', '') + ' ' + i.get('shape', '') for i in items[:3])})."]
+            # 4. Synthesize natural language result
+            base_summary = str(vlm_res.get("summary", ""))
+            summary_parts = [base_summary]
             if detected_text:
-                summary_parts.append(f"Text detected: '{detected_text[:80]}'.")
+                clean_snippet = detected_text.replace("\n", " ").strip()
+                if len(clean_snippet) > 160:
+                    clean_snippet = clean_snippet[:160] + "..."
+                summary_parts.append(f"Readable text extracted from camera: '{clean_snippet}'.")
 
-        combined_summary = " ".join(summary_parts)
+            if eff_detail == "concise" and vlm_res.get("items"):
+                items = vlm_res.get("items", [])
+                summary_parts = [
+                    f"Camera view: {len(items)} item(s) present "
+                    f"({', '.join(str(i.get('color', '')) + ' ' + str(i.get('shape', '')) for i in items[:3])})."
+                ]
+                if detected_text:
+                    summary_parts.append(f"Text detected: '{detected_text[:80]}'.")
 
-        return {
-            "status": "success",
-            "summary": combined_summary,
-            "prompt": target_prompt,
-            "detail_level": eff_detail,
-            "detected_objects": vlm_res.get("items", []),
-            "detected_text": detected_text,
-            "lighting": vlm_res.get("lighting", "normal"),
-            "dominant_color": vlm_res.get("dominant_color", "neutral"),
-            "resolution": vlm_res.get("resolution", f"{frame.shape[1]}x{frame.shape[0]}"),
-            "duration_ms": vlm_res.get("duration_ms", 0.0),
-            "image_data_url": data_url,
-            "device": "amd_igpu",
-        }
+            combined_summary = " ".join(summary_parts)
+
+            return {
+                "status": "success",
+                "summary": combined_summary,
+                "prompt": target_prompt,
+                "detail_level": eff_detail,
+                "detected_objects": vlm_res.get("items", []),
+                "detected_text": detected_text,
+                "lighting": vlm_res.get("lighting", "normal"),
+                "dominant_color": vlm_res.get("dominant_color", "neutral"),
+                "resolution": vlm_res.get("resolution", f"{frame.shape[1]}x{frame.shape[0]}"),
+                "duration_ms": vlm_res.get("duration_ms", 0.0),
+                "image_path": stored.get("image_path"),
+                "url": stored.get("url"),
+                "device": "amd_igpu",
+            }
+
+        return await asyncio.to_thread(_analyze)
 
     engine.tool_registry.register(
         ToolDefinition(

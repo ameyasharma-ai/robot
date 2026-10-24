@@ -24,7 +24,7 @@ import yaml
 
 from robot.audio import AudioCapture, AudioPlayer, VoiceActivityDetector, WakeWordDetector
 from robot.core.autonomy import AutonomyConfig, CuriosityEngine
-from robot.core.context import ContextEngine, GROUNDING_POLICY, format_system_prompt
+from robot.core.context import ContextEngine, GROUNDING_POLICY, format_system_prompt, strip_control_tokens
 from robot.core.events import EventBus, Events
 from robot.core.state import RobotMode, StateManager
 
@@ -51,6 +51,7 @@ from robot.tools import (
     ToolRouter,
 )
 from robot.tools.fast_path import FastPathRouter
+from robot.tools.hardening import bound_text, redact_secrets
 from robot.tools.builtins import register_builtin_tools
 from robot.tools.skills import ToolSkillManager
 from robot.tts import KokoroTTS, PiperTTS, TTSManager
@@ -67,6 +68,26 @@ API_SHUTDOWN_GRACE_S = 3.0
 
 #: Seconds uvicorn waits for in-flight connections after ``should_exit``.
 API_GRACEFUL_TIMEOUT_S = 2
+
+#: Character ceiling for one tool result fed back into the model context.
+MAX_TOOL_TURN_CHARS = 8_000
+
+
+def _sanitize_tool_turn(content: str) -> str:
+    """Make a tool result safe and bounded for the model context.
+
+    Tool output is attacker-controllable (scraped pages, clipboard, files,
+    handler error strings). Credential-shaped text is redacted, chat control
+    tokens that could break out of the ChatML frame are stripped, and the turn
+    is hard-capped so one large result cannot overflow the KV budget.
+
+    Args:
+        content: Serialized tool result text.
+
+    Returns:
+        str: Sanitized, bounded tool-turn content.
+    """
+    return bound_text(strip_control_tokens(redact_secrets(content)), MAX_TOOL_TURN_CHARS)
 
 
 def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
@@ -403,8 +424,13 @@ class RobotEngine:
 
         # Image Generation Service
         img_cfg = self.config.get("image", {})
+        image_output_dir = Path(img_cfg.get("output_dir", "data/images")).expanduser()
+        if not image_output_dir.is_absolute():
+            from robot.config import get_project_root
+
+            image_output_dir = get_project_root() / image_output_dir
         self.image_service = ImageGenerationService(
-            output_dir=img_cfg.get("output_dir", "data/images"),
+            output_dir=str(image_output_dir),
             max_concurrent=img_cfg.get("max_concurrent_jobs", 1),
             default_width=img_cfg.get("default_width", 512),
             default_height=img_cfg.get("default_height", 512),
@@ -610,7 +636,7 @@ class RobotEngine:
 
         pers = self.personalities.active
         if pers and getattr(pers, "voice_model", None) and hasattr(self.tts, "set_active_voice"):
-            self.tts.set_active_voice(pers.voice_model)
+            await asyncio.to_thread(self.tts.set_active_voice, pers.voice_model)
         if hasattr(self, "wakeword") and self.wakeword:
             self.wakeword.set_active_persona(default_personality)
 
@@ -633,11 +659,17 @@ class RobotEngine:
             echo_coupling_ratio=audio_cfg.get("echo_coupling_ratio", 0.40),
         )
 
-        # EasyEffects background service & default robot equalizer profile
+        # EasyEffects background service & default robot equalizer profile.
+        # Launching the daemon and loading a preset costs up to several seconds
+        # of subprocess time and must never stall async startup.
         try:
             from robot.tools.builtins.music import MusicPlayerService, ensure_easyeffects_running
-            ensure_easyeffects_running()
-            MusicPlayerService.get_instance().set_equalizer_preset("robot")
+
+            def _apply_audio_profile() -> None:
+                ensure_easyeffects_running()
+                MusicPlayerService.get_instance().set_equalizer_preset("robot")
+
+            await asyncio.to_thread(_apply_audio_profile)
         except Exception as _e:
             logger.debug("easyeffects_init_warning", error=str(_e))
 
@@ -739,7 +771,7 @@ class RobotEngine:
                 voice_m = getattr(pers, "voice_model", None) if pers else None
                 tts_cfg = getattr(pers, "tts_settings", {}) if pers else {}
                 if voice_m and hasattr(self.tts, "set_active_voice"):
-                    self.tts.set_active_voice(voice_m)
+                    await asyncio.to_thread(self.tts.set_active_voice, voice_m)
                 audio_w, sr_w = await self.tts.synthesize(
                     "Online.",
                     speed=tts_cfg.get("speed", 1.0),
@@ -751,7 +783,7 @@ class RobotEngine:
                 tts_ms = (time.perf_counter() - t_t0) * 1000
                 logger.info("tts_piper_warmed", duration_ms=round(tts_ms, 1), voice=voice_m or "default")
                 if self.player:
-                    self.player._ensure_stream(sr_w)
+                    await asyncio.to_thread(self.player._ensure_stream, sr_w)
 
                 # Pre-warm acknowledgment cache (0ms latency on tool acknowledgments)
                 ack_phrases = [
@@ -765,7 +797,9 @@ class RobotEngine:
                 ]
                 for ack in ack_phrases:
                     if hasattr(self.tts, "warm_phrase"):
-                        self.tts.warm_phrase(ack)
+                        # Each warm_phrase call runs real ONNX synthesis; doing it
+                        # inline would freeze the loop for the whole warmup.
+                        await asyncio.to_thread(self.tts.warm_phrase, ack)
                 logger.info("tts_phrase_cache_prewarmed", count=len(ack_phrases))
 
             # 4. LAST: Warm up LLM KV cache slot with exact invariant system prompt prefix
@@ -774,7 +808,7 @@ class RobotEngine:
             # 4. LLM Warmup (only necessary for local llama-server KV cache slot 0)
             if self.llm_provider_type in ("gemini", "openai_compatible", "openai"):
                 # Ensure local llama-server is stopped so 3.4GB VRAM is free
-                if LlamaServerManager.is_running():
+                if await LlamaServerManager.is_running_async():
                     await LlamaServerManager.stop()
             else:
                 await self.warm_up_llm()
@@ -783,8 +817,21 @@ class RobotEngine:
 
         logger.info("engine_setup_complete")
 
+    def _runtime_data_file(self, name: str) -> Path:
+        """Resolve a runtime state file under the project's ``data/`` directory.
+
+        Args:
+            name: File name, e.g. ``active_llm_provider.txt``.
+
+        Returns:
+            Path: Absolute path, independent of the process working directory.
+        """
+        from robot.config import get_project_root
+
+        return get_project_root() / "data" / name
+
     def _get_persisted_llm_provider(self, default: str = "local") -> str:
-        prov_file = Path("data/active_llm_provider.txt")
+        prov_file = self._runtime_data_file("active_llm_provider.txt")
         if prov_file.exists():
             try:
                 p = prov_file.read_text().strip().lower()
@@ -796,14 +843,14 @@ class RobotEngine:
 
     def _persist_llm_provider(self, provider: str) -> None:
         try:
-            prov_file = Path("data/active_llm_provider.txt")
+            prov_file = self._runtime_data_file("active_llm_provider.txt")
             prov_file.parent.mkdir(parents=True, exist_ok=True)
             prov_file.write_text(provider.strip().lower())
         except Exception as e:
             logger.warning("failed_to_persist_llm_provider", error=str(e))
 
     def _get_persisted_openai_model(self, default: str = "gpt-4o") -> str:
-        model_file = Path("data/active_openai_model.txt")
+        model_file = self._runtime_data_file("active_openai_model.txt")
         if model_file.exists():
             try:
                 m = model_file.read_text(encoding="utf-8").strip().strip('"').strip("'")
@@ -821,7 +868,7 @@ class RobotEngine:
         if not clean:
             return
         try:
-            model_file = Path("data/active_openai_model.txt")
+            model_file = self._runtime_data_file("active_openai_model.txt")
             model_file.parent.mkdir(parents=True, exist_ok=True)
             model_file.write_text(clean, encoding="utf-8")
             if hasattr(self, "config") and isinstance(self.config, dict):
@@ -1111,62 +1158,77 @@ class RobotEngine:
     async def run(self) -> None:
         """Start the full-duplex voice loop and API server."""
         self._running = True
-        await self.setup()
-
-        loop = asyncio.get_running_loop()
-        audio_queue = await self.capture.start(loop)
-
-        audio_cfg = self.config.get("audio", {})
-        barge_in_active = audio_cfg.get("barge_in_enabled", False)
-        barge_status = "\033[32mActive\033[0m" if barge_in_active else "\033[33mDeaf during speech (no self-interruption)\033[0m"
-
-        print("\n" + "=" * 58)
-        print("🤖  \033[1;35mROBOT CORE ONLINE — LIVE PIPELINE\033[0m")
-        print("=" * 58)
-        print(f" • \033[1mSession\033[0m:     {self._session_id}")
-        print(f" • \033[1mPersona\033[0m:     {self.personalities.active.name if self.personalities.active else 'neo'}")
-        print(f" • \033[1mServices\033[0m:    LLM: \033[32m✔\033[0m  STT: \033[32m✔\033[0m  TTS: \033[32m✔\033[0m")
-        print(f" • \033[1mBarge-in\033[0m:    {barge_status}")
-        print(f" • \033[1mLighting\033[0m:    \033[32mROG Aura (Active DBus Sync)\033[0m")
-        print(f" • \033[1mDisplay UI\033[0m:  \033[1;36mhttp://127.0.0.1:8888\033[0m (Face + Dev Console)")
-        print("=" * 58)
-        print("🎙️  \033[2mListening for speech...\033[0m\n")
-
-        # Start background image processing queue
-        self.image_service.start()
-        self.curiosity.start()
-        await self.scheduler.start()
-
-        tasks = [
-            asyncio.create_task(self._mic_loop(audio_queue)),
-            asyncio.create_task(self._response_loop()),
-            asyncio.create_task(self._tts_synthesizer_loop()),
-            asyncio.create_task(self._tts_player_loop()),
-            asyncio.create_task(self.health.start()),
-            asyncio.create_task(self.lighting.start()),
-        ]
-
-        # Deliberately outside `tasks`: cancelling this task would abort
-        # server.serve() inside its own shutdown, before uvicorn has closed the
-        # streams it is still waiting on. It is drained by _stop_api() instead.
-        self._api_task = asyncio.create_task(self._run_api(), name="api_server")
-
-        if self.perception is not None:
-            tasks.append(asyncio.create_task(self.perception.start()))
-
-        # Start face mesh background thread (daemon, non-blocking)
-        if getattr(self, "face_mesh", None) is not None:
-            self.face_mesh.start()
-
+        tasks: list[asyncio.Task] = []
         try:
+            await self.setup()
+
+            loop = asyncio.get_running_loop()
+            audio_queue = await self.capture.start(loop)
+
+            audio_cfg = self.config.get("audio", {})
+            barge_in_active = audio_cfg.get("barge_in_enabled", False)
+            barge_status = "\033[32mActive\033[0m" if barge_in_active else "\033[33mDeaf during speech (no self-interruption)\033[0m"
+
+            print("\n" + "=" * 58)
+            print("🤖  \033[1;35mROBOT CORE ONLINE — LIVE PIPELINE\033[0m")
+            print("=" * 58)
+            print(f" • \033[1mSession\033[0m:     {self._session_id}")
+            print(f" • \033[1mPersona\033[0m:     {self.personalities.active.name if self.personalities.active else 'neo'}")
+            print(f" • \033[1mServices\033[0m:    LLM: \033[32m✔\033[0m  STT: \033[32m✔\033[0m  TTS: \033[32m✔\033[0m")
+            print(f" • \033[1mBarge-in\033[0m:    {barge_status}")
+            print(f" • \033[1mLighting\033[0m:    \033[32mROG Aura (Active DBus Sync)\033[0m")
+            print(f" • \033[1mDisplay UI\033[0m:  \033[1;36mhttp://127.0.0.1:8888\033[0m (Face + Dev Console)")
+            print("=" * 58)
+            print("🎙️  \033[2mListening for speech...\033[0m\n")
+
+            # Start background image processing queue
+            self.image_service.start()
+            self.curiosity.start()
+            await self.scheduler.start()
+
+            tasks = [
+                asyncio.create_task(self._mic_loop(audio_queue)),
+                asyncio.create_task(self._response_loop()),
+                asyncio.create_task(self._tts_synthesizer_loop()),
+                asyncio.create_task(self._tts_player_loop()),
+                asyncio.create_task(self.health.start()),
+                asyncio.create_task(self.lighting.start()),
+            ]
+
+            # Deliberately outside `tasks`: cancelling this task would abort
+            # server.serve() inside its own shutdown, before uvicorn has closed the
+            # streams it is still waiting on. It is drained by _stop_api() instead.
+            self._api_task = asyncio.create_task(self._run_api(), name="api_server")
+
+            if self.perception is not None:
+                tasks.append(asyncio.create_task(self.perception.start()))
+
+            # Start face mesh background thread (daemon, non-blocking)
+            if getattr(self, "face_mesh", None) is not None:
+                self.face_mesh.start()
+
             await asyncio.gather(*tasks)
         except (asyncio.CancelledError, KeyboardInterrupt):
             logger.info("engine_shutting_down")
         finally:
             self._running = False
-            self.curiosity.stop()
-            self.image_service.stop()
-            await self.scheduler.stop()
+            # Each step is isolated: one failing subsystem must never stop the
+            # rest of the teardown from releasing devices and child processes.
+            def _sync_stop(label: str, stop: Any) -> None:
+                try:
+                    stop()
+                except Exception as exc:
+                    logger.warning("engine_shutdown_step_failed", component=label, error=str(exc))
+
+            async def _async_stop(label: str, stop: Any) -> None:
+                try:
+                    await stop()
+                except Exception as exc:
+                    logger.warning("engine_shutdown_step_failed", component=label, error=str(exc))
+
+            _sync_stop("curiosity", self.curiosity.stop)
+            _sync_stop("image_service", self.image_service.stop)
+            await _async_stop("scheduler", self.scheduler.stop)
 
             # The API goes down first: _running is what tells its MJPEG and
             # WebSocket generators to return, and they have to return before
@@ -1175,19 +1237,32 @@ class RobotEngine:
             for t in tasks:
                 if not t.done():
                     t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            await self.capture.stop()
-            self.player.stop()
-            self.player.close()
-            await self.lighting.stop()
-            await self.health.stop()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await _async_stop("capture", self.capture.stop)
+            _sync_stop("player", self.player.stop)
+            _sync_stop("player_close", self.player.close)
+            await _async_stop("lighting", self.lighting.stop)
+            await _async_stop("health", self.health.stop)
             # Stop face mesh thread before stopping perception/camera
             if getattr(self, "face_mesh", None) is not None:
-                self.face_mesh.stop()
+                _sync_stop("face_mesh", self.face_mesh.stop)
             if self.perception is not None:
-                await self.perception.stop()
+                await _async_stop("perception", self.perception.stop)
+            # Stop the model servers this process owns, not every process on the
+            # machine with a matching name: the managers track their own PIDs.
+            try:
+                from robot.stt import WhisperServerManager
+
+                await WhisperServerManager.stop()
+            except Exception as exc:
+                logger.warning("whisper_server_shutdown_failed", error=str(exc))
+            try:
+                await LlamaServerManager.stop()
+            except Exception as exc:
+                logger.warning("llama_server_shutdown_failed", error=str(exc))
             if self.memory:
-                await self.memory.close()
+                await _async_stop("memory", self.memory.close)
 
     async def stop(self) -> None:
         """Signal the engine and embedded API server to gracefully shut down."""
@@ -1330,6 +1405,14 @@ class RobotEngine:
                 host=api_cfg.get("host", "127.0.0.1"),
                 port=api_cfg.get("port", 8888),
                 log_level="warning",
+                access_log=False,
+                server_header=False,
+                timeout_keep_alive=max(1, int(api_cfg.get("keep_alive_s", 5))),
+                limit_concurrency=max(16, int(api_cfg.get("max_concurrency", 256))),
+                # Protocol-level pings keep half-open browser sockets detectable
+                # even when no application event is flowing.
+                ws_ping_interval=20.0,
+                ws_ping_timeout=20.0,
                 # Backstop for a stream that ignores the stop signal: without it
                 # uvicorn waits for its connections forever and Ctrl+C has to be
                 # resolved by cancelling this task from outside.
@@ -1374,6 +1457,12 @@ class RobotEngine:
                 barge_in_consecutive = 0
                 was_barge_in = False
                 continue
+
+            # Device liveness is checked here rather than in process_frame():
+            # reopening a dead microphone blocks in PortAudio and pactl/amixer,
+            # and that must never happen on the loop that plays audio back.
+            if self.capture.is_stale():
+                await self.capture.recover_async()
 
             clean_chunk, rms = self.capture.process_frame(frame)
 
@@ -1672,12 +1761,12 @@ class RobotEngine:
             if full_response and self.memory:
                 active_pers = self.personalities.active
                 ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
-                await self.memory.store_turn(
-                    self._session_id,
-                    user_text,
-                    full_response,
-                    self.state.state.active_personality,
-                    turn,
+                await self._persist_turn(
+                    session_id=self._session_id,
+                    user_text=user_text,
+                    bot_text=full_response,
+                    personality=self.state.state.active_personality,
+                    turn_number=turn,
                     namespace=ns,
                     metadata={"provider": getattr(self, "llm_provider_type", "local")},
                 )
@@ -1756,10 +1845,12 @@ class RobotEngine:
                     from robot.tts import TTSManager
                     tts = getattr(self, "tts", None)
                     if isinstance(tts, TTSManager):
-                        res = tts.switch_engine(tts_engine or "kokoro", voice=tts_voice)
+                        res = await asyncio.to_thread(
+                            tts.switch_engine, tts_engine or "kokoro", tts_voice
+                        )
                         applied_models["tts"] = res
                     elif hasattr(self.tts, "set_active_voice") and tts_voice:
-                        self.tts.set_active_voice(tts_voice)
+                        await asyncio.to_thread(self.tts.set_active_voice, tts_voice)
                         applied_models["tts"] = {"voice": tts_voice}
                 except Exception as e:
                     logger.warning("tts_default_switch_failed", error=str(e))
@@ -2357,7 +2448,7 @@ class RobotEngine:
 
                     # Append this tool call and its execution result into messages for complete context
                     import json as _json
-                    from robot.core.context import strip_control_tokens
+
                     raw_content = str(exec_result) if exec_result is not None else "Success"
                     messages.append({
                         "role": "assistant",
@@ -2372,7 +2463,7 @@ class RobotEngine:
                         "role": "tool",
                         "name": t_nm,
                         "tool_call_id": tc_id,
-                        "content": strip_control_tokens(raw_content),
+                        "content": _sanitize_tool_turn(raw_content),
                     })
 
                 tc = collected_tool_calls[-1]
@@ -2709,17 +2800,31 @@ class RobotEngine:
         if self.memory:
             active_pers = self.personalities.active
             ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
-            await self.memory.store_turn(
-                target_sid,
-                text,
-                response,
-                self.state.state.active_personality,
-                turn,
+            await self._persist_turn(
+                session_id=target_sid,
+                user_text=text,
+                bot_text=response,
+                personality=self.state.state.active_personality,
+                turn_number=turn,
                 namespace=ns,
                 metadata={"provider": getattr(self, "llm_provider_type", "local")},
             )
 
         return response
+
+    async def _persist_turn(self, **kwargs: Any) -> None:
+        """Record a finished turn without letting storage failure break the reply.
+
+        By the time this runs the user has already been answered: an unreachable
+        or full memory database must degrade to a warning, never abort a voice
+        turn or fail a chat request that already streamed its content.
+        """
+        if not self.memory:
+            return
+        try:
+            await self.memory.store_turn(**kwargs)
+        except Exception as exc:
+            logger.warning("store_turn_failed", error=str(exc))
 
     def _allocate_generation_budget(self, text: str, is_cloud: bool = False, has_tools: bool = True) -> int:
         """Dynamically allocate output token budget based on query complexity and requested length.
@@ -2784,7 +2889,7 @@ class RobotEngine:
 
         # Ensure mic is physically paused in text chat mode
         if hasattr(self, "capture") and self.capture and not self.capture.is_paused:
-            self.capture.pause()
+            await asyncio.to_thread(self.capture.pause)
 
         # Switch personality if specified
         if personality and personality in self.personalities.list_personalities():
@@ -3173,13 +3278,14 @@ class RobotEngine:
                     "tool_calls": collected_tool_calls,
                 })
                 import json as _json
+
                 for tc, tool_info in zip(collected_tool_calls, tools_called):
                     res_raw = tool_info.get("result")
                     res_str = _json.dumps(res_raw) if isinstance(res_raw, (dict, list)) else str(res_raw or "Executed")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", f"call_{int(time.time()*1000)}"),
-                        "content": res_str,
+                        "content": _sanitize_tool_turn(res_str),
                     })
 
                 second_pass_text = ""

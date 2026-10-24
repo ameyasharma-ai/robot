@@ -15,6 +15,11 @@ from robot.telemetry import get_logger
 
 logger = get_logger("image.sd")
 
+#: Ceiling on a base64 image payload accepted from a remote generation API.
+MAX_REMOTE_IMAGE_B64_CHARS = 32_000_000
+#: Ceiling on the decoded image written to the gallery, in bytes.
+MAX_REMOTE_IMAGE_BYTES = 24_000_000
+
 
 class LocalStableDiffusionProvider(ImageProvider):
     """Local Stable Diffusion image provider using diffusers on CPU/Vulkan."""
@@ -224,18 +229,29 @@ class RemoteOpenAIImageProvider(ImageProvider):
                 raise RuntimeError("No image data returned from remote endpoint")
 
             first_item = images_data[0]
+            raw_bytes: bytes | None = None
             if "b64_json" in first_item:
-                raw_bytes = base64.b64decode(first_item["b64_json"])
-                full_path.write_bytes(raw_bytes)
+                encoded = str(first_item["b64_json"])
+                if len(encoded) > MAX_REMOTE_IMAGE_B64_CHARS:
+                    raise RuntimeError("Remote image payload exceeds the accepted size limit")
+                raw_bytes = await asyncio.to_thread(base64.b64decode, encoded)
             elif "url" in first_item:
-                img_url = first_item["url"]
+                img_url = str(first_item["url"])
+                scheme = img_url.split(":", 1)[0].lower()
+                if scheme not in ("http", "https"):
+                    raise RuntimeError(f"Refusing to fetch image with unsupported scheme: {scheme!r}")
                 dl_resp = await client.get(img_url)
-                if dl_resp.status_code == 200:
-                    full_path.write_bytes(dl_resp.content)
-                else:
-                    raise RuntimeError(f"Failed to download image from {img_url}")
+                if dl_resp.status_code != 200:
+                    raise RuntimeError(f"Failed to download image (HTTP {dl_resp.status_code})")
+                if len(dl_resp.content) > MAX_REMOTE_IMAGE_BYTES:
+                    raise RuntimeError("Downloaded image exceeds the accepted size limit")
+                raw_bytes = dl_resp.content
             else:
                 raise RuntimeError("Unrecognized image response format")
+
+            if not raw_bytes:
+                raise RuntimeError("Remote image response contained no bytes")
+            await asyncio.to_thread(full_path.write_bytes, raw_bytes)
 
         job.progress = 100
         job.completed_at = time.time()

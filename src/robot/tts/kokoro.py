@@ -171,6 +171,7 @@ class KokoroTTS:
             self._voices_list[0] if self._voices_list else "af_heart"
         )
         self.prosody = ProsodyModulator(enabled=enable_prosody)
+        self.last_synthesis_error: str | None = None
         # Bounded LRU phrase cache: OrderedDict, move-to-end on hit, evict
         # oldest on overflow so long-running synthesis cannot grow memory forever.
         self._phrase_cache_max = max(1, int(cache_size))
@@ -423,25 +424,36 @@ class KokoroTTS:
             )
             raw_audio = np.asarray(samples, dtype=np.float32)
         except Exception as e:
+            self.last_synthesis_error = f"{type(e).__name__}: {e}"
             logger.error(
                 "kokoro_synthesis_failed",
                 error=str(e),
+                error_type=type(e).__name__,
                 voice=target_voice,
-                text=clean_text[:50],
+                text_chars=len(clean_text),
             )
-            return np.array([], dtype=np.float32), self.SAMPLE_RATE
+            # Never claim success with silent audio: the coordinator must be
+            # able to detect the failure and fall back to Piper once.
+            from robot.tts import TTSSynthesisError
+
+            raise TTSSynthesisError(
+                f"Kokoro synthesis failed for a {len(clean_text)} character phrase: {e}"
+            ) from e
 
         # Apply pitch shift if configured
         if abs(eff_pitch - 1.0) >= 0.02 and len(raw_audio) > 0:
             raw_audio = _shift_pitch(raw_audio, eff_pitch)
 
-        res = (raw_audio, sr)
+        # Store and return copies so callers cannot mutate the cached waveform
+        # in place (playback applies gain scaling to the returned array).
+        cached_audio = raw_audio.copy()
+        res = (cached_audio, sr)
 
         # Cache short phrases (< 120 chars) in the bounded LRU for instant replay
         if len(clean_text) < 120:
             self._cache_put(norm_key, res)
 
-        return res
+        return cached_audio.copy(), sr
 
     def warm_phrase(
         self,

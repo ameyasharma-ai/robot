@@ -47,6 +47,7 @@ class AsusAuraLighting:
         self._last_voice_update: float = 0.0
         self._last_set_time: float = 0.0
         self._last_zone_rgb: dict[int, tuple[int, int, int]] = {}
+        self._player: AudioPlayer | None = None
 
         # asusctl CLI-fallback rate limiting: the animation loop runs at ~26 Hz
         # across 4 zones, which previously spawned ~100 subprocesses/sec. Now a
@@ -187,7 +188,14 @@ class AsusAuraLighting:
     def attach(self, state_manager: StateManager, player: AudioPlayer) -> None:
         """Connect lighting controller to state changes and audio playback."""
         state_manager.subscribe(self._on_state_change)
+        self._player = player
         player.on_energy(self.on_voice_energy)
+
+    def detach(self) -> None:
+        """Disconnect from the audio player's per-block energy callback."""
+        if self._player is not None:
+            self._player.off_energy(self.on_voice_energy)
+            self._player = None
 
     async def _on_state_change(self, old_mode: RobotMode, new_mode: RobotMode) -> None:
         """React to RobotMode transitions."""
@@ -210,6 +218,7 @@ class AsusAuraLighting:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self.detach()
         self.set_brightness(3)
         self.set_color(0, 160, 255)
         if self._cli_executor is not None:

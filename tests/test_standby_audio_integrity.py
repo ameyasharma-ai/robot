@@ -55,7 +55,11 @@ async def test_audio_player_playback_lock_serialization() -> None:
             # We replace _play_blocking dispatch by assigning side_effect
             calls = [mock_play_blocking_a, mock_play_blocking_b]
 
-            async def fake_to_thread(fn):
+            async def fake_to_thread(fn, *args):
+                # Only the writer is simulated; the PortAudio stream-open hop runs
+                # for real against the patched _ensure_stream.
+                if getattr(fn, "__name__", "") != "_play_blocking":
+                    return fn(*args)
                 f = calls.pop(0)
                 return f()
 
@@ -94,9 +98,10 @@ async def test_audio_player_post_silence_padding() -> None:
             mock_thread.return_value = True
             await player.play(input_audio, sr, asyncio.Event())
 
-            assert mock_thread.call_count == 1
-            # Retrieve the internal _play_blocking function from to_thread
-            play_blocking_fn = mock_thread.call_args[0][0]
+            # Retrieve the internal _play_blocking function from to_thread; the
+            # earlier hop is the offloaded PortAudio stream open.
+            play_blocking_fn = mock_thread.call_args_list[-1][0][0]
+            assert play_blocking_fn.__name__ == "_play_blocking"
             # Inspect closure variable 'audio' in _play_blocking
             closure_vars = {
                 var_name: cell.cell_contents

@@ -46,7 +46,10 @@ allow-list and every other request is rejected without a valid token.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import html
+import inspect
 import ipaddress
 import json
 import os
@@ -60,13 +63,16 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
-from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from fastapi import Body, FastAPI, HTTPException, Path as PathParam, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
+
+from robot.api.production import DEFAULT_MAX_BODY_BYTES, FailureThrottle, ProductionMiddleware
 
 logger = structlog.get_logger()
 
 from robot.core.state import RobotMode
+from robot.concurrency import spawn
 
 if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
@@ -117,6 +123,14 @@ WS_EVENT_QUEUE_MAXSIZE = 100
 #: How often an idle WebSocket client re-checks whether the engine is still running.
 #: The send loop has no data to observe the shutdown with, so it polls on this beat.
 WS_SHUTDOWN_POLL_S = 0.5
+#: Longest voice clip accepted by ``POST /api/transcribe`` (5 minutes).
+TRANSCRIBE_MAX_DURATION_S = 300.0
+#: Ceiling for one Whisper transcription before the request is abandoned.
+TRANSCRIBE_TIMEOUT_S = 30.0
+#: Gallery metadata keyed by filename: ``(mtime, size, width, height)``. Bounded
+#: so a directory that grows without bound cannot grow the cache with it.
+_GALLERY_META_CACHE: dict[str, tuple[float, int, int, int]] = {}
+_GALLERY_META_CACHE_MAX = 4096
 
 
 class LoginRequest(BaseModel):
@@ -362,6 +376,122 @@ def _api_token_file() -> Path:
     from robot.config import get_project_root
 
     return get_project_root() / AUTH_TOKEN_FILE_DEFAULT
+
+
+async def _read_json_object(request: Request) -> dict[str, Any]:
+    """Read a request body that must be a JSON object.
+
+    Args:
+        request: Incoming request.
+
+    Returns:
+        dict[str, Any]: The decoded object.
+
+    Raises:
+        HTTPException: 400 when the body is not valid JSON or not an object.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    return payload
+
+
+def _validate_http_url(value: str, field: str) -> str:
+    """Validate an operator-supplied http(s) endpoint before it is persisted.
+
+    Args:
+        value: Raw URL string.
+        field: Field name used in the error detail.
+
+    Returns:
+        str: The stripped URL.
+
+    Raises:
+        HTTPException: 400 when the URL is not http(s), has no host, or embeds
+            credentials.
+    """
+    value = value.strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail=f"{field} must be an http(s) URL.")
+    if parsed.username or parsed.password:
+        raise HTTPException(status_code=400, detail=f"{field} must not contain credentials.")
+    return value
+
+
+def _resolve_images_dir(engine: "RobotEngine") -> Path:
+    """Resolve the generated-image directory once, independent of the CWD.
+
+    The image service owns the directory; using its configured value keeps the
+    writer, the gallery listing, the delete route and the static mount in
+    agreement even when the process is not started from the project root.
+
+    Args:
+        engine: Running engine, optionally carrying ``image_service.output_dir``.
+
+    Returns:
+        Path: Absolute directory holding generated artwork.
+    """
+    configured = getattr(getattr(engine, "image_service", None), "output_dir", None)
+    if isinstance(configured, (str, Path)) and str(configured).strip():
+        path = Path(configured).expanduser()
+    else:
+        path = Path("data/images")
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _decode_wav_to_mono16k(raw: bytes) -> tuple[np.ndarray | None, float]:
+    """Decode a PCM WAV upload into 16 kHz mono float32 samples.
+
+    Args:
+        raw: Raw WAV file bytes.
+
+    Returns:
+        tuple[np.ndarray | None, float]: The decoded samples and clip duration in
+            seconds, or ``(None, 0.0)`` when the payload is not a usable PCM WAV.
+    """
+    import io
+    import wave
+
+    try:
+        with wave.open(io.BytesIO(raw), "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            rate = wf.getframerate()
+            frame_count = wf.getnframes()
+            frames = wf.readframes(frame_count)
+    except (wave.Error, EOFError, ValueError):
+        return None, 0.0
+
+    if channels < 1 or rate <= 0 or not frames:
+        return None, 0.0
+
+    duration_s = len(frames) / float(rate * channels * max(1, width))
+    if width == 2:
+        pcm = np.frombuffer(frames, dtype=np.int16)
+    elif width == 4:
+        pcm = (np.frombuffer(frames, dtype=np.int32) >> 16).astype(np.int16)
+    elif width == 1:
+        pcm = (np.frombuffer(frames, dtype=np.uint8).astype(np.int16) - 128) << 8
+    else:
+        return None, 0.0
+
+    if channels > 1:
+        usable = (pcm.size // channels) * channels
+        pcm = pcm[:usable].reshape(-1, channels).mean(axis=1).astype(np.int16)
+
+    samples = pcm.astype(np.float32) / 32768.0
+    if rate != 16000 and samples.size:
+        target_len = max(1, int(samples.size * 16000 / rate))
+        samples = np.interp(
+            np.linspace(0, samples.size, target_len, endpoint=False),
+            np.arange(samples.size),
+            samples,
+        ).astype(np.float32)
+    return samples, duration_s
 
 
 def _read_persisted_token(path: Path) -> str:
@@ -617,10 +747,16 @@ async def _mjpeg_part_generator(
         return
 
 
+class LoginRequest(BaseModel):
+    """Request model for ``POST /auth/login``."""
+
+    token: str = Field(min_length=1, max_length=512)
+
+
 class ChatRequest(BaseModel):
-    text: str
-    session_id: str | None = None
-    personality: str | None = None
+    text: str = Field(min_length=1, max_length=32_000)
+    session_id: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]*$")
+    personality: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
     thinking: bool | None = None
 
 
@@ -630,48 +766,51 @@ class ThinkingModeRequest(BaseModel):
 
 class ChatSpeakRequest(BaseModel):
     """Request model for synthesizing speech audio for a chat message."""
-    text: str
-    personality: str | None = None
-    voice_model: str | None = None
-    speed: float = 1.0
-    pitch: float = 1.0
+    text: str = Field(min_length=1, max_length=8_000)
+    personality: str | None = Field(default=None, max_length=64)
+    voice_model: str | None = Field(default=None, max_length=256)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    pitch: float = Field(default=1.0, ge=0.5, le=2.0)
     play_hardware: bool = False
 
 
 class PersonaCreateRequest(BaseModel):
     """Request model for creating a new persona with provisioned isolated database."""
-    id: str
-    display_name: str | None = None
-    description: str | None = None
-    system_prompt: str | None = None
-    speaking_style: str | None = None
-    vocabulary: str | None = None
-    avatar_color: str | None = None
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_-]*$")
+    display_name: str | None = Field(default=None, max_length=128)
+    description: str | None = Field(default=None, max_length=2_000)
+    system_prompt: str | None = Field(default=None, max_length=32_000)
+    speaking_style: str | None = Field(default=None, max_length=4_000)
+    vocabulary: str | None = Field(default=None, max_length=4_000)
+    avatar_color: str | None = Field(default=None, max_length=32)
     default_models: dict[str, Any] | None = None
 
 
 class PersonaUpdateRequest(BaseModel):
     """Request model for updating an existing persona and its model defaults."""
-    display_name: str | None = None
-    description: str | None = None
-    system_prompt: str | None = None
-    speaking_style: str | None = None
-    vocabulary: str | None = None
-    avatar_color: str | None = None
+    display_name: str | None = Field(default=None, max_length=128)
+    description: str | None = Field(default=None, max_length=2_000)
+    system_prompt: str | None = Field(default=None, max_length=32_000)
+    speaking_style: str | None = Field(default=None, max_length=4_000)
+    vocabulary: str | None = Field(default=None, max_length=4_000)
+    avatar_color: str | None = Field(default=None, max_length=32)
     default_models: dict[str, Any] | None = None
 
 
 class TTSSwitchRequest(BaseModel):
     """Request model for switching active TTS engine and voice."""
-    engine: str
-    voice: str | None = None
+    engine: str = Field(min_length=1, max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    voice: str | None = Field(default=None, max_length=256)
 
 
 class TTSTestRequest(BaseModel):
     """Request model for generating test audio with a specific TTS engine and voice."""
-    engine: str = "kokoro"
-    voice: str | None = None
-    text: str = "Hello, this is a test of the neural voice engine on the robot."
+    engine: str = Field(default="kokoro", max_length=40, pattern=r"^[A-Za-z0-9_-]+$")
+    voice: str | None = Field(default=None, max_length=256)
+    text: str = Field(
+        default="Hello, this is a test of the neural voice engine on the robot.",
+        max_length=2_000,
+    )
 
 
 class ChatResponse(BaseModel):
@@ -682,8 +821,8 @@ class ChatResponse(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
-    personality: str | None = None
-    title: str | None = None
+    personality: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
+    title: str | None = Field(default=None, max_length=200)
 
 
 class StatusResponse(BaseModel):
@@ -706,21 +845,42 @@ class CameraModeRequest(BaseModel):
 
 
 class ImageGenRequest(BaseModel):
-    prompt: str
-    model: str | None = "default"
-    negative_prompt: str | None = ""
-    width: int | None = 512
-    height: int | None = 512
-    steps: int | None = 4
-    seed: int | None = -1
+    prompt: str = Field(min_length=1, max_length=2_000)
+    model: str | None = Field(default="default", max_length=128)
+    negative_prompt: str | None = Field(default="", max_length=2_000)
+    width: int | None = Field(default=512, ge=64, le=2048)
+    height: int | None = Field(default=512, ge=64, le=2048)
+    steps: int | None = Field(default=4, ge=1, le=50)
+    seed: int | None = Field(default=-1, ge=-1, le=2**32 - 1)
 
 
 class EqualizerRequest(BaseModel):
-    preset: str
+    preset: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9 _-]+$")
 
 
 class MusicVolumeRequest(BaseModel):
-    volume: float
+    volume: float = Field(ge=0.0, le=1.0)
+
+
+class ViewModeRequest(BaseModel):
+    mode: str = Field(default="dual", pattern=r"^(chat|dual)$")
+
+
+class WakeWordRequest(BaseModel):
+    require_wake_word: bool | None = None
+
+
+class LLMProviderRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class OpenAIModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f]+$")
+
+
+class CharacterActionRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    args: dict[str, Any] | None = None
 
 
 def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
@@ -756,12 +916,46 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     app = FastAPI(
         title="Robot Core API",
         description="Local-first humanoid robot brain API",
-        version="1.0.0",
+        version="1.1.0",
     )
     app.state.auth_token = token
     app.state.auth_token_source = token_source
     app.state.trust_loopback = trust_loopback
     app.add_middleware(_ApiAuthMiddleware, expected_token=token, trust_loopback=trust_loopback)
+
+    engine_config = getattr(engine, "config", None)
+    api_config = engine_config.get("api", {}) if isinstance(engine_config, dict) else {}
+    if not isinstance(api_config, dict):
+        api_config = {}
+    try:
+        max_body_bytes = int(api_config.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
+    except (TypeError, ValueError):
+        max_body_bytes = DEFAULT_MAX_BODY_BYTES
+    max_body_bytes = min(max(max_body_bytes, 64 * 1024), 256 * 1024 * 1024)
+    app.state.max_body_bytes = max_body_bytes
+    app.state.login_throttle = FailureThrottle(
+        max_failures=int(api_config.get("login_max_failures", 5) or 5),
+        window_s=float(api_config.get("login_window_s", 60) or 60),
+    )
+    # Added last so it is the outermost layer: security headers and the body cap
+    # then also cover 401s and static responses, not just successful routes.
+    app.add_middleware(ProductionMiddleware, max_body_bytes=max_body_bytes)
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """Log the fault and return a sanitized envelope with a correlation id."""
+        request_id = getattr(request.state, "request_id", "-")
+        logger.exception(
+            "api_unhandled_exception",
+            path=request.url.path,
+            method=request.method,
+            request_id=request_id,
+            error=str(exc),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error.", "request_id": request_id},
+        )
 
     if token_source == "generated":
         logger.warning(
@@ -769,9 +963,8 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             message=(
                 "No API token configured — generated one and saved it so it stays "
                 "stable across restarts. Local browsers at 127.0.0.1 need no token; "
-                "remote clients must present this value."
+                "remote clients must present the value stored in the token file."
             ),
-            token=token,
             token_file=str(_api_token_file()),
             login_endpoint="POST /auth/login {\"token\": \"<token>\"}",
         )
@@ -825,9 +1018,24 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         Raises:
             HTTPException: 401 when the submitted token does not match.
         """
+        client_key = getattr(request.client, "host", None) or "unknown"
+        throttle: FailureThrottle = request.app.state.login_throttle
+        retry_after = throttle.retry_after(client_key)
+        if retry_after:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed login attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
         if not _token_matches((req.token or "").strip(), token):
-            logger.warning("api_auth_login_failed", remote=getattr(request.client, "host", None))
+            throttle.record_failure(client_key)
+            logger.warning("api_auth_login_failed", remote=client_key)
+            # A small constant delay makes scripted guessing measurably slower
+            # without adding latency to a successful login.
+            await asyncio.sleep(0.25)
             raise HTTPException(status_code=401, detail="Invalid API token.")
+        throttle.reset(client_key)
         response.set_cookie(
             key=AUTH_COOKIE_NAME,
             value=token,
@@ -906,9 +1114,10 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         # Physically pause/resume mic stream to free audio hardware and ensure no audio is captured
         if hasattr(engine, "capture") and engine.capture:
             if engine.voice_enabled:
-                engine.capture.resume()
+                await engine.capture.resume_async()
             else:
-                engine.capture.pause()
+                # Releasing the microphone is blocking PortAudio teardown.
+                await asyncio.to_thread(engine.capture.pause)
         await engine.events.emit("voice_mode_changed", voice_enabled=engine.voice_enabled)
         return {"status": "ok", "voice_enabled": engine.voice_enabled, "is_chat_mode": engine.is_chat_mode}
 
@@ -930,7 +1139,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         }
 
     @app.post("/api/voice/wake-word-toggle")
-    async def toggle_wake_word(req: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    async def toggle_wake_word(req: WakeWordRequest | None = Body(default=None)) -> dict[str, Any]:
         """Toggle or set whether the active wake word is required to talk.
 
         Args:
@@ -939,7 +1148,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         Returns:
             dict[str, Any]: Updated wake-word gating status.
         """
-        explicit = req.get("require_wake_word")
+        explicit = req.require_wake_word if req is not None else None
         if explicit is None:
             engine.require_wake_word = not getattr(engine, "require_wake_word", True)
         else:
@@ -967,16 +1176,16 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"status": "ok", "camera_enabled": engine.is_camera_enabled}
 
     @app.post("/api/view-mode")
-    async def set_view_mode(req: dict[str, Any]):
+    async def set_view_mode(req: ViewModeRequest):
         """Synchronize UI active view mode ('chat' vs 'dual') with engine state.
 
         Args:
-            req: Payload dictionary containing 'mode' ('chat' | 'dual').
+            req: Payload containing 'mode' ('chat' | 'dual').
 
         Returns:
             dict[str, Any]: Status summary and confirmation.
         """
-        mode = req.get("mode", "dual")
+        mode = req.mode
         engine.is_chat_mode = (mode == "chat")
         if hasattr(engine, "notify_user_activity"):
             engine.notify_user_activity()
@@ -1019,10 +1228,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create persona: {e}")
+            logger.exception("persona_create_failed", error=str(e))
+            raise HTTPException(status_code=500, detail="Failed to create persona.")
 
     @app.get("/api/personas/{persona_id}")
-    async def get_persona(persona_id: str):
+    async def get_persona(persona_id: str = PathParam(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")):
         """Get details, default models, and database statistics for a specific persona."""
         pers = engine.personalities.get(persona_id)
         if not pers:
@@ -1033,7 +1243,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return data
 
     @app.put("/api/personas/{persona_id}")
-    async def update_persona(persona_id: str, req: PersonaUpdateRequest):
+    async def update_persona(persona_id: str = PathParam(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"), req: PersonaUpdateRequest = Body(...)):
         """Update an existing persona definition and default model configurations."""
         try:
             update_data = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
@@ -1045,10 +1255,15 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update persona: {e}")
+            logger.exception("persona_update_failed", persona=persona_id, error=str(e))
+            raise HTTPException(status_code=500, detail="Failed to update persona.")
 
     @app.delete("/api/personas/{persona_id}")
-    async def delete_persona(persona_id: str, delete_database: bool = True, force: bool = False):
+    async def delete_persona(
+        persona_id: str = PathParam(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+        delete_database: bool = True,
+        force: bool = False,
+    ):
         """Delete a persona definition and optionally delete its isolated database."""
         try:
             ok = engine.personalities.delete_persona(persona_id, delete_database=delete_database, force=force)
@@ -1056,10 +1271,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to delete persona: {e}")
+            logger.exception("persona_delete_failed", persona=persona_id, error=str(e))
+            raise HTTPException(status_code=500, detail="Failed to delete persona.")
 
     @app.post("/api/personas/{persona_id}/activate")
-    async def activate_persona(persona_id: str):
+    async def activate_persona(persona_id: str = PathParam(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")):
         """Activate a persona, hot-swap memory to its isolated database, and apply its default models."""
         try:
             res = await engine.switch_personality(persona_id)
@@ -1067,7 +1283,8 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to activate persona: {e}")
+            logger.exception("persona_activate_failed", persona=persona_id, error=str(e))
+            raise HTTPException(status_code=500, detail="Failed to activate persona.")
 
     @app.post("/personality/{name}")
     async def switch_personality(name: str):
@@ -1077,10 +1294,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             try:
                 res = await switch_fn(name)
                 return res
-            except ValueError as e:
-                return {"error": str(e)}
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to switch personality: {e}")
+            except ValueError as exc:
+                return {"error": str(exc)}
+            except Exception as exc:
+                logger.exception("legacy_personality_switch_failed", personality=name, error=str(exc))
+                raise HTTPException(status_code=500, detail="Failed to switch personality.") from None
 
         # Fallback or Mock Engine execution
         mgr = getattr(engine, "personalities", None)
@@ -1101,7 +1319,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             if hasattr(engine, "warm_up_llm") and callable(getattr(engine, "warm_up_llm")):
                 coro = engine.warm_up_llm(name)
                 if asyncio.iscoroutine(coro):
-                    asyncio.create_task(coro)
+                    spawn(coro, name="warm_up_llm")
             return {"status": "switched", "personality": name}
         return {"error": f"Personality '{name}' not found"}
 
@@ -1114,7 +1332,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             prov = "local"
         is_gemini = prov == "gemini"
         from robot.llm import LlamaServerManager
-        llama_running = LlamaServerManager.is_running()
+        llama_running = await LlamaServerManager.is_running_async()
         local_ctx = int(getattr(engine, "config", {}).get("llm", {}).get("context_window", 16384)) if hasattr(engine, "config") else 16384
         openai_cfg = getattr(engine, "config", {}).get("llm", {}).get("openai_compatible", {}) if hasattr(engine, "config") else {}
         is_openai = prov in ("openai_compatible", "openai")
@@ -1178,23 +1396,25 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return res
 
     @app.post("/api/llm/provider")
-    async def set_llm_provider(req: dict[str, Any]):
+    async def set_llm_provider(req: LLMProviderRequest):
         """Set specific LLM provider ('local', 'gemini', or 'openai_compatible')."""
-        target = req.get("provider", "local")
+        target = req.provider
         res = await engine.switch_llm_provider(target)
         return res
 
     @app.get("/api/llm/openai/models")
     async def scan_openai_models(
-        base_url: str | None = None,
-        api_key: str | None = None,
-        preset: str | None = None,
+        base_url: str | None = Query(default=None, max_length=2048),
+        preset: str | None = Query(default=None, max_length=32),
     ):
         """Scan available models from the OpenAI-compatible endpoint.
 
+        The API key is never accepted as a query parameter (it would leak into
+        browser history, proxy logs and access logs); it is resolved from the
+        engine configuration/environment for the selected preset.
+
         Args:
             base_url: Optional override endpoint URL to scan.
-            api_key: Optional override API key.
             preset: Optional provider preset ('openrouter', 'aicredits', 'openai', etc.).
 
         Returns:
@@ -1207,36 +1427,37 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         aicredits_cfg = cfg_root.get("aicredits", {})
 
         target_url = base_url
-        target_key = api_key
+        target_key: str | None = None
 
         if preset == "openrouter":
             target_url = base_url or openrouter_cfg.get("base_url") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-            target_key = api_key if api_key is not None else (openrouter_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", ""))
+            target_key = openrouter_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "")
         elif preset == "aicredits":
             target_url = base_url or aicredits_cfg.get("base_url") or os.environ.get("AICREDITS_BASE_URL", "https://aicredits.in/v1")
-            target_key = api_key if api_key is not None else (aicredits_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", ""))
+            target_key = aicredits_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
         elif preset == "openai":
             target_url = base_url or "https://api.openai.com/v1"
-            target_key = api_key if api_key is not None else os.environ.get("OPENAI_API_KEY", "")
+            target_key = os.environ.get("OPENAI_API_KEY", "")
         elif preset == "deepseek":
             target_url = base_url or "https://api.deepseek.com/v1"
-            target_key = api_key if api_key is not None else os.environ.get("DEEPSEEK_API_KEY", "")
+            target_key = os.environ.get("DEEPSEEK_API_KEY", "")
         elif preset == "groq":
             target_url = base_url or "https://api.groq.com/openai/v1"
-            target_key = api_key if api_key is not None else os.environ.get("GROQ_API_KEY", "")
+            target_key = os.environ.get("GROQ_API_KEY", "")
         elif preset == "ollama":
             target_url = base_url or "http://127.0.0.1:11434/v1"
-            target_key = api_key if api_key is not None else ""
+            target_key = ""
         else:
             if not target_url:
                 target_url = openai_cfg.get("base_url", "https://openrouter.ai/api/v1")
-            if target_key is None:
-                if "openrouter.ai" in str(target_url):
-                    target_key = openai_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "")
-                elif "aicredits.in" in str(target_url):
-                    target_key = openai_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
-                else:
-                    target_key = openai_cfg.get("api_key", "")
+            if "openrouter.ai" in str(target_url):
+                target_key = openai_cfg.get("api_key") or os.environ.get("OPENROUTER_API_KEY", "")
+            elif "aicredits.in" in str(target_url):
+                target_key = openai_cfg.get("api_key") or os.environ.get("AICREDITS_API_KEY", "")
+            else:
+                target_key = openai_cfg.get("api_key", "")
+
+        target_url = _validate_http_url(str(target_url or ""), "base_url")
 
         current_model = getattr(engine, "_get_persisted_openai_model", lambda d: d)(openai_cfg.get("model", "meta-llama/llama-3.3-70b-instruct:free"))
 
@@ -1258,10 +1479,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
                 "provider_preset": provider_preset,
             }
         except Exception as e:
+            logger.warning("openai_model_scan_failed", base_url=target_url, error=str(e))
             provider_preset = "openrouter" if "openrouter.ai" in str(target_url) else ("aicredits" if "aicredits.in" in str(target_url) else "custom")
             return {
                 "status": "error",
-                "message": str(e),
+                "message": "Could not reach the OpenAI-compatible provider.",
                 "models": [],
                 "count": 0,
                 "current_model": current_model,
@@ -1271,7 +1493,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             }
 
     @app.post("/api/llm/openai/model")
-    async def set_openai_model(req: dict[str, Any]):
+    async def set_openai_model(req: OpenAIModelRequest):
         """Set active model for the OpenAI-compatible provider.
 
         Args:
@@ -1281,7 +1503,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             dict[str, Any]: Status confirmation and selected model.
         """
         from robot.config import update_env_variable
-        new_model = req.get("model", "").strip()
+        new_model = req.model.strip()
         if not new_model:
             return {"status": "error", "message": "Model name cannot be empty."}
 
@@ -1340,12 +1562,23 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             dict[str, Any]: Status summary and confirmation.
         """
         from robot.config import update_env_variable
-        base_url = req.get("base_url", "").strip()
-        api_key = req.get("api_key", "").strip()
-        model = req.get("model", "").strip()
+        raw_base_url = req.get("base_url", "")
+        raw_api_key = req.get("api_key", "")
+        raw_model = req.get("model", "")
+        if not all(isinstance(value, str) for value in (raw_base_url, raw_api_key, raw_model)):
+            raise HTTPException(status_code=400, detail="base_url, api_key and model must be strings.")
+        base_url = raw_base_url.strip()
+        api_key = raw_api_key.strip()
+        model = raw_model.strip()
+        if base_url:
+            base_url = _validate_http_url(base_url, "base_url")
         ctx_win = req.get("context_window")
         prompt_caching = req.get("enable_prompt_caching", True)
         active_provider = req.get("active_provider") or req.get("preset", "custom")
+        if not isinstance(active_provider, str):
+            raise HTTPException(status_code=400, detail="active_provider must be a string.")
+        if len(api_key) > 512 or len(model) > 256:
+            raise HTTPException(status_code=400, detail="api_key or model is too long.")
 
         cfg_root = getattr(engine, "config", {}).setdefault("llm", {})
         openai_cfg = cfg_root.setdefault("openai_compatible", {})
@@ -1353,12 +1586,19 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         ai_cfg = cfg_root.setdefault("aicredits", {})
 
         # 1. Update OpenRouter specific fields if passed
+        def _nested_text(section: dict[str, Any], key: str) -> str:
+            value = section.get(key, "")
+            if not isinstance(value, str):
+                raise HTTPException(status_code=400, detail=f"{key} must be a string.")
+            return value.strip()
+
         or_data = req.get("openrouter")
         if isinstance(or_data, dict):
-            or_b = or_data.get("base_url", "").strip()
-            or_k = or_data.get("api_key", "").strip()
-            or_m = or_data.get("model", "").strip()
+            or_b = _nested_text(or_data, "base_url")
+            or_k = _nested_text(or_data, "api_key")
+            or_m = _nested_text(or_data, "model")
             if or_b:
+                or_b = _validate_http_url(or_b, "openrouter.base_url")
                 or_cfg["base_url"] = or_b
                 update_env_variable("OPENROUTER_BASE_URL", or_b)
             if or_k:
@@ -1371,10 +1611,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         # 2. Update AI Credits specific fields if passed
         ai_data = req.get("aicredits")
         if isinstance(ai_data, dict):
-            ai_b = ai_data.get("base_url", "").strip()
-            ai_k = ai_data.get("api_key", "").strip()
-            ai_m = ai_data.get("model", "").strip()
+            ai_b = _nested_text(ai_data, "base_url")
+            ai_k = _nested_text(ai_data, "api_key")
+            ai_m = _nested_text(ai_data, "model")
             if ai_b:
+                ai_b = _validate_http_url(ai_b, "aicredits.base_url")
                 ai_cfg["base_url"] = ai_b
                 update_env_variable("AICREDITS_BASE_URL", ai_b)
             if ai_k:
@@ -1526,19 +1767,22 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         active_local = LlamaServerManager.get_active_model_id()
 
         local_models = []
-        # Standard Qwen 3.5 4B model in Downloads
-        qwen_default = Path("/home/ameya/Downloads/Qwen3.5-4B-Q4_K_M.gguf")
-        if qwen_default.exists():
+        # The default local GGUF is whatever the manager is configured to load;
+        # never hard-code one machine's Downloads path into the API surface.
+        configured_model = Path(str(getattr(LlamaServerManager, "MODEL_PATH", "") or "")).expanduser()
+        if configured_model.is_file():
+            stem = configured_model.stem
+            default_id = "qwen3.5-4b" if "qwen3.5-4b" in stem.lower() else stem.lower().replace("_", "-")
             local_models.append({
-                "id": "qwen3.5-4b",
-                "name": "Qwen 3.5 4B (Instruct)",
-                "parameters": "4B",
+                "id": default_id,
+                "name": "Qwen 3.5 4B (Instruct)" if default_id == "qwen3.5-4b" else stem.replace("-", " ").replace("_", " "),
+                "parameters": "4B" if "4b" in stem.lower() else "local",
                 "is_vision": False,
-                "is_uncensored": False,
+                "is_uncensored": "uncensored" in stem.lower(),
                 "supports_tools": True,
                 "is_downloaded": True,
-                "is_active": (active_local == "qwen3.5-4b" and current_prov in ("local", "llama-server")),
-                "description": "Standard high-reasoning local edge model running on RTX 3050 with FlashAttention.",
+                "is_active": (active_local in (default_id, configured_model.name) and current_prov in ("local", "llama-server")),
+                "description": "Standard high-reasoning local edge model served by llama-server on the local GPU.",
             })
 
         for m in ModelRegistry.list_models():
@@ -1566,7 +1810,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             "active_local_model": active_local,
             "local_models": local_models,
             "gemini_models": gemini_models,
-            "llama_running": LlamaServerManager.is_running(),
+            "llama_running": await LlamaServerManager.is_running_async(),
         }
 
     # ─── Llama.cpp Advanced Loader & Offloading Settings (LM Studio) ───────
@@ -1574,7 +1818,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     async def get_llama_settings() -> dict[str, Any]:
         """Retrieve current llama-server configuration parameters and hardware offloading state."""
         from robot.llm import LlamaServerManager
-        return LlamaServerManager.get_settings()
+        return await LlamaServerManager.get_settings()
 
     @app.post("/api/llm/settings")
     async def update_llama_settings(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -1776,12 +2020,23 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         from robot.tts import TTSManager
         tts = getattr(engine, "tts", None)
         if isinstance(tts, TTSManager):
-            active_engine = tts.get_active_engine_name()
-            active_voice = tts.get_active_voice()
-            engines_list = tts.list_engines()
-            voices_list = tts.list_voices()
-            eng_inst = tts.get_active_engine()
-            sample_rate = getattr(eng_inst, "SAMPLE_RATE", 16000)
+            # Every accessor here can hit the disk or initialize an ONNX/Kokoro
+            # model, so the whole snapshot is resolved away from the loop.
+            (
+                active_engine,
+                active_voice,
+                engines_list,
+                voices_list,
+                sample_rate,
+            ) = await asyncio.to_thread(
+                lambda: (
+                    tts.get_active_engine_name(),
+                    tts.get_active_voice(),
+                    tts.list_engines(),
+                    tts.list_voices(),
+                    getattr(tts.get_active_engine(), "SAMPLE_RATE", 16000),
+                )
+            )
         else:
             active_engine = "piper"
             active_voice = getattr(tts, "_active_model", "en-us-lessac-medium")
@@ -1815,9 +2070,13 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         from robot.tts import TTSManager
         tts = getattr(engine, "tts", None)
         if isinstance(tts, TTSManager):
-            voices = tts.list_voices(engine_name=engine_filter)
-            active_engine = tts.get_active_engine_name()
-            active_voice = tts.get_active_voice()
+            voices, active_engine, active_voice = await asyncio.to_thread(
+                lambda: (
+                    tts.list_voices(engine_name=engine_filter),
+                    tts.get_active_engine_name(),
+                    tts.get_active_voice(),
+                )
+            )
         else:
             active_engine = "piper"
             active_voice = "en-us-lessac-medium"
@@ -1847,11 +2106,12 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             try:
                 engine.tts = TTSManager(engine.config)
                 tts = engine.tts
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to initialize TTSManager: {e}")
+            except Exception as exc:
+                logger.warning("tts_manager_init_failed", error=str(exc))
+                raise HTTPException(status_code=503, detail="Text-to-speech is unavailable.") from None
 
         try:
-            res = tts.switch_engine(req.engine, voice=req.voice)
+            res = await asyncio.to_thread(tts.switch_engine, req.engine, req.voice)
             if hasattr(engine, "events") and engine.events:
                 await engine.events.emit(
                     "tts_engine_changed",
@@ -1865,8 +2125,9 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
                 "voice": res["voice"],
                 "sample_rate": res["sample_rate"],
             }
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as exc:
+            logger.warning("tts_switch_failed", engine=req.engine, error=str(exc))
+            raise HTTPException(status_code=400, detail="Could not switch the text-to-speech engine.") from None
 
     @app.post("/api/tts/test")
     async def test_tts_voice(req: TTSTestRequest) -> Response:
@@ -1886,11 +2147,12 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             try:
                 engine.tts = TTSManager(engine.config)
                 tts = engine.tts
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"TTSManager unavailable: {e}")
+            except Exception as exc:
+                logger.warning("tts_test_manager_init_failed", error=str(exc))
+                raise HTTPException(status_code=503, detail="Text-to-speech is unavailable.") from None
 
         try:
-            target_engine = tts._get_or_load_engine(req.engine)
+            target_engine = await asyncio.to_thread(tts._get_or_load_engine, req.engine)
             test_phrase = req.text.strip() or "Hello, this is a test of the neural voice engine on the robot."
             samples, sr = await target_engine.synthesize(test_phrase, voice_model=req.voice)
             if len(samples) == 0:
@@ -1907,8 +2169,9 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             return Response(content=buf.getvalue(), media_type="audio/wav")
         except HTTPException:
             raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"TTS test synthesis failed: {e}")
+        except Exception as exc:
+            logger.warning("tts_test_synthesis_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Voice synthesis failed.") from None
 
     # ─── Spotify OAuth & Integration Endpoints ──────────────────────────────
     @app.get("/spotify/status")
@@ -1919,12 +2182,14 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         sp_cfg = ms.config.get("spotify", {})
         client_id = bool(sp_cfg.get("client_id"))
         client_secret = bool(sp_cfg.get("client_secret"))
-        sp_oauth = ms._get_spotify_oauth_client()
+        # Spotipy builds a session and talks HTTP; neither belongs on the loop.
+        sp_oauth = await asyncio.to_thread(ms._get_spotify_oauth_client)
         authenticated = sp_oauth is not None
-        devices = []
+        devices: list[Any] = []
         if sp_oauth:
             try:
-                devices = sp_oauth.devices().get("devices", [])
+                payload = await asyncio.to_thread(sp_oauth.devices)
+                devices = (payload or {}).get("devices", [])
             except Exception:
                 pass
         return {
@@ -1960,8 +2225,9 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             )
             auth_url = auth_manager.get_authorize_url()
             return RedirectResponse(auth_url)
-        except Exception as e:
-            return {"error": str(e)}
+        except Exception as exc:
+            logger.warning("spotify_login_start_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not start Spotify authorization.") from None
 
     @app.get("/callback")
     async def spotify_callback(code: str | None = None, error: str | None = None):
@@ -1990,7 +2256,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             )
         from robot.tools.builtins.music import MusicPlayerService
         ms = MusicPlayerService.get_instance()
-        success, msg = ms.handle_spotify_callback(code)
+        success, msg = await asyncio.to_thread(ms.handle_spotify_callback, code)
         if success:
             return HTMLResponse(
                 """<html><body style="font-family: sans-serif; background: #121212; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
@@ -2016,17 +2282,20 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         try:
             from robot.tools.builtins.music import MusicPlayerService
             return MusicPlayerService.get_instance().list_equalizer_presets()
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+        except Exception as exc:
+            logger.warning("music_endpoint_failed", error=str(exc))
+            return {"status": "error", "message": "Music service is unavailable."}
 
     @app.post("/api/equalizer")
     async def set_equalizer(req: EqualizerRequest):
         """Set active equalizer profile using EasyEffects."""
         try:
             from robot.tools.builtins.music import MusicPlayerService
-            return MusicPlayerService.get_instance().set_equalizer_preset(req.preset)
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+            ms = MusicPlayerService.get_instance()
+            return await asyncio.to_thread(ms.set_equalizer_preset, req.preset)
+        except Exception as exc:
+            logger.warning("music_endpoint_failed", error=str(exc))
+            return {"status": "error", "message": "Music service is unavailable."}
 
     @app.get("/api/music/status")
     async def get_music_status():
@@ -2034,12 +2303,16 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         try:
             from robot.tools.builtins.music import MusicPlayerService
             ms = MusicPlayerService.get_instance()
+            status, equalizer = await asyncio.to_thread(
+                lambda: (ms.get_status(), ms.list_equalizer_presets())
+            )
             return {
-                "status": ms.get_status(),
-                "equalizer": ms.list_equalizer_presets(),
+                "status": status,
+                "equalizer": equalizer,
             }
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+        except Exception as exc:
+            logger.warning("music_endpoint_failed", error=str(exc))
+            return {"status": "error", "message": "Music service is unavailable."}
 
     @app.post("/api/music/toggle")
     async def toggle_music_playback():
@@ -2047,13 +2320,12 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         try:
             from robot.tools.builtins.music import MusicPlayerService
             ms = MusicPlayerService.get_instance()
-            if ms.is_playing:
-                res = ms.pause()
-            else:
-                res = ms.resume()
+            action = ms.pause if ms.is_playing else ms.resume
+            res = await asyncio.to_thread(action)
             return {"status": "ok", "playback": res, "is_playing": ms.is_playing}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+        except Exception as exc:
+            logger.warning("music_endpoint_failed", error=str(exc))
+            return {"status": "error", "message": "Music service is unavailable."}
 
     @app.post("/api/music/restart")
     async def restart_music_track():
@@ -2061,10 +2333,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         try:
             from robot.tools.builtins.music import MusicPlayerService
             ms = MusicPlayerService.get_instance()
-            res = ms.replay()
+            res = await asyncio.to_thread(ms.replay)
             return {"status": "ok", "playback": res, "is_playing": ms.is_playing}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+        except Exception as exc:
+            logger.warning("music_endpoint_failed", error=str(exc))
+            return {"status": "error", "message": "Music service is unavailable."}
 
     @app.post("/api/music/volume")
     async def set_music_volume(req: MusicVolumeRequest):
@@ -2072,10 +2345,11 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         try:
             from robot.tools.builtins.music import MusicPlayerService
             ms = MusicPlayerService.get_instance()
-            res = ms.set_volume(req.volume)
+            res = await asyncio.to_thread(ms.set_volume, req.volume)
             return {"status": "ok", "volume": ms._volume, "result": res}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+        except Exception as exc:
+            logger.warning("music_endpoint_failed", error=str(exc))
+            return {"status": "error", "message": "Music service is unavailable."}
 
     @app.get("/api/memory/stats")
     async def get_memory_stats():
@@ -2086,7 +2360,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"status": "ok", "facts_count": 0, "messages_count": 0, "sessions_count": 0}
 
     @app.get("/chat/sessions")
-    async def list_chat_sessions(limit: int = 150):
+    async def list_chat_sessions(limit: int = Query(150, ge=1, le=500)):
         """List all isolated conversation sessions stored in the SQLite database."""
         if hasattr(engine, "memory") and engine.memory:
             sessions = await engine.memory.list_sessions(limit=limit)
@@ -2096,7 +2370,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     @app.post("/chat/sessions")
     async def create_chat_session(req: CreateSessionRequest | None = None):
         """Create a new isolated chat session in the database."""
-        sid = f"chat_{str(uuid.uuid4())[:8]}"
+        sid = f"chat_{uuid.uuid4()}"
         pers = (req and req.personality) or getattr(getattr(engine, "state", None), "active_personality", "neo")
         title = (req and req.title) or "New Chat"
         if hasattr(engine, "memory") and engine.memory:
@@ -2105,7 +2379,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"id": sid, "session_id": sid, "personality": pers, "title": title}
 
     @app.get("/chat/sessions/{session_id}")
-    async def get_chat_session(session_id: str):
+    async def get_chat_session(session_id: str = PathParam(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")):
         """Get all messages for an isolated chat session from the database."""
         if hasattr(engine, "memory") and engine.memory:
             sess = await engine.memory.get_session(session_id)
@@ -2124,7 +2398,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"session_id": session_id, "id": session_id, "title": "Conversation", "messages": []}
 
     @app.delete("/chat/sessions/{session_id}")
-    async def delete_chat_session(session_id: str):
+    async def delete_chat_session(session_id: str = PathParam(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")):
         """Delete an isolated chat session and its conversation history."""
         if hasattr(engine, "memory") and engine.memory:
             success = await engine.memory.delete_session(session_id)
@@ -2143,13 +2417,52 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         thinking_flag = req.thinking if req.thinking is not None else getattr(engine, "thinking_enabled", True)
 
         async def _event_generator():
-            async for chunk in engine.stream_text_chat(
-                text=req.text,
-                session_id=req.session_id,
-                personality=req.personality,
-                thinking=thinking_flag,
-            ):
-                yield f"data: {json.dumps(chunk)}\n\n"
+            # The engine can be silent for a long time while a tool runs. Pump it
+            # through a bounded queue so the SSE connection receives a keepalive
+            # comment during those gaps instead of looking dead to the browser.
+            queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=128)
+
+            async def _produce() -> None:
+                try:
+                    async for chunk in engine.stream_text_chat(
+                        text=req.text,
+                        session_id=req.session_id,
+                        personality=req.personality,
+                        thinking=thinking_flag,
+                    ):
+                        await queue.put(chunk)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("chat_stream_failed", error=str(exc))
+                    try:
+                        queue.put_nowait({"event": "error", "error": "The assistant stream failed."})
+                    except asyncio.QueueFull:
+                        pass
+                finally:
+                    try:
+                        queue.put_nowait(None)
+                    except asyncio.QueueFull:
+                        pass
+
+            producer = asyncio.create_task(_produce(), name="chat_stream_producer")
+            try:
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    if chunk is None:
+                        break
+                    yield f"data: {json.dumps(chunk)}\n\n"
+            finally:
+                if not producer.done():
+                    producer.cancel()
+                try:
+                    await producer
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         return StreamingResponse(
             _event_generator(),
@@ -2299,7 +2612,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
         # Optionally play on robot hardware speaker if requested
         if req.play_hardware and hasattr(engine, "player") and engine.player:
-            asyncio.create_task(engine.player.play(audio, sample_rate))
+            spawn(engine.player.play(audio, sample_rate), name="tts_hardware_play")
 
         # Emit robot_phrase event for avatar lip-sync / expressions
         if hasattr(engine, "events") and engine.events:
@@ -2488,78 +2801,73 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
     @app.post("/api/transcribe")
     async def transcribe_audio(request: Request):
-        """Transcribe uploaded voice recording (WAV binary or JSON base64) via Whisper STT for chat dictation."""
+        """Transcribe a recorded WAV clip (raw binary or JSON base64) via STT.
+
+        All decoding and resampling runs in a worker thread, malformed audio is
+        rejected with 400 instead of being forwarded, and a slow Whisper server
+        surfaces as 504 rather than hanging the request until the client gives
+        up.
+        """
+        ctype = (request.headers.get("content-type") or "").lower()
         try:
-            ctype = request.headers.get("content-type", "")
             if "application/json" in ctype:
-                data = await request.json()
-                import base64
-                b64_audio = data.get("audio", "")
-                content = base64.b64decode(b64_audio) if b64_audio else b""
+                payload = await request.json()
+                if not isinstance(payload, dict):
+                    raise HTTPException(status_code=400, detail="Expected a JSON object.")
+                b64_audio = payload.get("audio", "")
+                if not isinstance(b64_audio, str):
+                    raise HTTPException(status_code=400, detail="'audio' must be a base64 string.")
+                try:
+                    content = base64.b64decode(b64_audio, validate=True)
+                except (binascii.Error, ValueError):
+                    raise HTTPException(status_code=400, detail="'audio' is not valid base64.") from None
             else:
                 content = await request.body()
+        except HTTPException:
+            raise
+        except Exception:
+            logger.warning("api_transcribe_body_read_failed", content_type=ctype)
+            raise HTTPException(status_code=400, detail="Could not read the request body.") from None
 
-            if not content or len(content) < 44:
-                return {"status": "ok", "text": ""}
+        if not content or len(content) < 44:
+            return {"status": "ok", "text": ""}
 
-            from robot.stt import STTProvider, WhisperServerSTT
-            stt = getattr(engine, "stt", None)
-            if stt is None or not hasattr(stt, "transcribe"):
-                stt = WhisperServerSTT()
+        samples, duration_s = await asyncio.to_thread(_decode_wav_to_mono16k, content)
+        if samples is None:
+            raise HTTPException(status_code=400, detail="Unsupported audio: expected a PCM WAV file.")
+        if duration_s > TRANSCRIBE_MAX_DURATION_S:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio is longer than {int(TRANSCRIBE_MAX_DURATION_S)} seconds.",
+            )
 
-            import io
-            import wave
-            import numpy as np
+        stt = getattr(engine, "stt", None)
+        if stt is None or not hasattr(stt, "transcribe"):
+            from robot.stt import WhisperServerSTT
 
-            try:
-                with wave.open(io.BytesIO(content), "rb") as wf:
-                    channels = wf.getnchannels()
-                    width = wf.getsampwidth()
-                    rate = wf.getframerate()
-                    frames = wf.readframes(wf.getnframes())
+            stt = WhisperServerSTT()
 
-                    if width == 2:
-                        pcm_int16 = np.frombuffer(frames, dtype=np.int16)
-                    elif width == 4:
-                        pcm_int16 = (np.frombuffer(frames, dtype=np.int32) >> 16).astype(np.int16)
-                    else:
-                        pcm_int16 = np.frombuffer(frames, dtype=np.int8).astype(np.int16) << 8
+        try:
+            if inspect.iscoroutinefunction(stt.transcribe):
+                text = await asyncio.wait_for(
+                    stt.transcribe(samples, sample_rate=16000),
+                    timeout=TRANSCRIBE_TIMEOUT_S,
+                )
+            else:
+                text = await asyncio.wait_for(
+                    asyncio.to_thread(stt.transcribe, samples, 16000),
+                    timeout=TRANSCRIBE_TIMEOUT_S,
+                )
+        except asyncio.TimeoutError:
+            logger.warning("api_transcribe_timeout", duration_s=round(duration_s, 2))
+            raise HTTPException(status_code=504, detail="Transcription timed out.") from None
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("api_transcribe_failed", error=str(exc), duration_s=round(duration_s, 2))
+            raise HTTPException(status_code=503, detail="Speech recognition is unavailable.") from None
 
-                    if channels > 1:
-                        pcm_int16 = pcm_int16.reshape(-1, channels).mean(axis=1).astype(np.int16)
-
-                    pcm_float32 = pcm_int16.astype(np.float32) / 32768.0
-
-                    # Resample if sample rate != 16000
-                    if rate != 16000 and len(pcm_float32) > 0:
-                        target_len = int(len(pcm_float32) * 16000 / rate)
-                        pcm_float32 = np.interp(
-                            np.linspace(0, len(pcm_float32), target_len, endpoint=False),
-                            np.arange(len(pcm_float32)),
-                            pcm_float32,
-                        ).astype(np.float32)
-
-                    import inspect
-                    res = stt.transcribe(pcm_float32, sample_rate=16000)
-                    text = await res if inspect.isawaitable(res) else str(res)
-                    return {"status": "ok", "text": text}
-            except wave.Error:
-                import asyncio
-                import requests
-                def _forward():
-                    files = {"file": ("audio.wav", content, "audio/wav")}
-                    data = {"temperature": "0.0", "language": getattr(stt, "language", "en"), "response_format": "json"}
-                    url = getattr(stt, "url", "http://127.0.0.1:8081/inference")
-                    return requests.post(url, files=files, data=data, timeout=8)
-                resp = await asyncio.to_thread(_forward)
-                if resp.status_code == 200:
-                    raw_text = resp.json().get("text", "").strip()
-                    from robot.stt import clean_transcript
-                    return {"status": "ok", "text": clean_transcript(raw_text)}
-                return {"status": "error", "error": f"Whisper server returned {resp.status_code}", "text": ""}
-        except Exception as e:
-            logger.error("api_transcribe_error", error=str(e))
-            return {"status": "error", "error": str(e), "text": ""}
+        return {"status": "ok", "text": str(text or "").strip()}
 
     @app.post("/interrupt")
     async def interrupt_execution():
@@ -2568,12 +2876,20 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"status": "interrupted"}
 
     @app.get("/memory/search")
-    async def search_memory(query: str, limit: int = 5):
-        results = await engine.memory.get_relevant_memories(query, limit)
+    async def search_memory(
+        query: str = Query(..., min_length=1, max_length=500),
+        limit: int = Query(5, ge=1, le=50),
+    ):
+        active = getattr(getattr(engine, "personalities", None), "active", None)
+        namespace = getattr(active, "memory_namespace", None) or getattr(engine, "active_personality", "default")
+        results = await engine.memory.get_relevant_memories(query, user_id=namespace, limit=limit)
         return {"results": results}
 
     @app.get("/history/search")
-    async def search_history(query: str, limit: int = 10):
+    async def search_history(
+        query: str = Query(..., min_length=1, max_length=500),
+        limit: int = Query(10, ge=1, le=100),
+    ):
         results = await engine.memory.search_history(query, limit)
         return {"results": results}
 
@@ -2771,7 +3087,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
     # ─── Observability & Traces API ──────────────────────────────────────────
     @app.get("/observability/traces")
-    async def get_traces(limit: int = 15):
+    async def get_traces(limit: int = Query(15, ge=1, le=200)):
         """Get recent execution traces with spans and latencies."""
         if hasattr(engine, "observability") and engine.observability:
             return {
@@ -2782,9 +3098,10 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
     @app.get("/observability/hardware")
     async def get_hardware_metrics():
-        """Get live CPU, RAM, RTX 3050 VRAM/Temp, and AMD 680M utilization."""
+        """Get live CPU, RAM, discrete GPU VRAM/Temp, and integrated GPU utilization."""
         if hasattr(engine, "observability") and engine.observability:
-            return engine.observability.get_hardware_metrics()
+            # A cold sample shells out to nvidia-smi; keep that off the loop.
+            return await asyncio.to_thread(engine.observability.get_hardware_metrics)
         return {}
 
     @app.get("/observability/pipeline")
@@ -2809,10 +3126,10 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             return {"error": "Image service not initialized"}
         job = engine.image_service.submit_job(
             prompt=req.prompt,
-            width=req.width,
-            height=req.height,
-            steps=req.steps or 4,
-            seed=req.seed or -1,
+            width=req.width or 512,
+            height=req.height or 512,
+            steps=req.steps if req.steps is not None else 4,
+            seed=req.seed if req.seed is not None else -1,
             model=req.model or "default",
             negative_prompt=req.negative_prompt or "",
             trace_id=getattr(engine.observability, "current_trace_id", None) if hasattr(engine, "observability") else None,
@@ -2831,7 +3148,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         }
 
     @app.get("/images/jobs")
-    async def list_image_jobs(limit: int = 20):
+    async def list_image_jobs(limit: int = Query(20, ge=1, le=200)):
         """List recent image generation jobs."""
         if hasattr(engine, "image_service") and engine.image_service:
             return {"jobs": engine.image_service.list_jobs(limit)}
@@ -2846,8 +3163,12 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"cancelled": False, "error": "Image service not initialized"}
 
     @app.get("/api/images/gallery")
-    async def get_image_gallery(limit: int = 100) -> dict[str, Any]:
-        """List generated artwork images from data/images with rich metadata.
+    async def get_image_gallery(limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
+        """List generated artwork images from the image service directory.
+
+        The directory scan, sorting and image decoding run off the event loop.
+        Only the ``limit`` newest images are decoded, and dimensions are cached
+        by ``(mtime, size)`` so repeat requests touch no image files at all.
 
         Args:
             limit: Maximum number of gallery images to return.
@@ -2856,41 +3177,49 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
             Dictionary containing total count and list of image items with metadata.
         """
         from datetime import datetime, timezone
-        from PIL import Image
 
-        images_dir = Path("data/images")
-        if not images_dir.exists():
+        images_dir = _resolve_images_dir(engine)
+        if not images_dir.is_dir():
             return {"status": "ok", "total": 0, "images": []}
 
-        # Build lookup table from in-memory jobs if available
         jobs_lookup: dict[str, dict[str, Any]] = {}
         if hasattr(engine, "image_service") and engine.image_service:
             for j in engine.image_service.list_jobs(200):
                 out = j.get("output_path", "")
                 if out:
-                    base_name = Path(out).name
-                    jobs_lookup[base_name] = j
+                    jobs_lookup[Path(out).name] = j
 
-        items: list[dict[str, Any]] = []
         valid_extensions = {".png", ".jpg", ".jpeg", ".webp"}
 
-        for p in images_dir.iterdir():
-            if not p.is_file() or p.suffix.lower() not in valid_extensions:
-                continue
+        def _scan() -> tuple[int, list[dict[str, Any]]]:
+            from PIL import Image
 
-            fname = p.name
-            try:
-                stat = p.stat()
-                mtime = stat.st_mtime
-                size_bytes = stat.st_size
+            candidates: list[tuple[float, str, int]] = []
+            with os.scandir(images_dir) as entries:
+                for entry in entries:
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        if Path(entry.name).suffix.lower() not in valid_extensions:
+                            continue
+                        stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    candidates.append((stat.st_mtime, entry.name, stat.st_size))
 
-                # Match with in-memory job if possible
+            candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+            total = len(candidates)
+
+            if len(_GALLERY_META_CACHE) > _GALLERY_META_CACHE_MAX:
+                _GALLERY_META_CACHE.clear()
+
+            items: list[dict[str, Any]] = []
+            for mtime, fname, size_bytes in candidates[:limit]:
                 job_meta = jobs_lookup.get(fname, {})
                 prompt = job_meta.get("prompt", "")
                 model = job_meta.get("model", "")
                 duration_s = job_meta.get("duration_s", 0.0)
 
-                # If prompt is not in in-memory jobs, derive human-readable label
                 if not prompt:
                     if fname.startswith("img_test_flux"):
                         prompt = "FLUX.1 Schnell procedural/diffusion test benchmark"
@@ -2908,13 +3237,17 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
                         prompt = fname.rsplit(".", 1)[0].replace("_", " ").title()
                         model = "diffusion"
 
-                # Extract dimensions quickly
-                width, height = 512, 512
-                try:
-                    with Image.open(p) as img:
-                        width, height = img.size
-                except Exception:
-                    pass
+                cached = _GALLERY_META_CACHE.get(fname)
+                if cached and cached[0] == mtime and cached[1] == size_bytes:
+                    width, height = cached[2], cached[3]
+                else:
+                    width, height = 512, 512
+                    try:
+                        with Image.open(images_dir / fname) as img:
+                            width, height = img.size
+                    except Exception:
+                        pass
+                    _GALLERY_META_CACHE[fname] = (mtime, size_bytes, width, height)
 
                 size_kb = (
                     f"{round(size_bytes / 1024, 1)} KB"
@@ -2924,7 +3257,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
                 items.append({
                     "filename": fname,
-                    "url": f"/data/images/{fname}",
+                    "url": f"/data/images/{urllib.parse.quote(fname)}",
                     "prompt": prompt,
                     "model": model or "diffusion",
                     "duration_s": round(duration_s, 2),
@@ -2935,20 +3268,19 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
                     "created_at": mtime,
                     "created_at_iso": datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 })
-            except Exception as e:
-                logger.warning("gallery_image_read_failed", file=fname, error=str(e))
+            return total, items
 
-        # Sort reverse chronologically
-        items.sort(key=lambda x: x["created_at"], reverse=True)
-        return {
-            "status": "ok",
-            "total": len(items),
-            "images": items[:limit],
-        }
+        try:
+            total, items = await asyncio.to_thread(_scan)
+        except OSError as exc:
+            logger.warning("gallery_scan_failed", directory=str(images_dir), error=str(exc))
+            return {"status": "ok", "total": 0, "images": []}
+
+        return {"status": "ok", "total": total, "images": items}
 
     @app.delete("/api/images/gallery/{filename}")
     async def delete_gallery_image(filename: str) -> dict[str, Any]:
-        """Delete a generated artwork from data/images with path traversal protection.
+        """Delete a generated artwork from the image service directory.
 
         Args:
             filename: Target image filename to remove.
@@ -2956,23 +3288,38 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         Returns:
             Dictionary with deletion status and filename.
         """
-        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", filename) or ".." in filename or "/" in filename:
-            return {"status": "error", "message": "Invalid filename format."}
+        if (
+            not re.fullmatch(r"[a-zA-Z0-9_\-\.]{1,128}", filename)
+            or filename in (".", "..")
+            or ".." in filename
+        ):
+            raise HTTPException(status_code=400, detail="Invalid filename format.")
 
-        target_file = Path("data/images") / filename
-        if not target_file.exists() or not target_file.is_file():
-            return {"status": "error", "message": "File not found."}
+        images_dir = _resolve_images_dir(engine).resolve()
+        target_file = (images_dir / filename).resolve()
+        if target_file.parent != images_dir:
+            raise HTTPException(status_code=400, detail="Invalid filename format.")
+        if target_file.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(status_code=400, detail="Invalid filename format.")
+        if not target_file.is_file():
+            raise HTTPException(status_code=404, detail="File not found.")
 
         try:
-            target_file.unlink()
-            return {"status": "ok", "deleted": True, "filename": filename}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+            await asyncio.to_thread(target_file.unlink)
+        except OSError as exc:
+            logger.warning("gallery_delete_failed", file=filename, error=str(exc))
+            raise HTTPException(status_code=500, detail="Could not delete the image.") from None
+        _GALLERY_META_CACHE.pop(filename, None)
+        return {"status": "ok", "deleted": True, "filename": filename}
 
 
     # --- Temporal Scheduler Endpoints ---
     @app.get("/api/scheduler/jobs")
-    async def list_scheduled_jobs(job_type: str | None = None, status: str = "pending", limit: int = 50):
+    async def list_scheduled_jobs(
+        job_type: str | None = Query(default=None, max_length=32),
+        status: str = Query(default="pending", max_length=32),
+        limit: int = Query(50, ge=1, le=200),
+    ):
         """List scheduled timers, alarms, and reminders."""
         if hasattr(engine, "scheduler") and engine.scheduler:
             jobs = await engine.scheduler.list_jobs(job_type=job_type, status=status, limit=limit)
@@ -2982,9 +3329,18 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     @app.post("/api/scheduler/timer")
     async def create_timer(request: Request):
         """Create a new countdown timer."""
-        data = await request.json()
-        duration = float(data.get("duration_seconds", 60))
-        label = data.get("label", "Timer")
+        data = await _read_json_object(request)
+        duration_raw = data.get("duration_seconds", 60)
+        label_raw = data.get("label", "Timer")
+        if not isinstance(label_raw, str):
+            raise HTTPException(status_code=400, detail="label must be a string.")
+        try:
+            duration = float(duration_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="duration_seconds must be a number.") from None
+        if not 1.0 <= duration <= 86400.0:
+            raise HTTPException(status_code=400, detail="duration_seconds must be between 1 and 86400.")
+        label = label_raw.strip()[:200] or "Timer"
         if hasattr(engine, "scheduler") and engine.scheduler:
             job = await engine.scheduler.add_timer(duration, label=label)
             return {"status": "success", "timer": job.to_dict()}
@@ -2993,30 +3349,48 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     @app.post("/api/scheduler/alarm")
     async def create_alarm(request: Request):
         """Schedule a new clock alarm."""
-        data = await request.json()
+        data = await _read_json_object(request)
         target_time = data.get("target_time", "")
         label = data.get("label", "Alarm")
         recurring = bool(data.get("recurring", False))
+        if not isinstance(target_time, str) or not isinstance(label, str):
+            raise HTTPException(status_code=400, detail="target_time and label must be strings.")
+        target_time = target_time.strip()[:64]
+        label = label.strip()[:200] or "Alarm"
+        if not target_time:
+            raise HTTPException(status_code=400, detail="target_time is required.")
         if hasattr(engine, "scheduler") and engine.scheduler:
             try:
                 job = await engine.scheduler.add_alarm(target_time, label=label, recurring=recurring)
                 return {"status": "success", "alarm": job.to_dict()}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            except Exception as exc:
+                logger.warning("scheduler_alarm_create_failed", error=str(exc))
+                raise HTTPException(status_code=503, detail="Could not schedule the alarm.") from None
         return {"status": "error", "message": "Scheduler service not initialized"}
 
     @app.post("/api/scheduler/reminder")
     async def create_reminder(request: Request):
         """Schedule a new reminder."""
-        data = await request.json()
+        data = await _read_json_object(request)
         time_expr = data.get("time_expression", "")
         message = data.get("message", "")
+        if not isinstance(time_expr, str) or not isinstance(message, str):
+            raise HTTPException(status_code=400, detail="time_expression and message must be strings.")
+        time_expr = time_expr.strip()[:64]
+        message = message.strip()[:500]
+        if not time_expr:
+            raise HTTPException(status_code=400, detail="time_expression is required.")
         if hasattr(engine, "scheduler") and engine.scheduler:
             try:
                 job = await engine.scheduler.add_reminder(time_expr, message=message)
                 return {"status": "success", "reminder": job.to_dict()}
-            except Exception as e:
-                return {"status": "error", "message": str(e)}
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            except Exception as exc:
+                logger.warning("scheduler_reminder_create_failed", error=str(exc))
+                raise HTTPException(status_code=503, detail="Could not schedule the reminder.") from None
         return {"status": "error", "message": "Scheduler service not initialized"}
 
     @app.delete("/api/scheduler/jobs/{job_id}")
@@ -3036,14 +3410,14 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         return {"status": "error", "message": "Scheduler service not initialized"}
 
     # Mount /data/images for generated image previews.
-    # NOTE: the directory is intentionally resolved relative to the working
-    # directory, exactly like the image service output_dir ("data/images"), so
-    # the gallery listing, the static mount and the writer never disagree.
-    # Absolute paths are never hardcoded here and the mount stays authenticated:
-    # only the UI shell under /static is public (see AUTH_EXEMPT_PATHS).
+    # NOTE: the directory is resolved through the image service so the mount,
+    # the gallery listing and the writer can never disagree, even when the
+    # process runs with a different working directory. The mount stays
+    # authenticated: only the UI shell under /static is public (see
+    # AUTH_EXEMPT_PATHS).
     from fastapi.staticfiles import StaticFiles
 
-    images_dir = Path("data/images")
+    images_dir = _resolve_images_dir(engine)
     images_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/data/images", StaticFiles(directory=str(images_dir)), name="images")
 
@@ -3141,17 +3515,23 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
 
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
-        class NoCacheStaticFiles(StaticFiles):
-            """StaticFiles handler that appends no-cache headers to ensure instant live asset updates."""
+        class VersionedStaticFiles(StaticFiles):
+            """Cache static assets aggressively only when the URL is versioned.
+
+            The UI references its bundles with ``?v=<build>``, so those responses
+            can be cached for a year; unversioned assets keep revalidating so a
+            live edit still shows up on refresh.
+            """
 
             async def get_response(self, path: str, scope):
                 response = await super().get_response(path, scope)
-                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                response.headers["Pragma"] = "no-cache"
-                response.headers["Expires"] = "0"
+                if scope.get("query_string"):
+                    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                else:
+                    response.headers["Cache-Control"] = "no-cache"
                 return response
 
-        app.mount("/static", NoCacheStaticFiles(directory=str(static_dir)), name="static")
+        app.mount("/static", VersionedStaticFiles(directory=str(static_dir)), name="static")
 
         @app.get("/")
         async def index():
@@ -3225,9 +3605,13 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
                 all_facts = []
 
         recent_history = []
-        if hasattr(engine, "memory") and engine.memory and hasattr(engine.memory, "get_recent_history"):
+        if hasattr(engine, "memory") and engine.memory:
             try:
-                recent_history = await engine.memory.get_recent_history(limit=10, user_id=ns)
+                if hasattr(engine.memory, "get_recent_history"):
+                    recent_history = await engine.memory.get_recent_history(limit=10, user_id=ns)
+                elif hasattr(engine.memory, "get_recent_conversation"):
+                    session_id = getattr(engine, "_session_id", "default")
+                    recent_history = await engine.memory.get_recent_conversation(session_id, limit=10)
             except Exception:
                 recent_history = []
 
@@ -3270,7 +3654,7 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
         cache_reuse_pct = round((prefix_tokens / max(1, total_tokens)) * 100, 1)
 
         from robot.llm import LlamaServerManager
-        llama_running = LlamaServerManager.is_running()
+        llama_running = await LlamaServerManager.is_running_async()
 
         return {
             "timestamp": time.time(),

@@ -11,6 +11,7 @@ Tests:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import wave
 from pathlib import Path
@@ -22,6 +23,8 @@ from robot.core.engine import RobotEngine
 from robot.tools import PermissionLevel, ToolDefinition, ToolRegistry
 from robot.tools.builtins.communication_phone import (
     NTFYNotificationProvider,
+    approve_sms_draft,
+    issue_sms_confirmation_token,
     NotificationRateLimiter,
     SMSAuditLogger,
     TelegramNotificationProvider,
@@ -65,7 +68,7 @@ class TestPhoneAndCommunicationTools:
     @pytest.mark.asyncio
     async def test_ntfy_notification_dispatch(self) -> None:
         """Test NTFY.sh alert dispatch with payload formatting."""
-        provider = NTFYNotificationProvider(topic="test-robot-alerts")
+        provider = NTFYNotificationProvider(topic="test-robot-alerts", auth_token="test-token")
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.read.return_value = b'{"id":"123","event":"message"}'
@@ -82,8 +85,17 @@ class TestPhoneAndCommunicationTools:
             assert res["topic"] == "test-robot-alerts"
 
     @pytest.mark.asyncio
+    async def test_ntfy_unconfigured_fails_closed(self) -> None:
+        """Verify no egress is attempted when the topic or token is missing."""
+        provider = NTFYNotificationProvider(topic="test-robot-alerts", auth_token=None)
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            res = await provider.send_alert(title="Alert", message="Body")
+            assert res["status"] == "not_sent"
+            assert mock_urlopen.call_count == 0
+
+    @pytest.mark.asyncio
     async def test_sms_drafting_and_confirmation_flow(self, mock_engine: RobotEngine) -> None:
-        """Test two-stage SMS drafting and confirmation gate."""
+        """Test two-stage SMS drafting and the out-of-band confirmation gate."""
         register_communication_tools(mock_engine)
 
         draft_tool = mock_engine.tool_registry.get("communication.draft_sms")
@@ -99,17 +111,30 @@ class TestPhoneAndCommunicationTools:
         assert draft_res["status"] == "drafted"
         draft_id = draft_res["draft_id"]
         assert draft_id.startswith("sms_")
+        # The model must never see the token that unlocks dispatch.
+        token = issue_sms_confirmation_token(draft_id)
+        assert token
+        assert token not in json.dumps(draft_res)
 
         # Stage 2: Send without confirmation must be blocked
         blocked_res = await send_tool.handler(draft_id=draft_id, confirm=False)
         assert blocked_res["status"] == "confirmation_required"
 
-        # Stage 3: Send with confirmation proceeds
+        # Stage 3: The model asserting confirm=True is still not approval.
+        self_confirmed = await send_tool.handler(draft_id=draft_id, confirm=True)
+        assert self_confirmed["status"] == "not_sent"
+
+        # Stage 4: Out-of-band user approval unlocks dispatch, but a provider is
+        # still required before anything reports as sent.
+        assert approve_sms_draft(draft_id, token) is True
         with patch.object(SMSAuditLogger, "mark_dispatched") as mock_mark:
-            send_res = await send_tool.handler(draft_id=draft_id, confirm=True)
-            assert send_res["status"] == "sent"
-            assert "dispatched" in send_res["message"]
+            approved_res = await send_tool.handler(draft_id=draft_id, confirm=True)
+        if os.getenv("TWILIO_ACCOUNT_SID"):
+            assert approved_res["status"] == "sent"
             assert mock_mark.called
+        else:
+            assert approved_res["status"] == "not_sent"
+            assert "provider" in approved_res["reason"].lower()
 
     def test_sms_audit_logging_hashes_destination(self, tmp_path: Path) -> None:
         """Verify phone numbers are hashed with SHA-256 for privacy in SQLite audit log."""

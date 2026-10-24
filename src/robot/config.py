@@ -8,6 +8,9 @@ settings updates (e.g. OpenAI-compatible API base URL and keys).
 from __future__ import annotations
 
 import os
+import re
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,13 @@ import yaml
 from robot.telemetry import get_logger
 
 logger = get_logger("config")
+
+#: Serializes read-modify-write cycles on shared runtime files (.env, YAML).
+_FILE_WRITE_LOCK = threading.Lock()
+
+#: Environment variable names must be shell/POSIX identifiers; this also keeps a
+#: caller-supplied key from injecting a second assignment into the .env file.
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def get_project_root() -> Path:
@@ -74,6 +84,25 @@ def load_system_config(config_path: str | Path = "config/default.yaml") -> dict[
     return config
 
 
+def _env_int(name: str) -> int | None:
+    """Read an integer environment override, logging malformed values.
+
+    Args:
+        name: Environment variable name.
+
+    Returns:
+        int | None: Parsed value, or ``None`` when unset or invalid.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning("invalid_env_override_ignored", variable=name, value=raw[:64])
+        return None
+
+
 def _apply_env_overrides(config: dict[str, Any]) -> None:
     """Merge environment variables into the nested configuration dictionary.
 
@@ -89,15 +118,13 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
     if "LLM_MODEL" in os.environ:
         llm["model"] = os.environ["LLM_MODEL"].strip()
     if "LLM_CONTEXT_WINDOW" in os.environ:
-        try:
-            llm["context_window"] = int(os.environ["LLM_CONTEXT_WINDOW"])
-        except ValueError:
-            pass
+        value = _env_int("LLM_CONTEXT_WINDOW")
+        if value is not None:
+            llm["context_window"] = value
     if "LLM_MAX_TOKENS" in os.environ:
-        try:
-            llm["max_tokens"] = int(os.environ["LLM_MAX_TOKENS"])
-        except ValueError:
-            pass
+        value = _env_int("LLM_MAX_TOKENS")
+        if value is not None:
+            llm["max_tokens"] = value
     if "LLM_MODEL_PATH" in os.environ:
         llm["model_path"] = os.environ["LLM_MODEL_PATH"].strip()
     if "LLM_MULTIMODAL" in os.environ:
@@ -116,10 +143,9 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
     if "GEMINI_MODEL" in os.environ:
         gemini["model"] = os.environ["GEMINI_MODEL"].strip()
     if "GEMINI_CONTEXT_WINDOW" in os.environ:
-        try:
-            gemini["context_window"] = int(os.environ["GEMINI_CONTEXT_WINDOW"])
-        except ValueError:
-            pass
+        value = _env_int("GEMINI_CONTEXT_WINDOW")
+        if value is not None:
+            gemini["context_window"] = value
 
     # OpenAI-Compatible Provider Overrides
     openai_comp = llm.setdefault("openai_compatible", {})
@@ -141,26 +167,29 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
             pass
 
     if "OPENAI_COMPATIBLE_CONTEXT_WINDOW" in os.environ:
-        try:
-            openai_comp["context_window"] = int(os.environ["OPENAI_COMPATIBLE_CONTEXT_WINDOW"])
-        except ValueError:
-            pass
+        value = _env_int("OPENAI_COMPATIBLE_CONTEXT_WINDOW")
+        if value is not None:
+            openai_comp["context_window"] = value
     if "OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING" in os.environ:
         openai_comp["enable_prompt_caching"] = os.environ["OPENAI_COMPATIBLE_ENABLE_PROMPT_CACHING"].strip().lower() in ("true", "1", "yes")
 
     # OpenRouter Provider Overrides
     openrouter = llm.setdefault("openrouter", {})
-    openrouter["base_url"] = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+    if "OPENROUTER_BASE_URL" in os.environ:
+        openrouter["base_url"] = os.environ["OPENROUTER_BASE_URL"].strip()
     if "OPENROUTER_API_KEY" in os.environ:
         openrouter["api_key"] = os.environ["OPENROUTER_API_KEY"].strip()
-    openrouter["model"] = os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free").strip().strip('"').strip("'")
+    if "OPENROUTER_MODEL" in os.environ:
+        openrouter["model"] = os.environ["OPENROUTER_MODEL"].strip().strip('"').strip("'")
 
     # AICredits Provider Overrides
     aicredits = llm.setdefault("aicredits", {})
-    aicredits["base_url"] = os.environ.get("AICREDITS_BASE_URL", "https://aicredits.in/v1").strip()
+    if "AICREDITS_BASE_URL" in os.environ:
+        aicredits["base_url"] = os.environ["AICREDITS_BASE_URL"].strip()
     if "AICREDITS_API_KEY" in os.environ:
         aicredits["api_key"] = os.environ["AICREDITS_API_KEY"].strip()
-    aicredits["model"] = os.environ.get("AICREDITS_MODEL", "aion-labs/aion-3.0").strip().strip('"').strip("'")
+    if "AICREDITS_MODEL" in os.environ:
+        aicredits["model"] = os.environ["AICREDITS_MODEL"].strip().strip('"').strip("'")
 
     # ─── STT Overrides ──────────────────────────────────────────────────────────
     stt = config.setdefault("stt", {})
@@ -216,8 +245,79 @@ def _apply_env_overrides(config: dict[str, Any]) -> None:
         logging_cfg["level"] = os.environ["LOG_LEVEL"].strip().upper()
 
 
+def atomic_write_text(path: str | Path, text: str, *, mode: int = 0o600) -> None:
+    """Write ``text`` to ``path`` atomically with owner-only permissions.
+
+    A crash mid-write must never leave a truncated ``.env`` or YAML file behind,
+    and secrets files must not be world-readable for even a moment. The data is
+    written to a sibling temporary file, fsynced, and moved into place with
+    :func:`os.replace` (atomic on POSIX). Failures propagate to the caller.
+
+    Args:
+        path: Destination file.
+        text: Complete new contents.
+        mode: Permission bits applied before the file is moved into place.
+
+    Raises:
+        OSError: When the temporary file cannot be written or the replace fails.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, target)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def write_yaml_atomic(path: str | Path, data: dict[str, Any]) -> None:
+    """Persist a configuration mapping as YAML without truncating in place.
+
+    Args:
+        path: Destination YAML file.
+        data: Mapping to serialize.
+    """
+    rendered = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+    with _FILE_WRITE_LOCK:
+        atomic_write_text(path, rendered, mode=0o600)
+
+
+def _escape_dotenv_value(value: str) -> str:
+    """Escape a value so it survives a quoted ``.env`` assignment intact.
+
+    Args:
+        value: Raw value.
+
+    Returns:
+        str: Backslash/quote-escaped value safe to place between double quotes.
+
+    Raises:
+        ValueError: If the value contains NUL or a line break, which would allow
+            a second assignment to be injected into the file.
+    """
+    if any(ch in value for ch in ("\x00", "\n", "\r")):
+        raise ValueError("Environment values may not contain NUL or line breaks.")
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def update_env_variable(key: str, value: str, env_path: str | Path | None = None) -> bool:
     """Update or append an environment variable in the root .env file.
+
+    The file is updated atomically with ``0600`` permissions and the value is
+    quoted/escaped so a key or model name containing quotes cannot corrupt the
+    file or inject another assignment.
 
     Args:
         key: Environment variable name (e.g. 'OPENAI_COMPATIBLE_MODEL').
@@ -227,34 +327,43 @@ def update_env_variable(key: str, value: str, env_path: str | Path | None = None
     Returns:
         bool: True if successfully written, False otherwise.
     """
+    if not _ENV_KEY_RE.match(key or ""):
+        logger.error("invalid_env_variable_name", key=key)
+        return False
+    try:
+        escaped = _escape_dotenv_value(str(value))
+    except ValueError as exc:
+        logger.error("invalid_env_variable_value", key=key, error=str(exc))
+        return False
+
     root = get_project_root()
     target = Path(env_path) if env_path else root / ".env"
-    os.environ[key] = value
+    os.environ[key] = str(value)
 
     try:
-        lines: list[str] = []
-        key_found = False
-        if target.exists():
-            with open(target, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+        with _FILE_WRITE_LOCK:
+            lines: list[str] = []
+            if target.exists():
+                with open(target, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
 
-        new_lines: list[str] = []
-        prefix = f"{key}="
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith(prefix) or stripped.startswith(f"export {prefix}"):
-                new_lines.append(f'{key}="{value}"\n')
-                key_found = True
-            else:
-                new_lines.append(line)
+            replacement = f'{key}="{escaped}"\n'
+            new_lines: list[str] = []
+            key_found = False
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}="):
+                    new_lines.append(replacement)
+                    key_found = True
+                else:
+                    new_lines.append(line)
 
-        if not key_found:
-            if new_lines and not new_lines[-1].endswith("\n"):
-                new_lines.append("\n")
-            new_lines.append(f'{key}="{value}"\n')
+            if not key_found:
+                if new_lines and not new_lines[-1].endswith("\n"):
+                    new_lines.append("\n")
+                new_lines.append(replacement)
 
-        with open(target, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
+            atomic_write_text(target, "".join(new_lines), mode=0o600)
 
         logger.info("env_variable_persisted", key=key, target=str(target))
         return True

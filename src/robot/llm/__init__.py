@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
+import inspect
 import json
 import os
+import random
 import re
+import shutil
 import signal
 import subprocess
+import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, AsyncGenerator, TextIO
+from typing import Any, AsyncGenerator, AsyncIterator, TextIO
 
 import httpx
 import requests
@@ -22,11 +27,139 @@ try:  # Optional dependency: used to terminate tracked PID gracefully.
 except ImportError:  # pragma: no cover - fallback path exercised without psutil
     psutil = None  # type: ignore[assignment]
 
+from robot.concurrency import spawn
+from robot.daemon_log import open_daemon_log
 from robot.llm.model_registry import ModelCategory, ModelMetadata, ModelRegistry
 from robot.llm.settings import LlamaServerSettings
 from robot.telemetry import get_logger
 
 logger = get_logger("llm")
+
+#: Retry/backoff tuning for streamed completions. Retries are only permitted before the
+#: first token is received, otherwise replaying the stream would duplicate spoken output.
+STREAM_MAX_RETRIES = 2
+STREAM_RETRY_BASE_DELAY = 0.5
+STREAM_RETRY_DEADLINE_SECONDS = 30.0
+STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=5.0)
+
+#: Retry policy for the OpenAI-compatible cloud client.
+CLOUD_MAX_RETRIES = 2
+CLOUD_RETRY_MAX_DELAY = 10.0
+
+
+class LLMStreamError(RuntimeError):
+    """Typed streaming failure the engine can surface without replaying tokens.
+
+    Raised when a provider fails *after* partial output has already been emitted. The
+    engine must not fail over to another model or retry the same request in that case.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str = "local",
+        status_code: int | None = None,
+        partial_output: bool = True,
+    ) -> None:
+        """Initialize the streaming error.
+
+        Args:
+            message: Safe, user-facing description.
+            provider: Provider identifier ('local', 'gemini', 'openai_compatible').
+            status_code: HTTP status when the failure was an HTTP response.
+            partial_output: Whether tokens were already yielded to the caller.
+        """
+        super().__init__(message)
+        self.provider = provider
+        self.status_code = status_code
+        self.partial_output = partial_output
+
+
+def _estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate prompt tokens for an entire message list.
+
+    Serialises every message including ``tool_calls`` arguments and multimodal content
+    blocks. Base64 image payloads are replaced by a fixed per-image token cost instead
+    of counting every character, which would wildly overestimate the budget.
+
+    Args:
+        messages: Chat messages in OpenAI format.
+
+    Returns:
+        int: Estimated prompt token count.
+    """
+    total_chars = 0
+    image_tokens = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            total_chars += len(str(message))
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    total_chars += len(str(part))
+                    continue
+                if part.get("type") in ("image_url", "input_image", "image"):
+                    image_tokens += 1024
+                    total_chars += len(str(part.get("type", "")))
+                else:
+                    total_chars += len(str(part.get("text", "")))
+        else:
+            total_chars += len(str(content or ""))
+        metadata = {k: v for k, v in message.items() if k != "content"}
+        total_chars += len(json.dumps(metadata, default=str))
+    return max(1, total_chars // 4 + image_tokens)
+
+
+def _jittered_delay(attempt: int, base: float = STREAM_RETRY_BASE_DELAY, cap: float = 8.0) -> float:
+    """Compute an exponentially backed-off, jittered retry delay.
+
+    Args:
+        attempt: Zero-based attempt number.
+        base: Base delay in seconds.
+        cap: Maximum delay in seconds.
+
+    Returns:
+        float: Delay including full jitter.
+    """
+    exponential = min(cap, base * (2 ** max(0, attempt)))
+    return exponential + random.uniform(0.0, exponential * 0.25)
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse an HTTP ``Retry-After`` header in seconds form.
+
+    Args:
+        value: Header value.
+
+    Returns:
+        float | None: Parsed delay, or None when absent/non-numeric.
+    """
+    if not value:
+        return None
+    try:
+        seconds = float(value.strip())
+    except ValueError:
+        return None
+    if seconds < 0 or seconds != seconds:
+        return None
+    return seconds
+
+
+def _project_root() -> Path:
+    """Return the repository root independently of the process working directory.
+
+    Returns:
+        Path: Absolute project root.
+    """
+    try:
+        from robot.config import get_project_root
+
+        return get_project_root()
+    except Exception:  # pragma: no cover - defensive fallback
+        return Path(__file__).resolve().parents[3]
 
 
 class LLMProvider(ABC):
@@ -167,6 +300,12 @@ class LlamaServerLLM(LLMProvider):
         self._last_prompt_tokens: int = 0
         self._last_ttft_ms: float = 0.0
         self._client: httpx.AsyncClient | None = None
+        # Reference counting for in-flight streams: a config change may retire the
+        # cached client while another turn is still streaming through it. The old
+        # client is closed only once its last stream finishes.
+        self._client_refs: dict[httpx.AsyncClient, int] = {}
+        self._retired_clients: set[httpx.AsyncClient] = set()
+        self._client_rebuild_lock = asyncio.Lock()
 
     def _get_client(self) -> httpx.AsyncClient:
         """Return a lazily created, cached httpx client reused across requests.
@@ -179,24 +318,69 @@ class LlamaServerLLM(LLMProvider):
         """
         if self._client is None or self._client.is_closed:
             limits = httpx.Limits(max_keepalive_connections=5, max_connections=10, keepalive_expiry=120.0)
-            self._client = httpx.AsyncClient(timeout=30.0, limits=limits)
+            self._client = httpx.AsyncClient(timeout=STREAM_TIMEOUT, limits=limits)
         return self._client
+
+    @contextlib.asynccontextmanager
+    async def _lease_client(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Lease the cached client for one request, tracking concurrent users.
+
+        Yields:
+            httpx.AsyncClient: Client that remains open for the duration of the lease.
+        """
+        client = self._get_client()
+        self._client_refs[client] = self._client_refs.get(client, 0) + 1
+        try:
+            yield client
+        finally:
+            remaining = self._client_refs.get(client, 1) - 1
+            if remaining > 0:
+                self._client_refs[client] = remaining
+            else:
+                self._client_refs.pop(client, None)
+                if client is not self._client:
+                    self._retired_clients.discard(client)
+                    try:
+                        await client.aclose()
+                    except Exception:
+                        pass
 
     async def aclose(self) -> None:
         """Close the cached HTTP client (call on engine shutdown)."""
-        if self._client is not None and not self._client.is_closed:
-            await self._client.aclose()
+        clients: list[httpx.AsyncClient] = []
+        if self._client is not None:
+            clients.append(self._client)
+        clients.extend(self._retired_clients)
         self._client = None
+        self._retired_clients.clear()
+        self._client_refs.clear()
+        for client in clients:
+            if not client.is_closed:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
 
     async def _rebuild_client(self) -> None:
-        """Discard and lazily recreate the cached client after a transport failure."""
-        client = self._client
-        self._client = None
-        if client is not None and not client.is_closed:
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+        """Retire the cached client after a transport failure.
+
+        The retired client is detached immediately so new requests use a fresh one, but
+        it is only closed after its last concurrent stream lease ends.
+        """
+        async with self._client_rebuild_lock:
+            client = self._client
+            self._client = None
+            if client is None:
+                return
+            if self._client_refs.get(client, 0) > 0:
+                self._retired_clients.add(client)
+                logger.debug("llm_client_retired_while_in_use")
+                return
+            if not client.is_closed:
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
 
     def set_canonical_tools(self, tools: list[dict[str, Any]]) -> None:
         """Set or update the canonical invariant tool schema set.
@@ -214,8 +398,8 @@ class LlamaServerLLM(LLMProvider):
             Dictionary containing slot processing status and prompt token count.
         """
         try:
-            client = self._get_client()
-            resp = await client.get(f"{self.base_url.rsplit('/v1', 1)[0]}/slots", timeout=3.0)
+            async with self._lease_client() as client:
+                resp = await client.get(f"{self.base_url.rsplit('/v1', 1)[0]}/slots", timeout=3.0)
             if resp.status_code == 200:
                 slots = resp.json()
                 if slots and isinstance(slots, list):
@@ -238,6 +422,10 @@ class LlamaServerLLM(LLMProvider):
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion tokens from local llama-server with KV cache preservation.
 
+        Transport retries are only performed before the first token is received. Once any
+        token has been received, a failure raises :class:`LLMStreamError` instead of
+        replaying the stream (which would duplicate spoken output).
+
         Args:
             messages: Formatted message turns.
             max_tokens: Maximum tokens to generate.
@@ -246,6 +434,9 @@ class LlamaServerLLM(LLMProvider):
 
         Yields:
             Generated text tokens or tool call JSON indicators.
+
+        Raises:
+            LLMStreamError: If the stream drops after partial output was received.
         """
         # Resolve effective tools:
         # Invariant tool set guarantees token 0 (# Tools) stays 100% byte-invariant across turns.
@@ -262,201 +453,292 @@ class LlamaServerLLM(LLMProvider):
         else:
             effective_tools = self.canonical_tools if self.use_invariant_tools else None
 
+        self._last_prompt_tokens = _estimate_messages_tokens(messages)
+
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
             "max_tokens": max_tokens,
             "chat_template_kwargs": {"enable_thinking": self.enable_thinking},
+            "stream_options": {"include_usage": True},
         }
         if effective_tools:
             payload["tools"] = effective_tools
 
-        max_retries = 2
-        for attempt in range(max_retries + 1):
+        deadline = time.monotonic() + STREAM_RETRY_DEADLINE_SECONDS
+        received_output = False
+
+        for attempt in range(STREAM_MAX_RETRIES + 1):
             try:
-                client = self._get_client()
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                ) as response:
-                    if response.status_code != 200:
-                        err_body = await response.aread()
-                        err_str = err_body.decode("utf-8", errors="replace")
-                        logger.error("llm_stream_error", status=response.status_code, body=err_str)
-                        # Auto-recovery for context overflow: prune older messages from middle while preserving system and latest user turn
-                        if response.status_code == 400 and ("exceeds" in err_str or "context" in err_str):
-                            logger.warning("llm_context_overflow_recovery", attempt=attempt)
-                            msgs = payload.get("messages", [])
-                            system_msg = next((m for m in msgs if m.get("role") == "system"), None)
-                            user_msg = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
-                            last_msg = msgs[-1] if msgs else None
-                            pruned: list[dict[str, Any]] = []
-                            if system_msg:
-                                pruned.append(system_msg)
-                            non_system = [m for m in msgs if m.get("role") != "system"]
-                            if len(non_system) > 2 and attempt == 0:
-                                pruned.extend(non_system[-2:])
-                            else:
-                                # Strip bloated environment telemetry/grounding and retain bare user instruction
-                                if user_msg:
-                                    u_copy = dict(user_msg)
-                                    u_text = str(u_copy.get("content", ""))
-                                    if "[User Instruction]:\n" in u_text:
-                                        u_copy["content"] = u_text.split("[User Instruction]:\n", 1)[1].strip()
-                                    elif "[User Instruction]:" in u_text:
-                                        u_copy["content"] = u_text.split("[User Instruction]:", 1)[1].strip()
-                                    pruned.append(u_copy)
-                            payload["messages"] = pruned or msgs
-                            if attempt < max_retries:
+                async with self._lease_client() as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        json=payload,
+                    ) as response:
+                        if response.status_code != 200:
+                            err_body = await response.aread()
+                            err_str = err_body.decode("utf-8", errors="replace")
+                            logger.error(
+                                "llm_stream_error",
+                                status=response.status_code,
+                                body=err_str[:300],
+                            )
+                            # Auto-recovery for context overflow: drop the oldest turns while
+                            # preserving the system prompt and the final user/assistant pair.
+                            if response.status_code == 400 and (
+                                "exceeds" in err_str.lower() or "context" in err_str.lower()
+                            ):
+                                pruned = self._trim_messages_for_overflow(
+                                    payload.get("messages", []), err_str
+                                )
+                                if pruned is not None and attempt < STREAM_MAX_RETRIES:
+                                    payload["messages"] = pruned
+                                    logger.warning(
+                                        "llm_context_overflow_recovery",
+                                        attempt=attempt,
+                                        message_count=len(pruned),
+                                        estimated_tokens=_estimate_messages_tokens(pruned),
+                                    )
+                                    continue
+                                yield "The local model context window is full (HTTP 400)."
+                                return
+                            if response.status_code == 400:
+                                yield "The local model rejected the request (HTTP 400)."
+                                return
+                            yield f"Local model request failed (HTTP {response.status_code})."
+                            return
+
+                        tool_calls_acc: dict[int, dict] = {}
+                        in_qwen_tag = False
+                        qwen_tag_buf = ""
+                        pending_text_buf = ""
+
+                        async for line in response.aiter_lines():
+                            if not line or line == "data: [DONE]":
                                 continue
-                        yield "I encountered an error connecting to my local inference model."
-                        return
-                    tool_calls_acc: dict[int, dict] = {}
-                    in_qwen_tag = False
-                    qwen_tag_buf = ""
-                    pending_text_buf = ""
+                            if line.startswith("data: "):
+                                try:
+                                    data = json.loads(line[6:])
+                                    usage = data.get("usage") or {}
+                                    if usage.get("prompt_tokens"):
+                                        self._last_prompt_tokens = int(usage["prompt_tokens"])
+                                    choices = data.get("choices") or []
+                                    if not choices:
+                                        continue
+                                    choice = choices[0]
+                                    delta = choice.get("delta", {})
 
-                    async for line in response.aiter_lines():
-                        if not line or line == "data: [DONE]":
-                            continue
-                        if line.startswith("data: "):
-                            try:
-                                data = json.loads(line[6:])
-                                choice = data["choices"][0]
-                                delta = choice.get("delta", {})
+                                    # Accumulate native OpenAI tool calls delta chunks
+                                    if "tool_calls" in delta and delta["tool_calls"]:
+                                        received_output = True
+                                        for tc in delta["tool_calls"]:
+                                            idx = tc.get("index", 0)
+                                            if idx not in tool_calls_acc:
+                                                tool_calls_acc[idx] = {
+                                                    "id": tc.get("id") or f"call_{idx}_{int(time.time()*1000)}",
+                                                    "type": "function",
+                                                    "function": {
+                                                        "name": tc.get("function", {}).get("name", ""),
+                                                        "arguments": "",
+                                                    },
+                                                }
+                                            if tc.get("id"):
+                                                tool_calls_acc[idx]["id"] = tc["id"]
+                                            fn = tc.get("function", {})
+                                            if fn.get("name"):
+                                                tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                            if fn.get("arguments"):
+                                                tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+                                        continue
 
-                                # Accumulate native OpenAI tool calls delta chunks
-                                if "tool_calls" in delta and delta["tool_calls"]:
-                                    for tc in delta["tool_calls"]:
-                                        idx = tc.get("index", 0)
-                                        if idx not in tool_calls_acc:
-                                            tool_calls_acc[idx] = {
-                                                "id": tc.get("id") or f"call_{idx}_{int(time.time()*1000)}",
-                                                "type": "function",
-                                                "function": {
-                                                    "name": tc.get("function", {}).get("name", ""),
-                                                    "arguments": "",
-                                                },
-                                            }
-                                        if tc.get("id"):
-                                            tool_calls_acc[idx]["id"] = tc["id"]
-                                        fn = tc.get("function", {})
-                                        if fn.get("name"):
-                                            tool_calls_acc[idx]["function"]["name"] = fn["name"]
-                                        if fn.get("arguments"):
-                                            tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
-                                    continue
+                                    token = delta.get("content", "")
+                                    if not token:
+                                        continue
+                                    received_output = True
 
-                                token = delta.get("content", "")
-                                if not token:
-                                    continue
-
-                                # Intercept Qwen-style <tool_call> tags embedded in content
-                                if in_qwen_tag:
-                                    qwen_tag_buf += token
-                                    if "</tool_call>" in qwen_tag_buf:
-                                        parsed = parse_qwen_tool_call_block(qwen_tag_buf)
-                                        for p_tc in parsed:
-                                            tool_calls_acc[len(tool_calls_acc)] = p_tc
-                                        post = qwen_tag_buf.split("</tool_call>", 1)[1]
-                                        in_qwen_tag = False
-                                        qwen_tag_buf = ""
-                                        pending_text_buf += post
-                                else:
-                                    pending_text_buf += token
-                                    if "<tool_call" in pending_text_buf:
-                                        pre, post = pending_text_buf.split("<tool_call", 1)
-                                        if pre:
-                                            yield pre
-                                        qwen_tag_buf = "<tool_call" + post
-                                        in_qwen_tag = True
-                                        pending_text_buf = ""
+                                    # Intercept Qwen-style <tool_call> tags embedded in content
+                                    if in_qwen_tag:
+                                        qwen_tag_buf += token
                                         if "</tool_call>" in qwen_tag_buf:
                                             parsed = parse_qwen_tool_call_block(qwen_tag_buf)
                                             for p_tc in parsed:
                                                 tool_calls_acc[len(tool_calls_acc)] = p_tc
-                                            post_close = qwen_tag_buf.split("</tool_call>", 1)[1]
+                                            post = qwen_tag_buf.split("</tool_call>", 1)[1]
                                             in_qwen_tag = False
                                             qwen_tag_buf = ""
-                                            pending_text_buf += post_close
+                                            pending_text_buf += post
                                     else:
-                                        # Hold back if pending_text_buf ends with an unclosed angle or square bracket
-                                        match = re.search(r"(?:<[^>]*$|\[[^\]]*$)", pending_text_buf)
-                                        if match:
-                                            safe_len = match.start()
-                                            if safe_len > 0:
-                                                yield pending_text_buf[:safe_len]
-                                                pending_text_buf = pending_text_buf[safe_len:]
-                                        else:
-                                            # Check if pending_text_buf contains bracketed tool calls to intercept
-                                            b_tool_match = re.search(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", pending_text_buf)
-                                            if b_tool_match:
-                                                pre = pending_text_buf[:b_tool_match.start()]
-                                                if pre:
-                                                    yield pre
-                                                t_name = b_tool_match.group(1).strip()
-                                                raw_a = (b_tool_match.group(2) or b_tool_match.group(3) or "").strip()
-                                                parsed_a = {}
-                                                if raw_a:
-                                                    try:
-                                                        parsed_a = json.loads(raw_a) if raw_a.startswith("{") else {"query": raw_a}
-                                                    except Exception:
-                                                        parsed_a = {"query": raw_a}
-                                                tool_calls_acc[len(tool_calls_acc)] = {
-                                                    "id": f"call_{int(time.time()*1000)}_{len(tool_calls_acc)}",
-                                                    "type": "function",
-                                                    "function": {"name": t_name, "arguments": json.dumps(parsed_a)},
-                                                }
-                                                pending_text_buf = pending_text_buf[b_tool_match.end():]
-                                                continue
-
-                                            # Strip meta category markers like [conversation] or [tools]
-                                            b_meta_match = re.search(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", pending_text_buf, re.IGNORECASE)
-                                            if b_meta_match:
-                                                pre = pending_text_buf[:b_meta_match.start()]
-                                                if pre:
-                                                    yield pre
-                                                pending_text_buf = pending_text_buf[b_meta_match.end():]
-                                                continue
-
-                                            # Strip internal planning headers e.g. GREETING_HANDLING: ...
-                                            b_plan_match = re.search(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", pending_text_buf, re.MULTILINE)
-                                            if b_plan_match:
-                                                pre = pending_text_buf[:b_plan_match.start()]
-                                                if pre:
-                                                    yield pre
-                                                pending_text_buf = pending_text_buf[b_plan_match.end():]
-                                                continue
-
-                                            yield pending_text_buf
+                                        pending_text_buf += token
+                                        if "<tool_call" in pending_text_buf:
+                                            pre, post = pending_text_buf.split("<tool_call", 1)
+                                            if pre:
+                                                yield pre
+                                            qwen_tag_buf = "<tool_call" + post
+                                            in_qwen_tag = True
                                             pending_text_buf = ""
-                            except (json.JSONDecodeError, KeyError, IndexError):
-                                continue
+                                            if "</tool_call>" in qwen_tag_buf:
+                                                parsed = parse_qwen_tool_call_block(qwen_tag_buf)
+                                                for p_tc in parsed:
+                                                    tool_calls_acc[len(tool_calls_acc)] = p_tc
+                                                post_close = qwen_tag_buf.split("</tool_call>", 1)[1]
+                                                in_qwen_tag = False
+                                                qwen_tag_buf = ""
+                                                pending_text_buf += post_close
+                                        else:
+                                            # Hold back if pending_text_buf ends with an unclosed angle or square bracket
+                                            match = re.search(r"(?:<[^>]*$|\[[^\]]*$)", pending_text_buf)
+                                            if match:
+                                                safe_len = match.start()
+                                                if safe_len > 0:
+                                                    yield pending_text_buf[:safe_len]
+                                                    pending_text_buf = pending_text_buf[safe_len:]
+                                            else:
+                                                # Check if pending_text_buf contains bracketed tool calls to intercept
+                                                b_tool_match = re.search(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", pending_text_buf)
+                                                if b_tool_match:
+                                                    pre = pending_text_buf[:b_tool_match.start()]
+                                                    if pre:
+                                                        yield pre
+                                                    t_name = b_tool_match.group(1).strip()
+                                                    raw_a = (b_tool_match.group(2) or b_tool_match.group(3) or "").strip()
+                                                    parsed_a = {}
+                                                    if raw_a:
+                                                        try:
+                                                            parsed_a = json.loads(raw_a) if raw_a.startswith("{") else {"query": raw_a}
+                                                        except Exception:
+                                                            parsed_a = {"query": raw_a}
+                                                    tool_calls_acc[len(tool_calls_acc)] = {
+                                                        "id": f"call_{int(time.time()*1000)}_{len(tool_calls_acc)}",
+                                                        "type": "function",
+                                                        "function": {"name": t_name, "arguments": json.dumps(parsed_a)},
+                                                    }
+                                                    pending_text_buf = pending_text_buf[b_tool_match.end():]
+                                                    continue
 
-                    if in_qwen_tag and qwen_tag_buf:
-                        parsed = parse_qwen_tool_call_block(qwen_tag_buf)
-                        for p_tc in parsed:
-                            tool_calls_acc[len(tool_calls_acc)] = p_tc
+                                                # Strip meta category markers like [conversation] or [tools]
+                                                b_meta_match = re.search(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", pending_text_buf, re.IGNORECASE)
+                                                if b_meta_match:
+                                                    pre = pending_text_buf[:b_meta_match.start()]
+                                                    if pre:
+                                                        yield pre
+                                                    pending_text_buf = pending_text_buf[b_meta_match.end():]
+                                                    continue
 
-                    if pending_text_buf and not pending_text_buf.startswith("<") and not re.match(r"^\[(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|conversation|tools?)[^\]]*\]", pending_text_buf):
-                        yield pending_text_buf
+                                                # Strip internal planning headers e.g. GREETING_HANDLING: ...
+                                                b_plan_match = re.search(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", pending_text_buf, re.MULTILINE)
+                                                if b_plan_match:
+                                                    pre = pending_text_buf[:b_plan_match.start()]
+                                                    if pre:
+                                                        yield pre
+                                                    pending_text_buf = pending_text_buf[b_plan_match.end():]
+                                                    continue
 
-                    if tool_calls_acc:
-                        yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
-                return
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                                                yield pending_text_buf
+                                                pending_text_buf = ""
+                                except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+                                    continue
+
+                        if in_qwen_tag and qwen_tag_buf:
+                            parsed = parse_qwen_tool_call_block(qwen_tag_buf)
+                            for p_tc in parsed:
+                                tool_calls_acc[len(tool_calls_acc)] = p_tc
+
+                        if pending_text_buf and not pending_text_buf.startswith("<") and not re.match(r"^\[(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|conversation|tools?)[^\]]*\]", pending_text_buf):
+                            yield pending_text_buf
+
+                        if tool_calls_acc:
+                            yield f"__TOOL_CALL__{json.dumps(list(tool_calls_acc.values()))}"
+                    return
+            except (httpx.TransportError, TimeoutError) as exc:
+                if received_output:
+                    # Never replay a stream that already produced output: the caller has
+                    # spoken or displayed it and a retry would duplicate content.
+                    logger.error("llm_stream_dropped_after_output", attempt=attempt, error=str(exc))
+                    raise LLMStreamError(
+                        "The local model stream was interrupted after partial output.",
+                        provider="local",
+                        partial_output=True,
+                    ) from exc
                 # A stale pooled connection after a transport error can poison retries;
                 # drop the cached client so the next attempt gets a fresh one.
                 await self._rebuild_client()
-                if attempt < max_retries:
-                    logger.warning("llm_connection_retry", attempt=attempt, error=str(exc))
-                    await asyncio.sleep(0.3)
-                else:
-                    logger.error("llm_stream_connect_failed", error=str(exc))
-                    yield "I encountered an error connecting to my local inference model."
-                    return
+                if attempt < STREAM_MAX_RETRIES and time.monotonic() < deadline:
+                    delay = _jittered_delay(attempt)
+                    logger.warning(
+                        "llm_connection_retry",
+                        attempt=attempt,
+                        delay_s=round(delay, 2),
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("llm_stream_connect_failed", error=str(exc))
+                yield "I encountered an error connecting to my local inference model."
+                return
+
+    @staticmethod
+    def _trim_messages_for_overflow(
+        messages: list[dict[str, Any]],
+        error_text: str,
+    ) -> list[dict[str, Any]] | None:
+        """Trim history after a context-overflow 400 while preserving the current turn.
+
+        The oldest turns are dropped first, the system prompt is retained, and the final
+        user message plus any assistant/tool messages that follow it are always kept so
+        the server never receives a system-only payload. Returns ``None`` when no safe
+        change is possible, which prevents repeated no-op prune attempts.
+
+        Args:
+            messages: Messages that triggered the overflow.
+            error_text: Server error body (used to infer the context budget).
+
+        Returns:
+            list[dict[str, Any]] | None: Trimmed message list, or None if unchanged.
+        """
+        if not messages:
+            return None
+        system_message = next((m for m in messages if m.get("role") == "system"), None)
+        non_system = [m for m in messages if m.get("role") != "system"]
+        last_user_index = next(
+            (i for i in range(len(non_system) - 1, -1, -1) if non_system[i].get("role") == "user"),
+            None,
+        )
+        if last_user_index is None:
+            return None
+
+        tail = [dict(m) for m in non_system[last_user_index:]]
+        user_message = tail[0]
+        user_text = str(user_message.get("content", ""))
+        if "[User Instruction]:\n" in user_text:
+            user_message["content"] = user_text.split("[User Instruction]:\n", 1)[1].strip()
+        elif "[User Instruction]:" in user_text:
+            user_message["content"] = user_text.split("[User Instruction]:", 1)[1].strip()
+
+        budget = 8192
+        match = re.search(r"(\d{3,7})\s*tokens?", error_text, re.IGNORECASE)
+        if match:
+            budget = max(512, int(match.group(1)) * 3 // 4)
+
+        head = [dict(m) for m in non_system[:last_user_index]]
+        base_prefix = [system_message] if system_message else []
+
+        def _candidate() -> list[dict[str, Any]]:
+            """Build the candidate payload from the current head and fixed tail."""
+            return base_prefix + head + tail
+
+        while head and _estimate_messages_tokens(_candidate()) > budget:
+            # Drop whole oldest turns (user+assistant) rather than orphaning a tool result.
+            drop = 2 if len(head) >= 2 else 1
+            head = head[drop:]
+
+        candidate = _candidate()
+        if candidate == messages:
+            candidate = base_prefix + tail
+        if candidate == messages or not any(m.get("role") == "user" for m in candidate):
+            return None
+        return candidate
 
     async def health_check(self) -> bool:
         """Async, non-blocking llama-server health probe.
@@ -469,8 +751,8 @@ class LlamaServerLLM(LLMProvider):
         """
         try:
             base = self.base_url.rsplit("/v1", 1)[0]
-            client = self._get_client()
-            resp = await client.get(f"{base}/health", timeout=3.0)
+            async with self._lease_client() as client:
+                resp = await client.get(f"{base}/health", timeout=3.0)
             return resp.status_code == 200
         except Exception as exc:
             logger.debug("llm_health_check_failed", error=str(exc))
@@ -505,6 +787,7 @@ class GeminiLLM(LLMProvider):
 
         self._client: httpx.AsyncClient | None = None
         self._model_cooldown: dict[str, float] = {}
+        self._last_prompt_tokens: int = 0
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -549,21 +832,28 @@ class GeminiLLM(LLMProvider):
                 sanitized_messages.append(m)
 
         # Dynamic model routing with circuit-breaker cooldown:
-        # Avoid wasting 2-3 seconds querying a model that hit 429 quota or 503 high demand.
+        # Models in cooldown are *skipped for this request* instead of being appended and
+        # retried, which previously defeated the circuit breaker after a 429/503.
         now = time.time()
         all_candidates = [self.model] + [m for m in self.fallback_models if m != self.model]
-        available_models = [m for m in all_candidates if self._model_cooldown.get(m, 0) < now]
-        cooldown_models = [m for m in all_candidates if self._model_cooldown.get(m, 0) >= now]
-        models_to_try = available_models + cooldown_models
+        models_to_try = [m for m in all_candidates if self._model_cooldown.get(m, 0) < now]
+        self._last_prompt_tokens = _estimate_messages_tokens(sanitized_messages)
+
+        if not models_to_try:
+            logger.warning("gemini_all_models_in_cooldown", models=all_candidates)
+            yield "All Gemini models are cooling down after recent rate limits. Please retry shortly."
+            return
 
         client = self._get_client()
 
         for model_name in models_to_try:
+            received_output = False
             payload = {
                 "model": model_name,
                 "messages": sanitized_messages,
                 "stream": True,
                 "max_tokens": max_tokens,
+                "stream_options": {"include_usage": True},
             }
             if tools:
                 payload["tools"] = tools
@@ -592,12 +882,16 @@ class GeminiLLM(LLMProvider):
                             if line.startswith("data: "):
                                 try:
                                     data = json.loads(line[6:])
+                                    usage = data.get("usage") or {}
+                                    if usage.get("prompt_tokens"):
+                                        self._last_prompt_tokens = int(usage["prompt_tokens"])
                                     choices = data.get("choices", [])
                                     if not choices:
                                         continue
                                     delta = choices[0].get("delta", {})
 
                                     if "tool_calls" in delta and delta["tool_calls"]:
+                                        received_output = True
                                         for tc in delta["tool_calls"]:
                                             idx = tc.get("index", 0)
                                             if idx not in tool_calls_acc:
@@ -620,10 +914,12 @@ class GeminiLLM(LLMProvider):
 
                                     reasoning = delta.get("reasoning_content") or delta.get("thought")
                                     if reasoning:
+                                        received_output = True
                                         yield f"__THOUGHT__{reasoning}"
 
                                     token = delta.get("content", "")
                                     if token:
+                                        received_output = True
                                         yield token
                                 except (json.JSONDecodeError, KeyError, IndexError):
                                     continue
@@ -653,6 +949,19 @@ class GeminiLLM(LLMProvider):
                             )
                         continue
             except Exception as exc:
+                if received_output:
+                    # Abort failover after partial output: switching models would replay
+                    # and duplicate what the user already heard or saw.
+                    logger.error(
+                        "gemini_stream_failed_after_output",
+                        model=model_name,
+                        error=str(exc),
+                    )
+                    raise LLMStreamError(
+                        "The Gemini stream was interrupted after partial output.",
+                        provider="gemini",
+                        partial_output=True,
+                    ) from exc
                 logger.warning("gemini_request_exception", model=model_name, error=str(exc))
                 continue
 
@@ -721,6 +1030,57 @@ class OpenAICompatibleLLM(LLMProvider):
         self.enable_prompt_caching = enable_prompt_caching
         self.timeout = timeout
         self.last_cached_tokens: int = 0
+        self._last_prompt_tokens: int = 0
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return a lazily created, cached AsyncClient with HTTP keep-alive.
+
+        Reusing one client across turns avoids a fresh TCP/TLS handshake per request.
+
+        Returns:
+            httpx.AsyncClient: Cached client for this provider instance.
+        """
+        if self._client is None or self._client.is_closed:
+            limits = httpx.Limits(max_keepalive_connections=10, max_connections=20, keepalive_expiry=120.0)
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=limits,
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the cached HTTP client (call when the engine replaces this provider)."""
+        if self._client is not None and not self._client.is_closed:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+        self._client = None
+
+    def _supports_stream_usage(self) -> bool:
+        """Return whether the endpoint is known to accept ``stream_options.include_usage``.
+
+        Returns:
+            bool: True for OpenAI-compatible providers that implement streaming usage.
+        """
+        base = self.base_url.lower()
+        known = (
+            "openai.com",
+            "openrouter.ai",
+            "deepseek.com",
+            "groq.com",
+            "mistral.ai",
+            "together.ai",
+            "together.xyz",
+            "fireworks.ai",
+            "aicredits.in",
+            "localhost",
+            "127.0.0.1",
+        )
+        if "anthropic" in base:
+            return False
+        return any(marker in base for marker in known)
 
     async def stream_chat(
         self,
@@ -1017,6 +1377,101 @@ class LlamaServerManager:
             pass
 
     @classmethod
+    def _binary_path_matches(cls, candidate: str | None, binary: Path) -> bool:
+        """Return True when a process executable/argv[0] resolves to the binary.
+
+        Args:
+            candidate: Process executable or argv[0], if readable.
+            binary: Expected llama-server binary path.
+
+        Returns:
+            bool: Whether both paths resolve to the same executable.
+        """
+        if not candidate:
+            return False
+        try:
+            return Path(candidate).resolve() == binary.resolve()
+        except OSError:
+            return False
+
+    @classmethod
+    def _discover_llama_pids(cls) -> list[int]:
+        """Find llama-server processes this manager can safely identify.
+
+        A process is a candidate only when its executable (or argv[0]) resolves
+        to :attr:`BINARY_PATH`, or its cmdline contains the exact configured
+        model path. Nothing else is ever signalled.
+
+        Returns:
+            list[int]: Matching PIDs, excluding this Python process.
+        """
+        if psutil is None:  # pragma: no cover - psutil is a hard dependency
+            return []
+        binary = Path(cls.BINARY_PATH)
+        model_str = str(cls.MODEL_PATH or "")
+        own_pid = os.getpid()
+        matches: list[int] = []
+        for proc in psutil.process_iter(["pid", "exe", "cmdline"]):
+            try:
+                pid = int(proc.info.get("pid") or 0)
+                if pid <= 0 or pid == own_pid:
+                    continue
+                cmdline = [str(arg) for arg in (proc.info.get("cmdline") or []) if arg]
+                matched = cls._binary_path_matches(proc.info.get("exe"), binary) or (
+                    cls._binary_path_matches(cmdline[0] if cmdline else None, binary)
+                )
+                if not matched and model_str:
+                    matched = any(model_str in arg for arg in cmdline)
+                if matched:
+                    matches.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+        return matches
+
+    @classmethod
+    async def _terminate_discovered(cls) -> bool:
+        """SIGTERM only the llama-server processes this manager can identify.
+
+        Used when no tracked handle exists — for example a server left over
+        from a previous run of this program. ``pkill -f`` is deliberately not
+        used: it also kills unrelated processes sharing the name, including a
+        second llama.cpp checkout the operator is developing against.
+
+        Returns:
+            bool: True when at least one candidate was identified and signalled.
+        """
+        pids = await asyncio.to_thread(cls._discover_llama_pids)
+        if not pids:
+            logger.warning("llama_server_stop_no_safe_target")
+            return False
+
+        logger.info("llama_server_terminating_discovered", pids=pids)
+        processes = []
+        for pid in pids:
+            try:
+                proc = psutil.Process(pid)
+                proc.terminate()  # SIGTERM only; escalated below
+                processes.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        for _ in range(30):
+            if not any(p.is_running() and p.status() != psutil.STATUS_ZOMBIE for p in processes):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            stragglers = [p for p in processes if p.is_running() and p.status() != psutil.STATUS_ZOMBIE]
+            logger.warning("llama_server_discovered_terminate_timeout", pids=[p.pid for p in stragglers])
+            for proc in stragglers:
+                try:
+                    proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        return bool(pids)
+
+    @classmethod
     async def _release_tracked_process(cls) -> bool:
         """Terminate the tracked llama-server (SIGTERM, escalate to SIGKILL) and close fds.
 
@@ -1046,10 +1501,11 @@ class LlamaServerManager:
     async def stop(cls) -> bool:
         """Stop the llama-server to free 100% of GPU VRAM (3.4 GB).
 
-        Terminates the tracked PID launched by this manager. Falls back to
-        `pkill -f llama-server` only when no tracked handle exists (e.g. a
-        server left over from a previous program run), so unrelated system
-        processes sharing the name are never killed.
+        Terminates the tracked PID launched by this manager. When no tracked
+        handle exists (e.g. a server left over from a previous program run),
+        psutil is used to signal only those processes whose executable resolves
+        to :attr:`BINARY_PATH` — unrelated processes sharing the name are never
+        killed.
 
         Returns:
             bool: True if the health endpoint confirmed shutdown, False otherwise.
@@ -1057,7 +1513,7 @@ class LlamaServerManager:
         logger.info("stopping_llama_server_freeing_vram")
         try:
             if not await cls._release_tracked_process():
-                subprocess.run(["pkill", "-9", "-f", "llama-server"], check=False)
+                await cls._terminate_discovered()
 
             for _ in range(25):
                 if not await cls.is_running_async():
@@ -1121,7 +1577,7 @@ class LlamaServerManager:
         log_dir = Path("logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         try:
-            log_file = open(log_dir / "llama-server.log", "a", encoding="utf-8")
+            log_file = open_daemon_log(log_dir / "llama-server.log")
         except OSError as e:
             logger.error("llama_server_log_open_failed", error=str(e))
             return False
@@ -1158,16 +1614,16 @@ class LlamaServerManager:
         return False
 
     @classmethod
-    def get_settings(cls) -> dict[str, Any]:
-        """Retrieve current llama-server configuration and status.
+    async def get_settings(cls) -> dict[str, Any]:
+        """Retrieve current llama-server configuration and live status.
 
         Returns:
             dict[str, Any]: Active settings dictionary and status metadata.
         """
-        s = LlamaServerSettings.load()
+        settings = await asyncio.to_thread(LlamaServerSettings.load)
         return {
-            "settings": s.to_dict(),
-            "is_running": cls.is_running(),
+            "settings": settings.to_dict(),
+            "is_running": await cls.is_running_async(),
             "active_model": cls.get_active_model_id(),
         }
 
@@ -1392,7 +1848,7 @@ class LlamaServerManager:
                     p_name = getattr(engine, "active_personality_name", "neo")
                     coro = engine.warm_up_llm(p_name)
                     if asyncio.iscoroutine(coro):
-                        asyncio.create_task(coro)
+                        spawn(coro, name="warm_up_llm")
                 if hasattr(engine, "events") and hasattr(engine.events, "emit"):
                     emit_coro = engine.events.emit(
                         "llm.model_changed",

@@ -7,6 +7,7 @@ updates, deletion, merging, namespaces, and context injection.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -14,18 +15,230 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
+from robot import config as robot_config
 from robot.telemetry import get_logger
 
 logger = get_logger("memory")
 
 # Project root (repo root), resolved from this file: <root>/src/robot/memory/__init__.py.
-# Used to anchor CWD-relative default DB paths so a stray 0-byte conversations.db
-# is never created when the process starts from a different working directory.
+# Kept as a module constant for backward compatibility; runtime path resolution uses
+# ``robot.config.get_project_root()`` so CWD changes (and test monkeypatching) cannot
+# move the data directory.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+#: Canonical persona aliases. ``cypher`` is Neo's memory namespace and the historical
+#: public name of the built-in assistant persona.
+PERSONA_ALIASES: dict[str, str] = {
+    "cypher": "neo",
+    "matrix": "neo",
+    "hacker": "neo",
+    "cyber": "neo",
+}
+
+#: Persona identifiers that are allowed to use the shared system-user profile.
+SYSTEM_PERSONA_NAMES: frozenset[str] = frozenset(
+    {"user", "neo", "luna", "aria", "glados", "cypher", "matrix", "hacker", "cyber"}
+)
+
+#: Safety ceiling for FTS query tokens; keeps a hostile query from becoming a giant
+#: MATCH expression.
+_MAX_FTS_TOKENS = 16
+_MAX_FTS_TOKEN_LEN = 64
+
+#: Ceiling on archive rows read into one context build. Callers ask for tens of
+#: turns; an unbounded ``limit`` would let a client pull the whole history.
+MAX_ARCHIVE_ROWS = 2_000
+#: Ceiling on rows scanned before fact de-duplication.
+MAX_FACT_SCAN_ROWS = 2_000
+
+#: Conversation metadata keys that contain hidden chain-of-thought / model reasoning.
+#: They are stripped before persistence so private reasoning never becomes a
+#: world-readable database row.
+_REDACTED_METADATA_KEYS: frozenset[str] = frozenset(
+    {
+        "thought",
+        "thoughts",
+        "thinking",
+        "reasoning",
+        "reasoning_content",
+        "reasoning_text",
+        "chain_of_thought",
+        "cot",
+    }
+)
+
+
+def normalize_persona(name: str | None) -> str:
+    """Normalize a persona identifier and resolve built-in aliases.
+
+    Args:
+        name: Raw persona identifier (case-insensitive, alias-aware).
+
+    Returns:
+        Canonical lowercase persona identifier; ``"neo"`` when empty.
+    """
+    clean = (name or "").strip().lower()
+    if not clean:
+        return "neo"
+    return PERSONA_ALIASES.get(clean, clean)
+
+
+def persona_variants(name: str | None) -> tuple[str, ...]:
+    """Return every stored persona spelling that belongs to ``name``.
+
+    Conversation rows historically used both the active persona name (``neo``) and
+    the memory namespace (``cypher``). Reads must treat both as the same persona
+    while still excluding unrelated personas.
+
+    Args:
+        name: Persona identifier.
+
+    Returns:
+        Tuple of lowercase persona identifiers accepted for this persona.
+    """
+    canonical = normalize_persona(name)
+    variants = {canonical}
+    for alias, target in PERSONA_ALIASES.items():
+        if target == canonical:
+            variants.add(alias)
+    return tuple(sorted(variants))
+
+
+def generate_session_id() -> str:
+    """Create a collision-resistant chat session identifier.
+
+    Returns:
+        A full UUID-based session identifier prefixed with ``chat_``.
+    """
+    return f"chat_{uuid.uuid4()}"
+
+
+def _persona_expr(column: str) -> str:
+    """Return the SQL expression that normalizes a persona column.
+
+    Every persona-scoped predicate and every persona index must spell this the
+    same way: SQLite only uses an expression index when the queried expression
+    is structurally identical to the one that was indexed.
+
+    Args:
+        column: Column reference, optionally table-qualified.
+
+    Returns:
+        Normalized, lower-cased persona expression with the default persona.
+    """
+    return f"LOWER(COALESCE(NULLIF(TRIM({column}), ''), 'neo'))"
+
+
+def _clause_for(name: str | None, column: str = "personality") -> tuple[str, tuple[str, ...]]:
+    """Return the persona SQL predicate and its positional parameters."""
+    variants = persona_variants(name)
+    placeholders = ", ".join("?" for _ in variants)
+    sql = f"{_persona_expr(column)} IN ({placeholders})"
+    return sql, variants
+
+
+def _sanitize_fts_query(query: str) -> str:
+    """Turn arbitrary user input into a safe FTS5 ``MATCH`` expression.
+
+    Raw text is never passed to ``MATCH``: quotes, ``*``, ``:``, ``NEAR`` and
+    boolean operators have FTS5 syntax meaning and raised ``OperationalError``
+    (HTTP 500) for ordinary search queries. Tokens are split on non-word
+    characters, quoted, length-capped, and AND-joined.
+
+    Args:
+        query: Raw user query.
+
+    Returns:
+        A quoted FTS expression, or ``""`` when no searchable token exists.
+    """
+    raw_tokens = re.findall(r"\w+", (query or "").lower(), flags=re.UNICODE)
+    operators = {"and", "or", "not", "near"}
+    tokens: list[str] = []
+    for token in raw_tokens:
+        token = token[:_MAX_FTS_TOKEN_LEN]
+        if not token or token in operators:
+            continue
+        tokens.append(token)
+        if len(tokens) >= _MAX_FTS_TOKENS:
+            break
+    if not tokens:
+        return ""
+    return " AND ".join(f'"{token}"' for token in tokens)
+
+
+def _sanitize_metadata(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Strip private model reasoning from conversation metadata.
+
+    Args:
+        metadata: Optional metadata mapping supplied by the caller.
+
+    Returns:
+        A copy without chain-of-thought keys, or ``None`` when nothing remains.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    clean = {
+        key: value
+        for key, value in metadata.items()
+        if str(key).strip().lower() not in _REDACTED_METADATA_KEYS
+    }
+    return clean or None
+
+
+def _harden_permissions(db_path: Path) -> None:
+    """Restrict a conversation database (and its WAL sidecars) to the owner.
+
+    Args:
+        db_path: SQLite database file path.
+    """
+    try:
+        os.chmod(db_path.parent, 0o700)
+    except OSError:
+        pass
+    for candidate in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        try:
+            if candidate.exists():
+                os.chmod(candidate, 0o600)
+        except OSError:
+            pass
+
+
+def _parse_json_field(raw: Any, expected_type: type, default: Any, *, user_id: str = "") -> Any:
+    """Parse a JSON profile column defensively.
+
+    Corrupted or type-mismatched JSON falls back to ``default`` instead of
+    crashing every profile read.
+
+    Args:
+        raw: Raw database value.
+        expected_type: ``dict`` or ``list``.
+        default: Value returned when parsing fails.
+        user_id: Namespace used only for structured logging.
+
+    Returns:
+        Parsed value with the expected container type, or ``default``.
+    """
+    if raw is None or raw == "":
+        return default
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("profile_json_parse_failed", user_id=user_id, error=type(exc).__name__)
+        return default
+    if not isinstance(parsed, expected_type):
+        logger.warning(
+            "profile_json_type_mismatch",
+            user_id=user_id,
+            expected=expected_type.__name__,
+            actual=type(parsed).__name__,
+        )
+        return default
+    return parsed
 
 
 class Mem0Provider:
@@ -39,6 +252,39 @@ class Mem0Provider:
         self._config = config
         self._memory = None
         self._initialized = False
+        try:
+            self._timeout = float(config.get("timeout_seconds", 5.0))
+        except (TypeError, ValueError):
+            self._timeout = 5.0
+        if self._timeout <= 0:
+            self._timeout = None
+        # A timed-out call cannot be cancelled: its worker thread keeps running
+        # and keeps talking to the client. This lock lives in the worker, so the
+        # orphan serializes against the next call instead of opening the same
+        # Qdrant collection twice.
+        self._client_lock = threading.Lock()
+
+    def _call_client(self, func: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run one mem0 client call with exclusive access to the underlying store.
+
+        Args:
+            func: Bound mem0 method to invoke.
+            *args: Positional arguments for the call.
+            **kwargs: Keyword arguments for the call.
+
+        Returns:
+            Whatever the mem0 call returns.
+
+        Raises:
+            TimeoutError: If the store is still busy after the configured timeout.
+        """
+        budget = self._timeout if self._timeout else 5.0
+        if not self._client_lock.acquire(timeout=budget):
+            raise TimeoutError(f"memory backend busy for more than {budget:.1f}s")
+        try:
+            return func(*args, **kwargs)
+        finally:
+            self._client_lock.release()
 
     async def initialize(self) -> None:
         try:
@@ -126,15 +372,24 @@ class Mem0Provider:
         if not self._initialized or not self._memory:
             return None
         try:
-            result = await asyncio.to_thread(
+            future = asyncio.to_thread(
+                self._call_client,
                 self._memory.add,
                 messages,
                 user_id=user_id,
-                metadata=metadata or {},
+                metadata={**(metadata or {}), "namespace": user_id},
                 infer=infer,
+            )
+            result = (
+                await asyncio.wait_for(future, timeout=self._timeout)
+                if self._timeout
+                else await future
             )
             logger.info("memory_stored", user_id=user_id)
             return result
+        except asyncio.TimeoutError:
+            logger.warning("memory_store_timeout", user_id=user_id, timeout_s=self._timeout)
+            return None
         except Exception as e:
             logger.error("memory_store_failed", error=str(e))
             return None
@@ -149,11 +404,17 @@ class Mem0Provider:
         if not self._initialized or not self._memory:
             return []
         try:
-            raw = await asyncio.to_thread(
+            future = asyncio.to_thread(
+                self._call_client,
                 self._memory.search,
                 query,
                 filters={"user_id": user_id},
                 top_k=limit,
+            )
+            raw = (
+                await asyncio.wait_for(future, timeout=self._timeout)
+                if self._timeout
+                else await future
             )
             # In Mem0 v1.1+, search returns {'results': [...]}. Handle both dict and list.
             if isinstance(raw, dict):
@@ -174,8 +435,13 @@ class Mem0Provider:
                     cleaned.append(item)
                 elif isinstance(item, str):
                     cleaned.append({"memory": item})
-            logger.info("memory_searched", query=query[:50], results=len(cleaned))
+            # Do not log raw user queries: they frequently contain personal data and
+            # the database/query log is world-readable on some installations.
+            logger.info("memory_searched", query_chars=len(query or ""), results=len(cleaned))
             return cleaned
+        except asyncio.TimeoutError:
+            logger.warning("memory_search_timeout", timeout_s=self._timeout)
+            return []
         except Exception as e:
             logger.error("memory_search_failed", error=str(e))
             return []
@@ -186,7 +452,7 @@ class Mem0Provider:
             return []
         try:
             raw = await asyncio.to_thread(
-                self._memory.get_all, filters={"user_id": user_id}
+                self._call_client, self._memory.get_all, filters={"user_id": user_id}
             )
             if isinstance(raw, dict):
                 results = raw.get("results", [])
@@ -227,38 +493,196 @@ class Mem0Provider:
 class ConversationHistory:
     """SQLite + FTS conversation archive.
 
-    Stores complete conversations, tool events, timestamps,
-    sessions, and important system events.
+    Every public read path is scoped to a persona. Rows written by another
+    persona are never returned, even when they share the same database file
+    (legacy archives did exactly that). The SQLite connection is a single
+    ``check_same_thread=False`` handle guarded by an ``RLock``; all execution
+    and row materialization happen under that lock inside worker threads.
     """
 
-    def __init__(self, db_path: str = "data/database/conversations.db") -> None:
+    #: Schema migration version applied once per database file.
+    SCHEMA_VERSION = 1
+
+    def __init__(
+        self,
+        db_path: str = "data/database/conversations.db",
+        personality: str | None = None,
+        *,
+        retention_days: int | None = 180,
+        max_messages: int | None = None,
+    ) -> None:
+        self._in_memory = str(db_path) == ":memory:"
         p = Path(db_path)
-        if not p.is_absolute():
+        if not self._in_memory and not p.is_absolute():
             # Anchor relative defaults to the project root, not the process CWD.
-            p = _PROJECT_ROOT / p
+            p = robot_config.get_project_root() / p
         self.db_path = p
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self._in_memory:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                os.chmod(self.db_path.parent, 0o700)
+            except OSError:
+                pass
         self._conn: sqlite3.Connection | None = None
         # Shared connection is used from asyncio.to_thread worker threads and
         # read on the event loop; every execute/commit/fetch sequence must
         # hold this lock to serialize access to the single sqlite3 connection.
         self._db_lock = threading.RLock()
 
+        # Persona context. An explicit argument (or a persona-scoped path such
+        # as .../personas/neo/conversations.db) pins the namespace; otherwise
+        # legacy/test databases infer it from their session/personality rows.
+        inferred = personality or self._infer_personality_from_path(p)
+        self._personality: str | None = normalize_persona(inferred) if inferred else None
+        self._personality_explicit = bool(inferred)
+
+        self._busy_timeout_ms = 5000
+        self._write_retries = 3
+        self._retention_days = self._normalize_retention(retention_days)
+        self._max_messages = max_messages if (max_messages and max_messages > 0) else None
+        self._last_retention_cleanup = 0.0
+
+    # ------------------------------------------------------------------
+    # Persona resolution
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _infer_personality_from_path(path: Path) -> str | None:
+        """Infer a persona id from ``.../personas/<id>/conversations.db``."""
+        try:
+            parts = path.resolve().parts
+        except OSError:
+            return None
+        for idx, part in enumerate(parts):
+            if part == "personas" and idx + 1 < len(parts):
+                candidate = parts[idx + 1].strip().lower()
+                if re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", candidate):
+                    return candidate
+        return None
+
+    @staticmethod
+    def _normalize_retention(value: Any) -> int | None:
+        """Normalize a retention setting; ``None``/``<=0`` explicitly disables it."""
+        if value is None:
+            return None
+        try:
+            days = int(value)
+        except (TypeError, ValueError):
+            return 180
+        return days if days > 0 else None
+
+    @property
+    def personality(self) -> str:
+        """Active persona namespace for reads and writes."""
+        return self._personality or "neo"
+
+    @personality.setter
+    def personality(self, value: str | None) -> None:
+        """Pin the active persona namespace explicitly."""
+        self._personality = normalize_persona(value)
+        self._personality_explicit = True
+
+    @property
+    def has_explicit_personality(self) -> bool:
+        """Whether the persona was supplied/path-derived rather than inferred."""
+        return self._personality_explicit and self._personality is not None
+
+    def _resolve_personality_sync(self, session_id: str | None = None) -> str:
+        """Resolve the persona for an unscoped legacy/test database."""
+        if self._personality:
+            return self._personality
+        if session_id and self._conn is not None:
+            row = self._run_locked(
+                lambda conn: conn.execute(
+                    "SELECT personality FROM sessions WHERE id = ? LIMIT 1", (session_id,)
+                ).fetchone()
+            )
+            if row and row[0]:
+                return normalize_persona(str(row[0]))
+        rows = self._run_locked(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT personality FROM conversations "
+                "WHERE personality IS NOT NULL AND TRIM(personality) != '' LIMIT 2"
+            ).fetchall()
+        ) or []
+        if len(rows) == 1 and rows[0][0]:
+            return normalize_persona(str(rows[0][0]))
+        return "neo"
+
+    async def _persona_for(
+        self, personality: str | None = None, session_id: str | None = None
+    ) -> str:
+        """Resolve a persona without blocking the event loop."""
+        if personality:
+            return normalize_persona(personality)
+        if self._personality:
+            return self._personality
+        return await asyncio.to_thread(self._resolve_personality_sync, session_id)
+
     # ------------------------------------------------------------------
     # Thread-safe SQLite helpers (all DB I/O goes through these)
     # ------------------------------------------------------------------
 
-    def _run_locked(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
-        """Run `operation(conn)` atomically under the shared DB lock.
+    def _run_locked(
+        self, operation: Callable[[sqlite3.Connection], Any], *, retries: int | None = None
+    ) -> Any:
+        """Run ``operation(conn)`` atomically under the shared DB lock.
 
-        Call this from a worker thread (asyncio.to_thread) so cursor creation
-        AND row materialization (fetchall/fetchone) happen inside the same
-        locked thread task instead of being consumed on another thread.
+        ``database is locked`` is retried with bounded exponential backoff
+        (the connection also carries ``busy_timeout=5000``). Any exception
+        rolls back a partially applied transaction before propagating, so a
+        failed multi-statement write can never leave the connection in an
+        open transaction.
+
+        Args:
+            operation: Callable receiving the live connection.
+            retries: Optional attempt override.
+
+        Returns:
+            Whatever ``operation`` returns, or ``None`` when not connected.
         """
-        with self._db_lock:
-            if self._conn is None:
-                return None
-            return operation(self._conn)
+        attempts = max(1, retries if retries is not None else self._write_retries)
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            busy = False
+            with self._db_lock:
+                if self._conn is None:
+                    return None
+                try:
+                    return operation(self._conn)
+                except sqlite3.OperationalError as exc:
+                    message = str(exc).lower()
+                    busy = "locked" in message or "busy" in message
+                    try:
+                        self._conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    last_error = exc
+                    if not busy or attempt == attempts - 1:
+                        raise
+                except sqlite3.Error:
+                    try:
+                        self._conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
+                except Exception:
+                    try:
+                        self._conn.rollback()
+                    except sqlite3.Error:
+                        pass
+                    raise
+            # The external writer may release while we sleep outside the lock.
+            time.sleep(min(0.05 * (2 ** attempt), 0.5))
+        if last_error is not None:
+            raise last_error
+        return None
+
+    def _require_connection(self) -> sqlite3.Connection:
+        """Return the live connection or raise instead of silently dropping a write."""
+        if self._conn is None:
+            raise RuntimeError("conversation database is not initialized")
+        return self._conn
 
     def _query_rows(self, sql: str, params: tuple = ()) -> list:
         """Execute a SELECT and materialize all rows in one locked thread task."""
@@ -276,26 +700,50 @@ class ConversationHistory:
         return self._run_locked(_op)
 
     def _execute_commit(self, statements: list[tuple[str, tuple]]) -> None:
-        """Execute one or more statements and commit, all under the DB lock."""
-        def _op(conn: sqlite3.Connection) -> None:
-            for sql, params in statements:
-                conn.execute(sql, params)
-            conn.commit()
+        """Execute one or more statements and commit atomically under the DB lock."""
+        self._require_connection()
 
-        self._run_locked(_op)
+        def _op(conn: sqlite3.Connection) -> None:
+            try:
+                for sql, params in statements:
+                    conn.execute(sql, params)
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+
+        try:
+            self._run_locked(_op)
+        except Exception as exc:
+            logger.error("history_write_failed", error=type(exc).__name__, statements=len(statements))
+            raise
+        if not self._in_memory:
+            _harden_permissions(self.db_path)
 
     async def initialize(self) -> None:
-        """Create tables and FTS index (serialized on the DB lock)."""
+        """Create tables, indexes and FTS triggers, then run one-time migrations."""
         await asyncio.to_thread(self._initialize_sync)
 
     def _initialize_sync(self) -> None:
         """Blocking schema setup; runs under the DB lock in a worker thread."""
         with self._db_lock:
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
+            if self._conn is not None:
+                return
+            self._conn = sqlite3.connect(
+                str(self.db_path) if not self._in_memory else ":memory:",
+                timeout=5.0,
+                check_same_thread=False,
+            )
+            conn = self._conn
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(f"PRAGMA busy_timeout={self._busy_timeout_ms}")
+            conn.execute("PRAGMA foreign_keys=ON")
 
-            self._conn.executescript(
+            conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS conversations (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -308,6 +756,16 @@ class ConversationHistory:
                     tool_result TEXT,
                     timestamp TEXT NOT NULL,
                     metadata TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    personality TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    turn_count INTEGER DEFAULT 0,
+                    title TEXT DEFAULT 'New Chat',
+                    updated_at TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_session ON conversations(session_id);
@@ -323,15 +781,16 @@ class ConversationHistory:
                     INSERT INTO conversations_fts(rowid, content) VALUES (new.id, new.content);
                 END;
 
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    personality TEXT NOT NULL,
-                    started_at TEXT NOT NULL,
-                    ended_at TEXT,
-                    turn_count INTEGER DEFAULT 0,
-                    title TEXT DEFAULT 'New Chat',
-                    updated_at TEXT
-                );
+                CREATE TRIGGER IF NOT EXISTS conversations_ad AFTER DELETE ON conversations BEGIN
+                    INSERT INTO conversations_fts(conversations_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS conversations_au AFTER UPDATE ON conversations BEGIN
+                    INSERT INTO conversations_fts(conversations_fts, rowid, content)
+                    VALUES ('delete', old.id, old.content);
+                    INSERT INTO conversations_fts(rowid, content) VALUES (new.id, new.content);
+                END;
 
                 CREATE TABLE IF NOT EXISTS facts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -351,6 +810,17 @@ class ConversationHistory:
                     INSERT INTO facts_fts(rowid, fact) VALUES (new.id, new.fact);
                 END;
 
+                CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+                    INSERT INTO facts_fts(facts_fts, rowid, fact)
+                    VALUES ('delete', old.id, old.fact);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+                    INSERT INTO facts_fts(facts_fts, rowid, fact)
+                    VALUES ('delete', old.id, old.fact);
+                    INSERT INTO facts_fts(rowid, fact) VALUES (new.id, new.fact);
+                END;
+
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id TEXT PRIMARY KEY,
                     durable_preferences TEXT NOT NULL DEFAULT '{}',
@@ -361,93 +831,286 @@ class ConversationHistory:
                 );
             """
             )
-            self._conn.commit()
+            conn.commit()
 
-            # Migrate existing sessions table if title or updated_at are missing
+            # Migrate existing sessions table if title or updated_at are missing.
             try:
-                cur = self._conn.execute("PRAGMA table_info(sessions)")
+                cur = conn.execute("PRAGMA table_info(sessions)")
                 existing_cols = {row[1] for row in cur.fetchall()}
                 if "title" not in existing_cols:
-                    self._conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT 'New Chat'")
+                    conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT 'New Chat'")
                 if "updated_at" not in existing_cols:
-                    self._conn.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
-                self._conn.commit()
-            except Exception:
-                pass
+                    conn.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
+                conn.commit()
+            except sqlite3.Error as exc:
+                logger.warning("history_sessions_migration_failed", error=str(exc))
 
-            # Clean up any legacy system event titles in sessions
-            try:
-                self._conn.execute("UPDATE sessions SET title = 'Voice Chat' WHERE title LIKE '[%'")
-                self._conn.commit()
-            except Exception:
-                pass
+            self._apply_persona_indexes(conn)
+            self._apply_migrations(conn)
+            self._repair_fts_if_needed(conn)
+            if not self._in_memory:
+                _harden_permissions(self.db_path)
+            logger.info(
+                "history_initialized",
+                db=str(self.db_path),
+                personality=self.personality,
+                explicit=self._personality_explicit,
+            )
 
-            # Backfill any historical voice sessions from conversations into sessions
+    def _apply_persona_indexes(self, conn: sqlite3.Connection) -> None:
+        """Install the expression indexes that persona-scoped queries actually use.
+
+        Every persona predicate normalizes the column
+        (``LOWER(COALESCE(NULLIF(TRIM(personality), ''), 'neo'))``), and SQLite
+        only uses an expression index when the queried expression matches the
+        indexed one. The older plain-personality composites can never match, so
+        they are dropped: they cost a write per message and serve no read.
+        """
+        normalized = _persona_expr("personality")
+        statements = [
+            # Superseded plain-column composites.
+            "DROP INDEX IF EXISTS idx_conversations_session_persona",
+            "DROP INDEX IF EXISTS idx_conversations_persona_timestamp",
+            "DROP INDEX IF EXISTS idx_sessions_persona_updated",
+            f"CREATE INDEX IF NOT EXISTS idx_conversations_persona_norm "
+            f"ON conversations({normalized})",
+            f"CREATE INDEX IF NOT EXISTS idx_conversations_session_persona_norm "
+            f"ON conversations(session_id, {normalized})",
+            f"CREATE INDEX IF NOT EXISTS idx_sessions_persona_norm "
+            f"ON sessions({normalized}, updated_at)",
+        ]
+        for sql in statements:
             try:
-                self._conn.execute(
-                    """
-                    INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
-                    SELECT 
-                        c.session_id,
-                        COALESCE(MAX(c.personality), 'neo') as pers,
-                        MIN(c.timestamp) as started,
-                        MAX(c.timestamp) as updated,
-                        COUNT(*)/2 as turns,
-                        COALESCE(
-                            (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
-                             FROM conversations
-                             WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
-                             ORDER BY id ASC LIMIT 1),
-                            'Voice Chat'
-                        ) as title
-                    FROM conversations c
-                    WHERE c.session_id NOT IN (SELECT id FROM sessions)
-                    GROUP BY c.session_id;
-                    """
+                conn.execute(sql)
+            except sqlite3.Error as exc:
+                logger.warning("persona_index_failed", error=str(exc)[:200])
+        conn.commit()
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        """Apply the one-time schema/data migration (idempotent, versioned)."""
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_version ("
+                "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+            )
+            row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+            current = int(row[0]) if row and row[0] is not None else 0
+            if current >= self.SCHEMA_VERSION:
+                conn.commit()
+                return
+
+            # 1. Legacy system-event titles.
+            conn.execute("UPDATE sessions SET title = 'Voice Chat' WHERE title LIKE '[%'")
+
+            # 2. Backfill session rows for historical conversations exactly once.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO sessions
+                    (id, personality, started_at, updated_at, turn_count, title)
+                SELECT
+                    c.session_id,
+                    LOWER(COALESCE(NULLIF(TRIM(c.personality), ''), 'neo')) AS pers,
+                    MIN(c.timestamp) AS started,
+                    MAX(c.timestamp) AS updated,
+                    COUNT(*) / 2 AS turns,
+                    COALESCE(
+                        (SELECT SUBSTR(u.content, 1, 36) ||
+                                (CASE WHEN LENGTH(u.content) > 36 THEN '...' ELSE '' END)
+                         FROM conversations u
+                         WHERE u.session_id = c.session_id
+                           AND u.role = 'user'
+                           AND u.content NOT LIKE '[%'
+                         ORDER BY u.id ASC LIMIT 1),
+                        'Voice Chat'
+                    ) AS title
+                FROM conversations c
+                WHERE c.session_id NOT IN (SELECT id FROM sessions)
+                GROUP BY c.session_id;
+                """
+            )
+
+            # 3. Remove known STT/lyric poison once, then rebuild the FTS index.
+            #    Every clause must match a distinctive multi-word fragment: a
+            #    short pattern here silently destroys legitimate facts (an
+            #    earlier "%cold.%" clause deleted anything mentioning a cold).
+            poison_clauses = [
+                "fact LIKE '%world would never ever be true%'",
+                "fact LIKE '%never love my whole game%'",
+                "fact LIKE '%point where I love and I hate you%'",
+                "fact LIKE '%my name is logged out in jail%'",
+                "fact LIKE '%current activity: going to school%'",
+                "fact LIKE '%Dove Cameron%'",
+                "fact LIKE '%skip to content%'",
+            ]
+            deleted = conn.execute(
+                f"DELETE FROM facts WHERE {' OR '.join(poison_clauses)}"
+            ).rowcount
+
+            # 4. Deduplicate only exact normalized duplicates; distinct values
+            #    (e.g. two favorite colors) are always preserved.
+            conn.execute(
+                "DELETE FROM facts WHERE id NOT IN ("
+                "SELECT MIN(id) FROM facts GROUP BY user_id, LOWER(fact))"
+            )
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_user_fact_norm "
+                    "ON facts(user_id, LOWER(fact))"
                 )
-                self._conn.commit()
-            except Exception as e:
-                logger.warning("history_backfill_sessions_failed", error=str(e))
+            except sqlite3.Error as exc:
+                # A legacy duplicate that survived normalization must never
+                # prevent startup; add_fact still performs lock-protected dedupe.
+                logger.warning("facts_unique_index_failed", error=str(exc))
 
-            # Clean up poisoned facts (STT song lyric noise, obsolete benchmarks, duplicates)
-            # and rebuild the facts FTS index ONLY when a schema/rowid-count sentinel
-            # changed — a full rebuild every boot on large archives is wasteful.
+            # 5. Rebuild both external-content FTS indexes with the FTS5 rebuild
+            #    command (DELETE FROM an external-content table is invalid).
+            conn.execute("INSERT INTO conversations_fts(conversations_fts) VALUES('rebuild')")
+            conn.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
+
+            conn.execute(
+                "INSERT INTO schema_version(version, applied_at) VALUES (?, ?)",
+                (self.SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+            logger.info(
+                "history_migration_applied",
+                version=self.SCHEMA_VERSION,
+                poison_deleted=deleted,
+                db=str(self.db_path),
+            )
+        except sqlite3.Error as exc:
             try:
-                poison_clauses = [
-                    "fact LIKE '%world would never ever be true%'",
-                    "fact LIKE '%never love my whole game%'",
-                    "fact LIKE '%point where I love and I hate you%'",
-                    "fact LIKE '%my name is logged out in jail%'",
-                    "fact LIKE '%current activity: going to school%'",
-                    "fact LIKE '%Dove Cameron%'",
-                    "fact LIKE '%skip to content%'",
-                    "fact LIKE '%openrouter%'",
-                    "fact LIKE '%cold.%'",
-                    "fact LIKE '%cold,%'",
-                ]
-                delete_sql = f"DELETE FROM facts WHERE {' OR '.join(poison_clauses)}"
-                deleted = self._conn.execute(delete_sql).rowcount
-                facts_count = int(self._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
-                fts_count = int(self._conn.execute("SELECT COUNT(*) FROM facts_fts").fetchone()[0])
-                if deleted > 0 or facts_count != fts_count:
-                    logger.info(
-                        "history_fts_rebuild",
-                        reason="poisoned_deletions" if deleted > 0 else "rowid_count_sentinel_changed",
-                        facts_count=facts_count,
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            logger.error("history_migration_failed", error=str(exc), db=str(self.db_path))
+
+    @staticmethod
+    def _repair_fts_if_needed(conn: sqlite3.Connection) -> None:
+        """Verify FTS indexes and rebuild them when orphan/mismatched rows exist."""
+        pairs = (
+            ("conversations", "conversations_fts"),
+            ("facts", "facts_fts"),
+        )
+        for base_table, fts_table in pairs:
+            try:
+                base_count = int(conn.execute(f"SELECT COUNT(*) FROM {base_table}").fetchone()[0])
+                fts_count = int(conn.execute(f"SELECT COUNT(*) FROM {fts_table}").fetchone()[0])
+                if base_count != fts_count:
+                    logger.warning(
+                        "history_fts_orphans_detected",
+                        table=fts_table,
+                        base_count=base_count,
                         fts_count=fts_count,
                     )
-                    self._conn.execute("DELETE FROM facts_fts")
-                    self._conn.execute(
-                        "INSERT INTO facts_fts (rowid, fact) SELECT id, fact FROM facts"
-                    )
-                    self._conn.commit()
+                    conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('rebuild')")
                 else:
-                    self._conn.commit()
-                    logger.info("history_fts_up_to_date", facts_count=facts_count)
-            except Exception as e:
-                logger.warning("history_facts_cleanup_failed", error=str(e))
+                    try:
+                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('integrity-check')")
+                    except sqlite3.Error:
+                        logger.warning("history_fts_integrity_failed", table=fts_table)
+                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('rebuild')")
+                conn.commit()
+            except sqlite3.Error as exc:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                logger.warning("history_fts_check_failed", table=fts_table, error=str(exc))
 
-            logger.info("history_initialized", db=str(self.db_path))
+    # ------------------------------------------------------------------
+    # Retention
+    # ------------------------------------------------------------------
+
+    def configure_retention(
+        self, retention_days: Any = 180, max_messages: Any = None
+    ) -> None:
+        """Configure periodic archive retention without touching recent data."""
+        self._retention_days = self._normalize_retention(retention_days)
+        try:
+            limit = int(max_messages) if max_messages is not None else 0
+        except (TypeError, ValueError):
+            limit = 0
+        self._max_messages = limit if limit > 0 else None
+
+    async def maybe_cleanup_retention(self, *, force: bool = False) -> int:
+        """Run cheap bounded retention cleanup at most once per interval."""
+        now = time.monotonic()
+        if not force and now - self._last_retention_cleanup < 3600:
+            return 0
+        self._last_retention_cleanup = now
+        return await asyncio.to_thread(self._cleanup_retention_sync, force)
+
+    def _cleanup_retention_sync(self, force: bool = False) -> int:
+        """Delete a bounded batch of old archive rows and vacuum occasionally."""
+        if self._retention_days is None and self._max_messages is None:
+            return 0
+        deleted_total = 0
+        cutoff = None
+        if self._retention_days is not None:
+            cutoff = (
+                datetime.now(timezone.utc) - timedelta(days=self._retention_days)
+            ).isoformat()
+
+        def _op(conn: sqlite3.Connection) -> int:
+            deleted = 0
+            try:
+                if cutoff is not None:
+                    cur = conn.execute(
+                        "DELETE FROM conversations WHERE id IN ("
+                        "SELECT id FROM conversations WHERE timestamp < ? LIMIT 500)",
+                        (cutoff,),
+                    )
+                    deleted += max(0, cur.rowcount)
+                    cur = conn.execute(
+                        "DELETE FROM sessions WHERE id NOT IN "
+                        "(SELECT DISTINCT session_id FROM conversations) "
+                        "AND COALESCE(updated_at, started_at) < ?",
+                        (cutoff,),
+                    )
+                    deleted += max(0, cur.rowcount)
+                if self._max_messages is not None:
+                    row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
+                    total = int(row[0]) if row else 0
+                    excess = max(0, total - self._max_messages)
+                    if excess:
+                        cut = min(excess, 1000)
+                        cur = conn.execute(
+                            "DELETE FROM conversations WHERE id IN ("
+                            "SELECT id FROM conversations ORDER BY id ASC LIMIT ?)",
+                            (cut,),
+                        )
+                        deleted += max(0, cur.rowcount)
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
+            return deleted
+
+        try:
+            deleted_total = int(self._run_locked(_op) or 0)
+        except Exception as exc:
+            logger.warning("history_retention_cleanup_failed", error=type(exc).__name__)
+            return 0
+
+        if deleted_total:
+            logger.info("history_retention_cleaned", rows=deleted_total, db=str(self.db_path))
+            # VACUUM at most once per forced/manual cycle; it is never part of
+            # a normal turn's write path.
+            if force:
+                try:
+                    with self._db_lock:
+                        if self._conn is not None:
+                            self._conn.execute("VACUUM")
+                except sqlite3.Error as exc:
+                    logger.warning("history_vacuum_failed", error=str(exc))
+            if not self._in_memory:
+                _harden_permissions(self.db_path)
+        return deleted_total
+
 
     async def add_message(
         self,
@@ -460,10 +1123,15 @@ class ConversationHistory:
         tool_result: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        """Record a conversation message."""
-        if not self._conn:
-            return
+        """Record a conversation message.
+
+        Raises:
+            RuntimeError: If the database has not been initialized. A write is
+                never silently discarded.
+        """
+        self._require_connection()
         t_res_str = json.dumps(tool_result) if isinstance(tool_result, (dict, list)) else tool_result
+        safe_metadata = _sanitize_metadata(metadata)
         await asyncio.to_thread(
             self._execute_commit,
             [
@@ -476,45 +1144,69 @@ class ConversationHistory:
                         session_id,
                         role,
                         content,
-                        personality,
+                        normalize_persona(personality),
                         turn_number,
                         tool_name,
                         t_res_str,
                         datetime.now(timezone.utc).isoformat(),
-                        json.dumps(metadata) if metadata else None,
+                        json.dumps(safe_metadata) if safe_metadata else None,
                     ),
                 )
             ],
         )
 
-    async def search(self, query: str, limit: int = 10) -> list[dict]:
-        """Full-text search across conversation history."""
+    async def search(
+        self, query: str, limit: int = 10, personality: str | None = None
+    ) -> list[dict]:
+        """Full-text search scoped to one persona.
+
+        Args:
+            query: Raw user query; tokenized and quoted before reaching FTS5.
+            limit: Maximum rows.
+            personality: Persona namespace; defaults to the active persona.
+
+        Returns:
+            Matching messages, or an empty list for an unsearchable query.
+        """
         if not self._conn:
             return []
-        rows = await asyncio.to_thread(
-            self._query_rows,
-            """SELECT c.role, c.content, c.timestamp, c.session_id
-               FROM conversations_fts f
-               JOIN conversations c ON c.id = f.rowid
-               WHERE f.content MATCH ?
-               ORDER BY c.timestamp DESC
-               LIMIT ?""",
-            (query, limit),
-        )
+        safe_query = _sanitize_fts_query(query)
+        if not safe_query:
+            return []
+        persona = await self._persona_for(personality)
+        clause, variants = _clause_for(persona, "c.personality")
+        try:
+            rows = await asyncio.to_thread(
+                self._query_rows,
+                f"""SELECT c.role, c.content, c.timestamp, c.session_id
+                   FROM conversations_fts f
+                   JOIN conversations c ON c.id = f.rowid
+                   WHERE f.content MATCH ? AND {clause}
+                   ORDER BY c.timestamp DESC
+                   LIMIT ?""",
+                (safe_query, *variants, limit),
+            )
+        except sqlite3.Error as exc:
+            logger.warning("history_search_failed", error=str(exc)[:200], query_chars=len(query or ""))
+            return []
         return [
             {"role": r[0], "content": r[1], "timestamp": r[2], "session_id": r[3]} for r in rows
         ]
 
-    async def get_recent(self, session_id: str, limit: int = 20) -> list[dict]:
-        """Get recent messages from current session."""
+    async def get_recent(
+        self, session_id: str, limit: int = 20, personality: str | None = None
+    ) -> list[dict]:
+        """Get recent messages from the current session within one persona."""
         if not self._conn:
             return []
+        persona = await self._persona_for(personality, session_id)
+        clause, variants = _clause_for(persona)
         rows = await asyncio.to_thread(
             self._query_rows,
-            """SELECT role, content, timestamp FROM conversations
-               WHERE session_id = ?
+            f"""SELECT role, content, timestamp FROM conversations
+               WHERE session_id = ? AND {clause}
                ORDER BY id DESC LIMIT ?""",
-            (session_id, limit),
+            (session_id, *variants, limit),
         )
         return [
             {"role": r[0], "content": r[1], "timestamp": r[2]}
@@ -522,16 +1214,20 @@ class ConversationHistory:
             if r[1] and r[1].strip() not in ("[", "]", "<", ">")
         ]
 
-    async def clear_turn(self, session_id: str, turn_number: int = 0) -> None:
+    async def clear_turn(
+        self, session_id: str, turn_number: int = 0, personality: str | None = None
+    ) -> None:
         """Clear a specific turn (e.g. turn 0 bootstrap) from session history."""
-        if not self._conn:
-            return
+        self._require_connection()
+        persona = await self._persona_for(personality, session_id)
+        clause, variants = _clause_for(persona)
         await asyncio.to_thread(
             self._execute_commit,
             [
                 (
-                    "DELETE FROM conversations WHERE session_id = ? AND turn_number = ?",
-                    (session_id, turn_number),
+                    "DELETE FROM conversations WHERE session_id = ? AND turn_number = ? "
+                    f"AND {clause}",
+                    (session_id, turn_number, *variants),
                 )
             ],
         )
@@ -541,9 +1237,10 @@ class ConversationHistory:
     ) -> dict:
         """Create or register a new isolated conversation session."""
         if not session_id:
-            session_id = f"chat_{str(uuid.uuid4())[:8]}"
+            session_id = generate_session_id()
+        persona = normalize_persona(personality)
         if not self._conn:
-            return {"id": session_id, "session_id": session_id, "personality": personality, "title": title}
+            return {"id": session_id, "session_id": session_id, "personality": persona, "title": title}
         now_iso = datetime.now(timezone.utc).isoformat()
         await asyncio.to_thread(
             self._execute_commit,
@@ -551,66 +1248,48 @@ class ConversationHistory:
                 (
                     """INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
                        VALUES (?, ?, ?, ?, 0, ?)""",
-                    (session_id, personality, now_iso, now_iso, title),
+                    (session_id, persona, now_iso, now_iso, title),
                 )
             ],
         )
         return {
             "id": session_id,
             "session_id": session_id,
-            "personality": personality,
+            "personality": persona,
             "title": title,
             "started_at": now_iso,
             "updated_at": now_iso,
             "turn_count": 0,
         }
 
-    async def list_sessions(self, limit: int = 150) -> list[dict]:
-        """List past chat sessions ordered by most recently active."""
+    async def list_sessions(
+        self, limit: int = 150, personality: str | None = None
+    ) -> list[dict]:
+        """List past chat sessions for one persona, most recently active first.
+
+        This is a pure read path: legacy session backfill happens once during
+        initialize (schema migration), never on a GET request.
+        """
         if not self._conn:
             return []
-
-        # Ensure any orphan conversations have session records
-        try:
-            await asyncio.to_thread(
-                self._execute_commit,
-                [
-                    (
-                        """
-                        INSERT OR IGNORE INTO sessions (id, personality, started_at, updated_at, turn_count, title)
-                        SELECT 
-                            c.session_id,
-                            COALESCE(MAX(c.personality), 'neo'),
-                            MIN(c.timestamp),
-                            MAX(c.timestamp),
-                            COUNT(*)/2,
-                            COALESCE(
-                                (SELECT SUBSTR(content, 1, 36) || (CASE WHEN LENGTH(content) > 36 THEN '...' ELSE '' END)
-                                 FROM conversations
-                                 WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%'
-                                 ORDER BY id ASC LIMIT 1),
-                                'Voice Chat'
-                            )
-                        FROM conversations c
-                        WHERE c.session_id NOT IN (SELECT id FROM sessions)
-                        GROUP BY c.session_id;
-                        """,
-                        (),
-                    )
-                ],
-            )
-        except Exception:
-            pass
-
+        persona = await self._persona_for(personality)
+        sess_clause, sess_variants = _clause_for(persona, "s.personality")
+        msg_clause, msg_variants = _clause_for(persona, "c.personality")
         rows = await asyncio.to_thread(
             self._query_rows,
-            """SELECT s.id, s.personality, s.started_at, s.updated_at, s.turn_count, s.title,
-                      (SELECT content FROM conversations WHERE session_id = s.id AND role = 'assistant' ORDER BY id DESC LIMIT 1) as last_assistant_msg,
-                      (SELECT content FROM conversations WHERE session_id = s.id AND role = 'user' AND content NOT LIKE '[%' ORDER BY id ASC LIMIT 1) as first_user_msg
+            f"""SELECT s.id, s.personality, s.started_at, s.updated_at, s.turn_count, s.title,
+                      (SELECT c.content FROM conversations c
+                        WHERE c.session_id = s.id AND c.role = 'assistant' AND {msg_clause}
+                        ORDER BY c.id DESC LIMIT 1) as last_assistant_msg,
+                      (SELECT c.content FROM conversations c
+                        WHERE c.session_id = s.id AND c.role = 'user' AND c.content NOT LIKE '[%'
+                          AND {msg_clause}
+                        ORDER BY c.id ASC LIMIT 1) as first_user_msg
                FROM sessions s
+               WHERE {sess_clause}
                ORDER BY COALESCE(s.updated_at, s.started_at) DESC
                LIMIT ?""",
-            (limit,),
+            (*msg_variants, *msg_variants, *sess_variants, limit),
         )
         result = []
         for r in rows:
@@ -633,35 +1312,45 @@ class ConversationHistory:
             })
         return result
 
-    async def get_session(self, session_id: str) -> dict | None:
-        """Get session metadata by ID, falling back to conversations table if needed."""
+    async def get_session(
+        self, session_id: str, personality: str | None = None
+    ) -> dict | None:
+        """Get session metadata by ID, scoped to one persona."""
         if not self._conn:
             return None
+        persona = await self._persona_for(personality, session_id)
+        sess_clause, sess_variants = _clause_for(persona, "personality")
         row = await asyncio.to_thread(
             self._query_one,
-            """SELECT id, personality, started_at, updated_at, turn_count, title
+            f"""SELECT id, personality, started_at, updated_at, turn_count, title
                FROM sessions
-               WHERE id = ?""",
-            (session_id,),
+               WHERE id = ? AND {sess_clause}""",
+            (session_id, *sess_variants),
         )
         if not row:
+            msg_clause, msg_variants = _clause_for(persona, "c.personality")
             c_row = await asyncio.to_thread(
                 self._query_one,
-                """SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'), MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
+                f"""SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'),
+                           MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
                           COALESCE(
-                            (SELECT SUBSTR(content, 1, 36) FROM conversations WHERE session_id = c.session_id AND role = 'user' AND content NOT LIKE '[%' ORDER BY id ASC LIMIT 1),
+                            (SELECT SUBSTR(u.content, 1, 36)
+                             FROM conversations u
+                             WHERE u.session_id = c.session_id AND u.role = 'user'
+                               AND u.content NOT LIKE '[%'
+                             ORDER BY u.id ASC LIMIT 1),
                             'Voice Chat'
                           )
                    FROM conversations c
-                   WHERE c.session_id = ?
+                   WHERE c.session_id = ? AND {msg_clause}
                    GROUP BY c.session_id""",
-                (session_id,),
+                (session_id, *msg_variants),
             )
             if not c_row:
                 return None
             return {
                 "id": c_row[0],
-                "personality": c_row[1] or "neo",
+                "personality": normalize_persona(str(c_row[1] or "neo")),
                 "started_at": c_row[2],
                 "updated_at": c_row[3],
                 "turn_count": c_row[4] or 0,
@@ -676,38 +1365,62 @@ class ConversationHistory:
             "title": row[5] or "Conversation",
         }
 
-    async def get_stats(self) -> dict[str, int]:
-        """Return memory statistics including fact count and total conversation messages.
+    async def get_stats(
+        self, personality: str | None = None, user_id: str | None = None
+    ) -> dict[str, int]:
+        """Return persona-scoped memory statistics.
+
+        Args:
+            personality: Persona whose conversations/sessions are counted.
+            user_id: Optional fact namespace filter.
 
         Returns:
-            dict[str, int]: Dictionary containing facts_count, messages_count, and sessions_count.
+            Dictionary containing facts_count, messages_count, and sessions_count.
         """
         if not self._conn:
             return {"facts_count": 0, "messages_count": 0, "sessions_count": 0}
+        persona = await self._persona_for(personality)
+        msg_clause, variants = _clause_for(persona, "personality")
+        sess_clause, _ = _clause_for(persona, "personality")
 
-        def _query() -> dict[str, int]:
-            def _op(conn: sqlite3.Connection) -> dict[str, int]:
+        def _op(conn: sqlite3.Connection) -> dict[str, int]:
+            if user_id:
+                f_count = int(
+                    conn.execute("SELECT COUNT(*) FROM facts WHERE user_id = ?", (user_id,)).fetchone()[0]
+                )
+            else:
                 f_count = int(conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0])
-                m_count = int(conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0])
-                s_count = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-                return {"facts_count": f_count, "messages_count": m_count, "sessions_count": s_count}
+            m_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM conversations WHERE {msg_clause}", variants
+                ).fetchone()[0]
+            )
+            s_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM sessions WHERE {sess_clause}", variants
+                ).fetchone()[0]
+            )
+            return {"facts_count": f_count, "messages_count": m_count, "sessions_count": s_count}
 
-            return self._run_locked(_op)
+        return await asyncio.to_thread(self._run_locked, _op)
 
-        return await asyncio.to_thread(_query)
-
-    async def get_session_messages(self, session_id: str, limit: int = 200) -> list[dict]:
-        """Get all messages for an isolated session, including tool call details and metrics."""
+    async def get_session_messages(
+        self, session_id: str, limit: int = 200, personality: str | None = None
+    ) -> list[dict]:
+        """Get all messages for an isolated session within one persona."""
         if not self._conn:
             return []
+        persona = await self._persona_for(personality, session_id)
+        clause, variants = _clause_for(persona)
         rows = await asyncio.to_thread(
             self._query_rows,
-            """SELECT id, role, content, personality, turn_number, tool_name, tool_result, timestamp, metadata
+            f"""SELECT id, role, content, personality, turn_number, tool_name,
+                       tool_result, timestamp, metadata
                FROM conversations
-               WHERE session_id = ?
+               WHERE session_id = ? AND {clause}
                ORDER BY id ASC
                LIMIT ?""",
-            (session_id, limit),
+            (session_id, *variants, limit),
         )
         msgs = []
         for r in rows:
@@ -737,91 +1450,125 @@ class ConversationHistory:
             })
         return msgs
 
-    async def delete_session(self, session_id: str) -> bool:
-        """Delete an isolated session and all its messages."""
-        if not self._conn:
-            return False
+    async def delete_session(self, session_id: str, personality: str | None = None) -> bool:
+        """Delete an isolated session and all its messages within one persona."""
+        self._require_connection()
+        persona = await self._persona_for(personality, session_id)
+        msg_clause, msg_variants = _clause_for(persona)
+        sess_clause, sess_variants = _clause_for(persona)
         await asyncio.to_thread(
             self._execute_commit,
             [
-                ("DELETE FROM conversations WHERE session_id = ?", (session_id,)),
-                ("DELETE FROM sessions WHERE id = ?", (session_id,)),
+                (
+                    f"DELETE FROM conversations WHERE session_id = ? AND {msg_clause}",
+                    (session_id, *msg_variants),
+                ),
+                (
+                    f"DELETE FROM sessions WHERE id = ? AND {sess_clause}",
+                    (session_id, *sess_variants),
+                ),
             ],
         )
         return True
 
     async def update_session(
-        self, session_id: str, title: str | None = None, turn_count: int | None = None
+        self,
+        session_id: str,
+        title: str | None = None,
+        turn_count: int | None = None,
+        personality: str | None = None,
     ) -> None:
-        """Update session metadata."""
-        if not self._conn:
-            return
+        """Update session metadata within one persona."""
+        self._require_connection()
+        persona = await self._persona_for(personality, session_id)
+        clause, variants = _clause_for(persona)
         now_iso = datetime.now(timezone.utc).isoformat()
         if title is not None and turn_count is not None:
-            sql = "UPDATE sessions SET title = ?, turn_count = ?, updated_at = ? WHERE id = ?"
-            params: tuple = (title, turn_count, now_iso, session_id)
+            sql = (
+                "UPDATE sessions SET title = ?, turn_count = ?, updated_at = ? "
+                f"WHERE id = ? AND {clause}"
+            )
+            params: tuple = (title, turn_count, now_iso, session_id, *variants)
         elif title is not None:
-            sql = "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?"
-            params = (title, now_iso, session_id)
+            sql = f"UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND {clause}"
+            params = (title, now_iso, session_id, *variants)
         elif turn_count is not None:
-            sql = "UPDATE sessions SET turn_count = ?, updated_at = ? WHERE id = ?"
-            params = (turn_count, now_iso, session_id)
+            sql = f"UPDATE sessions SET turn_count = ?, updated_at = ? WHERE id = ? AND {clause}"
+            params = (turn_count, now_iso, session_id, *variants)
         else:
-            sql = "UPDATE sessions SET updated_at = ? WHERE id = ?"
-            params = (now_iso, session_id)
+            sql = f"UPDATE sessions SET updated_at = ? WHERE id = ? AND {clause}"
+            params = (now_iso, session_id, *variants)
         await asyncio.to_thread(self._execute_commit, [(sql, params)])
 
-    async def update_session_title(self, session_id: str, title: str) -> None:
+    async def update_session_title(
+        self, session_id: str, title: str, personality: str | None = None
+    ) -> None:
         """Update session title."""
-        await self.update_session(session_id, title=title)
+        await self.update_session(session_id, title=title, personality=personality)
 
-    async def update_session_title_if_default(self, session_id: str, new_title: str) -> None:
+    async def update_session_title_if_default(
+        self, session_id: str, new_title: str, personality: str | None = None
+    ) -> None:
         """Update session title only if it is currently a generic default or system event string."""
-        if not self._conn:
-            return
+        self._require_connection()
+        persona = await self._persona_for(personality, session_id)
+        clause, variants = _clause_for(persona)
         await asyncio.to_thread(
             self._execute_commit,
             [
                 (
-                    """UPDATE sessions 
-                       SET title = ? 
-                       WHERE id = ? AND (title IN ('New Chat', 'Voice Chat', 'Chat', 'New Conversation', '') OR title LIKE '[%')""",
-                    (new_title, session_id),
+                    f"""UPDATE sessions
+                       SET title = ?
+                       WHERE id = ? AND {clause}
+                         AND (title IN ('New Chat', 'Voice Chat', 'Chat', 'New Conversation', '')
+                              OR title LIKE '[%')""",
+                    (new_title, session_id, *variants),
                 )
             ],
         )
 
-    async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> None:
-        """Store a durable fact in SQLite, preventing duplicate entries.
+    async def add_fact(self, fact: str, user_id: str = "user", key: str | None = None) -> bool:
+        """Store a durable fact in SQLite, preventing exact duplicates.
 
-        The dedupe SELECT, the INSERT, and the commit run as one atomic
-        locked unit so concurrent add_fact calls cannot race past the
-        duplicate check.
+        The dedupe SELECT, INSERT, and commit run as one locked transaction so
+        concurrent ``add_fact`` calls cannot race past the duplicate check.
+
+        Returns:
+            True when a new row was inserted, False for a duplicate or blank fact.
         """
-        if not self._conn:
-            return
-        clean_fact = fact.strip()
+        self._require_connection()
+        clean_fact = (fact or "").strip()
         if not clean_fact:
-            return
+            return False
+        namespace = (user_id or "").strip() or "user"
 
         def _add_atomic(conn: sqlite3.Connection) -> bool:
             try:
                 row = conn.execute(
-                    """SELECT id FROM facts WHERE (user_id = ? OR user_id = 'default') AND LOWER(fact) = LOWER(?) LIMIT 1""",
-                    (user_id, clean_fact),
+                    "SELECT id FROM facts WHERE user_id = ? AND LOWER(fact) = LOWER(?) LIMIT 1",
+                    (namespace, clean_fact),
                 ).fetchone()
                 if row:
+                    conn.commit()
                     return False
+                conn.execute(
+                    """INSERT INTO facts (key, fact, user_id, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (key, clean_fact, namespace, datetime.now(timezone.utc).isoformat()),
+                )
+                conn.commit()
+                return True
             except Exception:
-                pass
-            conn.execute(
-                """INSERT INTO facts (key, fact, user_id, created_at) VALUES (?, ?, ?, ?)""",
-                (key, clean_fact, user_id, datetime.now(timezone.utc).isoformat()),
-            )
-            conn.commit()
-            return True
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                raise
 
-        await asyncio.to_thread(self._run_locked, _add_atomic)
+        result = await asyncio.to_thread(self._run_locked, _add_atomic)
+        if result and not self._in_memory:
+            _harden_permissions(self.db_path)
+        return bool(result)
 
     async def search_facts(self, query: str, user_id: str = "user", limit: int = 5) -> list[dict]:
         """Search persistent facts for specific user/namespace using FTS5, LIKE fallback, and deduplication.
@@ -834,7 +1581,6 @@ class ConversationHistory:
         if not self._conn:
             return []
 
-        import re
         clean_q = (query or "").strip().lower()
 
         # 1. Greeting & Pleasantry Guard: never pollute conversational openings with durable facts
@@ -885,14 +1631,14 @@ class ConversationHistory:
                     self._query_rows,
                     """SELECT f.id, f.fact, f.created_at FROM facts_fts ft
                        JOIN facts f ON f.id = ft.rowid
-                       WHERE ft.fact MATCH ? AND (f.user_id = ? OR f.user_id = 'default')
+                       WHERE ft.fact MATCH ? AND f.user_id = ?
                        ORDER BY f.id DESC LIMIT ?""",
                     (fts_expr, user_id, limit * 3),
                 )
                 if rows:
                     return self._deduplicate_fact_rows(rows, limit)
-            except Exception:
-                pass
+            except sqlite3.Error as exc:
+                logger.warning("facts_fts_search_failed", error=str(exc)[:200])
 
             # 2. Individual keyword LIKE fallback
             like_clauses = " OR ".join("fact LIKE ?" for _ in words)
@@ -901,66 +1647,97 @@ class ConversationHistory:
                 rows = await asyncio.to_thread(
                     self._query_rows,
                     f"""SELECT id, fact, created_at FROM facts
-                        WHERE ({like_clauses}) AND (user_id = ? OR user_id = 'default')
+                        WHERE ({like_clauses}) AND user_id = ?
                         ORDER BY id DESC LIMIT ?""",
                     tuple(params),
                 )
                 if rows:
                     return self._deduplicate_fact_rows(rows, limit)
-            except Exception:
-                pass
+            except sqlite3.Error as exc:
+                logger.warning("facts_like_search_failed", error=str(exc)[:200])
 
         # If query specified keywords but no fact matched, return empty list
         # to prevent irrelevant memory pollution during unrelated commands or tasks.
         return []
 
     @staticmethod
+    def _fact_identity(fact_text: str) -> tuple[str, str] | None:
+        """Extract a ``(predicate/entity, value)`` pair from a fact sentence.
+
+        Two facts are redundant only when both the predicate and the value
+        match. "favorite color is blue" and "favorite color is red" therefore
+        remain distinct even though they share words.
+
+        Args:
+            fact_text: Normalized fact sentence.
+
+        Returns:
+            ``(key, value)`` or ``None`` when the sentence is not structured.
+        """
+        text = " ".join(fact_text.lower().split()).strip(" .!?;")
+        if not text:
+            return None
+        text = re.sub(r"\buser's\b", "user", text)
+        text = re.sub(r"\bameya's\b", "ameya", text)
+        text = re.sub(r"'s\b", "", text)
+        match = re.match(
+            r"^(?P<key>.+?)\s+(?:is|are|was|were|likes?|loves?|prefers?|has|have|=|:)\s+"
+            r"(?P<value>.+)$",
+            text,
+        )
+        if not match:
+            return None
+        key = " ".join(match.group("key").split())
+        value = match.group("value").strip()
+        # Elaborations after a comma/semicolon add commentary, not a new value
+        # ("crush is X, and ..." still records the same crush X).
+        value = re.split(r"[,;]", value, maxsplit=1)[0].strip()
+        if not key or not value:
+            return None
+        return key, value
+
+    @staticmethod
     def _deduplicate_fact_rows(rows: list[tuple], limit: int) -> list[dict]:
-        """Filter out semantically redundant fact rows to maximize diverse memory recall."""
-        import re
-        stop = {
-            "user", "the", "a", "an", "is", "in", "on", "at", "to", "for", "with",
-            "about", "of", "me", "my", "and", "that", "i", "he", "she", "it", "his",
-            "her", "asked", "asking", "asks", "know", "remember", "saved", "stored",
-        }
+        """Filter redundant facts without collapsing facts whose values differ."""
         unique_facts: list[dict] = []
-        seen_word_sets: list[set[str]] = []
+        seen_exact: set[str] = set()
+        seen_structured: dict[str, set[str]] = {}
 
         for r in rows:
             fact_text = str(r[1]).strip()
-            words = set(w for w in re.findall(r"\w+", fact_text.lower()) if w not in stop)
-            if not words:
-                words = set(re.findall(r"\w+", fact_text.lower()))
+            normalized = " ".join(fact_text.lower().split())
+            if not normalized:
+                continue
+            if normalized in seen_exact:
+                continue
 
-            is_dup = False
-            for seen in seen_word_sets:
-                common = words & seen
-                # High content word overlap indicates redundant phrasing of the same fact
-                if len(common) >= 2 and (len(common) / min(len(words), len(seen))) >= 0.5:
-                    is_dup = True
-                    break
-                elif len(common) >= 1 and len(words) == 1 and len(seen) == 1:
-                    is_dup = True
-                    break
-
-            if not is_dup:
-                seen_word_sets.append(words)
-                unique_facts.append({"id": r[0], "memory": fact_text, "fact": fact_text, "created_at": r[2]})
-                if len(unique_facts) >= limit:
-                    break
+            identity = ConversationHistory._fact_identity(fact_text)
+            if identity is not None:
+                key, value = identity
+                values = seen_structured.setdefault(key, set())
+                if value in values:
+                    # Same subject/predicate AND same value: redundant phrasing.
+                    continue
+                values.add(value)
+            seen_exact.add(normalized)
+            unique_facts.append(
+                {"id": r[0], "memory": fact_text, "fact": fact_text, "created_at": r[2]}
+            )
+            if len(unique_facts) >= limit:
+                break
 
         return unique_facts
 
     async def get_all_facts(self, user_id: str = "user", limit: int = 500) -> list[dict]:
-        """Retrieve all durable facts for the user/personality across time, deduplicated."""
+        """Retrieve all durable facts for one explicit namespace, deduplicated."""
         if not self._conn:
             return []
         rows = await asyncio.to_thread(
             self._query_rows,
             """SELECT id, fact, created_at FROM facts
-               WHERE user_id = ? OR user_id = 'default'
+               WHERE user_id = ?
                ORDER BY id DESC LIMIT ?""",
-            (user_id, max(limit * 3, 100)),
+            (user_id, min(max(int(limit) * 3, 100), MAX_FACT_SCAN_ROWS)),
         )
         return self._deduplicate_fact_rows(rows, limit)
 
@@ -1084,26 +1861,47 @@ class ConversationHistory:
             "updated_at": now,
         }
 
-    async def get_archive(self, limit: int = 1000, exclude_session_id: str | None = None) -> list[dict]:
-        """Retrieve chronological past conversation history across previous sessions."""
+    async def get_archive(
+        self,
+        limit: int = 1000,
+        exclude_session_id: str | None = None,
+        personality: str | None = None,
+    ) -> list[dict]:
+        """Retrieve chronological past conversation history for one persona.
+
+        Args:
+            limit: Maximum rows to read (newest first, returned oldest first).
+            exclude_session_id: Session to omit, usually the live one.
+            personality: Persona to scope to; defaults to this database's persona.
+
+        Returns:
+            Archived messages as dicts with role, content, timestamp and session.
+        """
         if not self._conn:
             return []
+        persona = await self._persona_for(personality)
+        clause, variants = _clause_for(persona, "personality")
+        cap = max(1, min(int(limit), MAX_ARCHIVE_ROWS))
         if exclude_session_id:
             rows = await asyncio.to_thread(
                 self._query_rows,
-                """SELECT role, content, timestamp, session_id FROM conversations
-                   WHERE session_id != ?
+                f"""SELECT role, content, timestamp, session_id FROM conversations
+                   WHERE session_id != ? AND {clause}
                    ORDER BY id DESC LIMIT ?""",
-                (exclude_session_id, limit),
+                (exclude_session_id, *variants, cap),
             )
         else:
             rows = await asyncio.to_thread(
                 self._query_rows,
-                """SELECT role, content, timestamp, session_id FROM conversations
+                f"""SELECT role, content, timestamp, session_id FROM conversations
+                   WHERE {clause}
                    ORDER BY id DESC LIMIT ?""",
-                (limit,),
+                (*variants, cap),
             )
-        return [{"role": r[0], "content": r[1], "timestamp": r[2], "session_id": r[3]} for r in reversed(rows)]
+        return [
+            {"role": r[0], "content": r[1], "timestamp": r[2], "session_id": r[3]}
+            for r in reversed(rows)
+        ]
 
     async def health_check(self) -> bool:
         return self._conn is not None
@@ -1374,10 +2172,26 @@ class MemoryManager:
         return await self.history.get_all_facts(user_id=user_id, limit=limit)
 
     async def get_conversation_archive(
-        self, limit: int = 1000, exclude_session_id: str | None = None
+        self,
+        limit: int = MAX_ARCHIVE_ROWS,
+        exclude_session_id: str | None = None,
+        personality: str | None = None,
     ) -> list[dict]:
-        """Retrieve historical multi-session conversations for deep context recall."""
-        return await self.history.get_archive(limit=limit, exclude_session_id=exclude_session_id)
+        """Retrieve one persona's historical conversations for deep recall.
+
+        Args:
+            limit: Maximum messages to read; capped at MAX_ARCHIVE_ROWS.
+            exclude_session_id: Session to omit, usually the live one.
+            personality: Persona to scope to; defaults to the active persona.
+
+        Returns:
+            Archived messages, oldest first.
+        """
+        return await self.history.get_archive(
+            limit=limit,
+            exclude_session_id=exclude_session_id,
+            personality=personality,
+        )
 
     async def clear_turn(self, session_id: str, turn_number: int = 0) -> None:
         """Clear a specific turn from session history."""

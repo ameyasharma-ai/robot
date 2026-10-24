@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 import time
 import warnings
@@ -83,6 +84,16 @@ class AudioPlayer:
         # so barge-in is never delayed by retry backoff.
         self._open_backoff = threading.Event()
         self._playback_lock: asyncio.Lock | None = None
+        # Per-playback cancellation tokens. ``stop()`` sets every registered
+        # token without touching ``self._lock`` (which the writer holds across
+        # ``stream.write``), so barge-in never waits for a full audio block.
+        self._cancel_tokens: set[threading.Event] = set()
+        self._cancel_tokens_lock = threading.Lock()
+        # The writer awaitable for the active playback. Only one may exist at a
+        # time; a replacement play waits (bounded) for the previous writer.
+        self._writer_task: asyncio.Future[Any] | None = None
+        self._writer_token: threading.Event | None = None
+        self._writer_join_timeout_s: float = 1.0
         # Rolling buffer of recent block RMS values (covers ~320ms acoustic travel & hardware DAC ring buffer)
         self._recent_rms: deque[float] = deque(maxlen=8)
         self._energy_callbacks: list = []
@@ -352,6 +363,11 @@ class AudioPlayer:
         if len(audio) == 0:
             return True
 
+        if generation_id is None:
+            # Bind the current generation so stop() — which bumps it — invalidates
+            # this playback even when the caller has no turn token of its own.
+            generation_id = self._generation_id
+
         if interrupt.is_set() or (generation_id is not None and generation_id != self._generation_id):
             return False
 
@@ -385,12 +401,28 @@ class AudioPlayer:
             post_silence = np.zeros(int(sample_rate * 0.04), dtype=np.float32)
             audio = np.concatenate([audio, post_silence])
 
+            # A cancelled/timed-out play() must never leave a writer running:
+            # otherwise the next play() would start a second writer on the
+            # same PortAudio stream. Reap the previous writer before starting.
+            if not await self._reap_writer():
+                logger.warning("playback_previous_writer_still_active")
+                return False
+
             self._is_playing = True
             self._duck_target = 1.0
             self._volume = 1.0
 
+            # Per-playback cancel token: set by stop(), by cancellation of
+            # this coroutine, and by the finally block. The writer checks it
+            # before every individual write.
+            cancel_token = threading.Event()
+            with self._cancel_tokens_lock:
+                self._cancel_tokens.add(cancel_token)
+            stream: sd.OutputStream | None = None
+
             try:
-                stream = self._ensure_stream(sample_rate)
+                # Opening/reopening PortAudio blocks; keep it off the loop.
+                stream = await asyncio.to_thread(self._ensure_stream, sample_rate)
                 if stream is None:
                     logger.warning("playback_failed_hardware_degraded")
                     return False
@@ -399,7 +431,11 @@ class AudioPlayer:
                 def _play_blocking() -> bool:
                     t_play_start = time.time()
                     for idx in range(0, len(audio), block_len):
-                        if interrupt.is_set() or (generation_id is not None and generation_id != self._generation_id):
+                        if (
+                            cancel_token.is_set()
+                            or interrupt.is_set()
+                            or (generation_id is not None and generation_id != self._generation_id)
+                        ):
                             logger.info("playback_interrupted_or_generation_stale")
                             return False
 
@@ -421,52 +457,148 @@ class AudioPlayer:
                         for cb in self._energy_callbacks:
                             try:
                                 cb(block_rms)
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.debug("playback_energy_callback_failed", error=str(exc))
                         if chunk.ndim == 1:
                             chunk = chunk.reshape(-1, 1)
 
-                        if interrupt.is_set() or (generation_id is not None and generation_id != self._generation_id):
+                        if (
+                            cancel_token.is_set()
+                            or interrupt.is_set()
+                            or (generation_id is not None and generation_id != self._generation_id)
+                        ):
                             logger.info("playback_interrupted_barge_in")
-                            with self._lock:
-                                if self._stream is not None:
-                                    try:
-                                        self._stream.abort()
-                                    except Exception:
-                                        pass
+                            try:
+                                stream.abort()
+                            except Exception:
+                                pass
                             return False
 
                         with self._lock:
-                            if self._stream is not None and not interrupt.is_set():
-                                if generation_id is not None and generation_id != self._generation_id:
-                                    try:
-                                        self._stream.abort()
-                                    except Exception:
-                                        pass
-                                    return False
+                            if (
+                                cancel_token.is_set()
+                                or interrupt.is_set()
+                                or (generation_id is not None and generation_id != self._generation_id)
+                            ):
                                 try:
-                                    t0 = time.time()
-                                    self._stream.write(chunk)
-                                    latency_ms = (time.time() - t0) * 1000.0
-                                    self._metrics.blocks_played += 1
-                                    self._metrics.last_block_latency_ms = latency_ms
-                                except Exception as e:
-                                    self._metrics.errors += 1
-                                    self._metrics.underflows += 1
-                                    logger.debug("stream_write_error", error=str(e))
-                                    return False
+                                    stream.abort()
+                                except Exception:
+                                    pass
+                                return False
+                            try:
+                                t0 = time.time()
+                                stream.write(chunk)
+                                latency_ms = (time.time() - t0) * 1000.0
+                                self._metrics.blocks_played += 1
+                                self._metrics.last_block_latency_ms = latency_ms
+                            except Exception as e:
+                                self._metrics.errors += 1
+                                self._metrics.underflows += 1
+                                logger.debug("stream_write_error", error=str(e))
+                                return False
                     self._metrics.total_playback_time_s += (time.time() - t_play_start)
                     return True
 
-                return await asyncio.to_thread(_play_blocking)
+                writer_awaitable = asyncio.to_thread(_play_blocking)
+                if not inspect.isawaitable(writer_awaitable):
+                    # Tests replace asyncio.to_thread with a synchronous fake.
+                    return writer_awaitable
+
+                writer_task = asyncio.ensure_future(writer_awaitable)
+                self._writer_task = writer_task
+                self._writer_token = cancel_token
+                try:
+                    return await asyncio.shield(writer_task)
+                except asyncio.CancelledError:
+                    # Shutdown/timeout: cancel the writer, unblock a pending
+                    # stream.write via abort(), then wait (bounded) for the
+                    # writer thread to leave before releasing the state.
+                    cancel_token.set()
+                    self._abort_stream_now()
+                    await self._join_writer(writer_task)
+                    raise
+                finally:
+                    cancel_token.set()
+                    if not writer_task.done():
+                        self._abort_stream_now()
+                        await self._join_writer(writer_task)
+                    if writer_task.done() and self._writer_task is writer_task:
+                        self._writer_task = None
+                        self._writer_token = None
             finally:
+                with self._cancel_tokens_lock:
+                    self._cancel_tokens.discard(cancel_token)
                 self._is_playing = False
                 self._current_rms = 0.0
                 self._recent_rms.clear()
                 self._last_play_time = time.time()
 
+    async def _join_writer(self, writer_task: asyncio.Future[Any]) -> None:
+        """Wait a bounded amount of time for a writer thread to exit.
+
+        Args:
+            writer_task: Awaitable wrapping ``asyncio.to_thread(_play_blocking)``.
+        """
+        if writer_task.done():
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(writer_task), timeout=self._writer_join_timeout_s
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            logger.warning("playback_writer_join_timeout")
+        except Exception as exc:
+            logger.debug("playback_writer_join_error", error=str(exc))
+
+    async def _reap_writer(self) -> bool:
+        """Ensure at most one writer thread can exist for this player.
+
+        Returns:
+            bool: True when no writer is running (or it exited within the
+                bounded wait), False if a previous writer is still stuck.
+        """
+        writer_task = self._writer_task
+        if writer_task is None or writer_task.done():
+            self._writer_task = None
+            self._writer_token = None
+            return True
+        token = self._writer_token
+        if token is not None:
+            token.set()
+        self._abort_stream_now()
+        await self._join_writer(writer_task)
+        if writer_task.done():
+            self._writer_task = None
+            self._writer_token = None
+            return True
+        return False
+
+    def _abort_stream_now(self) -> None:
+        """Abort the current PortAudio output stream without taking the lock.
+
+        ``abort()`` is the only PortAudio stream operation documented as safe
+        to call concurrently with a blocked ``write()``; it discards queued
+        hardware frames and unblocks the writer thread immediately.
+        """
+        stream = self._stream
+        if stream is None:
+            return
+        try:
+            stream.abort()
+        except Exception:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
     def stop(self) -> None:
-        """Immediately stop playback, invalidate active generation ID, and purge ALSA ring buffer."""
+        """Immediately stop playback, invalidate active generation ID, and purge ALSA ring buffer.
+
+        Deliberately lock-free with respect to ``self._lock``: the writer thread
+        holds that lock across ``stream.write()`` for up to one audio block, so
+        waiting on it would add tens of milliseconds to barge-in. ``abort()`` is
+        thread-safe and is the only synchronization needed here.
+        """
         self._generation_id += 1
         self._is_playing = False
         self._current_rms = 0.0
@@ -475,29 +607,32 @@ class AudioPlayer:
         self._duck_target = 1.0
         # Cut short any pending stream-open backoff sleep in _ensure_stream.
         self._open_backoff.set()
-        with self._lock:
-            if self._stream is not None:
-                try:
-                    # abort() immediately discards unplayed frames in hardware buffer (<40ms)
-                    self._stream.abort()
-                except Exception:
-                    try:
-                        self._stream.stop()
-                    except Exception:
-                        pass
+        # Cancel every registered playback (active and queued behind the lock).
+        with self._cancel_tokens_lock:
+            tokens = list(self._cancel_tokens)
+        for token in tokens:
+            token.set()
+        self._abort_stream_now()
 
     def close(self) -> None:
         """Release PortAudio resources on shutdown."""
         self.stop()
-        with self._lock:
+        # Bounded lock acquisition: a stuck writer must not hang shutdown.
+        acquired = self._lock.acquire(timeout=self._writer_join_timeout_s)
+        if not acquired:
+            logger.warning("playback_close_lock_timeout")
+            return
+        try:
             stream = self._stream
             self._stream = None
             self._stream_sr = None
-            if stream is not None:
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+        finally:
+            self._lock.release()
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
 
     def __del__(self) -> None:
         """Last-resort GC safety net — NOT the supported teardown path.

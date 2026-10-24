@@ -6,21 +6,29 @@ Manages switching between Piper ONNX (ultra low-latency local) and Kokoro Neural
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 
+from robot.config import atomic_write_text, get_project_root
 from robot.telemetry import get_logger
 from robot.tts.prosody import EmotionCategory, ProsodyModulation, ProsodyModulator
 
 logger = get_logger("tts.manager")
 
-DATA_DIR = Path("data")
+DATA_DIR = get_project_root() / "data"
 ACTIVE_ENGINE_FILE = DATA_DIR / "active_tts_engine.txt"
 ACTIVE_VOICE_FILE = DATA_DIR / "active_tts_voice.txt"
-CONFIG_FILE = Path("config/default.yaml")
+
+#: Serializes read-modify-write cycles on the shared YAML state file. This is
+#: imported by the STT manager too, so STT and TTS cannot lose each other's
+#: sections with concurrent whole-file rewrites.
+_STATE_LOCK = threading.RLock()
 
 
 class TTSManager:
@@ -50,6 +58,9 @@ class TTSManager:
         self._engines: dict[str, Any] = {}
         self._init_primary_engine()
 
+        # Engines that already consumed their one-time failure fallback.
+        self._fallback_used: set[str] = set()
+
         # Load persisted active voice
         persisted_voice = self._load_persisted_voice()
         if persisted_voice:
@@ -60,6 +71,32 @@ class TTSManager:
             active_engine=self._active_engine_name,
             active_voice=self.get_active_voice(),
         )
+
+    @staticmethod
+    def _engine_sample_rate(engine: Any, default: int = 16000) -> int:
+        """Return an engine's native sample rate.
+
+        Args:
+            engine: TTS provider instance.
+            default: Fallback rate when the provider does not expose one.
+
+        Returns:
+            int: Native sample rate in Hz.
+        """
+        try:
+            return int(getattr(engine, "SAMPLE_RATE", default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    @property
+    def sample_rate(self) -> int:
+        """Return the active engine's native synthesis sample rate."""
+        return self._engine_sample_rate(self.get_active_engine())
+
+    @property
+    def SAMPLE_RATE(self) -> int:
+        """Alias kept for callers that read ``SAMPLE_RATE`` off the manager."""
+        return self.sample_rate
 
     def _load_persisted_engine(self) -> str | None:
         """Read persisted active TTS engine name from data file.
@@ -92,29 +129,32 @@ class TTSManager:
         return None
 
     def _persist_state(self, engine_name: str, voice_name: str | None = None) -> None:
-        """Save active TTS engine and voice to disk.
+        """Save active TTS engine and voice to the runtime state files.
+
+        ``config/default.yaml`` is deliberately never rewritten: it is a
+        hand-maintained file whose comments and layout a load/dump cycle would
+        destroy, and ``tts.provider`` there is only a first-run default. The
+        ``data/active_tts_*.txt`` files read back by ``_load_persisted_engine``
+        and ``_load_persisted_voice`` are the authoritative runtime state.
 
         Args:
             engine_name: Active engine identifier.
             voice_name: Optional voice identifier to save.
         """
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            ACTIVE_ENGINE_FILE.write_text(engine_name, encoding="utf-8")
-            if voice_name:
-                ACTIVE_VOICE_FILE.write_text(voice_name, encoding="utf-8")
+            # Share STT's module lock so both managers serialize their
+            # read-modify-write cycles on the same YAML document.
+            try:
+                from robot.stt.manager import CONFIG_STATE_LOCK
+            except Exception:  # pragma: no cover - STT unavailable
+                CONFIG_STATE_LOCK = _STATE_LOCK
 
-            # Update default.yaml tts.provider key
-            if CONFIG_FILE.exists():
-                text = CONFIG_FILE.read_text(encoding="utf-8")
-                import re
-                new_text = re.sub(
-                    r"(tts:\s*\n(?:\s+#[^\n]*\n)*\s+provider:\s*)[^\n]+",
-                    r"\g<1>" + engine_name,
-                    text,
-                )
-                if new_text != text:
-                    CONFIG_FILE.write_text(new_text, encoding="utf-8")
+            with CONFIG_STATE_LOCK:
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(ACTIVE_ENGINE_FILE, engine_name, mode=0o600)
+                if voice_name:
+                    atomic_write_text(ACTIVE_VOICE_FILE, voice_name, mode=0o600)
+
         except Exception as e:
             logger.warning("failed_persisting_tts_state", error=str(e))
 
@@ -173,8 +213,43 @@ class TTSManager:
         return self._active_engine_name
 
     def get_active_engine(self) -> Any:
-        """Return active TTS provider instance."""
+        """Return active TTS provider instance.
+
+        Raises:
+            RuntimeError: If the engine has to be loaded and loading fails.
+
+        Note:
+            First use of an engine blocks for the duration of model loading.
+            Async callers must use ``get_active_engine_async`` instead.
+        """
         return self._get_or_load_engine(self._active_engine_name)
+
+    async def _get_or_load_engine_async(self, engine_name: str) -> Any:
+        """Resolve an engine without holding the event loop during model load.
+
+        Constructing a provider reads and initializes an ONNX/Kokoro model,
+        which costs seconds of blocking disk and CPU work. Running it inline
+        would stall every other coroutine — including the microphone and
+        playback tasks — so it is offloaded whenever the engine is not already
+        cached.
+
+        Args:
+            engine_name: Target engine ('piper' or 'kokoro').
+
+        Returns:
+            Any: Instantiated TTS provider instance.
+        """
+        cached = self._engines.get(engine_name.lower())
+        if cached is not None:
+            return cached
+        return await asyncio.to_thread(self._get_or_load_engine, engine_name)
+
+    async def get_active_engine_async(self) -> Any:
+        """Return the active engine, loading it off the event loop if uncached."""
+        cached = self._engines.get(self._active_engine_name)
+        if cached is not None:
+            return cached
+        return await self._get_or_load_engine_async(self._active_engine_name)
 
     def get_active_voice(self) -> str:
         """Return currently active voice identifier for active engine."""
@@ -250,7 +325,7 @@ class TTSManager:
             "status": "switched",
             "engine": target,
             "voice": active_v,
-            "sample_rate": getattr(eng, "SAMPLE_RATE", 16000),
+            "sample_rate": self._engine_sample_rate(eng),
         }
 
     def list_engines(self) -> list[dict[str, Any]]:
@@ -396,18 +471,114 @@ class TTSManager:
         modulate: bool = False,
         personality_name: str | None = None,
     ) -> tuple[np.ndarray, int]:
-        """Synthesize text on active engine."""
-        eng = self.get_active_engine()
-        return await eng.synthesize(
-            text,
-            speed=speed,
-            pitch=pitch,
-            voice_model=voice_model,
-            noise_scale=noise_scale,
-            noise_w=noise_w,
-            modulate=modulate,
-            personality_name=personality_name,
+        """Synthesize text on the active engine with one engine-level fallback.
+
+        Engine failures (including Kokoro's typed ``TTSSynthesisError`` and a
+        Piper empty-audio failure) are logged and retried once on the other
+        initialized engine. No exception is ever propagated into the caller's
+        synthesis loop; when every engine fails, empty audio is returned so the
+        voice pipeline degrades to silence rather than terminating.
+
+        Args:
+            text: Text to synthesize.
+            speed: Speech speed multiplier.
+            pitch: Pitch multiplier.
+            voice_model: Optional voice override.
+            noise_scale: Optional noise scale.
+            noise_w: Optional noise_w duration.
+            modulate: Whether the engine should apply sentiment prosody.
+            personality_name: Active personality name.
+
+        Returns:
+            tuple[np.ndarray, int]: Audio samples and sample rate. Audio is
+                empty when all engines fail.
+        """
+        from robot.tts import TTSSynthesisError, clean_text_for_speech
+
+        active_name = self._active_engine_name
+        phrase = text or ""
+        try:
+            active_engine = await self.get_active_engine_async()
+        except Exception as exc:
+            logger.error("tts_active_engine_unavailable", engine=active_name, error=str(exc))
+            return np.array([], dtype=np.float32), 16000
+
+        active_rate = self._engine_sample_rate(active_engine)
+        try:
+            requires_audio = bool(clean_text_for_speech(phrase))
+        except Exception:
+            requires_audio = bool(phrase.strip())
+
+        async def _call(engine: Any) -> tuple[np.ndarray, int]:
+            audio, sr = await engine.synthesize(
+                phrase,
+                speed=speed,
+                pitch=pitch,
+                voice_model=voice_model,
+                noise_scale=noise_scale,
+                noise_w=noise_w,
+                modulate=modulate,
+                personality_name=personality_name,
+            )
+            if requires_audio and len(audio) == 0:
+                raise TTSSynthesisError(
+                    f"{type(engine).__name__} returned empty audio for a non-empty phrase"
+                )
+            return audio, int(sr)
+
+        try:
+            return await _call(active_engine)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "tts_engine_synthesis_failed",
+                engine=active_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                phrase_chars=len(phrase),
+            )
+
+        # One fallback per engine per session. Loading the alternate engine is
+        # offloaded because ONNX model initialization is blocking.
+        if not hasattr(self, "_fallback_used"):
+            self._fallback_used = set()
+        fallback_name = "piper" if active_name != "piper" else "kokoro"
+        if active_name in self._fallback_used:
+            logger.error(
+                "tts_fallback_already_exhausted",
+                engine=active_name,
+                phrase_chars=len(phrase),
+            )
+            return np.array([], dtype=np.float32), active_rate
+        self._fallback_used.add(active_name)
+
+        try:
+            fallback_engine = await self._get_or_load_engine_async(fallback_name)
+            audio, sr = await _call(fallback_engine)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "tts_fallback_engine_failed",
+                failed_engine=active_name,
+                fallback_engine=fallback_name,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                phrase_chars=len(phrase),
+            )
+            return np.array([], dtype=np.float32), active_rate
+
+        # The fallback proved healthy: use it for the rest of the session so
+        # every later phrase is not delayed by a known-broken engine first.
+        self._active_engine_name = fallback_name
+        logger.warning(
+            "tts_engine_fallback_activated",
+            failed_engine=active_name,
+            active_engine=fallback_name,
+            sample_rate=sr,
         )
+        return audio, sr
 
     async def synthesize_with_prosody(
         self,
@@ -419,21 +590,37 @@ class TTSManager:
         noise_w: float | None = None,
         personality_name: str | None = None,
     ) -> tuple[np.ndarray, int, ProsodyModulation]:
-        """Synthesize text with dynamic prosody modulation on active engine."""
-        eng = self.get_active_engine()
-        return await eng.synthesize_with_prosody(
+        """Synthesize text with dynamic prosody, never raising engine errors."""
+        eff_speed, eff_pitch = speed, pitch
+        eff_ns, eff_nw = noise_scale, noise_w
+        modulation = ProsodyModulation()
+        try:
+            # Resolve the engine off-loop first: modulate_prosody reads it, and a
+            # cold model load inside that sync call would block the whole loop.
+            await self.get_active_engine_async()
+            eff_speed, eff_pitch, eff_ns, eff_nw, modulation = self.modulate_prosody(
+                text,
+                base_speed=speed,
+                base_pitch=pitch,
+                base_noise_scale=noise_scale,
+                base_noise_w=noise_w,
+                personality_name=personality_name,
+            )
+        except Exception as exc:
+            logger.debug("tts_prosody_modulation_failed", error=str(exc))
+        audio, sr = await self.synthesize(
             text,
-            speed=speed,
-            pitch=pitch,
+            speed=eff_speed,
+            pitch=eff_pitch,
             voice_model=voice_model,
-            noise_scale=noise_scale,
-            noise_w=noise_w,
-            personality_name=personality_name,
+            noise_scale=eff_ns,
+            noise_w=eff_nw,
         )
+        return audio, sr, modulation
 
     async def health_check(self) -> bool:
         """Check operational health of active TTS provider."""
-        eng = self.get_active_engine()
+        eng = await self.get_active_engine_async()
         if hasattr(eng, "health_check"):
             return await eng.health_check()
         return True

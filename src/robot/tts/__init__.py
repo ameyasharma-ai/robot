@@ -15,6 +15,15 @@ from robot.telemetry import get_logger
 logger = get_logger("tts")
 
 
+class TTSSynthesisError(RuntimeError):
+    """Raised when a TTS engine cannot produce audio for a phrase.
+
+    TTSManager treats this as a recoverable engine failure: it logs the error,
+    falls back to another initialized engine once, and ultimately returns empty
+    audio instead of propagating an exception into the voice pipeline.
+    """
+
+
 def clean_text_for_speech(text: str) -> str:
     """Sanitize text for natural spoken TTS.
 
@@ -143,8 +152,27 @@ class PiperTTS(TTSProvider):
         self._default_model = self._resolve_model_path(model_path)
         self._active_model = self._default_model
         self.prosody = ProsodyModulator(enabled=enable_prosody)
+        self.last_synthesis_error: str | None = None
         self._load_voice(self._default_model)
         logger.info("piper_initialized", default_model=self._default_model, dynamic_prosody=enable_prosody)
+
+    @property
+    def SAMPLE_RATE(self) -> int:
+        """Return the active Piper voice's native sample rate in Hz.
+
+        Piper voices are not all 16 kHz (e.g. medium voices are typically
+        22.05 kHz); reporting a hard-coded rate made the API and playback
+        resample/interpret audio at the wrong speed.
+        """
+        voice = self._voices.get(self._active_model)
+        config = getattr(voice, "config", None)
+        sample_rate = getattr(config, "sample_rate", None)
+        try:
+            if sample_rate:
+                return int(sample_rate)
+        except (TypeError, ValueError):
+            pass
+        return 16000
 
     def _resolve_model_path(self, model_path: str) -> str:
         if not model_path:
@@ -319,12 +347,15 @@ class PiperTTS(TTSProvider):
         if abs(eff_pitch - 1.0) >= 0.02 and len(raw_audio) > 0:
             raw_audio = _shift_pitch(raw_audio, eff_pitch)
 
-        res = (raw_audio, sr)
+        # Never hand the mutable cache array to callers: in-place gain scaling
+        # in playback would permanently poison subsequent cache hits.
+        cached_audio = raw_audio.copy()
+        res = (cached_audio, sr)
 
         # Cache short phrases (< 120 chars) in the bounded LRU
         if len(clean_text) < 120:
             self._cache_put(norm_key, res)
-        return res
+        return cached_audio.copy(), sr
 
     def warm_phrase(
         self,
@@ -355,10 +386,35 @@ class PiperTTS(TTSProvider):
         noise_w: float | None = None,
         modulate: bool = False,
         personality_name: str | None = None,
+        raise_on_error: bool = False,
     ) -> tuple[np.ndarray, int]:
+        """Synthesize text with Piper, never escaping with an arbitrary error.
+
+        ONNX Runtime, espeak and model files can fail at runtime. Letting that
+        exception escape used to kill the engine's ``_tts_synthesizer_loop``
+        task (and therefore the process). Failures are logged with the real
+        error and reported as empty audio by default; ``raise_on_error=True``
+        lets a coordinator (TTSManager) receive a typed ``TTSSynthesisError``
+        so it can try a different engine.
+
+        Args:
+            text: Text phrase to synthesize.
+            speed: Speech rate multiplier.
+            pitch: Pitch shift multiplier.
+            voice_model: Optional voice model override.
+            noise_scale: Piper noise scale override.
+            noise_w: Piper noise_w duration override.
+            modulate: Whether to apply sentiment prosody modulation.
+            personality_name: Active personality name for sentiment bias.
+            raise_on_error: Raise ``TTSSynthesisError`` instead of returning
+                empty audio when synthesis fails.
+
+        Returns:
+            tuple[np.ndarray, int]: Audio samples and native sample rate.
+        """
         clean_text = clean_text_for_speech(text)
         if not clean_text:
-            return np.array([], dtype=np.float32), 16000
+            return np.array([], dtype=np.float32), self.SAMPLE_RATE
 
         target_voice_key = self._resolve_model_path(voice_model or self._active_model)
         if not modulate:
@@ -371,17 +427,32 @@ class PiperTTS(TTSProvider):
                 return audio.copy(), sr
 
         import asyncio
-        return await asyncio.to_thread(
-            self._synthesize_sync,
-            clean_text,
-            speed,
-            pitch,
-            voice_model,
-            noise_scale,
-            noise_w,
-            modulate,
-            personality_name,
-        )
+        try:
+            return await asyncio.to_thread(
+                self._synthesize_sync,
+                clean_text,
+                speed,
+                pitch,
+                voice_model,
+                noise_scale,
+                noise_w,
+                modulate,
+                personality_name,
+            )
+        except Exception as e:
+            self.last_synthesis_error = f"{type(e).__name__}: {e}"
+            logger.error(
+                "piper_synthesis_failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                voice=target_voice_key,
+                text_chars=len(clean_text),
+            )
+            if raise_on_error:
+                raise TTSSynthesisError(
+                    f"Piper synthesis failed for a {len(clean_text)} character phrase: {e}"
+                ) from e
+            return np.array([], dtype=np.float32), self.SAMPLE_RATE
 
     async def synthesize_with_prosody(
         self,
@@ -409,7 +480,7 @@ class PiperTTS(TTSProvider):
         """
         clean_text = clean_text_for_speech(text)
         if not clean_text:
-            return np.array([], dtype=np.float32), 16000, ProsodyModulation()
+            return np.array([], dtype=np.float32), self.SAMPLE_RATE, ProsodyModulation()
 
         eff_speed, eff_pitch, eff_ns, eff_nw, modulation = self.modulate_prosody(
             clean_text,
@@ -440,6 +511,7 @@ __all__ = [
     "clean_text_for_speech",
     "split_into_phrases",
     "TTSProvider",
+    "TTSSynthesisError",
     "PiperTTS",
     "KokoroTTS",
     "TTSManager",

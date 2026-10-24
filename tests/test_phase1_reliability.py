@@ -5,7 +5,7 @@ Tests cover:
 2. Memory Relevance Noise Filtering (Phase 1.1)
 3. LLM Special & Control Token Stripping (Phase 1.1)
 4. Standardized ToolOutcomeStatus & PlanStepStatus (Phase 1.2)
-5. 3.0s Network Timeout Cap Enforcement (Phase 1.2)
+5. Per-Tool Timeout Budget + Hard Ceiling Enforcement (Phase 1.2)
 6. Consequential Action Gating for L3+ External/System/Dev (Phase 1.2)
 7. Sequential 5-Step Planner Boundary (Phase 1.2)
 """
@@ -18,6 +18,7 @@ import pytest
 
 from robot.core.context import ContextEngine, strip_control_tokens
 from robot.tools import (
+    MAX_TOOL_TIMEOUT_S,
     ExecutionPlan,
     PermissionLevel,
     PermissionManager,
@@ -27,6 +28,7 @@ from robot.tools import (
     ToolDefinition,
     ToolOutcomeStatus,
     ToolRegistry,
+    effective_tool_timeout,
 )
 
 
@@ -130,8 +132,8 @@ def test_standardized_tool_outcome_status_enum() -> None:
 
 
 @pytest.mark.asyncio
-async def test_network_tool_timeout_3s_enforced() -> None:
-    """Verify PermissionManager caps network tool execution at 3.0 seconds."""
+async def test_tool_timeout_budget_is_enforced() -> None:
+    """Verify PermissionManager aborts a handler that outlives its declared budget."""
     pm = PermissionManager(max_auto_level=PermissionLevel.HARMLESS_LOCAL)
 
     async def hanging_search(query: str = "") -> dict[str, Any]:
@@ -145,16 +147,29 @@ async def test_network_tool_timeout_3s_enforced() -> None:
         handler=hanging_search,
         permission_level=PermissionLevel.HARMLESS_LOCAL,
         family="web",
-        timeout_s=10.0,  # Defined with 10s, but should be capped at 3.0s
+        timeout_s=0.5,
     )
 
-    t_start = asyncio.get_event_loop().time()
+    t_start = asyncio.get_running_loop().time()
     outcome = await pm.execute(net_tool, {"query": "robotics"})
-    elapsed = asyncio.get_event_loop().time() - t_start
+    elapsed = asyncio.get_running_loop().time() - t_start
 
     assert outcome["status"] == ToolOutcomeStatus.TIMEOUT.value
-    assert "timed out after 3.0s" in outcome["error"]
-    assert elapsed < 3.5
+    assert "timed out after 0.5s" in outcome["error"]
+    assert elapsed < 2.0
+
+
+def test_tool_timeout_budget_is_capped() -> None:
+    """Verify an absurd declared budget cannot exceed the framework's hard ceiling."""
+    slow_tool = ToolDefinition(
+        name="music.play_playlist",
+        description="Play",
+        parameters={"type": "object", "properties": {}},
+        handler=None,  # type: ignore[arg-type]
+        family="music",
+        timeout_s=3600.0,
+    )
+    assert effective_tool_timeout(slow_tool) == MAX_TOOL_TIMEOUT_S
 
 
 def test_planner_l3_consequential_confirmation_required() -> None:

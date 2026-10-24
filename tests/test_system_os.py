@@ -11,6 +11,7 @@ Validates:
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ from robot.tools.builtins.system_os import (
     read_system_clipboard,
     register_system_os_tools,
     resolve_application_binary,
+    validate_app_arguments,
     write_system_clipboard,
 )
 
@@ -78,19 +80,41 @@ def test_resolve_application_binary_urls_and_unknown() -> None:
 
 @pytest.mark.asyncio
 async def test_launch_detached_process() -> None:
-    """Verify detached process launching spawns new session and returns PID."""
-    with patch("subprocess.Popen") as mock_popen:
-        mock_proc = MagicMock()
-        mock_proc.pid = 4242
-        mock_popen.return_value = mock_proc
+    """Verify detached launching uses the non-blocking asyncio child-process API."""
+    mock_proc = MagicMock()
+    mock_proc.pid = 4242
+    with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+        mock_exec.return_value = mock_proc
 
         success, pid, msg = await launch_detached_process("/usr/bin/code", ["--new-window"])
         assert success is True
         assert pid == 4242
         assert "Started process" in msg
-        mock_popen.assert_called_once()
-        _, kwargs = mock_popen.call_args
+        mock_exec.assert_called_once()
+        args, kwargs = mock_exec.call_args
+        assert args == ("/usr/bin/code", "--new-window")
         assert kwargs.get("start_new_session") is True
+
+
+def test_validate_app_arguments_confines_paths(tmp_path: Path) -> None:
+    """Path arguments must stay inside the permitted workspace roots."""
+    inside = tmp_path / "notes.txt"
+    inside.write_text("hello")
+    assert validate_app_arguments("code", [str(inside)]) == [str(inside)]
+
+    with pytest.raises(ValueError, match="outside the permitted workspace"):
+        validate_app_arguments("code", ["/etc/shadow"])
+    with pytest.raises(ValueError, match="outside the permitted workspace"):
+        validate_app_arguments("nautilus", ["/root/.ssh"])
+
+
+def test_validate_app_arguments_rejects_urlish_and_flags() -> None:
+    """Interpreter flags and shell metacharacters stay rejected."""
+    assert validate_app_arguments("code", ["--new-window"]) == ["--new-window"]
+    with pytest.raises(ValueError, match="not allowed"):
+        validate_app_arguments("code", ["-e"])
+    with pytest.raises(ValueError, match="Unsafe characters"):
+        validate_app_arguments("code", ["a;rm -rf /"])
 
 
 def test_get_system_battery_status() -> None:

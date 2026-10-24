@@ -269,7 +269,7 @@ def test_perception_get_latest_scene():
 
 
 @pytest.mark.asyncio
-async def test_perception_analyze_camera_frame():
+async def test_perception_analyze_camera_frame(monkeypatch, tmp_path):
     """Verify perception.analyze_camera_frame and perception.vlm_inspect tools."""
     from unittest.mock import MagicMock
     from robot.core.engine import RobotEngine
@@ -277,7 +277,11 @@ async def test_perception_analyze_camera_frame():
     from robot.tools import PermissionLevel
 
     engine = RobotEngine()
+    from robot.tools.builtins import perception as perception_module
+
     register_perception_tools(engine)
+    # Keep snapshot writes inside the test sandbox.
+    monkeypatch.setattr(perception_module, "SNAPSHOT_DIR", tmp_path / "camera")
 
     # 1. Verification of tool definitions and aliases
     tool_def = engine.tool_registry.get("perception.analyze_camera_frame")
@@ -296,7 +300,7 @@ async def test_perception_analyze_camera_frame():
     assert res_standby["status"] == "standby"
     assert "standby" in res_standby["summary"].lower()
     assert res_standby["prompt"] == "Read the paper in front of you"
-    assert res_standby["image_data_url"] is None
+    assert res_standby["image_path"] is None
 
     # 3. Live camera frame analysis
     # Create synthetic test frame (640x480 RGB with bright colored rectangle)
@@ -318,8 +322,9 @@ async def test_perception_analyze_camera_frame():
     assert res_live["prompt"] == "What object is on the table?"
     assert res_live["detail_level"] == "normal"
     assert res_live["resolution"] == "640x480"
-    assert res_live["image_data_url"] is not None
-    assert res_live["image_data_url"].startswith("data:image/jpeg;base64,")
+    assert res_live["image_path"] is not None
+    assert str(tmp_path / "camera") in res_live["image_path"]
+    assert res_live["url"].startswith("/data/images/camera/")
     assert len(res_live["detected_objects"]) >= 1
 
     # 4. Concise detail level test

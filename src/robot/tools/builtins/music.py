@@ -28,16 +28,36 @@ if TYPE_CHECKING:
 
 logger = get_logger("tools.music")
 
+#: EasyEffects is a user-session daemon: re-checking it on every preset call
+#: costs a subprocess each time and buys nothing between launches.
+_EASYEFFECTS_CHECK_COOLDOWN_S = 30.0
+_easyeffects_last_check: float = 0.0
+
+#: A local-library scan walks three trees, including ~/Music. The answer only
+#: changes when files are added, so per-turn status reads must not re-walk it.
+_TRACK_SCAN_TTL_S = 30.0
+#: Hard ceiling on directory entries inspected per scan, so an enormous music
+#: library cannot turn a status call into an unbounded crawl.
+_MAX_SCANNED_FILES = 5_000
+
 
 def ensure_easyeffects_running() -> bool:
     """Ensure the EasyEffects audio processing service is running in background.
-    
+
     If not already running, launches it in service mode so PipeWire audio filters
     and equalizer profiles work reliably without manual user intervention.
+
+    Returns:
+        True when the daemon is running or was just launched.
     """
+    global _easyeffects_last_check
+    now = time.monotonic()
+    if _easyeffects_last_check and now - _easyeffects_last_check < _EASYEFFECTS_CHECK_COOLDOWN_S:
+        return True
     try:
         check = subprocess.run(["pgrep", "-f", "easyeffects"], capture_output=True, text=True, timeout=1.0)
         if check.returncode == 0 and check.stdout.strip():
+            _easyeffects_last_check = now
             return True
         logger.info("starting_easyeffects_service_daemon")
         subprocess.Popen(
@@ -46,7 +66,9 @@ def ensure_easyeffects_running() -> bool:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        time.sleep(0.4)
+        # Give a freshly launched daemon a moment to register on the session bus.
+        time.sleep(0.25)
+        _easyeffects_last_check = now
         return True
     except Exception as e:
         logger.warning("ensure_easyeffects_running_failed", error=str(e))
@@ -68,6 +90,7 @@ class MusicPlayerService:
         self._current_source = "None"
         self._volume = self.config.get("default_volume", 0.8)
         self._history: list[dict[str, Any]] = []
+        self._track_cache: tuple[float, list[str]] | None = None
         # Event set when music audio frames actually begin playing (for TTS coordination)
         self._music_started_event = asyncio.Event()
         self._music_active = False
@@ -81,19 +104,46 @@ class MusicPlayerService:
             return self._current_process.poll() is None
         return self._is_playing or self._music_active
 
-    def list_local_tracks(self) -> list[str]:
-        """Scan local music directory, generated audio directory, and ~/Music and return list of track names."""
+    def list_local_tracks(self, use_cache: bool = True) -> list[str]:
+        """Scan local music directories and return track names.
+
+        The scan is cached for :data:`_TRACK_SCAN_TTL_S` because conversation
+        status and world-state reads call it on every turn.
+
+        Args:
+            use_cache: Reuse a recent scan; pass False after adding files.
+
+        Returns:
+            Sorted, de-duplicated track stems found in the library.
+        """
+        cached = self._track_cache
+        if use_cache and cached and time.monotonic() - cached[0] < _TRACK_SCAN_TTL_S:
+            return cached[1]
+
         music_dir = Path(self.config.get("local_music_dir", "data/music"))
-        gen_dir = Path("data/generated_audio")
-        search_dirs = [music_dir, gen_dir, Path.home() / "Music"]
+        search_dirs = [music_dir, Path("data/generated_audio"), Path.home() / "Music"]
         valid_exts = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".webm", ".opus"}
-        tracks = []
+        tracks: set[str] = set()
+        scanned = 0
         for s_dir in search_dirs:
-            if s_dir.exists():
+            try:
                 for f in s_dir.rglob("*"):
-                    if f.is_file() and f.suffix.lower() in valid_exts and not f.name.endswith(".part"):
-                        tracks.append(f.stem)
-        return sorted(list(set(tracks)))
+                    scanned += 1
+                    if (
+                        f.suffix.lower() in valid_exts
+                        and not f.name.endswith(".part")
+                        and f.is_file()
+                    ):
+                        tracks.add(f.stem)
+                    if scanned >= _MAX_SCANNED_FILES:
+                        logger.warning("music_library_scan_truncated", limit=_MAX_SCANNED_FILES)
+                        break
+            except OSError as exc:
+                logger.warning("music_library_scan_failed", directory=str(s_dir), error=str(exc))
+
+        results = sorted(tracks)
+        self._track_cache = (time.monotonic(), results)
+        return results
 
     def get_status(self) -> dict[str, Any]:
         """Return the current live music playback state, history, and last played song."""

@@ -69,13 +69,17 @@ def main() -> None:
         except Exception as e:
             logger.error("engine_task_crashed", error=str(e), traceback=traceback.format_exc())
         finally:
-            # Terminate any external background server processes (llama-server, whisper-server)
-            import subprocess
+            # A crashed engine can return from run() before its teardown runs.
+            # Stop only the servers this process actually started; never reach
+            # for every process on the machine that happens to match a name.
             try:
-                subprocess.run(["pkill", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(["pkill", "-f", "whisper-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+                from robot.llm import LlamaServerManager
+                from robot.stt import WhisperServerManager
+
+                await WhisperServerManager.stop()
+                await LlamaServerManager.stop()
+            except Exception as exc:
+                logger.warning("background_server_cleanup_failed", error=str(exc))
 
     try:
         asyncio.run(_runner())
@@ -84,8 +88,8 @@ def main() -> None:
     except Exception as e:
         logger.error("robot_runner_exception", error=str(e), traceback=traceback.format_exc())
     finally:
-        print("\n🤖 Robot Core and all background server processes terminated cleanly.")
-        print("🧠 GPU VRAM and system memory released.")
+        print("\nRobot Core stopped. Background model servers released.")
+        print("GPU VRAM and system memory released.")
 
 
 if __name__ == "__main__":

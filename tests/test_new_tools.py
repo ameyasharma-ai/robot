@@ -1,6 +1,7 @@
 """Unit tests for the 12 new advanced developer, terminal, productivity, and extended system tools."""
 
 import asyncio
+from pathlib import Path
 from typing import Any
 import pytest
 
@@ -19,6 +20,9 @@ from robot.tools.builtins.productivity_knowledge import (
     wikipedia_lookup,
 )
 from robot.tools.builtins.system_extended import (
+    MAX_SHOT_FILES,
+    SHOTS_URL_PREFIX,
+    _finish_capture,
     network_speedtest,
     network_wifi_scan,
     os_capture_screen,
@@ -192,3 +196,69 @@ def test_tool_registrations() -> None:
     calc_tool = engine.tool_registry.get("calculator.evaluate")
     assert calc_tool is not None
     assert calc_tool.permission_level == PermissionLevel.READ_ONLY
+
+
+def test_finish_capture(tmp_path: Path) -> None:
+    """Verify screenshot cropping, metadata extraction, and directory retention bounds.
+
+    Args:
+        tmp_path: Pytest temporary directory fixture for isolated file operations.
+    """
+    from PIL import Image
+
+    # a) 200x100 PNG with region=None and run_ocr=False
+    base_file = tmp_path / "shot_initial.png"
+    img = Image.new("RGB", (200, 100), color="white")
+    img.save(base_file)
+
+    res_a = _finish_capture(base_file, region=None, run_ocr=False)
+    expected_keys = {
+        "detected_text",
+        "bounding_boxes",
+        "width",
+        "height",
+        "size_bytes",
+        "image_path",
+        "url",
+    }
+    assert set(res_a.keys()) == expected_keys
+    assert res_a["width"] == 200
+    assert res_a["height"] == 100
+    assert res_a["url"].startswith(SHOTS_URL_PREFIX)
+    assert res_a["url"].endswith(base_file.name)
+    assert res_a["image_path"] == str(base_file.resolve())
+    assert res_a["size_bytes"] > 0
+    assert "base64" not in repr(res_a)
+
+    # b) region crop on fresh 200x100 PNG
+    crop_file = tmp_path / "shot_crop.png"
+    img_crop = Image.new("RGB", (200, 100), color="blue")
+    img_crop.save(crop_file)
+
+    res_b = _finish_capture(crop_file, region=[10, 10, 50, 40], run_ocr=False)
+    assert res_b["width"] == 50
+    assert res_b["height"] == 40
+
+    # Clean up prior test files so tmp_path contains only shot_*.png for pruning
+    base_file.unlink(missing_ok=True)
+    crop_file.unlink(missing_ok=True)
+
+    # c) Pruning: create MAX_SHOT_FILES + 5 PNGs named shot_000.png ... in tmp_path
+    created_files: list[Path] = []
+    total_shots = MAX_SHOT_FILES + 5
+    for i in range(total_shots):
+        shot_path = tmp_path / f"shot_{i:03d}.png"
+        Image.new("RGB", (20, 20)).save(shot_path)
+        created_files.append(shot_path)
+
+    newest_shot = created_files[-1]
+    _finish_capture(newest_shot, region=None, run_ocr=False)
+
+    remaining_pngs = list(tmp_path.glob("*.png"))
+    assert len(remaining_pngs) == MAX_SHOT_FILES
+    assert newest_shot.exists()
+    for old_file in created_files[:5]:
+        assert not old_file.exists()
+    for retained_file in created_files[5:]:
+        assert retained_file.exists()
+

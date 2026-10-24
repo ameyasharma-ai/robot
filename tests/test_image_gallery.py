@@ -142,19 +142,15 @@ def test_delete_gallery_image_path_traversal_protection(test_gallery_env: Path) 
 
     # 1. Path traversal attempt with ..
     resp = client.delete("/api/images/gallery/..%2Fetc%2Fpasswd")
-    # FastAPI route matching or endpoint regex validation rejects this
-    assert resp.status_code in (404, 200)
-    if resp.status_code == 200:
-        assert resp.json()["status"] == "error"
+    # Invalid names are rejected before any filesystem access.
+    assert resp.status_code in (400, 404)
 
     # 2. Non-existent file
     resp = client.delete("/api/images/gallery/non_existent.png")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "error"
-    assert "not found" in resp.json()["message"].lower()
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["detail"].lower()
 
     # 3. Invalid characters
     resp = client.delete("/api/images/gallery/bad*name?.png")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "error"
-    assert "invalid" in resp.json()["message"].lower()
+    assert resp.status_code == 400
+    assert "invalid" in resp.json()["detail"].lower()

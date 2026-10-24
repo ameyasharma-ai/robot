@@ -6107,7 +6107,7 @@ class RobotUI {
                         closeLightbox();
                         this.loadGalleryImages();
                     } else {
-                        alert(`Failed to delete image: ${data.message || "Unknown error"}`);
+                        alert(`Failed to delete image: ${data.detail || data.message || "Unknown error"}`);
                     }
                 } catch (err) {
                     alert(`Error deleting image: ${err.message}`);

@@ -16,6 +16,12 @@ from typing import TYPE_CHECKING, Any
 
 from robot.telemetry import get_logger
 from robot.tools import PermissionLevel, ToolDefinition
+from robot.tools.builtins.web_agent import (
+    UnsafeURLError,
+    build_safe_opener,
+    validate_outbound_url,
+    validate_outbound_url_async,
+)
 
 if TYPE_CHECKING:
     from robot.core.engine import RobotEngine
@@ -79,6 +85,10 @@ async def wikipedia_lookup(query: str, lang: str = "en") -> dict[str, Any]:
         return {"status": "error", "error": str(e), "query": clean_q}
 
 
+_NOTES_MAX_CHARS = 8192
+_NOTES_TRUNCATION_MARKER = "\n... [note truncated at 8 KiB] ..."
+
+
 class NotesVault:
     """Local Markdown Knowledge Vault (`data/notes/`)."""
 
@@ -90,12 +100,61 @@ class NotesVault:
         safe_name = re.sub(r"[^\w\s-]", "", title.strip()).strip().replace(" ", "_").lower()
         return safe_name or "note"
 
+    def _resolve_note_path(self, title: str) -> Path | None:
+        """Resolve a note title/filename to a path confined to the vault.
+
+        Absolute paths, ``..`` components, separators, control characters, and
+        symlinks that resolve outside the vault are rejected.  The previous raw
+        ``vault_path / title`` fallback (which allowed ``/etc/passwd``) is gone.
+
+        Args:
+            title: Note title or optional ``*.md`` filename.
+
+        Returns:
+            Resolved file path inside the vault, or ``None`` when invalid.
+        """
+        raw = (title or "").strip()
+        if not raw or "\x00" in raw or any(ord(ch) < 32 for ch in raw):
+            return None
+        candidate_path = Path(raw)
+        if candidate_path.is_absolute():
+            return None
+        if any(part in ("..", "") for part in candidate_path.parts):
+            return None
+
+        vault_root = self.vault_path.resolve()
+        names = [self._safe_filename(raw) + ".md"]
+        if raw.lower().endswith(".md") and "/" not in raw and "\\" not in raw:
+            names.append(raw)
+
+        for name in names:
+            candidate = (vault_root / name).resolve(strict=False)
+            if not candidate.is_relative_to(vault_root):
+                continue
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _note_target(self, title: str) -> tuple[Path, str] | None:
+        """Return a confined write target for a note title, or ``None``."""
+        raw = (title or "").strip()
+        if not raw or "\x00" in raw or any(ord(ch) < 32 for ch in raw):
+            return None
+        fname = self._safe_filename(raw) + ".md"
+        vault_root = self.vault_path.resolve()
+        target = (vault_root / fname).resolve(strict=False)
+        if not target.is_relative_to(vault_root):
+            return None
+        return target, fname
+
     def create_note(self, title: str, content: str, tags: list[str] | None = None) -> dict[str, Any]:
         """Create a new Markdown note in the vault."""
         if not title or not title.strip():
             return {"status": "error", "error": "Note title is required."}
-        fname = self._safe_filename(title) + ".md"
-        fpath = self.vault_path / fname
+        resolved = self._note_target(title)
+        if resolved is None:
+            return {"status": "error", "error": "Invalid note title or filename."}
+        fpath, fname = resolved
         tag_header = f"Tags: {', '.join(tags)}\n\n" if tags else ""
         full_text = f"# {title.strip()}\n{tag_header}{content.strip()}\n"
         fpath.write_text(full_text, encoding="utf-8")
@@ -105,8 +164,10 @@ class NotesVault:
         """Append content to an existing Markdown note."""
         if not title or not title.strip():
             return {"status": "error", "error": "Note title is required to append content."}
-        fname = self._safe_filename(title) + ".md"
-        fpath = self.vault_path / fname
+        resolved = self._note_target(title)
+        if resolved is None:
+            return {"status": "error", "error": "Invalid note title or filename."}
+        fpath, fname = resolved
         if not fpath.exists():
             return self.create_note(title, content)
         existing = fpath.read_text(encoding="utf-8")
@@ -115,7 +176,12 @@ class NotesVault:
 
     def list_notes(self) -> dict[str, Any]:
         """List all Markdown notes stored in the vault."""
-        files = list(self.vault_path.glob("*.md"))
+        vault_root = self.vault_path.resolve()
+        files = []
+        for candidate in self.vault_path.glob("*.md"):
+            resolved = candidate.resolve()
+            if resolved.is_relative_to(vault_root) and resolved.is_file():
+                files.append(resolved)
         notes_list = []
         for f in files:
             lines = f.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -124,26 +190,40 @@ class NotesVault:
         return {"status": "success", "action": "list", "notes": notes_list, "count": len(notes_list), "total": len(notes_list)}
 
     def read_note(self, title: str) -> dict[str, Any]:
-        """Read full markdown content of a note."""
+        """Read a note's markdown content, capped at 8 KiB.
+
+        The title is resolved strictly inside the vault; absolute paths,
+        traversal, and escaping symlinks are rejected.
+        """
         if not title or not title.strip():
             return {"status": "error", "error": "Title or filename is required."}
-        fname = self._safe_filename(title) + ".md"
-        fpath = self.vault_path / fname
-        if not fpath.exists():
-            fpath = self.vault_path / title.strip()
-        if not fpath.exists():
-            return {"status": "error", "error": f"Note '{title}' not found in vault."}
-        return {"status": "success", "action": "read", "title": title, "content": fpath.read_text(encoding="utf-8")}
+        fpath = self._resolve_note_path(title)
+        if fpath is None:
+            return {"status": "error", "error": f"Note '{title}' not found in vault or path is not allowed."}
+        raw_text = fpath.read_text(encoding="utf-8", errors="ignore")
+        truncated = len(raw_text) > _NOTES_MAX_CHARS
+        if truncated:
+            raw_text = raw_text[:_NOTES_MAX_CHARS] + _NOTES_TRUNCATION_MARKER
+        return {
+            "status": "success",
+            "action": "read",
+            "title": title,
+            "content": raw_text,
+            "truncated": truncated,
+        }
 
     def search(self, query: str) -> dict[str, Any]:
         """Search notes vault content for query term."""
         q_clean = (query or "").strip().lower()
-        files = list(self.vault_path.glob("*.md"))
+        vault_root = self.vault_path.resolve()
         matches = []
-        for f in files:
-            txt = f.read_text(encoding="utf-8", errors="ignore")
-            if not q_clean or q_clean in txt.lower() or q_clean in f.name.lower():
-                matches.append({"file": f.name, "snippet": txt[:300]})
+        for candidate in self.vault_path.glob("*.md"):
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(vault_root) or not resolved.is_file():
+                continue
+            txt = resolved.read_text(encoding="utf-8", errors="ignore")
+            if not q_clean or q_clean in txt.lower() or q_clean in resolved.name.lower():
+                matches.append({"file": resolved.name, "snippet": txt[:300]})
         return {"status": "success", "action": "search", "query": q_clean, "matches": matches[:10], "match_count": len(matches[:10])}
 
     async def manage_notes(
@@ -244,6 +324,21 @@ async def web_scrape_page(url: str, max_chars: int = 4000) -> dict[str, Any]:
     if not clean_url.startswith(("http://", "https://")):
         clean_url = "https://" + clean_url
 
+    try:
+        char_limit = max(1, min(12000, int(max_chars)))
+    except (TypeError, ValueError):
+        char_limit = 4000
+
+    try:
+        await validate_outbound_url_async(clean_url)
+    except UnsafeURLError as exc:
+        logger.warning(
+            "web_scrape_blocked",
+            host=urllib.parse.urlsplit(clean_url).hostname or "",
+            reason=str(exc),
+        )
+        return {"status": "error", "error": f"Blocked URL: {exc}", "url": clean_url}
+
     def _scrape() -> dict[str, Any]:
         try:
             req = urllib.request.Request(
@@ -252,12 +347,17 @@ async def web_scrape_page(url: str, max_chars: int = 4000) -> dict[str, Any]:
                     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 },
             )
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                html = resp.read().decode("utf-8", errors="replace")
+            # The custom opener validates the initial URL, every redirect hop,
+            # and the final URL against private/loopback targets.
+            opener = build_safe_opener()
+            with opener.open(req, timeout=3.0) as resp:
+                final_url = resp.geturl()
+                validate_outbound_url(final_url)
+                html = resp.read(500_000).decode("utf-8", errors="replace")
 
             # Extract title
             title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-            page_title = title_m.group(1).strip() if title_m else clean_url
+            page_title = title_m.group(1).strip()[:300] if title_m else final_url
 
             # Strip scripts, styles, navs, headers, footers
             html = re.sub(r"<(?:script|style|svg|nav|header|footer|iframe)[^>]*>.*?</(?:script|style|svg|nav|header|footer|iframe)>", "", html, flags=re.IGNORECASE | re.DOTALL)
@@ -269,29 +369,41 @@ async def web_scrape_page(url: str, max_chars: int = 4000) -> dict[str, Any]:
             # Collapse whitespace
             clean_text = re.sub(r"\s+", " ", text).strip()
 
-            if len(clean_text) > max_chars:
-                clean_text = clean_text[:max_chars] + " ... [Content Truncated]"
+            if len(clean_text) > char_limit:
+                clean_text = clean_text[:char_limit] + " ... [Content Truncated]"
 
             return {
                 "status": "success",
-                "url": clean_url,
+                "url": final_url,
                 "title": page_title,
                 "text": clean_text,
                 "length_chars": len(clean_text),
+                "untrusted": True,
             }
-        except Exception as e:
-            logger.warning("web_scrape_page_failed", url=clean_url, error=str(e))
+        except UnsafeURLError as exc:
+            logger.warning(
+                "web_scrape_redirect_blocked",
+                host=urllib.parse.urlsplit(clean_url).hostname or "",
+                reason=str(exc),
+            )
+            return {"status": "error", "error": f"Blocked URL: {exc}", "url": clean_url}
+        except Exception as exc:
+            logger.warning(
+                "web_scrape_page_failed",
+                host=urllib.parse.urlsplit(clean_url).hostname or "",
+                error_type=type(exc).__name__,
+            )
             return {
                 "status": "error",
-                "error": f"Failed to scrape webpage: {e}",
+                "error": f"Failed to scrape webpage ({type(exc).__name__}).",
                 "url": clean_url,
             }
 
     try:
         return await asyncio.to_thread(_scrape)
-    except Exception as e:
-        logger.error("web_scrape_failed", url=clean_url, error=str(e))
-        return {"status": "error", "error": str(e), "url": clean_url}
+    except Exception as exc:
+        logger.error("web_scrape_failed", error_type=type(exc).__name__)
+        return {"status": "error", "error": "Web scrape failed.", "url": clean_url}
 
 
 def register_productivity_knowledge_tools(engine: RobotEngine) -> None:

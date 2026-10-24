@@ -188,7 +188,13 @@ class TemporalScheduler:
 
     def _init_db_sync(self) -> None:
         """Create database tables synchronously."""
-        with sqlite3.connect(str(self._db_path)) as conn:
+        with sqlite3.connect(str(self._db_path), timeout=5.0) as conn:
+            # WAL lets the 1-second dispatch loop and API reads/writes proceed
+            # without "database is locked"; NORMAL keeps durability across
+            # process crashes (only an OS crash can lose the last commit).
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS scheduled_jobs (
