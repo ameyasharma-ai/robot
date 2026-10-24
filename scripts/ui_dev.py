@@ -10,6 +10,7 @@ clients without a token. Set ``ROBOT_API_TRUST_LOOPBACK=0`` to exercise the
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import math
 import os
@@ -402,6 +403,12 @@ async def activate_persona(persona_id: str) -> dict:
     return {"ok": True, "active": persona_id}
 
 
+@app.post("/api/llm/openai/config")
+async def save_openai_config(request: Request) -> dict:
+    body = await request.json()
+    return {"status": "ok", "message": "Configuration saved", "model": body.get("model", "")}
+
+
 @app.get("/api/memory/stats")
 async def memory_stats() -> dict:
     return {"facts": 87, "messages": 4312, "sessions": 12, "db_size_mb": 8.4}
@@ -449,12 +456,43 @@ async def history_search(q: str = "") -> dict:
 
 @app.get("/api/images/gallery")
 async def image_gallery() -> dict:
-    return {
-        "images": [
-            {"name": f"gen_{i:03d}.png", "created_at": time.time() - 3600 * i, "prompt": f"cyberdeck concept art {i}"}
-            for i in range(6)
-        ]
-    }
+    """Mirror the real gallery payload so the modal's populated and empty states
+    can be exercised without a diffusion backend."""
+    prompts = [
+        ("flux-schnell", "cyberpunk humanoid robot in neon tokyo rain", 200),
+        ("sd-turbo", "photorealistic robotic laboratory at golden hour", 28),
+        ("dreamshaper-v8", "anime android companion under cherry blossoms", 305),
+        ("sdxl-turbo", "chrome sculpture on a salt flat, studio lighting", 160),
+        ("small-sd", "minimalist robot portrait, soft rim light", 240),
+        ("fast-procedural", "abstract neon landscape, volumetric fog", 90),
+    ]
+    now = time.time()
+    images = []
+    for i, (model, prompt, hue) in enumerate(prompts):
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">'
+            f'<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">'
+            f'<stop offset="0" stop-color="hsl({hue} 70% 46%)"/>'
+            f'<stop offset="1" stop-color="hsl({(hue + 45) % 360} 75% 18%)"/>'
+            f'</linearGradient></defs><rect width="512" height="512" fill="url(#g)"/>'
+            f'<circle cx="256" cy="236" r="116" fill="rgba(255,255,255,0.14)"/>'
+            f'<rect x="96" y="404" width="320" height="10" rx="5" fill="rgba(255,255,255,0.22)"/>'
+            f'</svg>'
+        )
+        images.append({
+            "filename": f"gen_{i:03d}.png",
+            "url": "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode(),
+            "prompt": prompt,
+            "model": model,
+            "duration_s": round(1.4 + i * 0.37, 2),
+            "width": 512,
+            "height": 512,
+            "size_bytes": 186_000 + i * 41_000,
+            "size_kb": f"{round((186_000 + i * 41_000) / 1024, 1)} KB",
+            "created_at": now - 3600 * i,
+            "created_at_iso": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(now - 3600 * i)),
+        })
+    return {"status": "ok", "total": len(images), "images": images}
 
 
 @app.get("/api/images/models")

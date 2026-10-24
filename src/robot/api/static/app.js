@@ -92,7 +92,7 @@ class RobotUI {
 
         this.initViewControls();
         this.initEngineCluster();
-        this.initOverlayCloseControls();
+        this.initOverlayManager();
         this.initPersonalitySelector();
         this.initPersonaManager();
         this.initLlmProviderToggle();
@@ -336,6 +336,22 @@ class RobotUI {
         }
     }
 
+    /**
+     * Keep both chat send buttons in step with their composers: a blank
+     * message or an in-flight reply means there is nothing to submit.
+     * @returns {void}
+     */
+    syncChatComposer() {
+        const mainBtn = document.getElementById("chatSendBtn");
+        const mainInput = document.getElementById("chatInput");
+        if (mainBtn && mainInput) {
+            mainBtn.disabled = mainInput.value.trim() === "";
+        }
+        if (this.btnChatSubmit && this.chatTextarea) {
+            this.btnChatSubmit.disabled = Boolean(this.chatStreaming) || this.chatTextarea.value.trim() === "";
+        }
+    }
+
     initTextChat() {
         const input = document.getElementById("chatInput");
         const btn = document.getElementById("chatSendBtn");
@@ -427,6 +443,7 @@ class RobotUI {
 
                 // Clear input so user can type next message
                 input.value = "";
+                this.syncChatComposer();
                 if (typeof this.setRobotMode === "function") {
                     this.setRobotMode("thinking");
                 }
@@ -527,6 +544,7 @@ class RobotUI {
                 btn.classList.remove("sending");
                 input.disabled = false;
                 input.focus();
+                this.syncChatComposer();
             }
         };
 
@@ -541,6 +559,9 @@ class RobotUI {
                 sendMessage();
             }
         });
+
+        input.addEventListener("input", () => this.syncChatComposer());
+        this.syncChatComposer();
     }
 
     initChatWorkspace() {
@@ -648,6 +669,7 @@ class RobotUI {
             this.chatTextarea.addEventListener("input", () => {
                 this.chatTextarea.style.height = "auto";
                 this.chatTextarea.style.height = `${Math.min(220, this.chatTextarea.scrollHeight)}px`;
+                this.syncChatComposer();
             });
 
             this.chatTextarea.addEventListener("keydown", (e) => {
@@ -664,6 +686,8 @@ class RobotUI {
                 this.sendChatMessage();
             });
         }
+
+        this.syncChatComposer();
 
         if (this.btnChatStopStream) {
             this.btnChatStopStream.addEventListener("click", (e) => {
@@ -1460,7 +1484,7 @@ class RobotUI {
         if (hero) hero.remove();
 
         this.chatStreaming = true;
-        if (this.btnChatSubmit) this.btnChatSubmit.disabled = true;
+        this.syncChatComposer();
         if (this.btnChatStopStream) this.btnChatStopStream.style.display = "inline-flex";
         this.chatTextarea.value = "";
         this.chatTextarea.style.height = "auto";
@@ -1934,7 +1958,7 @@ class RobotUI {
             if (cursorSpan) cursorSpan.remove();
             this.chatStreaming = false;
             this.chatAbortController = null;
-            if (this.btnChatSubmit) this.btnChatSubmit.disabled = false;
+            this.syncChatComposer();
             if (this.btnChatStopStream) this.btnChatStopStream.style.display = "none";
             if (this.chatLiveSpeed) this.chatLiveSpeed.textContent = "0.0 tok/s";
 
@@ -2452,6 +2476,7 @@ class RobotUI {
         if (this.chatTextarea) {
             this.chatTextarea.value = this.chatPreRecordText;
             this.chatTextarea.focus();
+            this.syncChatComposer();
         }
     }
 
@@ -2504,6 +2529,7 @@ class RobotUI {
             this.chatTextarea.focus();
             const len = this.chatTextarea.value.length;
             this.chatTextarea.setSelectionRange(len, len);
+            this.syncChatComposer();
         }
     }
 
@@ -2984,30 +3010,146 @@ class RobotUI {
     }
 
     /**
-     * The single Escape path for every overlay. Each surface closes through its own
-     * close control so its cleanup still runs, topmost layer first.
+     * One owner for every modal-style overlay. Modals open and close through
+     * inline `display` at a dozen call sites, so this watches the DOM instead of
+     * each call: focus moves in, Tab stays inside, the page behind becomes inert,
+     * scrolling is locked, and focus returns to the control that opened it.
      * @returns {void}
      */
-    initOverlayCloseControls() {
-        document.addEventListener("keydown", (e) => {
-            if (e.key !== "Escape") return;
-            const openModals = [...document.querySelectorAll(".cyber-modal-backdrop")]
-                .filter((m) => m.style.display === "flex");
-            const top = openModals[openModals.length - 1];
-            if (top) {
-                const closeBtn = top.querySelector(".modal-close-btn, .lightbox-close-btn");
-                if (closeBtn) closeBtn.click();
-                return;
-            }
-            if (document.body.classList.contains("engine-cluster-open")) {
-                this.setEngineClusterOpen(false);
-                return;
-            }
-            if (this.chatSidebar && this.chatSidebar.classList.contains("mobile-open")
-                && this.btnToggleChatSidebar) {
-                this.btnToggleChatSidebar.click();
-            }
+    initOverlayManager() {
+        this._overlayLayers = [...document.querySelectorAll(".cyber-modal-backdrop, .api-auth-gate")];
+        this._activeOverlay = null;
+        this._overlayReturnFocus = null;
+
+        const observer = new MutationObserver(() => this.syncOverlayState());
+        this._overlayLayers.forEach((layer) => {
+            observer.observe(layer, { attributes: true, attributeFilter: ["style", "class", "hidden"] });
         });
+        this._overlayObserver = observer;
+
+        document.addEventListener("keydown", (e) => this.onOverlayKeydown(e), true);
+    }
+
+    /**
+     * @returns {HTMLElement|null} Topmost visible overlay layer.
+     */
+    openOverlayLayer() {
+        const open = (this._overlayLayers || []).filter(
+            (layer) => getComputedStyle(layer).display !== "none"
+        );
+        return open[open.length - 1] || null;
+    }
+
+    /**
+     * @param {HTMLElement} layer
+     * @returns {HTMLElement[]} Focusable elements in tab order.
+     */
+    overlayTabbables(layer) {
+        return [...layer.querySelectorAll(
+            'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]),' +
+            'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )].filter((el) => el.offsetParent !== null);
+    }
+
+    /**
+     * Reconcile focus, inertness and scroll lock with which layer is on top.
+     * @returns {void}
+     */
+    syncOverlayState() {
+        const top = this.openOverlayLayer();
+        if (top === this._activeOverlay) return;
+        const previous = this._activeOverlay;
+        this._activeOverlay = top;
+
+        if (top && !previous) {
+            this._overlayReturnFocus = document.activeElement;
+            // Compensate for the scrollbar the lock removes, so nothing shifts.
+            const gap = window.innerWidth - document.documentElement.clientWidth;
+            if (gap > 0) document.body.style.paddingRight = `${gap}px`;
+            document.documentElement.classList.add("overlay-open");
+            document.body.classList.add("overlay-open");
+        }
+
+        (this._overlayLayers || []).forEach((layer) => {
+            const visible = getComputedStyle(layer).display !== "none";
+            if (visible && layer !== top) layer.setAttribute("inert", "");
+            else layer.removeAttribute("inert");
+        });
+
+        if (top) {
+            ["header.top-nav", "main.main-viewport", "#chatSidebar", "#chatSidebarBackdrop"]
+                .forEach((sel) => document.querySelector(sel)?.setAttribute("inert", ""));
+            this.focusOverlay(top);
+            return;
+        }
+
+        document.documentElement.classList.remove("overlay-open");
+        document.body.classList.remove("overlay-open");
+        document.body.style.paddingRight = "";
+        ["header.top-nav", "main.main-viewport", "#chatSidebar", "#chatSidebarBackdrop"]
+            .forEach((sel) => document.querySelector(sel)?.removeAttribute("inert"));
+        const returnTo = this._overlayReturnFocus;
+        this._overlayReturnFocus = null;
+        if (returnTo && document.contains(returnTo) && typeof returnTo.focus === "function") {
+            returnTo.focus({ preventScroll: true });
+        }
+    }
+
+    /**
+     * @param {HTMLElement} layer
+     * @returns {void}
+     */
+    focusOverlay(layer) {
+        if (layer.contains(document.activeElement)) return;
+        const target = [...layer.querySelectorAll("input:not([type=hidden]), textarea")].find(
+            (el) => el.offsetParent !== null
+        ) || layer.querySelector(".cyber-modal, .lightbox-modal");
+        if (target && !target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+        target?.focus({ preventScroll: true });
+    }
+
+    /**
+     * Escape closes the topmost overlay through its own close control so each
+     * surface keeps its cleanup; Tab never leaves an open layer.
+     * @param {KeyboardEvent} e
+     * @returns {void}
+     */
+    onOverlayKeydown(e) {
+        const top = this.openOverlayLayer();
+        if (e.key === "Tab" && top) {
+            const items = this.overlayTabbables(top);
+            if (!items.length) {
+                e.preventDefault();
+                return;
+            }
+            const [first] = items;
+            const last = items[items.length - 1];
+            const active = document.activeElement;
+            if (!top.contains(active)) {
+                e.preventDefault();
+                first.focus();
+            } else if (e.shiftKey && (active === first || active === top)) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && active === last) {
+                e.preventDefault();
+                first.focus();
+            }
+            return;
+        }
+        if (e.key !== "Escape") return;
+        if (top) {
+            const closeBtn = top.querySelector(".modal-close-btn, .lightbox-close-btn");
+            if (closeBtn) closeBtn.click();
+            return;
+        }
+        if (document.body.classList.contains("engine-cluster-open")) {
+            this.setEngineClusterOpen(false);
+            return;
+        }
+        if (this.chatSidebar?.classList.contains("mobile-open") && this.btnToggleChatSidebar) {
+            this.btnToggleChatSidebar.click();
+        }
     }
 
     initViewControls() {
@@ -4315,8 +4457,7 @@ class RobotUI {
             });
         }
 
-        if (btnSaveConfig) {
-            btnSaveConfig.addEventListener("click", async () => {
+        const saveConfig = async () => {
                 const orBase = inputOrBaseUrl ? inputOrBaseUrl.value.trim() : "https://openrouter.ai/api/v1";
                 const orKey = inputOrApiKey ? inputOrApiKey.value.trim() : "";
                 const orModel = inputOrModel ? inputOrModel.value.trim() : "meta-llama/llama-3.3-70b-instruct:free";
@@ -4389,7 +4530,7 @@ class RobotUI {
                         }, 750);
                     } else {
                         if (modalFeedback) {
-                            modalFeedback.textContent = `Error: ${data.message || data.error}`;
+                            modalFeedback.textContent = `Error: ${data.message || data.error || `HTTP ${res.status}`}`;
                             modalFeedback.className = "cyberdeck-modal-feedback error";
                         }
                     }
@@ -4399,6 +4540,17 @@ class RobotUI {
                         modalFeedback.className = "cyberdeck-modal-feedback error";
                     }
                 }
+        };
+
+        if (btnSaveConfig) btnSaveConfig.addEventListener("click", saveConfig);
+
+        /* The endpoint dialog is one form, so Enter in any field saves exactly
+           once and the password inputs are no longer orphaned. */
+        const configForm = document.getElementById("openaiConfigForm");
+        if (configForm) {
+            configForm.addEventListener("submit", (e) => {
+                e.preventDefault();
+                saveConfig();
             });
         }
 
@@ -5544,6 +5696,21 @@ class RobotUI {
         const drawer = document.getElementById("cardImageGen");
         const modelSelect = document.getElementById("imgModelSelect");
         const stepsInput = document.getElementById("imgStepsInput");
+        const resSelect = document.getElementById("imgResSelect");
+        const viewportLabel = document.getElementById("canvasViewportLabel");
+
+        /* The canvas HUD states the resolution the next job will use; leaving it
+           at 512×512 while the Size control says 1024 is a lie the user can see. */
+        const syncViewportLabel = () => {
+            if (!resSelect || !viewportLabel) return;
+            const [w, h] = resSelect.value.split("x");
+            viewportLabel.textContent = `AI VIEWPORT • ${w}×${h} PX`;
+        };
+
+        if (resSelect) {
+            resSelect.addEventListener("change", syncViewportLabel);
+            syncViewportLabel();
+        }
 
         if (btnToggle && drawer) {
             btnToggle.addEventListener("click", (e) => {
@@ -5593,7 +5760,6 @@ class RobotUI {
             const prompt = input.value.trim();
             if (!prompt) return;
 
-            const resSelect = document.getElementById("imgResSelect");
             const [width, height] = (resSelect ? resSelect.value : "512x512").split("x").map(Number);
             const steps = stepsInput ? (parseInt(stepsInput.value, 10) || 4) : 4;
             const targetModel = modelSelect ? modelSelect.value : "sd-turbo";
@@ -5632,20 +5798,20 @@ class RobotUI {
                     const err = data.error || (data.detail ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : `HTTP ${res.status}`);
                     this.logEvent("IMAGE", `Image generation error: ${err}`, "system");
                     if (btnGen) {
-                        btnGen.disabled = false;
                         btnGen.textContent = "Generate";
                         btnGen.classList.remove("generating");
                     }
+                    this.syncImageComposer();
                     this.updatePipelineStatus({ IMAGE: "ERROR" });
                 }
             } catch (e) {
                 console.error("Image gen failed", e);
                 this.logEvent("IMAGE", `Failed to send generation request: ${e.message}`, "system");
                 if (btnGen) {
-                    btnGen.disabled = false;
                     btnGen.textContent = "Generate";
                     btnGen.classList.remove("generating");
                 }
+                this.syncImageComposer();
                 this.updatePipelineStatus({ IMAGE: "ERROR" });
             }
         };
@@ -5658,12 +5824,14 @@ class RobotUI {
         }
 
         if (input) {
+            input.addEventListener("input", () => this.syncImageComposer());
             input.addEventListener("keydown", (e) => {
                 if (e.key === "Enter") {
                     e.preventDefault();
                     submitImage();
                 }
             });
+            this.syncImageComposer();
         }
 
         if (btnCancel) {
@@ -5687,6 +5855,7 @@ class RobotUI {
                 if (stylePrompt && input) {
                     input.value = stylePrompt;
                     input.focus();
+                    this.syncImageComposer();
                 }
             });
         });
@@ -5702,6 +5871,18 @@ class RobotUI {
                 }
             });
         }
+    }
+
+    /**
+     * Keep the studio's Generate button honest: it is unavailable while a job
+     * is in flight and whenever the prompt is blank.
+     * @returns {void}
+     */
+    syncImageComposer() {
+        const btnGen = document.getElementById("btnGenImage");
+        const input = document.getElementById("imgPromptInput");
+        if (!btnGen || !input) return;
+        btnGen.disabled = Boolean(this.activeImageJob) || input.value.trim() === "";
     }
 
     updateImageJobsUI(jobs) {
@@ -5757,10 +5938,10 @@ class RobotUI {
             if (badge) badge.textContent = "STATUS: READY";
             if (btnCancel) btnCancel.disabled = true;
             if (btnGen) {
-                btnGen.disabled = false;
                 btnGen.textContent = "Generate";
                 btnGen.classList.remove("generating");
             }
+            this.syncImageComposer();
             if (genStatus) genStatus.style.display = "none";
             
             const pwrap = document.getElementById("imgProgressWrap");
@@ -5860,6 +6041,11 @@ class RobotUI {
             });
         }
 
+        const btnRetryGallery = document.getElementById("btnRetryGallery");
+        if (btnRetryGallery) {
+            btnRetryGallery.addEventListener("click", () => this.loadGalleryImages());
+        }
+
         // Filter Chips
         if (filterChips) {
             filterChips.addEventListener("click", (e) => {
@@ -5934,34 +6120,86 @@ class RobotUI {
     }
 
     /**
+     * Switch the gallery body between its loading, ready, error and empty faces.
+     * @param {"loading"|"ready"|"error"|"empty"} state - Which face to show.
+     * @param {string} [message] - Detail line for the error face.
+     * @returns {void}
+     */
+    setGalleryState(state, message = "") {
+        const grid = document.getElementById("galleryGrid");
+        if (!grid) return;
+        const loading = document.getElementById("galleryLoadingState");
+        const error = document.getElementById("galleryErrorState");
+        const empty = document.getElementById("galleryEmptyState");
+        const errorText = document.getElementById("galleryErrorText");
+
+        if (loading) loading.hidden = state !== "loading";
+        if (error) error.hidden = state !== "error";
+        if (empty) empty.hidden = state !== "empty";
+        grid.hidden = state !== "ready";
+
+        if (state === "error" && errorText) {
+            errorText.textContent = message || "The image service did not respond.";
+        }
+    }
+
+    /**
      * Load image gallery items from the server API.
      * @param {boolean} [render=true] - Whether to re-render the gallery grid.
      * @returns {Promise<void>}
      */
     async loadGalleryImages(render = true) {
+        if (render) this.setGalleryState("loading");
         try {
             const res = await this.apiFetch("/api/images/gallery?limit=150");
+            if (!res.ok) throw new Error(`Gallery request failed (HTTP ${res.status})`);
             const data = await res.json();
-            if (data.status === "ok" && Array.isArray(data.images)) {
-                this.galleryImages = data.images;
-                const total = data.total || this.galleryImages.length;
+            if (data.status !== "ok" || !Array.isArray(data.images)) {
+                throw new Error(data.message || "The gallery returned an unexpected response.");
+            }
+            this.galleryImages = data.images;
+            const total = data.total || this.galleryImages.length;
 
-                const countBadge = document.getElementById("galleryCountBadge");
-                if (countBadge) countBadge.textContent = total;
+            const countBadge = document.getElementById("galleryCountBadge");
+            if (countBadge) countBadge.textContent = total;
 
-                const modalBadge = document.getElementById("modalGalleryCountBadge");
-                if (modalBadge) modalBadge.textContent = `${total} ARTWORKS`;
+            const modalBadge = document.getElementById("modalGalleryCountBadge");
+            if (modalBadge) modalBadge.textContent = `${total} ${total === 1 ? "ARTWORK" : "ARTWORKS"}`;
 
-                const countAll = document.getElementById("galleryCountAll");
-                if (countAll) countAll.textContent = total;
+            const countAll = document.getElementById("galleryCountAll");
+            if (countAll) countAll.textContent = total;
 
-                if (render) {
-                    this.renderGalleryGrid();
-                }
+            if (render) {
+                this.renderGalleryGrid();
             }
         } catch (err) {
             console.warn("Failed to load gallery images:", err);
+            if (render) {
+                const friendly = err instanceof TypeError
+                    ? "Couldn’t reach the image service. Check that the API is running."
+                    : err.message;
+                this.setGalleryState("error", friendly);
+            }
         }
+    }
+
+    /**
+     * Condense an epoch timestamp into a card-sized age label.
+     * @param {number} epoch - Unix timestamp in seconds.
+     * @returns {string} Compact age such as "now", "12m", "3h", "4d", "6w" or "2y".
+     */
+    relativeStamp(epoch) {
+        if (!Number.isFinite(epoch)) return "";
+        const secs = Date.now() / 1000 - epoch;
+        if (secs < 90) return "now";
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `${mins}m`;
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) return `${hours}h`;
+        const days = Math.floor(hours / 24);
+        if (days < 7) return `${days}d`;
+        if (days < 365) return `${Math.floor(days / 7)}w`;
+        return `${Math.floor(days / 365)}y`;
     }
 
     /**
@@ -5970,7 +6208,6 @@ class RobotUI {
      */
     renderGalleryGrid() {
         const grid = document.getElementById("galleryGrid");
-        const emptyState = document.getElementById("galleryEmptyState");
         if (!grid) return;
 
         let filtered = this.galleryImages || [];
@@ -6004,38 +6241,58 @@ class RobotUI {
 
         if (filtered.length === 0) {
             grid.innerHTML = "";
-            if (emptyState) emptyState.style.display = "block";
+            const hasArtwork = (this.galleryImages || []).length > 0;
+            const title = document.getElementById("galleryEmptyTitle");
+            const sub = document.getElementById("galleryEmptySub");
+            const icon = document.getElementById("galleryEmptyIcon");
+            if (title) title.textContent = hasArtwork ? "No matches" : "Nothing saved yet";
+            if (sub) {
+                sub.textContent = hasArtwork
+                    ? "No artwork matches this filter and search. Clear them to see everything."
+                    : "Generate visual artwork using the Image Studio to populate your persistent gallery.";
+            }
+            if (icon) icon.textContent = hasArtwork ? "🔍" : "🎨";
+            this.setGalleryState("empty");
             return;
         }
 
-        if (emptyState) emptyState.style.display = "none";
+        this.setGalleryState("ready");
         grid.innerHTML = filtered.map(img => {
             const promptEscaped = (img.prompt || "Generated Artwork")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#39;");
             const modelLabel = (img.model || "diffusion").toUpperCase();
             return `
-                <div class="gallery-card" data-filename="${img.filename}">
+                <div class="gallery-card" data-filename="${img.filename}" role="button" tabindex="0" aria-label="Open ${promptEscaped}">
                     <div class="gallery-thumb-wrap">
-                        <img src="${img.url}" alt="${promptEscaped}" class="gallery-thumb" loading="lazy" />
+                        <img src="${img.url}" alt="${promptEscaped}" class="gallery-thumb" loading="lazy" decoding="async" />
                         <span class="gallery-card-badge">${modelLabel}</span>
-                        <span class="gallery-card-size">${img.size_kb || ""}</span>
                     </div>
                     <div class="gallery-card-info">
                         <div class="gallery-card-prompt" title="${promptEscaped}">${promptEscaped}</div>
-                        <div class="gallery-card-date">${img.created_at_iso || ""}</div>
+                        <div class="gallery-card-meta">
+                            <span class="gallery-card-size">${img.size_kb || ""}</span>
+                            <span class="gallery-card-age" title="${img.created_at_iso || ""}">${this.relativeStamp(img.created_at)}</span>
+                        </div>
                     </div>
                 </div>
             `;
         }).join("");
 
-        // Attach click listeners to cards
+        // Attach click and keyboard listeners to cards
         grid.querySelectorAll(".gallery-card").forEach(card => {
-            card.addEventListener("click", () => {
+            const open = () => {
                 const fname = card.dataset.filename;
                 const imgItem = this.galleryImages.find(i => i.filename === fname);
                 if (imgItem) {
                     this.openGalleryLightbox(imgItem);
+                }
+            };
+            card.addEventListener("click", open);
+            card.addEventListener("keydown", (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    open();
                 }
             });
         });
@@ -6245,14 +6502,16 @@ class RobotUI {
 
             const dualInput = document.getElementById("chatInput");
             const dualSendBtn = document.getElementById("chatSendBtn");
-            const wsInput = document.getElementById("chatWsTextarea");
-            const wsSendBtn = document.getElementById("chatWsSendBtn");
+            const wsInput = this.chatTextarea;
+            const wsSendBtn = this.btnChatSubmit;
 
             if (document.body.classList.contains("mode-chat") && wsInput && wsSendBtn) {
                 wsInput.value = prompt;
+                wsInput.dispatchEvent(new Event("input", { bubbles: true }));
                 wsSendBtn.click();
             } else if (dualInput && dualSendBtn) {
                 dualInput.value = prompt;
+                dualInput.dispatchEvent(new Event("input", { bubbles: true }));
                 dualSendBtn.click();
             }
         };

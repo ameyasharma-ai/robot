@@ -230,6 +230,14 @@ body {
     overflow-x: hidden;
 }
 
+/* An open dialog owns the viewport: nothing behind it scrolls. The overlay
+   manager compensates for the scrollbar it removes so the page never shifts. */
+html.overlay-open,
+body.overlay-open {
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
 h1, h2, h3, h4, h5 {
     font-weight: 600;
     line-height: var(--lh-tight);
@@ -930,7 +938,9 @@ input[type="radio"]:checked::after {
 .card-badges {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    /* A wrapped badge row stays left-aligned with the title instead of leaving
+       the last pill stranded on the right edge. */
+    justify-content: flex-start;
     gap: var(--s-1);
     flex: 0 1 auto;
     min-width: 0;
@@ -1724,6 +1734,7 @@ input[type="radio"]:checked::after {
 .telem-sep {
     width: 1px;
     height: 14px;
+    overflow: hidden;
     background: var(--line);
 }
 
@@ -2155,7 +2166,14 @@ body.mode-dual .chat-workspace-panel { display: none; }
 
 .chat-send-btn:hover:not(:disabled) { background: var(--accent-400); }
 .chat-send-btn:active:not(:disabled) { transform: translateY(1px); }
-.chat-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* An empty composer is not a dimmed action, it is an unavailable one. */
+.chat-send-btn:disabled {
+    color: var(--text-4);
+    cursor: not-allowed;
+    background: var(--surface-control);
+    border: 1px solid var(--line);
+}
 
 /* ── 6. HUD ───────────────────────────────────────────────────────────────── */
 
@@ -2196,6 +2214,54 @@ body.mode-dual .chat-workspace-panel { display: none; }
     min-height: 0;
     max-height: 100%;
     overflow: hidden;
+}
+
+/* The metrics card carries more telemetry than a short viewport can show. It
+   scrolls as a unit rather than silently clipping the pipeline to a half row;
+   the scrollbar only appears when the content actually overflows. */
+.hud-bottom-split > .card-metrics {
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+    /* Scroll shadows: the lower edge only darkens while telemetry continues
+       below the fold, so a partially visible row never reads as a layout bug. */
+    background:
+        linear-gradient(var(--surface-card) 30%, transparent) top left / 100% 24px no-repeat local,
+        linear-gradient(transparent, var(--surface-card) 70%) bottom left / 100% 24px no-repeat local,
+        radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.4), transparent) top left / 100% 8px no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.4), transparent) bottom left / 100% 8px no-repeat scroll,
+        var(--surface-card);
+}
+
+.hud-bottom-split > .card-metrics::-webkit-scrollbar { width: 6px; }
+
+.hud-bottom-split > .card-metrics::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border-radius: var(--r-pill);
+}
+
+.card-metrics > * { flex: 0 0 auto; }
+
+/* The telemetry deck used to absorb the shortfall with its own scrollbar and
+   lose its last chip row. Let the card own the overflow instead. In a tall
+   column the deck grows to consume the spare height — the scope trace gets
+   taller — while a max-content floor keeps the card scrolling on short ones. */
+.card-metrics .pipeline-telemetry-deck {
+    flex: 1 1 auto;
+    min-height: max-content;
+    overflow: visible;
+}
+
+.card-metrics .telemetry-deck-body { flex: 1 1 auto; }
+
+.card-metrics .telemetry-sub-box { justify-content: space-between; }
+
+.card-metrics .acoustic-canvas-wrap {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 46px;
 }
 
 .resize-handle {
@@ -2427,12 +2493,12 @@ body.mode-dual .chat-workspace-panel { display: none; }
 .sc-lbl {
     font-size: var(--t-2xs);
     font-weight: 650;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--text-3);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    /* Two short words must not cost a letter: wrap instead of ellipsizing a
+       label the user is expected to read. */
+    line-height: 1.25;
 }
 
 .sc-val {
@@ -2466,13 +2532,19 @@ body.mode-dual .chat-workspace-panel { display: none; }
 
 .hardware-grid {
     display: grid;
+    flex: 1 1 auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Rows share the card's height with the vision card beside it, so the
+       hardware card never ends in a band of dead space. */
+    grid-auto-rows: minmax(0, 1fr);
+    align-content: stretch;
     gap: var(--s-2);
 }
 
 .hw-item {
     display: flex;
     flex-direction: column;
+    justify-content: center;
     gap: var(--s-1);
     min-width: 0;
     padding: var(--s-2) var(--s-3);
@@ -2538,6 +2610,9 @@ body.mode-dual .chat-workspace-panel { display: none; }
     flex-direction: column;
     gap: var(--s-3);
     min-height: 0;
+    /* The pipeline decides between one line and wrapped rows from the card's
+       own width, not the window's. */
+    container-type: inline-size;
 }
 
 .metrics-card-header { align-items: flex-start; }
@@ -2596,6 +2671,22 @@ body.mode-dual .chat-workspace-panel { display: none; }
 .pipeline-flow::-webkit-scrollbar,
 .integrated-pipeline-flow::-webkit-scrollbar { display: none; }
 
+/* The chain stays one line while the card can hold it. Below that it wraps into
+   readable rows — a dashboard that hides TTS/AVATAR/IMAGE behind an invisible
+   horizontal scroll cannot be used to check the pipeline at a glance. */
+@container (max-width: 560px) {
+    .pipeline-flow,
+    .integrated-pipeline-flow {
+        flex-wrap: wrap;
+        justify-content: center;
+        row-gap: var(--s-1);
+    }
+
+    .pipe-arrow { display: none; }
+
+    .pipe-node { flex: 1 1 64px; }
+}
+
 .pipe-node {
     display: flex;
     flex-direction: column;
@@ -2603,11 +2694,12 @@ body.mode-dual .chat-workspace-panel { display: none; }
     gap: 1px;
     flex: none;
     min-width: 46px;
-    padding: var(--s-1) 6px;
+    padding: 3px 6px;
     background: var(--surface-control);
     border: 1px solid var(--line-hair);
     border-radius: var(--r-xs);
     text-align: center;
+    line-height: 1.2;
     transition: background var(--d-2) var(--ease), border-color var(--d-2) var(--ease);
 }
 
@@ -3030,6 +3122,10 @@ body.mode-dual .chat-workspace-panel { display: none; }
     flex-direction: column;
     gap: var(--s-3);
     min-height: 0;
+    /* The deck header switches from one row to two based on the card's width,
+       not the window's: at 474px the badge would otherwise orphan below the
+       tabs. */
+    container-type: inline-size;
 }
 
 .cyber-deck-header {
@@ -3052,6 +3148,20 @@ body.mode-dual .chat-workspace-panel { display: none; }
 }
 
 .cyber-deck-tabs::-webkit-scrollbar { display: none; }
+
+/* Narrow deck: title and state share the first row, the tab rail owns the
+   second. The alternative is a third row holding nothing but "STUDIO: READY". */
+@container (max-width: 560px) {
+    .cyber-deck-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+    }
+
+    .cyber-deck-header .card-title { grid-column: 1; grid-row: 1; }
+    .cyber-deck-header .card-badges { grid-column: 2; grid-row: 1; justify-self: end; }
+    .cyber-deck-header .cyber-deck-tabs { grid-column: 1 / -1; grid-row: 2; }
+}
 
 .deck-tab-btn {
     display: inline-flex;
@@ -3174,6 +3284,17 @@ body.mode-dual .chat-workspace-panel { display: none; }
     min-width: 0;
 }
 
+/* Phone-width deck: the prompt keeps a full line, the actions sit beneath it
+   instead of squeezing the field into a placeholder fragment. */
+@container (max-width: 400px) {
+    .image-input-row { flex-wrap: wrap; }
+
+    /* Specific enough to beat the base rules, which are declared below this
+       block and would otherwise pin the field's basis and the button's width. */
+    .image-input-row .img-prompt-input { flex: 1 1 100%; }
+    .image-input-row .img-gen-btn { flex: 1 1 auto; }
+}
+
 .img-prompt-input {
     flex: 1 1 auto;
     min-width: 0;
@@ -3199,6 +3320,16 @@ body.mode-dual .chat-workspace-panel { display: none; }
     color: var(--accent-on);
 }
 
+/* Blank prompt or a job already running: the button shows it is unavailable
+   instead of accepting a click it will ignore. */
+.img-gen-btn:disabled {
+    background: var(--surface-control);
+    border-color: var(--line);
+    color: var(--text-3);
+}
+
+.img-gen-btn.generating:disabled { color: var(--accent-300); }
+
 .img-cancel-btn {
     min-height: 34px;
     background: var(--tint-danger);
@@ -3208,6 +3339,10 @@ body.mode-dual .chat-workspace-panel { display: none; }
 }
 
 .img-cancel-btn:hover:not(:disabled) { background: rgba(239, 68, 68, 0.22); }
+
+/* Cancel only has meaning while a job is running; at rest it is a disabled
+   red button occupying a third of the composer. */
+.img-cancel-btn:disabled { display: none; }
 
 .image-controls-row {
     display: flex;
@@ -3248,16 +3383,50 @@ body.mode-dual .chat-workspace-panel { display: none; }
 .img-steps-input { width: 54px; }
 
 .img-gallery-btn {
-    margin-left: auto;
-    min-height: 28px;
-    background: transparent;
+    min-height: 30px;
+    padding: 0 var(--s-2);
+    background: rgba(4, 6, 10, 0.72);
     border-color: var(--line);
     color: var(--text-2);
     flex: none;
     white-space: nowrap;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
 }
 
-.img-gallery-btn:hover { background: var(--surface-control); color: var(--text-1); }
+.img-gallery-btn:hover { background: rgba(4, 6, 10, 0.92); color: var(--text-1); }
+
+/* The gallery belongs to the canvas it indexes, not to the parameter row. */
+.img-gallery-overlay {
+    position: absolute;
+    top: var(--s-2);
+    right: var(--s-2);
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.img-gallery-count {
+    min-width: 18px;
+    padding: 0 5px;
+    background: var(--surface-raised);
+    border-radius: var(--r-pill);
+    font-family: var(--font-mono);
+    font-size: var(--t-2xs);
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    color: var(--text-1);
+}
+
+/* Below this the canvas HUD and the gallery chip would share a line, and the
+   size is already stated by the Size control above. */
+@container (max-width: 340px) {
+    .canvas-viewport-hud { display: none; }
+
+    .img-placeholder { padding: var(--s-3); }
+}
 
 .btn-icon { font-size: 12px; line-height: 1; }
 
@@ -3307,9 +3476,8 @@ body.mode-dual .chat-workspace-panel { display: none; }
 
 .canvas-viewport-hud {
     position: absolute;
-    top: var(--s-2);
-    left: 50%;
-    transform: translateX(-50%);
+    top: 13px;
+    left: var(--s-2);
     display: flex;
     align-items: center;
     gap: var(--s-1);
@@ -3381,6 +3549,32 @@ body.mode-dual .chat-workspace-panel { display: none; }
     font-size: var(--t-2xs);
     color: var(--text-3);
     line-height: var(--lh-body);
+}
+
+.img-placeholder-text {
+    max-width: 34ch;
+    margin: 0;
+    font-size: var(--t-xs);
+}
+
+.img-placeholder-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--s-1);
+    margin-top: var(--s-1);
+}
+
+.ipm-chip {
+    padding: 2px 8px;
+    background: var(--surface-control);
+    border: 1px solid var(--line-hair);
+    border-radius: var(--r-pill);
+    font-family: var(--font-mono);
+    font-size: var(--t-2xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-3);
 }
 
 #imgPreviewArea img {
@@ -4914,9 +5108,9 @@ button.chat-stat-pill:hover {
     border: 1px solid var(--accent-500);
 }
 
-.chat-send-action-btn:hover { background: var(--accent-400); }
+.chat-send-action-btn:hover:not(:disabled) { background: var(--accent-400); }
 
-.chat-send-action-btn:active { transform: scale(.95); }
+.chat-send-action-btn:active:not(:disabled) { transform: scale(.95); }
 
 .chat-send-action-btn:disabled {
     color: var(--text-4);
@@ -6419,7 +6613,7 @@ button.chat-stat-pill:hover {
     align-items: start;
 }
 
-.gallery-empty-state {
+.gallery-state {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -6429,6 +6623,21 @@ button.chat-stat-pill:hover {
     min-height: 240px;
     text-align: center;
 }
+
+.gallery-state[hidden] { display: none; }
+
+.gallery-state-label {
+    font-size: var(--t-sm);
+    color: var(--text-3);
+}
+
+.gallery-state .cyber-btn { margin-top: var(--s-2); }
+
+.gallery-state .empty-sub { color: var(--text-3); }
+
+#galleryErrorState .empty-sub { color: var(--danger-400); }
+
+#galleryGrid[hidden] { display: none; }
 
 .empty-icon { font-size: var(--t-3xl); }
 
@@ -6446,9 +6655,16 @@ button.chat-stat-pill:hover {
 }
 
 /* Opens from inside the gallery modal, so it sits one layer above it. */
-.lightbox-backdrop { z-index: 135; }
+/* One artwork at a time: the gallery sheet behind would otherwise ghost its
+   header and footer through the shared backdrop. */
+.lightbox-backdrop {
+    z-index: 135;
+    background: rgb(3 6 12 / 92%);
+    backdrop-filter: blur(10px);
+}
 
 .lightbox-modal {
+    position: relative;
     display: grid;
     gap: var(--s-3);
     grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr);
@@ -6592,7 +6808,6 @@ button.chat-stat-pill:hover {
 .tts-voice-card,
 .persona-card,
 .gallery-card,
-.sensor-chip,
 .tts-section-card,
 .stt-section-card {
     display: flex;
@@ -6761,6 +6976,7 @@ button.chat-stat-pill:hover {
 }
 
 .gallery-thumb {
+    display: block;
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -6769,22 +6985,30 @@ button.chat-stat-pill:hover {
 
 .gallery-card:hover .gallery-thumb { transform: scale(1.04); }
 
-.gallery-card-badge,
-.gallery-card-size {
+.gallery-card:focus-visible {
+    outline: 2px solid var(--accent-500);
+    outline-offset: 2px;
+}
+
+.gallery-card-badge {
     position: absolute;
+    top: 6px;
+    left: 6px;
     z-index: 1;
+    max-width: calc(100% - 12px);
+    overflow: hidden;
     padding: 2px 7px;
     font-family: var(--font-mono);
     font-size: var(--t-2xs);
     font-weight: 600;
+    letter-spacing: .04em;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--text-1);
-    background: rgb(4 6 10 / 76%);
+    background: rgb(4 6 10 / 72%);
     border-radius: var(--r-xs);
     backdrop-filter: blur(3px);
 }
-
-.gallery-card-badge { top: 6px; left: 6px; }
-.gallery-card-size { top: 6px; right: 6px; }
 
 .gallery-card-info {
     display: flex;
@@ -6803,10 +7027,26 @@ button.chat-stat-pill:hover {
     -webkit-line-clamp: 2;
 }
 
-.gallery-card-date {
+.gallery-card-meta {
+    display: flex;
+    gap: var(--s-2);
+    align-items: baseline;
+    justify-content: space-between;
+    min-width: 0;
+}
+
+.gallery-card-size,
+.gallery-card-age {
     font-family: var(--font-mono);
     font-size: var(--t-2xs);
-    color: var(--text-3);
+    white-space: nowrap;
+}
+
+.gallery-card-size { color: var(--text-3); }
+
+.gallery-card-age {
+    flex: 0 0 auto;
+    color: var(--text-4);
 }
 
 /* -- Model search rows ----------------------------------------------------- */
@@ -7379,8 +7619,6 @@ button.chat-stat-pill:hover {
         padding: 0 var(--s-2);
     }
 
-    .brand-title,
-    .brand-ver,
     .nav-divider,
     .telemetry-pod { display: none; }
 
@@ -7389,24 +7627,58 @@ button.chat-stat-pill:hover {
        page gutter — and it is the only always-on canvas on the page. */
     .matrix-rain-canvas { display: none; }
 
-    .nav-zone-left { flex: 0 0 auto; gap: var(--s-1); }
+    /* The wordmark is the whole left zone, and the wordmark does not fit a
+       phone bar. Keeping only its pulsing dot leaves a stray LED, so the zone
+       leaves too and the state pill anchors the left edge instead. */
+    .nav-zone-left { display: none; }
 
     .nav-zone-right {
         flex: 1 1 auto;
+        justify-content: space-between;
         gap: var(--s-2);
     }
 
-    /* The suite strip: hidden until ENGINE opens it, then a full-width second
-       row that scrolls sideways instead of squashing its controls. */
+    /* The suite strip: hidden until ENGINE opens it. Open, it wraps instead of
+       scrolling sideways — a chip cut off at the right edge hides a control. */
     .nav-zone-center {
         display: none;
         order: 3;
         flex: 1 1 100%;
+        flex-wrap: wrap;
         justify-content: flex-start;
         gap: var(--s-2);
+        min-width: 0;
+        overflow: visible;
+        mask-image: none;
+        -webkit-mask-image: none;
+    }
+
+    /* The provider pills are a row of their own inside the panel. They wrap
+       too: one unwrappable 514px row is what pushed the whole layout viewport
+       past the phone's width and put the right edge off-screen. */
+    .llm-provider-wrap {
+        flex: 1 1 100%;
+        flex-wrap: wrap;
+        row-gap: var(--s-2);
+        min-width: 0;
+    }
+
+    .llm-provider-wrap > * {
+        flex: 0 1 auto;
+        min-width: 0;
     }
 
     body.engine-cluster-open .nav-zone-center { display: flex; }
+
+    /* The X is this panel's close control, so it leads the first row. The title
+       only repeats the ENGINE button that opened the panel. */
+    .cluster-handle {
+        position: static;
+        padding-right: 0;
+        background: none;
+    }
+
+    .cluster-title { display: none; }
 
     .cluster-toggle-btn { display: inline-flex; }
 
@@ -7497,7 +7769,26 @@ button.chat-stat-pill:hover {
 
     .speech-bubble { max-width: min(100%, 320px); }
 
-    .chat-input-bar { flex-wrap: wrap; }
+    /* Two rows, deliberately: the voice/thinking toggles read as a row of
+       modes, while the message field and send share the row a thumb expects.
+       Flex-wrap used to strand the send button under a full-width field. */
+    .chat-input-bar {
+        display: grid;
+        grid-template-columns: max-content max-content minmax(0, 1fr) 36px;
+        align-items: center;
+        row-gap: var(--s-2);
+    }
+
+    .chat-input-bar .voice-toggle-btn { grid-column: 1; grid-row: 1; }
+    .chat-input-bar .thinking-toggle-btn { grid-column: 2; grid-row: 1; }
+
+    .chat-input-bar .chat-input {
+        grid-column: 1 / 4;
+        grid-row: 2;
+        width: 100%;
+    }
+
+    .chat-input-bar .chat-send-btn { grid-column: 4; grid-row: 2; }
 
     /* HUD cards go single-column and scroll with the page. */
     .card-metrics,
@@ -7546,6 +7837,15 @@ button.chat-stat-pill:hover {
         padding: calc(var(--s-3) + env(safe-area-inset-top)) var(--s-3) var(--s-2);
     }
 
+    /* Long titles and a count badge share the header with the close and action
+       controls; letting the badge fall to its own line beats shaving it into
+       "0 ARTWOR". */
+    .modal-title {
+        flex-wrap: wrap;
+        row-gap: var(--s-1);
+        font-size: var(--t-sm);
+    }
+
     .modal-body { padding: var(--s-3); gap: var(--s-3); }
 
     .modal-footer {
@@ -7568,6 +7868,7 @@ button.chat-stat-pill:hover {
     .lightbox-modal {
         grid-template-columns: minmax(0, 1fr);
         width: 100%;
+        height: 100dvh;
         max-height: 100dvh;
         overflow-y: auto;
         border-radius: 0;
@@ -7575,7 +7876,31 @@ button.chat-stat-pill:hover {
 
     .lightbox-image-wrap img { max-height: 52dvh; }
 
+    /* The sheet scrolls under a thumb; the only way out has to stay put. */
+    .lightbox-close-btn { position: fixed; }
+
     .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+
+    /* Stack the rail above the field: side by side the search box was left in
+       a ragged 257px column. */
+    .gallery-filter-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: var(--s-2);
+    }
+
+    .gallery-filter-chips { width: 100%; }
+
+    .gallery-search-box { min-width: 0; }
+
+    /* The filter rail scrolls; the fade is what says the cut-off chip is not
+       missing, only off-screen. */
+    @supports (mask-image: linear-gradient(#000, #000)) {
+        .gallery-filter-chips {
+            mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+            -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+        }
+    }
 
     .hf-search-bar-wrap { flex-wrap: wrap; }
 
@@ -7586,6 +7911,15 @@ button.chat-stat-pill:hover {
     .modal-footer .cyber-btn { min-height: 40px; }
 
     .api-auth-card { width: min(100% - 32px, 420px); }
+}
+
+/* -- 360: the two composer mode pills and the send target must still share
+   their rows, so they give up padding before the message field does. -------- */
+
+@media (max-width: 360px) {
+    .chat-input-bar { column-gap: var(--s-1); }
+
+    .chat-tool-btn { padding: 0 6px; }
 }
 
 /* -- 430: small phone ------------------------------------------------------ */
@@ -7611,8 +7945,6 @@ button.chat-stat-pill:hover {
        session title and turn a 46px bar into a 77px one. */
     .chat-stat-pill { gap: 4px; font-size: var(--t-2xs); }
 
-    .brand-title { font-size: var(--t-md); }
-
     .hero-title { font-size: var(--t-xl); }
 
     .hero-features { flex-direction: column; align-items: stretch; }
@@ -7628,10 +7960,6 @@ button.chat-stat-pill:hover {
     .tab-icon { display: none; }
 
     .vision-grid { grid-template-columns: minmax(0, 1fr); }
-
-    .img-controls-row { flex-direction: column; align-items: stretch; }
-
-    .img-gallery-btn { margin-left: 0; }
 }
 
 /* -- Coarse pointers get reachable targets even on wide screens ------------ */
@@ -7657,6 +7985,7 @@ button.chat-stat-pill:hover {
     .btn-thought-toggle,
     .btn-thought-card-toggle,
     .stream-size-btn,
+    .img-gallery-btn,
     .modal-close-btn,
     .eq-chip,
     .stt-chip,

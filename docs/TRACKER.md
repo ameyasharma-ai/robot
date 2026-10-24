@@ -8,6 +8,18 @@
 
 ## ✅ Recently Completed (2026-10-24)
 
+### Frontend — production polish pass across every surface
+This campaign treated the console as a shipped product rather than a demo: states, focus, form semantics, dead space, and the phone layout were audited surface by surface at 360 / 393 / 768 / 1024 / 1280 / 1440 / 1920 / 2560.
+
+- **Phone layout viewport no longer inflates**: opening ENGINE measured `documentElement.scrollWidth == 522` on a 393px phone, pushing the right edge off-screen. The cause was flex automatic minimum size — `min-width: auto` on `.nav-zone-center` (with the 514px-wide provider strip inside) forced the viewport wider than the screen. `min-width: 0`, a wrapping `.llm-provider-wrap`, and disabling the scroll mask brought `docSW == innerWidth` back at 360, 393 and 768; the cluster now stacks into labelled rows instead of clipping.
+- **Gallery is a real gallery**: cards are keyboard-openable (`role="button"`, Enter/Space), carry model, size and a relative age (`18m`, `3h`) without truncating the meta row, and the modal has explicit **loading / error / empty / no-match** states with a working *Try again* path. A failed fetch says “Couldn’t reach the image service…” instead of an empty grid.
+- **Composers tell the truth**: both chat send buttons and *Generate* disable on empty input and while a stream/job is active, with a neutral disabled palette rather than a dimmed accent.
+- **Forms and semantics**: all four password fields now live inside `<form>` elements (Chrome’s “password field is not contained in a form” warning is gone), Enter submits once with no navigation, the config save path reports `message`/`error`/HTTP status instead of `undefined`, a skip link precedes the header, `<main>` carries an `sr-only` `h1`, and the global status pill is an `aria-live` region.
+- **Card anatomy**: badges left-align when they wrap, the telemetry deck grows to absorb spare height in a tall column (the 206px scope at 1920 replaces a dead void; short viewports keep the scroll shadow and full content), and image titles were shortened to fit one line.
+- **Lightbox**: the phone sheet is full-bleed with the close control pinned where a thumb reaches, the backdrop is 92% + 10px blur so the gallery no longer ghosts through, and the desktop ✕ is anchored to the dialog rather than the window corner.
+- **Cleanup**: dead `.brand-title` / `.brand-ver` phone overrides removed (the whole brand zone is already hidden there), cache-bust bumped to `7.10-ui`.
+- **Verified**: zero console/page errors and zero horizontal overflow at all eight widths; chat thread and composer aligned at 393 / 768 / 1440; gallery opens, lightbox opens and closes by button and Escape, session drawer closes by backdrop tap and Escape; 377/377 tests green.
+
 ### Console — duplicated controls purged, the tab spinner bounded, and a phone header that closes
 Four reports in one message: the chat toolbar repeating the main toolbar, a favicon that spins forever after load, an ugly phone top bar, and menus that cannot be closed on a phone. Each had a distinct root cause, and two of them were the same underlying defect seen from different ends.
 

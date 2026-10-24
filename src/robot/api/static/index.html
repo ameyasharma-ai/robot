@@ -3,14 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#070a10">
+    <meta name="description" content="Robot Core console — realtime voice, vision and local model control for the Aero neural engine.">
     <title>Robot Core — HUD & Face System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/index.css?v=7.5-header">
+    <link rel="stylesheet" href="/static/index.css?v=7.10-ui">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23050810'/%3E%3Cpath d='M16 5l3 6 6 1-4.5 4.4L21.6 23 16 19.8 10.4 23l1.1-6.6L7 12l6-1z' fill='%2322c8e6'/%3E%3C/svg%3E">
 </head>
 <body class="mode-dual">
+    <a class="skip-link" href="#mainContent">Skip to console</a>
     <!-- ═══ API AUTH GATE ═══════════════════════════════════════════════════
          The Robot Core API requires a bearer token on every route except
          /health and these static assets (see robot.api.create_app). Requests
@@ -281,7 +285,7 @@
         <div class="nav-zone nav-zone-right">
             <!-- One seam group: what the robot is doing, and how fast it did it. -->
             <div class="header-state">
-                <div class="status-pill status-idle" id="globalStatusPill">
+                <div class="status-pill status-idle" id="globalStatusPill" role="status" aria-live="polite">
                     <span class="status-indicator"></span>
                     <span class="status-text" id="globalStatusText">IDLE</span>
                 </div>
@@ -292,12 +296,12 @@
                         <span class="telem-label">TTFT</span>
                         <span class="telem-val" id="hudTtft">-- ms</span>
                     </div>
-                    <span class="telem-sep">•</span>
+                    <span class="telem-sep" aria-hidden="true"></span>
                     <div class="telemetry-item">
                         <span class="telem-label">E2E</span>
                         <span class="telem-val" id="hudE2e">-- ms</span>
                     </div>
-                    <span class="telem-sep">•</span>
+                    <span class="telem-sep" aria-hidden="true"></span>
                     <div class="telemetry-item">
                         <span class="telem-label">TOK</span>
                         <span class="telem-val" id="hudTokens">--</span>
@@ -321,7 +325,8 @@
     </header>
 
     <!-- Main Container -->
-    <main class="main-viewport">
+    <main class="main-viewport" id="mainContent">
+        <h1 class="sr-only">Robot Core console</h1>
         <!-- LEFT: Robot Digital Face & 3D Character Avatar UI -->
         <section class="face-panel" id="facePanel">
             <!-- Cybernetic Holographic Chamber Framing Brackets -->
@@ -387,7 +392,7 @@
                 <div class="card card-vision">
                     <div class="card-header">
                         <div class="card-title">
-                            <span class="icon">👁️</span> CONTINUOUS PERCEPTION & SPATIAL AWARENESS
+                            <span class="icon">👁️</span> PERCEPTION & SPATIAL AWARENESS
                         </div>
                         <div class="card-badges">
                             <span class="badge" id="hudLighting">LIGHT: NORMAL</span>
@@ -703,9 +708,9 @@
                                 <button class="img-style-chip" data-style="photorealistic futuristic robotic laboratory, octanerender, ultra high definition" title="Photoreal style">📸 Photoreal</button>
                             </div>
                             <div class="image-input-row">
-                                <input type="text" class="img-prompt-input" id="imgPromptInput" aria-label="Image generation prompt" placeholder="Prompt (e.g. Cyberpunk robot in neon rain)..." autocomplete="off" />
-                                <button class="img-gen-btn" id="btnGenImage">Generate</button>
-                                <button class="img-cancel-btn" id="btnCancelImage" disabled>Cancel</button>
+                                <input type="text" class="img-prompt-input" id="imgPromptInput" aria-label="Image generation prompt" placeholder="Describe a scene or subject…" autocomplete="off" />
+                                <button class="img-gen-btn" id="btnGenImage" type="button">Generate</button>
+                                <button class="img-cancel-btn" id="btnCancelImage" type="button" disabled>Cancel</button>
                             </div>
                             <div class="image-controls-row">
                                 <label class="img-ctrl-label">Model:
@@ -728,9 +733,6 @@
                                 <label class="img-ctrl-label">Steps:
                                     <input type="number" id="imgStepsInput" value="4" min="1" max="50" class="img-steps-input" title="Inference steps" />
                                 </label>
-                                <button type="button" class="img-gallery-btn cyber-btn-sm" id="btnOpenGallery" title="View Generated Artwork Gallery">
-                                    <span class="btn-icon">🖼️</span> Gallery (<span id="galleryCountBadge">0</span>)
-                                </button>
                                 <div class="img-progress-wrap" id="imgProgressWrap" style="display: none;">
                                     <div class="img-progress-bar" id="imgProgressBar" style="width: 0%;"></div>
                                 </div>
@@ -742,15 +744,23 @@
                                 <span class="canvas-bracket cb-br"></span>
                                 <div class="canvas-viewport-hud">
                                     <span class="cvh-dot"></span>
-                                    <span class="cvh-text">AI VIEWPORT • 512×512 HD</span>
+                                    <span class="cvh-text" id="canvasViewportLabel">AI VIEWPORT • 512×512 PX</span>
                                 </div>
+                                <button type="button" class="img-gallery-btn cyber-btn-sm img-gallery-overlay" id="btnOpenGallery" title="View generated artwork">
+                                    <span class="btn-icon">🖼️</span> Gallery <span class="img-gallery-count" id="galleryCountBadge">0</span>
+                                </button>
                                 <div class="img-placeholder" id="imgPlaceholder">
                                     <div class="img-placeholder-reticle">
                                         <span class="reticle-ring"></span>
                                         <span class="reticle-core">🎨</span>
                                     </div>
-                                    <div class="img-placeholder-title">NEURAL LATENT DIFFUSION CANVAS</div>
-                                    <div class="img-placeholder-text">Non-blocking background synthesis • Generates on CPU/SD without stealing RTX 3050 VRAM</div>
+                                    <div class="img-placeholder-title">Nothing generated yet</div>
+                                    <p class="img-placeholder-text">Describe an image and press Generate. Finished pieces appear here and in your gallery.</p>
+                                    <div class="img-placeholder-meta">
+                                        <span class="ipm-chip">Non-blocking</span>
+                                        <span class="ipm-chip">512–1024 px</span>
+                                        <span class="ipm-chip">Saved to gallery</span>
+                                    </div>
                                 </div>
                                 <div id="imgGeneratingStatus" style="display: none;">
                                     <div class="img-scanner-bar"></div>
@@ -763,7 +773,7 @@
                                         <div id="imgGenElapsed" class="img-status-sub">Elapsed: 0.0s</div>
                                     </div>
                                 </div>
-                                <img id="imgPreviewImg" src="" alt="Generated artwork" style="display: none;" title="Click to view full size" />
+                                <img id="imgPreviewImg" src="" alt="Generated artwork" decoding="async" style="display: none;" title="Click to view full size" />
                                 <div id="imgMetaBlock" style="display: none;">
                                     <div class="img-meta-row">
                                         <span>Model: <b id="metaModel">--</b></span>
@@ -1128,7 +1138,7 @@
                 </div>
                 <button class="modal-close-btn" id="btnCloseOpenaiModal" title="Close">✕</button>
             </div>
-            <div class="modal-body">
+            <form class="modal-body" id="openaiConfigForm" autocomplete="off">
                 <!-- Dual Provider Columns: OpenRouter & AI Credits -->
                 <div class="dual-provider-grid">
                     <!-- COLUMN 1: OPENROUTER -->
@@ -1262,10 +1272,10 @@
                 </select>
 
                 <div class="modal-feedback" id="openaiConfigFeedback"></div>
-            </div>
+            </form>
             <div class="modal-footer">
-                <button class="cyber-btn btn-secondary" id="btnTestAndScanModal">🔄 Rescan Active Models</button>
-                <button class="cyber-btn btn-primary" id="btnSaveOpenaiConfig">💾 Save All Configurations</button>
+                <button class="cyber-btn btn-secondary" id="btnTestAndScanModal" type="button">🔄 Rescan Active Models</button>
+                <button class="cyber-btn btn-primary" id="btnSaveOpenaiConfig" type="submit" form="openaiConfigForm">💾 Save All Configurations</button>
             </div>
         </div>
     </div>
@@ -1996,13 +2006,23 @@
 
             <!-- Gallery Grid Container -->
             <div class="modal-body gallery-modal-body" id="galleryModalBody">
+                <div class="gallery-state" id="galleryLoadingState" hidden>
+                    <span class="img-spinner" aria-hidden="true"></span>
+                    <span class="gallery-state-label">Loading artwork…</span>
+                </div>
+                <div class="gallery-state" id="galleryErrorState" role="alert" hidden>
+                    <div class="empty-icon">⚠️</div>
+                    <div class="empty-title">Couldn’t load the gallery</div>
+                    <div class="empty-sub" id="galleryErrorText">The image service did not respond.</div>
+                    <button class="cyber-btn btn-secondary" id="btnRetryGallery" type="button">Try again</button>
+                </div>
                 <div class="gallery-grid" id="galleryGrid">
                     <!-- Populated dynamically via /api/images/gallery -->
                 </div>
-                <div class="gallery-empty-state" id="galleryEmptyState" style="display: none;">
-                    <div class="empty-icon">🎨</div>
-                    <div class="empty-title">No Generated Artwork Found</div>
-                    <div class="empty-sub">Generate visual artwork using the Image Studio to populate your persistent gallery.</div>
+                <div class="gallery-state" id="galleryEmptyState" hidden>
+                    <div class="empty-icon" id="galleryEmptyIcon">🎨</div>
+                    <div class="empty-title" id="galleryEmptyTitle">Nothing saved yet</div>
+                    <div class="empty-sub" id="galleryEmptySub">Generate visual artwork using the Image Studio to populate your persistent gallery.</div>
                 </div>
             </div>
 
@@ -2018,7 +2038,7 @@
         <div class="lightbox-modal" role="dialog" aria-modal="true" aria-label="Artwork preview">
             <button class="lightbox-close-btn" id="btnCloseLightbox" title="Close Preview (Esc)">✕</button>
             <div class="lightbox-image-wrap">
-                <img id="lightboxImage" src="" alt="Artwork Preview" />
+                <img id="lightboxImage" src="" alt="Artwork Preview" decoding="async" />
             </div>
             <div class="lightbox-sidebar">
                 <div class="lightbox-badge-row">
@@ -2051,6 +2071,6 @@
     <script src="/static/character/AnimationSystem.js?v=9.0-skinny-cute-pro"></script>
     <script src="/static/character/GazeSystem.js?v=9.0-skinny-cute-pro"></script>
     <script src="/static/character/CharacterEngine.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/app.js?v=7.5-header"></script>
+    <script src="/static/app.js?v=7.10-ui"></script>
 </body>
 </html>
