@@ -29,6 +29,7 @@ class DetectedPerson:
     bbox: list[int] = field(default_factory=list)  # [x, y, w, h]
     norm_x: float = 0.5  # Normalized 0..1 (left to right in frame)
     norm_y: float = 0.5  # Normalized 0..1 (top to bottom in frame)
+    clothing_color: str = ""  # Estimated clothing/shirt color
 
 
 @dataclass
@@ -39,6 +40,7 @@ class DetectedObject:
     confidence: float
     bbox: list[int] = field(default_factory=list)  # [x, y, w, h]
     position: str = "center"  # "left", "center", "right"
+    color: str = ""  # Estimated dominant optical color
 
 
 @dataclass
@@ -52,6 +54,7 @@ class TabletopItem:
     estimated_distance_m: float = 0.5  # Estimated radial distance in meters
     position_clock: str = "12 o'clock"  # Relative clock position (e.g., "10 o'clock", "12 o'clock", "2 o'clock")
     last_seen: float = field(default_factory=time.time)
+    color: str = ""  # Estimated dominant optical color
 
     def to_dict(self) -> dict[str, Any]:
         """Convert tabletop item to dictionary format."""
@@ -62,6 +65,7 @@ class TabletopItem:
             "estimated_distance": self.estimated_distance,
             "estimated_distance_m": round(self.estimated_distance_m, 2),
             "position_clock": self.position_clock,
+            "color": self.color,
             "age_seconds": round(time.time() - self.last_seen, 1),
         }
 
@@ -126,6 +130,7 @@ class WorldState:
                         estimated_distance_m=smoothed_dist_m,
                         position_clock=new_item.position_clock,
                         last_seen=now,
+                        color=new_item.color or getattr(match, "color", ""),
                     )
                 )
             else:
@@ -149,6 +154,7 @@ class WorldState:
                 "position": p.position,
                 "distance": p.distance_estimate,
                 "looking_at_robot": p.looking_at_robot,
+                "clothing_color": getattr(p, "clothing_color", "") or "",
                 "norm_x": round(p.norm_x, 3),
                 "norm_y": round(p.norm_y, 3),
             })
@@ -157,6 +163,7 @@ class WorldState:
         for obj in self.objects:
             objects_summary.append({
                 "label": obj.label,
+                "color": getattr(obj, "color", "") or "",
                 "confidence": round(obj.confidence, 2),
                 "position": obj.position,
             })
@@ -184,7 +191,8 @@ class WorldState:
         if compact["people"]:
             lines.append("people:")
             for p in compact["people"]:
-                lines.append(f"  - id: {p['id']}")
+                cloth = f" ({p['clothing_color']})" if p.get("clothing_color") else ""
+                lines.append(f"  - id: {p['id']}{cloth}")
                 lines.append(f"    position: {p['position']}")
                 lines.append(f"    distance: {p['distance']}")
                 lines.append(f"    looking_at_robot: {str(p['looking_at_robot']).lower()}")
@@ -195,7 +203,8 @@ class WorldState:
         if compact["objects"]:
             lines.append("objects:")
             for o in compact["objects"]:
-                lines.append(f"  - label: {o['label']}")
+                col = f" ({o['color']})" if o.get("color") else ""
+                lines.append(f"  - label: {o['label']}{col}")
                 lines.append(f"    position: {o['position']}")
                 lines.append(f"    confidence: {o['confidence']}")
         else:
@@ -204,7 +213,8 @@ class WorldState:
         if compact["tabletop_items"]:
             lines.append("tabletop_items:")
             for t in compact["tabletop_items"]:
-                lines.append(f"  - item: {t['object_name']}")
+                col = f" ({t['color']})" if t.get("color") else ""
+                lines.append(f"  - item: {t['object_name']}{col}")
                 lines.append(f"    distance: {t['estimated_distance']} (~{t['estimated_distance_m']}m)")
                 lines.append(f"    clock_position: {t['position_clock']}")
 

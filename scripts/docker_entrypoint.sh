@@ -7,7 +7,7 @@ set -e
 echo "🤖 Robot Core Container Starting..."
 
 # Ensure volume mount directories exist with correct permissions
-mkdir -p /app/data/memory/qdrant /app/data/memory/personas /app/data/database /app/logs /app/models
+mkdir -p /app/data/memory/qdrant /app/data/memory/personas /app/data/database /app/data/images /app/logs /app/models
 
 # Check if ALSA audio device /dev/snd is available
 if [ -d "/dev/snd" ]; then

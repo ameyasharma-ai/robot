@@ -31,6 +31,64 @@ from robot.telemetry import get_logger
 logger = get_logger("perception.engine")
 
 
+def extract_roi_color(frame_hsv: np.ndarray, x: int, y: int, w: int, h: int) -> str:
+    """Extract dominant human-readable color label from a bounding box region in HSV space.
+
+    Args:
+        frame_hsv: Full frame in HSV color space.
+        x: Bounding box left pixel offset.
+        y: Bounding box top pixel offset.
+        w: Bounding box width in pixels.
+        h: Bounding box height in pixels.
+
+    Returns:
+        Recognized color name (e.g. 'red', 'blue', 'green', 'black', 'white', etc.).
+    """
+    fh, fw = frame_hsv.shape[:2]
+    # Inset by 10% to minimize background boundary bleed
+    inset_x = max(1, int(w * 0.1))
+    inset_y = max(1, int(h * 0.1))
+    x1 = max(0, min(fw - 1, x + inset_x))
+    y1 = max(0, min(fh - 1, y + inset_y))
+    x2 = max(x1 + 1, min(fw, x + w - inset_x))
+    y2 = max(y1 + 1, min(fh, y + h - inset_y))
+
+    roi = frame_hsv[y1:y2, x1:x2]
+    if roi.size == 0:
+        return "neutral"
+
+    mean_h = float(np.mean(roi[:, :, 0]))
+    mean_s = float(np.mean(roi[:, :, 1]))
+    mean_v = float(np.mean(roi[:, :, 2]))
+
+    # Achromatic checks (low saturation)
+    if mean_s < 38:
+        if mean_v > 165:
+            return "white"
+        elif mean_v < 65:
+            return "black"
+        else:
+            return "gray"
+
+    # Chromatic categorization by OpenCV hue (0-180)
+    if mean_h < 10 or mean_h >= 170:
+        return "red"
+    elif mean_h < 25:
+        return "orange"
+    elif mean_h < 35:
+        return "yellow"
+    elif mean_h < 85:
+        return "green"
+    elif mean_h < 105:
+        return "cyan"
+    elif mean_h < 135:
+        return "blue"
+    elif mean_h < 155:
+        return "purple"
+    else:
+        return "magenta"
+
+
 class PerceptionEngine:
     """Continuous visual perception engine that updates WorldState at 10 FPS."""
 
@@ -300,6 +358,7 @@ class PerceptionEngine:
 
         # 3. People / Face detection via YuNet
         people: list[DetectedPerson] = []
+        frame_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         if self._detector is not None:
             scale_w = 320.0 / w
             scale_h = 240.0 / h
@@ -341,6 +400,13 @@ class PerceptionEngine:
                     else:
                         distance = "far"
 
+                    # Estimate clothing / upper torso color below detected chin
+                    torso_x = max(0, x - int(box_w * 0.15))
+                    torso_y = min(h - 1, y + box_h)
+                    torso_w = min(w - torso_x, int(box_w * 1.3))
+                    torso_h = min(h - torso_y, int(box_h * 1.2))
+                    clothing_color = extract_roi_color(frame_hsv, torso_x, torso_y, torso_w, torso_h) if torso_h > 10 else ""
+
                     people.append(
                         DetectedPerson(
                             id=f"user_{idx + 1}" if idx > 0 else "user",
@@ -351,6 +417,7 @@ class PerceptionEngine:
                             bbox=[x, y, box_w, box_h],
                             norm_x=round(norm_x, 3),
                             norm_y=round(norm_y, 3),
+                            clothing_color=clothing_color,
                         )
                     )
 
@@ -396,12 +463,15 @@ class PerceptionEngine:
                         else:
                             opos = "center"
 
+                        obj_color = extract_roi_color(frame_hsv, ox1, oy1, obw, obh)
+
                         objects.append(
                             DetectedObject(
                                 label=label,
                                 confidence=round(conf, 2),
                                 bbox=[ox1, oy1, obw, obh],
                                 position=opos,
+                                color=obj_color,
                             )
                         )
 
@@ -440,6 +510,7 @@ class PerceptionEngine:
                                     estimated_distance_m=dist_m,
                                     position_clock=clock_pos,
                                     last_seen=time.time(),
+                                    color=obj_color,
                                 )
                             )
             except Exception as e:

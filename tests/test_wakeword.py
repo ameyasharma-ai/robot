@@ -251,4 +251,36 @@ async def test_engine_wake_gating_and_follow_up_window() -> None:
     assert in_follow_up5 is False
 
 
+@pytest.mark.asyncio
+async def test_wake_word_auto_switch_persona() -> None:
+    """Verify addressing a persona via wake word auto-switches personality and tailored acknowledgment."""
+    from robot.core.engine import RobotEngine
+    from unittest.mock import MagicMock
+
+    engine = RobotEngine()
+    engine.state.state.active_personality = "neo"
+
+    # Test persona resolution helper
+    assert engine._get_persona_for_wake_word("hey luna") == "luna"
+    assert engine._get_persona_for_wake_word("luna") == "luna"
+    assert engine._get_persona_for_wake_word("hey cypher") == "cypher"
+    assert engine._get_persona_for_wake_word("hey glados") == "glados"
+    assert engine._get_persona_for_wake_word("hey aria") == "aria"
+    assert engine._get_persona_for_wake_word("wake up") is None
+    assert engine._get_persona_for_wake_word("hey robot") is None
+
+    # Test auto-switch to Luna
+    target_pers = engine._get_persona_for_wake_word("hey luna")
+    assert target_pers == "luna"
+    await engine.switch_personality(target_pers)
+    assert engine.state.state.active_personality == "luna"
+
+    # Test persona-tailored wake acknowledgment in Luna
+    engine.tts = MagicMock()
+    interrupt = MagicMock()
+    ack = await engine._stream_response("[Wake word acknowledge]", 0.0, interrupt)
+    assert "listening" in ack.lower()
+    assert ack == "Hey there! I'm listening."
+
+
 

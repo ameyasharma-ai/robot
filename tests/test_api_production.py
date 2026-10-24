@@ -38,6 +38,7 @@ def test_security_headers_and_request_id(api_engine: MagicMock) -> None:
     assert response.headers["referrer-policy"] == "no-referrer"
     assert "default-src 'self'" in response.headers["content-security-policy"]
     assert response.headers["cache-control"] == "no-store"
+    assert "microphone=(self)" in response.headers["permissions-policy"]
     assert response.headers["x-request-id"]
 
 

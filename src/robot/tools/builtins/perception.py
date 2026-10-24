@@ -167,21 +167,33 @@ def register_perception_tools(engine: "RobotEngine") -> None:
         ws = engine.perception.world_state.to_compact()
         people_desc = []
         for p in ws.get("people", []):
-            dist = p.get("distance", "mid")
+            dist = p.get("distance", "near")
             pos = p.get("position", "center")
-            people_desc.append(f"Person at {pos} ({dist} distance)")
+            cloth = f" (wearing {p['clothing_color']})" if p.get("clothing_color") else ""
+            people_desc.append(f"Person at {pos}{cloth} ({dist} distance)")
 
         obj_desc = []
         for o in ws.get("objects", []):
             lbl = o.get("label", "item")
             pos = o.get("position", "center")
-            obj_desc.append(f"{lbl} at {pos}")
+            col = f"{o['color']} " if o.get("color") else ""
+            obj_desc.append(f"{col}{lbl} at {pos}")
+
+        table_desc = []
+        for t in ws.get("tabletop_items", []):
+            lbl = t.get("object_name", "item")
+            clk = t.get("position_clock", "12 o'clock")
+            col = f"{t['color']} " if t.get("color") else ""
+            table_desc.append(f"{col}{lbl} at {clk}")
 
         details = []
         if people_desc:
             details.append("People detected: " + ", ".join(people_desc))
         if obj_desc:
             details.append("Objects detected: " + ", ".join(obj_desc))
+        elif table_desc:
+            details.append("Tabletop items: " + ", ".join(table_desc))
+
         if not details:
             details.append("No distinct people or objects clearly recognized in the immediate camera frame. Suggest the user hold the object directly toward the camera.")
 
@@ -190,6 +202,7 @@ def register_perception_tools(engine: "RobotEngine") -> None:
             "summary": summary,
             "people": people_desc,
             "objects": obj_desc,
+            "tabletop": table_desc,
             "lighting": ws.get("lighting", "normal"),
             "motion": ws.get("motion", "none"),
         }
@@ -304,19 +317,16 @@ def register_perception_tools(engine: "RobotEngine") -> None:
                 "device": "amd_igpu",
             }
 
-        def _analyze() -> dict[str, Any]:
-            """Encode, ground, and OCR the frame entirely off the event loop."""
-            # 1. Encode and persist the exact analysed frame
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-            success, encimg = cv2.imencode(".jpg", frame, encode_param)
-            stored: dict[str, Any] = {}
-            if success:
-                stored = _store_snapshot(encimg.tobytes(), frame.shape[1], frame.shape[0])
+        # 1. Encode and persist the exact analysed frame off the event loop
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+        success, encimg = cv2.imencode(".jpg", frame, encode_param)
+        stored: dict[str, Any] = {}
+        if success:
+            stored = _store_snapshot(encimg.tobytes(), frame.shape[1], frame.shape[0])
 
-            # 2. Local VLM Grounding Analysis (geometric, color, spatial layout)
+        # 2. Local optical grounding and OCR
+        def _local_ground() -> dict[str, Any]:
             vlm_res = _resolve_vlm().inspect_frame(frame, query=target_prompt)
-
-            # 3. Optional local OCR extraction
             detected_text = ""
             if do_ocr and success:
                 try:
@@ -329,8 +339,60 @@ def register_perception_tools(engine: "RobotEngine") -> None:
                 except Exception:
                     detected_text = ""
             detected_text = detected_text[:MAX_OCR_CHARS]
+            return {"vlm_res": vlm_res, "detected_text": detected_text}
 
-            # 4. Synthesize natural language result
+        local_analysis = await asyncio.to_thread(_local_ground)
+        vlm_res = local_analysis["vlm_res"]
+        detected_text = local_analysis["detected_text"]
+
+        # 3. Cloud Frontier VLM Grounding (if Gemini configured and not forced local)
+        gemini_summary: str | None = None
+        gemini_cfg = engine.config.get("llm", {}).get("gemini", {}) if getattr(engine, "config", None) else {}
+        gemini_key = gemini_cfg.get("api_key")
+        if gemini_key and len(str(gemini_key)) > 10 and success and not kwargs.get("_local_only"):
+            try:
+                import base64
+                from robot.llm import GeminiLLM
+
+                b64_frame = base64.b64encode(encimg.tobytes()).decode("utf-8")
+                vlm_client = GeminiLLM(
+                    api_key=gemini_key,
+                    base_url=gemini_cfg.get("base_url", "https://generativelanguage.googleapis.com/v1beta/openai"),
+                    model=gemini_cfg.get("model", "gemini-3.1-flash-lite"),
+                )
+                vlm_msgs = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"You are the visual cortex of an intelligent humanoid robot. "
+                                    f"User asks: '{target_prompt}'. Inspect the camera frame and answer accurately and concisely in 1-2 direct sentences, "
+                                    f"specifically detailing colors, objects, text, physical position, and scene appearance."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{b64_frame}"},
+                            },
+                        ],
+                    }
+                ]
+                vlm_chunks = []
+                async for chunk in vlm_client.stream_chat(vlm_msgs, max_tokens=150):
+                    vlm_chunks.append(chunk)
+                if vlm_chunks:
+                    gemini_summary = "".join(vlm_chunks).strip()
+            except Exception as exc:
+                logger.debug("gemini_vlm_inspection_failed", error=str(exc))
+
+        # 4. Synthesize natural language result
+        if gemini_summary and eff_detail != "concise":
+            combined_summary = gemini_summary
+            if detected_text and detected_text not in combined_summary:
+                combined_summary += f" Readable text: '{detected_text[:120]}'."
+        else:
             base_summary = str(vlm_res.get("summary", ""))
             summary_parts = [base_summary]
             if detected_text:
@@ -350,23 +412,21 @@ def register_perception_tools(engine: "RobotEngine") -> None:
 
             combined_summary = " ".join(summary_parts)
 
-            return {
-                "status": "success",
-                "summary": combined_summary,
-                "prompt": target_prompt,
-                "detail_level": eff_detail,
-                "detected_objects": vlm_res.get("items", []),
-                "detected_text": detected_text,
-                "lighting": vlm_res.get("lighting", "normal"),
-                "dominant_color": vlm_res.get("dominant_color", "neutral"),
-                "resolution": vlm_res.get("resolution", f"{frame.shape[1]}x{frame.shape[0]}"),
-                "duration_ms": vlm_res.get("duration_ms", 0.0),
-                "image_path": stored.get("image_path"),
-                "url": stored.get("url"),
-                "device": "amd_igpu",
-            }
-
-        return await asyncio.to_thread(_analyze)
+        return {
+            "status": "success",
+            "summary": combined_summary,
+            "prompt": target_prompt,
+            "detail_level": eff_detail,
+            "detected_objects": vlm_res.get("items", []),
+            "detected_text": detected_text,
+            "lighting": vlm_res.get("lighting", "normal"),
+            "dominant_color": vlm_res.get("dominant_color", "neutral"),
+            "resolution": vlm_res.get("resolution", f"{frame.shape[1]}x{frame.shape[0]}"),
+            "duration_ms": vlm_res.get("duration_ms", 0.0),
+            "image_path": stored.get("image_path"),
+            "url": stored.get("url"),
+            "device": "gemini_vlm" if gemini_summary else "amd_igpu",
+        }
 
     engine.tool_registry.register(
         ToolDefinition(

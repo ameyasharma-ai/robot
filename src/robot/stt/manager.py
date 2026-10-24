@@ -974,6 +974,7 @@ class WhisperServerManager:
         model_id_or_path: str,
         engine: Any | None = None,
         port: int | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Hot-swap the active Whisper STT model with rollback on failure.
 
@@ -986,12 +987,13 @@ class WhisperServerManager:
             model_id_or_path: Target model identifier (e.g. 'small.en') or path.
             engine: Optional active RobotEngine to re-bind STT and emit events.
             port: Target server port (defaults to the currently active port).
+            force: If True, restart whisper-server even if target model is already running.
 
         Returns:
             dict[str, Any]: Status summary of the model switch operation.
         """
         async with cls._lifecycle():
-            return await cls._switch_model_locked(model_id_or_path, engine=engine, port=port)
+            return await cls._switch_model_locked(model_id_or_path, engine=engine, port=port, force=force)
 
     @classmethod
     async def _switch_model_locked(
@@ -999,6 +1001,7 @@ class WhisperServerManager:
         model_id_or_path: str,
         engine: Any | None = None,
         port: int | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Switch implementation; caller must hold the lifecycle guard."""
         logger.info("switching_whisper_model", target=model_id_or_path)
@@ -1018,6 +1021,22 @@ class WhisperServerManager:
         previous_id = cls.get_active_model_id()
         previous_path = cls.resolve_model_path(previous_id)
         previous_port = int(cls._active_port or cls._tracked_port or target_port)
+
+        # Avoid redundant process restart if target model is already healthy and active
+        if not force and clean_id == previous_id and await cls.is_running_async(target_port):
+            logger.info("whisper_model_already_running", model=clean_id, port=target_port)
+            return {
+                "status": "ok",
+                "model": clean_id,
+                "name": meta.name if meta else clean_id,
+                "parameters": meta.parameters if meta else "unknown",
+                "size_mb": meta.size_mb if meta else 0,
+                "latency_rating": meta.latency_rating if meta else "unknown",
+                "device": "AMD Radeon 680M (Vulkan dev 0)",
+                "model_path": str(resolved_path),
+                "port": target_port,
+                "already_active": True,
+            }
 
         # Same-port hot swap: the old process must release the port before the
         # new one can bind. Keep the old client usable until the new model is

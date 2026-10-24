@@ -1196,23 +1196,48 @@ class ConversationHistory:
     async def get_recent(
         self, session_id: str, limit: int = 20, personality: str | None = None
     ) -> list[dict]:
-        """Get recent messages from the current session within one persona."""
+        """Get recent messages from the current session within one persona.
+
+        Falls back to recent turns within the persona across sessions if the current
+        session has fewer than 2 messages, preserving follow-up conversation context.
+        Attaches executed tool results to assistant turns so the model remains aware
+        of real-time actions and creations across turns.
+        """
         if not self._conn:
             return []
         persona = await self._persona_for(personality, session_id)
         clause, variants = _clause_for(persona)
         rows = await asyncio.to_thread(
             self._query_rows,
-            f"""SELECT role, content, timestamp FROM conversations
+            f"""SELECT role, content, timestamp, tool_name, tool_result FROM conversations
                WHERE session_id = ? AND {clause}
                ORDER BY id DESC LIMIT ?""",
             (session_id, *variants, limit),
         )
-        return [
-            {"role": r[0], "content": r[1], "timestamp": r[2]}
-            for r in reversed(rows)
-            if r[1] and r[1].strip() not in ("[", "]", "<", ">")
-        ]
+        if len(rows) < 2:
+            cross_rows = await asyncio.to_thread(
+                self._query_rows,
+                f"""SELECT role, content, timestamp, tool_name, tool_result FROM conversations
+                   WHERE {clause}
+                   ORDER BY id DESC LIMIT ?""",
+                (*variants, limit),
+            )
+            if cross_rows:
+                rows = cross_rows
+
+        res = []
+        for r in reversed(rows):
+            role, content, ts, t_name, t_res = r[0], r[1], r[2], r[3], r[4]
+            if not content or content.strip() in ("[", "]", "<", ">") or content.strip() == "[Wake word acknowledge]":
+                continue
+            if role == "assistant" and content.strip() == "I'm listening.":
+                continue
+            if role == "assistant" and t_name and t_res:
+                clean_res = str(t_res).strip()
+                if clean_res and clean_res not in content:
+                    content = f"{content}\n[Tool Result: {t_name} -> {clean_res}]"
+            res.append({"role": role, "content": content, "timestamp": ts})
+        return res
 
     async def clear_turn(
         self, session_id: str, turn_number: int = 0, personality: str | None = None

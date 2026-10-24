@@ -51,9 +51,9 @@ def test_bounded_context_growth(context_engine):
     assert messages[1]["role"] == "user"
     assert messages[-1]["role"] == "user"
 
-    # Total tokens must not exceed budget
+    # Total tokens must not exceed budget (system grounding + 2200 conversation budget)
     total_tokens = sum(len(m["content"]) // 4 for m in messages if isinstance(m.get("content"), str))
-    assert total_tokens < 3500
+    assert total_tokens < 5000
 
 
 def test_system_prompt_prefix_invariance(context_engine):

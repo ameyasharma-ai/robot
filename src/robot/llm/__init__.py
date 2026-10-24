@@ -665,6 +665,12 @@ class LlamaServerLLM(LLMProvider):
                 # drop the cached client so the next attempt gets a fresh one.
                 await self._rebuild_client()
                 if attempt < STREAM_MAX_RETRIES and time.monotonic() < deadline:
+                    if not await LlamaServerManager.is_running_async():
+                        logger.warning("llama_server_crashed_attempting_restart", attempt=attempt)
+                        try:
+                            await LlamaServerManager.start()
+                        except Exception as restart_err:
+                            logger.error("llama_server_restart_failed", error=str(restart_err))
                     delay = _jittered_delay(attempt)
                     logger.warning(
                         "llm_connection_retry",
@@ -1760,6 +1766,7 @@ class LlamaServerManager:
         model_id_or_path: str,
         engine: Any | None = None,
         port: int = 8080,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Hot-swap the local GGUF model on the RTX 3050 GPU.
 
@@ -1767,6 +1774,7 @@ class LlamaServerManager:
             model_id_or_path: Identifier from ModelRegistry or path to GGUF model file.
             engine: Optional active RobotEngine to warm up and re-bind.
             port: Port for the llama-server (default: 8080).
+            force: If True, restart llama-server even if target model is already running.
 
         Returns:
             dict[str, Any]: Result status dictionary.
@@ -1814,6 +1822,24 @@ class LlamaServerManager:
             return {
                 "status": "error",
                 "message": f"Could not find model file for '{model_id_or_path}' on disk.",
+            }
+
+        # Avoid redundant process stop and restart if target model is already running and healthy
+        if not force and (cls._active_model_id == resolved_id or cls._active_model_id == model_id_or_path) and await cls.is_running_async():
+            logger.info("llama_model_already_running", model=resolved_id)
+            if engine:
+                try:
+                    if hasattr(engine, "llm") and hasattr(engine.llm, "model"):
+                        engine.llm.model = resolved_id
+                    if hasattr(engine, "llm_provider_type"):
+                        engine.llm_provider_type = "local"
+                except Exception:
+                    pass
+            return {
+                "status": "ok",
+                "model": resolved_id,
+                "name": model_name,
+                "already_active": True,
             }
 
         # Stop currently running server to evacuate VRAM

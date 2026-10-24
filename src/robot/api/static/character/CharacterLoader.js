@@ -221,9 +221,9 @@ class CharacterLoader {
                 if (pbrMat) {
                     pbrMat.name = mat.name;
                     // Preserve skinning and morph target blendshapes for 100% animation fidelity
-                    pbrMat.skinning = !!mat.skinning;
-                    pbrMat.morphTargets = !!mat.morphTargets;
-                    pbrMat.morphNormals = !!mat.morphNormals;
+                    pbrMat.skinning = Boolean(node.isSkinnedMesh || mat.skinning);
+                    pbrMat.morphTargets = Boolean(node.morphTargetDictionary || mat.morphTargets);
+                    pbrMat.morphNormals = Boolean(mat.morphNormals);
 
                     return pbrMat;
                 }

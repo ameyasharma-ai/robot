@@ -86,11 +86,11 @@ class VoiceActivityDetector:
         if is_bot_speaking:
             threshold = self.barge_in_threshold
             # Acoustic speaker bleed scales directly with playback reference envelope.
-            # During playback, microphone captures (speaker_bleed + user_voice).
-            # To allow barge-in, mic RMS must exceed the acoustic speaker bleed
-            # plus a minimal excess energy threshold corresponding to speech.
+            # At 100% speaker volume, laptop microphone captures direct chassis and airborne speaker bleed.
+            # To allow barge-in, mic RMS must exceed the acoustic speaker bleed (with 15% safety margin)
+            # plus an excess vocal energy threshold corresponding to human voice.
             expected_bleed = self._max_ref_rms * self._learned_coupling
-            min_rms = max(0.006, expected_bleed) + self.barge_in_energy
+            min_rms = max(0.008, expected_bleed * 1.10) + self.barge_in_energy
         elif in_echo_guard:
             threshold = self.echo_guard_threshold
             min_rms = self.echo_guard_energy
@@ -107,4 +107,11 @@ class VoiceActivityDetector:
 
         prob = float(self._model(chunk, self.sample_rate).item())
         is_voice = prob > threshold
+
+        # Smoothly track physical acoustic chassis leakage during active playback when no human voice is detected
+        if is_bot_speaking and self._max_ref_rms > 0.015 and prob < 0.35:
+            instant_leakage = min(0.95, max(0.10, rms / self._max_ref_rms))
+            # Exponential moving average (alpha=0.03) adapts to room acoustics and speaker volume
+            self._learned_coupling = min(0.90, max(0.20, 0.97 * self._learned_coupling + 0.03 * instant_leakage))
+
         return is_voice, prob

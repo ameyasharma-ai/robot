@@ -177,7 +177,8 @@ def test_local_model_switch_validation() -> None:
 async def test_llama_switch_model_mocked() -> None:
     """Verify LlamaServerManager.switch_model logic with mocked process manager."""
     with patch.object(LlamaServerManager, "start", return_value=True) as mock_start, \
-         patch.object(LlamaServerManager, "stop", return_value=True) as mock_stop:
+         patch.object(LlamaServerManager, "stop", return_value=True) as mock_stop, \
+         patch.object(LlamaServerManager, "is_running_async", return_value=False):
         
         mock_engine = get_mock_engine()
         mock_engine.llm = MagicMock()
@@ -189,3 +190,18 @@ async def test_llama_switch_model_mocked() -> None:
         assert LlamaServerManager.get_active_model_id() == "qwen3.5-4b"
         assert mock_stop.called
         assert mock_start.called
+
+
+@pytest.mark.asyncio
+async def test_llama_switch_model_already_running() -> None:
+    """Verify LlamaServerManager.switch_model skips restart when model is already active."""
+    LlamaServerManager._active_model_id = "qwen3.5-4b"
+    with patch.object(LlamaServerManager, "start", return_value=True) as mock_start, \
+         patch.object(LlamaServerManager, "stop", return_value=True) as mock_stop, \
+         patch.object(LlamaServerManager, "is_running_async", return_value=True):
+        res = await LlamaServerManager.switch_model("qwen3.5-4b")
+        assert res["status"] == "ok"
+        assert res.get("already_active") is True
+        assert not mock_stop.called
+        assert not mock_start.called
+

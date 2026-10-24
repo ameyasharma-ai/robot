@@ -344,21 +344,21 @@
                     <span class="char-hud-badge char-hud-tool" id="charToolBadge" style="display: none;">🛠️ TOOL: IDLE</span>
                     <span class="char-hud-badge char-hud-thinking" id="charThinkingBadge" style="display: none;"><span class="hud-thinking-dot"></span> 🧠 REASONING...</span>
                 </div>
-            </div>
 
-            <!-- Cybernetic Holographic Neural Reasoning Matrix (Avatar View) -->
-            <div class="avatar-thought-card" id="avatarThoughtCard" style="display: none;">
-                <div class="avatar-thought-header" id="avatarThoughtHeader">
-                    <div class="thought-hdr-left">
-                        <span class="avatar-thought-brain">🧠</span>
-                        <span class="avatar-thought-title" id="avatarThoughtTitle">NEURAL REASONING MATRIX</span>
-                        <span class="avatar-thought-timer" id="avatarThoughtTimer">0.0s</span>
+                <!-- Cybernetic Holographic Neural Reasoning Matrix (Avatar View - Confined to 3D Viewport) -->
+                <div class="avatar-thought-card" id="avatarThoughtCard" style="display: none;">
+                    <div class="avatar-thought-header" id="avatarThoughtHeader">
+                        <div class="thought-hdr-left">
+                            <span class="avatar-thought-brain">🧠</span>
+                            <span class="avatar-thought-title" id="avatarThoughtTitle">NEURAL REASONING MATRIX</span>
+                            <span class="avatar-thought-timer" id="avatarThoughtTimer">0.0s</span>
+                        </div>
+                        <div class="thought-hdr-actions">
+                            <button class="btn-thought-card-toggle" id="btnAvatarThoughtToggle" type="button" title="Minimize / Expand thoughts">▾</button>
+                        </div>
                     </div>
-                    <div class="thought-hdr-actions">
-                        <button class="btn-thought-card-toggle" id="btnAvatarThoughtToggle" type="button" title="Minimize / Expand thoughts">▾</button>
-                    </div>
+                    <div class="avatar-thought-body" id="avatarThoughtBody"></div>
                 </div>
-                <div class="avatar-thought-body" id="avatarThoughtBody"></div>
             </div>
 
             <!-- Interactive Speech Bubble -->
@@ -2064,13 +2064,13 @@
     </div>
 
     <!-- Character Engine & Subsystems (Three.js & Modules) -->
-    <script src="/static/three.min.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/GLTFLoader.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/character/CharacterRig.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/character/CharacterLoader.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/character/AnimationSystem.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/character/GazeSystem.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/character/CharacterEngine.js?v=9.0-skinny-cute-pro"></script>
-    <script src="/static/app.js?v=7.10-ui"></script>
+    <script src="/static/three.min.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/GLTFLoader.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/character/CharacterRig.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/character/CharacterLoader.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/character/AnimationSystem.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/character/GazeSystem.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/character/CharacterEngine.js?v=9.1-pbr-avatar"></script>
+    <script src="/static/app.js?v=7.11-ui"></script>
 </body>
 </html>

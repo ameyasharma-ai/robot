@@ -122,8 +122,12 @@ class AudioCapture:
         one second and a missing utility is never treated as a fatal error.
         """
         commands = [
+            ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"],
+            ["pactl", "set-sink-volume", "@DEFAULT_SINK@", "100%"],
+            ["amixer", "-c", "1", "sset", "Master", "100%", "unmute"],
+            ["amixer", "-c", "1", "sset", "Speaker", "100%", "unmute"],
             ["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "0"],
-            ["pactl", "set-source-volume", "@DEFAULT_SOURCE@", "100%"],
+            ["pactl", "set-source-volume", "@DEFAULT_SOURCE@", "60%"],
             ["amixer", "-c", "1", "sset", "Internal Mic Boost", "0"],
             ["amixer", "-c", "1", "sset", "Capture", "35", "cap"],
         ]

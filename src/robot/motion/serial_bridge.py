@@ -355,7 +355,11 @@ class SerialBridge:
 
     def _find_available_port(self) -> Optional[str]:
         """Auto-probe connected USB/ACM serial ports on Linux."""
-        candidates = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*")
+        candidates = (
+            glob.glob("/dev/serial/by-id/*")
+            + glob.glob("/dev/ttyUSB*")
+            + glob.glob("/dev/ttyACM*")
+        )
         if candidates:
             return sorted(candidates)[0]
         return None

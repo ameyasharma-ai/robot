@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: robot-core:latest
     container_name: robot-core
     restart: unless-stopped
     # network_mode: host (below) shares the host network stack directly, so a

@@ -257,8 +257,8 @@ class LlamaServerSettings:
 
     # ─── Context & Batch Sizing ──────────────────────────────────────────────
     ctx_size: int = 16384  # -c / --ctx-size: context window token capacity
-    batch_size: int = 4096  # -b / --batch-size: logical prompt processing batch size
-    ubatch_size: int = 4096  # -ub / --ubatch-size: physical micro-batch size
+    batch_size: int = 2048  # -b / --batch-size: logical prompt processing batch size
+    ubatch_size: int = 1024  # -ub / --ubatch-size: physical micro-batch size (1024 prevents RTX 3050 CUDA OOM in cudaGraphInstantiate)
     parallel: int = 1  # -np / --parallel: concurrent execution slots
     cont_batching: bool = True  # -cb / --cont-batching: continuous batching
 

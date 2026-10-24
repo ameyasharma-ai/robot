@@ -456,7 +456,7 @@ class RobotUI {
             }
 
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 20000);
+            const timeoutId = setTimeout(() => controller.abort(), 60000);
 
             try {
                 const resp = await this.apiFetch("/chat", {
@@ -525,7 +525,7 @@ class RobotUI {
                 }, Math.min(10000, response.length * 80 + 1000));
             } catch (err) {
                 clearTimeout(timeoutId);
-                const errMsg = err.name === "AbortError" ? "Request timed out after 20s" : err.message;
+                const errMsg = err.name === "AbortError" ? "Request timed out after 60s" : err.message;
                 if (this.bubbleContent) {
                     this.bubbleContent.textContent = `[Error]: ${errMsg}`;
                 }
@@ -631,6 +631,21 @@ class RobotUI {
             } else if (e.key === "Escape") {
                 e.preventDefault();
                 this.cancelChatVoiceRecord();
+            }
+        });
+
+        // Apple-style Command Palette Hotkey: Cmd+K (macOS) / Ctrl+K (Linux/Windows)
+        window.addEventListener("keydown", (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+                e.preventDefault();
+                const personaModal = document.getElementById("modalPersonaManager");
+                if (personaModal && personaModal.classList.contains("active")) {
+                    const closeBtn = personaModal.querySelector(".cyber-modal-close");
+                    if (closeBtn) closeBtn.click();
+                } else {
+                    const btn = document.getElementById("btnTopNavPersonaPicker") || document.getElementById("btnHeaderPersona");
+                    if (btn) btn.click();
+                }
             }
         });
 
@@ -1343,6 +1358,18 @@ class RobotUI {
             } else {
                 resStr = String(msg.tool_result || "Tool execution completed.");
             }
+            let imagePreviewHtml = "";
+            const imgMatch = resStr.match(/(?:https?:\/\/[^\s"']+|\/api\/[^\s"']+|\/data\/[^\s"']+|[a-zA-Z0-9_\-\/]+\.(?:png|jpg|jpeg|webp))/i);
+            if (imgMatch && (msg.tool_name === "image.generate" || resStr.includes(".png") || resStr.includes(".jpg") || resStr.includes(".webp"))) {
+                let imgUrl = imgMatch[0];
+                if (imgUrl.startsWith("data/")) imgUrl = "/" + imgUrl;
+                else if (!imgUrl.startsWith("http") && !imgUrl.startsWith("/")) imgUrl = "/" + imgUrl;
+                imagePreviewHtml = `
+                    <div class="chat-generated-image-wrap" style="margin-top: 10px; border-radius: 8px; overflow: hidden; max-width: 320px; border: 1px solid rgba(255,255,255,0.18); box-shadow: 0 4px 16px rgba(0,0,0,0.3);">
+                        <img src="${this.escapeHtml(imgUrl)}" alt="Generated Output" style="width: 100%; height: auto; display: block;" loading="lazy" />
+                    </div>
+                `;
+            }
             toolHtml = `
                 <div class="chat-tool-card completed">
                     <div class="tool-hdr">
@@ -1351,6 +1378,7 @@ class RobotUI {
                     </div>
                     <div class="tool-result-box">
                         <pre class="tool-result-content">${this.escapeHtml(resStr)}</pre>
+                        ${imagePreviewHtml}
                     </div>
                 </div>
             `;
@@ -2760,6 +2788,8 @@ class RobotUI {
         cleaned = cleaned.replace(/\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]/gi, "");
         // Strip internal category tags e.g. [conversation], [tools], [call], [meta], [greeting]
         cleaned = cleaned.replace(/\[\s*(?:conversation|tools?|call|meta|internal|action|greeting)\b[^\]]*\]/gi, "");
+        // Strip grounded tool result tags if present in history content
+        cleaned = cleaned.replace(/\[Tool Result:\s*[^\]]*\]/gi, "");
         // Strip planning or handling prefixes e.g. GREETING_HANDLING: ...
         cleaned = cleaned.replace(/^[A-Z_]+_HANDLING:\s*[^\n]*\n?/gim, "");
         cleaned = cleaned.replace(/\b[A-Z_]+_HANDLING:\s*[^\n]*/gi, "");
@@ -2857,7 +2887,7 @@ class RobotUI {
         if (typeof CharacterEngine !== "undefined" && this.characterContainer) {
             this.characterEngine = new CharacterEngine(this.characterContainer, {
                 variant: "animated",
-                modelUrl: "/static/models/avatar.glb?v=9.0-skinny-cute-pro",
+                modelUrl: "/static/models/avatar.glb?v=9.1-pbr-avatar",
             });
             this.logEvent("3D-CORE", "Animated 3D character initialized (WebGL2).", "system");
 
@@ -6561,7 +6591,13 @@ class RobotUI {
                     grad.addColorStop(1, "rgba(0, 255, 102, 0.95)");
 
                     ctx.fillStyle = grad;
-                    ctx.fillRect(x, y, barWidth, barH);
+                    if (ctx.roundRect) {
+                        ctx.beginPath();
+                        ctx.roundRect(x, y, barWidth, barH, [2, 2, 0, 0]);
+                        ctx.fill();
+                    } else {
+                        ctx.fillRect(x, y, barWidth, barH);
+                    }
 
                     ctx.fillStyle = "#55ff99";
                     ctx.fillRect(x, y, barWidth, 1.5);

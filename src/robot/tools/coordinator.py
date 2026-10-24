@@ -212,6 +212,7 @@ class ToolConversationCoordinator:
         self._active_tasks: set[asyncio.Task[Any]] = set()
         self._turn_tool_chars: int = 0
         self._turn_consumed_untrusted: bool = False
+        self._last_execution: dict[str, Any] | None = None
 
     # ─── Fast Intent Router (Phase 24) ──────────────────────────────────────
 
@@ -246,19 +247,65 @@ class ToolConversationCoordinator:
             return "perception.what_do_you_see", {}, ToolCategory.DIRECT
 
         # 4. Physical / Avatar Motions (FORMAT: ~5ms)
+        # Match conversational requests like "Can you raise your left hand?", "raise your hand", "wave your left hand", etc.
+        motion_regex = re.search(
+            r"^(?:(?:can|could|will)\s+you\s+(?:please\s+)?|please\s+)?(raise|wave|shake|nod|tilt|shrug|bow|clap|cheer|dance|point|sit|stand)\b(?:\s+(?:your|her|his))?(?:\s+(left|right|both))?(?:\s+(?:hand|arm|head))?(?:\s+for\s+me|\s+to\s+me)?\??$",
+            text,
+            re.IGNORECASE,
+        )
+        if motion_regex:
+            raw_act = motion_regex.group(1).lower()
+            side_arg = motion_regex.group(2).lower() if motion_regex.group(2) else None
+            act_map = {
+                "raise": "raise_hand",
+                "wave": "wave",
+                "nod": "nod",
+                "shake": "shake_head",
+                "tilt": "tilt_head",
+                "shrug": "shrug",
+                "bow": "bow",
+                "clap": "clap",
+                "cheer": "cheer",
+                "dance": "dance",
+                "point": "point",
+                "sit": "sit",
+                "stand": "stand",
+            }
+            canonical_act = act_map.get(raw_act, raw_act)
+            motion_args: dict[str, Any] = {"action": canonical_act}
+            if side_arg:
+                motion_args["side"] = side_arg
+            elif canonical_act in ("raise_hand", "wave", "point"):
+                motion_args["side"] = "right"
+            return "character.execute_action", motion_args, ToolCategory.FORMAT
+
         motion_triggers = {
-            "wave": "wave",
-            "wave your hand": "wave",
-            "nod": "nod",
-            "shake head": "shake_head",
-            "dance": "dance",
-            "bow": "bow",
-            "cheer": "cheer",
-            "shrug": "shrug",
+            "wave": ("wave", "right"),
+            "wave your hand": ("wave", "right"),
+            "wave your left hand": ("wave", "left"),
+            "wave your right hand": ("wave", "right"),
+            "raise hand": ("raise_hand", "right"),
+            "raise your hand": ("raise_hand", "right"),
+            "raise left hand": ("raise_hand", "left"),
+            "raise right hand": ("raise_hand", "right"),
+            "raise your left hand": ("raise_hand", "left"),
+            "raise your right hand": ("raise_hand", "right"),
+            "nod": ("nod", None),
+            "nod your head": ("nod", None),
+            "shake head": ("shake_head", None),
+            "shake your head": ("shake_head", None),
+            "dance": ("dance", None),
+            "bow": ("bow", None),
+            "cheer": ("cheer", None),
+            "shrug": ("shrug", None),
+            "clap": ("clap", None),
         }
-        for trig, act in motion_triggers.items():
+        for trig, (act, s_side) in motion_triggers.items():
             if text == trig or text.startswith(f"{trig} ") or text.endswith(f" {trig}"):
-                return "character.execute_action", {"action": act}, ToolCategory.FORMAT
+                m_args: dict[str, Any] = {"action": act}
+                if s_side:
+                    m_args["side"] = s_side
+                return "character.execute_action", m_args, ToolCategory.FORMAT
 
         # 5. Memory Write (FORMAT: 10ms - 40ms)
         mem_write_match = re.search(
@@ -365,13 +412,14 @@ class ToolConversationCoordinator:
             return "web.search", {"query": user_text.strip(" .?!")}, ToolCategory.LLM_REQUIRED
 
         # 8. Image Generation (ASYNC: 3000ms - 8000ms)
-        img_match = re.search(
-            r"^(?:generate(?:\s+an)?\s+image\s+of|draw(?:\s+me)?(?:\s+an?)?|create(?:\s+an)?\s+image\s+of|paint(?:\s+an?)?|generate(?:\s+a)?\s+picture\s+of)\s+(.+)$",
+        # Match conversational prompts like "and make me a picture of a dog", "can you draw a sunset", "create an image of..."
+        img_pattern = re.search(
+            r"^(?:(?:and|now|also|so|please|can\s+you|could\s+you|would\s+you)\s+)*(?:(?:generate|create|render)(?:\s+(?:me|us))?(?:\s+(?:an?|a))?\s+(?:image|picture|photo|illustration|drawing|render)\s+of|(?:make)(?:\s+(?:me|us))?(?:\s+(?:an?|a))?\s+(?:image|picture|photo|illustration|drawing|render)\s+of|(?:draw|paint|sketch)(?:\s+(?:me|us))?(?:\s+(?:an?|a))?(?:\s+(?:image|picture|photo|illustration|drawing|painting))?(?:\s+of)?)\s+(.+)$",
             user_text.strip(),
             re.IGNORECASE,
         )
-        if img_match:
-            prompt = img_match.group(1).strip(" .?!")
+        if img_pattern:
+            prompt = img_pattern.group(1).strip(" .?!")
             return "image.generate", {"prompt": prompt}, ToolCategory.ASYNC
 
         return None
@@ -424,6 +472,12 @@ class ToolConversationCoordinator:
         )
         self._active_context = ctx
         self._active_turn_id = turn_id or request_id
+        self._last_execution = {
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "tool_result": None,
+            "tool_error": None,
+        }
 
         tool_def = self.engine.tool_registry.get(tool_name)
         if not tool_def:
@@ -459,9 +513,13 @@ class ToolConversationCoordinator:
                 if "error" in result_data:
                     ctx.tool_error = str(result_data["error"])
                     ctx.tool_status = ToolExecutionStatus.FAILED
+                    if self._last_execution:
+                        self._last_execution["tool_error"] = ctx.tool_error
                 else:
                     ctx.tool_result = result_data.get("result", "")
                     ctx.tool_status = ToolExecutionStatus.COMPLETED
+                    if self._last_execution:
+                        self._last_execution["tool_result"] = ctx.tool_result
             except asyncio.CancelledError:
                 ctx.tool_status = ToolExecutionStatus.CANCELLED
                 raise
@@ -937,9 +995,13 @@ class ToolConversationCoordinator:
             res = await self.engine.permissions.execute(tool_def, tool_args)
             ctx.tool_result = res.get("result", res.get("error", ""))
             ctx.tool_status = ToolExecutionStatus.COMPLETED
+            if self._last_execution:
+                self._last_execution["tool_result"] = ctx.tool_result
         except Exception as e:
             ctx.tool_error = str(e)
             ctx.tool_status = ToolExecutionStatus.FAILED
+            if self._last_execution:
+                self._last_execution["tool_error"] = ctx.tool_error
         finally:
             ctx.tool_end_time = time.perf_counter()
             dur = (ctx.tool_end_time - ctx.tool_start_time) * 1000
@@ -995,3 +1057,12 @@ class ToolConversationCoordinator:
             duration_ms=duration_ms,
             metadata=meta,
         )
+
+    def get_last_execution(self) -> dict[str, Any] | None:
+        """Return the most recently executed tool name and result for turn persistence.
+
+        Returns:
+            Dictionary containing tool_name, tool_args, tool_result, and tool_error, or None.
+        """
+        return getattr(self, "_last_execution", None)
+

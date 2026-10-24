@@ -22,7 +22,7 @@ class CharacterEngine {
         this.facialSystem = null;
 
         // Options
-        this.modelUrl = options.modelUrl || "/static/models/avatar.glb?v=9.0-skinny-cute-pro";
+        this.modelUrl = options.modelUrl || "/static/models/avatar.glb?v=9.1-pbr-avatar";
         this.variant = options.variant || "animated"; // "animated" | "realistic"
 
         // Diagnostics

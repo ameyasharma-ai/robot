@@ -40,7 +40,7 @@ SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"referrer-policy", b"no-referrer"),
     (
         b"permissions-policy",
-        b"camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=()",
+        b"camera=(), microphone=(self), geolocation=(), payment=(), usb=(), serial=(), hid=()",
     ),
     (b"cross-origin-opener-policy", b"same-origin"),
     (b"cross-origin-resource-policy", b"same-origin"),
@@ -53,7 +53,8 @@ SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
             b"font-src 'self' data: https://fonts.gstatic.com; "
             b"img-src 'self' data: blob:; "
             b"media-src 'self' data: blob:; "
-            b"connect-src 'self' ws: wss:; "
+            b"connect-src 'self' ws: wss: blob: data:; "
+            b"worker-src 'self' blob:; "
             b"object-src 'none'; base-uri 'self'; form-action 'self'; "
             b"frame-ancestors 'none'"
         ),

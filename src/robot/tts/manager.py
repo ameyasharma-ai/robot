@@ -497,11 +497,42 @@ class TTSManager:
 
         active_name = self._active_engine_name
         phrase = text or ""
-        try:
-            active_engine = await self.get_active_engine_async()
-        except Exception as exc:
-            logger.error("tts_active_engine_unavailable", engine=active_name, error=str(exc))
-            return np.array([], dtype=np.float32), 16000
+
+        # Auto-route cross-engine voices (e.g. Kokoro voice specified when Piper is currently active)
+        active_engine: Any = None
+        if voice_model:
+            is_kokoro_voice = any(
+                voice_model.startswith(p)
+                for p in (
+                    "af_", "am_", "bf_", "bm_", "ef_", "em_", "ff_",
+                    "hf_", "hm_", "if_", "im_", "jf_", "jm_", "pf_",
+                    "pm_", "zf_", "zm_",
+                )
+            )
+            is_piper_voice = (
+                "piper" in voice_model.lower()
+                or ".onnx" in voice_model.lower()
+                or any(k in voice_model.lower() for k in ("lessac", "amy", "bryce", "kathleen", "hfc", "ryan", "alan"))
+            )
+            if is_kokoro_voice and active_name != "kokoro":
+                try:
+                    active_engine = await self._get_or_load_engine_async("kokoro")
+                    active_name = "kokoro"
+                except Exception as exc:
+                    logger.warning("tts_auto_route_kokoro_failed", error=str(exc))
+            elif is_piper_voice and active_name != "piper" and not is_kokoro_voice:
+                try:
+                    active_engine = await self._get_or_load_engine_async("piper")
+                    active_name = "piper"
+                except Exception as exc:
+                    logger.warning("tts_auto_route_piper_failed", error=str(exc))
+
+        if active_engine is None:
+            try:
+                active_engine = await self.get_active_engine_async()
+            except Exception as exc:
+                logger.error("tts_active_engine_unavailable", engine=active_name, error=str(exc))
+                return np.array([], dtype=np.float32), 16000
 
         active_rate = self._engine_sample_rate(active_engine)
         try:

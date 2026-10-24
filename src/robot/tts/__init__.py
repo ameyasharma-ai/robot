@@ -175,8 +175,16 @@ class PiperTTS(TTSProvider):
         return 16000
 
     def _resolve_model_path(self, model_path: str) -> str:
+        """Resolve model path to an existing ONNX file, falling back cleanly.
+
+        Args:
+            model_path: Voice model name or path.
+
+        Returns:
+            str: Path to a valid voice model ONNX file or the default voice.
+        """
         if not model_path:
-            return getattr(self, "_active_model", "models/tts/en-us-lessac-medium.onnx")
+            return getattr(self, "_active_model", getattr(self, "_default_model", "models/tts/en-us-lessac-medium.onnx"))
         p = Path(model_path)
         if p.exists():
             return str(p)
@@ -189,6 +197,9 @@ class PiperTTS(TTSProvider):
         for c in candidates:
             if c.exists():
                 return str(c)
+        # Avoid crashing or logging Errno 2 if an alien voice (e.g. Kokoro af_heart) is supplied
+        if hasattr(self, "_default_model") and Path(self._default_model).exists():
+            return self._default_model
         return model_path
 
     def _load_voice(self, model_path: str) -> piper.PiperVoice:

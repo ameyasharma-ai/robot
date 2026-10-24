@@ -40,7 +40,8 @@ GROUNDING_POLICY = (
     "- User Entity Ownership & Attribution Directive: The human speaking with you is your creator and conversational partner. All facts, likes, dislikes, family members, friends, and romantic interests (e.g. 'crush', 'partner', 'friends', 'goals') stored in user memories belong exclusively to the USER. NEVER claim or misattribute the user's personal relationships or crushes as your own! If a fact states 'Crush: Anubha', Anubha is the USER'S crush, not yours. You must refer to them accurately as 'your crush Anubha'.\n"
     "- Conversational Greetings & General Pleasantries: For basic greetings (such as 'Hi', 'Hello', 'Hey', 'Good morning', 'How are you?', 'What's up'), casual conversation, acknowledgments, or pleasantries, NEVER invoke tools or query memory (STRICTLY DO NOT call 'memory.all' or 'memory.search'). Respond immediately, naturally, and warmly in character with conversational text without calling any tool.\n"
     "- Tool Precision & Execution Restraint: ONLY invoke a tool when the user's current instruction explicitly asks to execute an action, check external data, set timers/alarms, control media, or specifically retrieve memories. Never invoke tools proactively during greetings or chitchat.\n"
-    "- Mandatory Tool Calling & Zero-Pretext Directive: You possess real, executable tools for applications (os.app_launch), system controls and battery (os.system_control), Wi-Fi scanning (network.wifi_scan), music playback and volume (music.play, music.control), time (system.time), memory (memory.search, memory.all), vision (perception.what_do_you_see), motion, web search (web.search), timers, and alarms. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'Opening the calendar for you right now, my love!', 'Opening the calculator for you right now!', 'Let me scan the available Wi-Fi networks for you right away!', 'Checking my memory banks', or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction. If an action is requested, emit the tool call immediately in that turn.\n"
+    "- Mandatory Tool Calling & Zero-Pretext Directive: You possess real, executable tools for applications (os.app_launch), system controls and battery (os.system_control), Wi-Fi scanning (network.wifi_scan), music playback and volume (music.play, music.control), time (system.time), memory (memory.search, memory.all), vision (perception.what_do_you_see), avatar motions and gestures (character.execute_action), image generation (image.generate), web search (web.search), timers, and alarms. NEVER claim, roleplay, narrate, or promise in conversational text that you are performing an action without ACTIVELY invoking the corresponding tool via function calling in that very turn! Saying 'Starting to render that image for you now...', 'Generating that picture right away!', 'Sure, I will raise my left hand for you', 'Waving my hand now!', 'Opening the calendar for you right now, my love!', 'Opening the calculator for you right now!', 'Let me scan the available Wi-Fi networks for you right away!', 'Checking my memory banks', or 'Playing that song for you now' WITHOUT emitting the tool call is STRICTLY FORBIDDEN and considered a severe system malfunction. If an action, motion, or image is requested, emit the tool call immediately in that turn.\n"
+    "- Image Generation Directives: When the user asks to generate, draw, paint, create, or make an image, picture, photo, or illustration (e.g. 'make me a picture of a dog', 'draw a sunset', 'create an image of...'), you MUST invoke `image.generate(prompt=...)`. NEVER describe or roleplay rendering an image in text without calling `image.generate`.\n"
     "- Desktop Applications & OS Automation: When the user asks to open or launch an application ('open application: cal', 'open calculator', 'launch spotify', 'open chrome', 'start terminal', 'open vs code'), you MUST immediately invoke `os.app_launch(app_name=...)`. When the user asks to scan Wi-Fi ('scan available Wi-Fi networks', 'scan wifi'), invoke `network.wifi_scan()`. When the user asks to check battery level, power status, or lock screen, invoke `os.system_control(action=...)`.\n"
     "- Explicit Memory Tool Queries: When the user explicitly requests to search memory (e.g. 'search your memory tool', 'check your memory', 'search memory for X'), you MUST invoke 'memory.search' with the target entity or subject! NEVER claim to search memory in text while skipping the tool call.\n"
     "- Web Search Context & Pronoun Anaphora: When the user asks to search the web ('search online', 'use your tool and search about it', 'look it up'), you MUST immediately invoke 'web.search'. When the user uses pronouns or references ('about it', 'for that', 'look this up', 'about him', 'about her'), resolve the search query from the immediate preceding conversation subject (e.g. 'Ashutosh' from 'What about their leader Ashutosh?') rather than defaulting to older background topics or substituting the user's personal identity.\n"
@@ -53,7 +54,7 @@ GROUNDING_POLICY = (
     "- Sequential Multi-Action Chaining Directive: When the user asks you to perform multiple actions or requests in a single turn (e.g. 'check what you see, play some music, and set volume to 50%'), you MUST invoke all required tools. NEVER stop after one tool and claim you did the others in text without calling the tool. In multi-step turns, address each step sequentially with real execution.\n"
     "- Factual Truth & Zero Hallucination: Ground every factual assertion directly in tool results, system telemetry, or memory facts provided. If information is absent or unverified, state clearly and concisely that you do not know or ask for clarification rather than inventing facts.\n"
     "- Capability & Tool Inquiries: When the user asks what tools, functions, or capabilities you have (e.g. 'what all tools do you have?', 'list your tools', 'what can you do?'), you MUST invoke 'system.list_tools' once or explain your capabilities directly in character. NEVER invoke 'system.status', 'system.hardware', 'memory.all', or other unrelated tools when asked about your capabilities.\n"
-    "- Physical Motions & Gestures: Tools starting with 'character.' (such as 'character.execute_action') control a physical humanoid avatar body. ONLY invoke them when the user explicitly commands a physical gesture or bodily movement (e.g. 'wave', 'bow', 'turn around', 'nod'). NEVER invoke motion tools when answering questions, thinking, or writing essays.\n"
+    "- Physical Motions & Gestures: Tools starting with 'character.' (such as 'character.execute_action') control a physical humanoid avatar body. When the user explicitly commands a physical gesture or bodily movement (e.g. 'raise your hand', 'raise your left hand', 'wave', 'bow', 'turn around', 'nod'), you MUST invoke `character.execute_action(action=..., side=...)`. NEVER narrate bodily movements in conversational text or asterisks without calling `character.execute_action`. Conversely, NEVER invoke motion tools when answering questions, thinking, or writing essays.\n"
     "- Pure Conversational Speech & Anti-Leakage Directive: NEVER output raw tool syntax, bracketed tool invocations (such as '[system.time]', '[perception.what_do_you_see]', '[music.play]'), XML tags, internal category markers (such as '[conversation]', '[tools]'), or planning prefixes (such as 'GREETING_HANDLING:') into your conversational reply! Speak exclusively natural, human dialogue. Tools must be invoked strictly through system function calling channels, NEVER typed directly into conversational text.\n"
     "- Grounding Context Separation: Any environment grounding, player status, or tool results provided are background telemetry. Never repeat raw background labels or formatting tags to the user."
 )
@@ -172,7 +173,10 @@ def format_situation_banner(situation: dict | None = None) -> str:
         p_val = world.get("people_count", world.get("people", 0))
         people = len(p_val) if isinstance(p_val, (list, tuple, dict)) else p_val
         scene = world.get("scene", "indoor")
-        parts.append(f"• Visual Scene: {people} person(s) present | Scene: {scene}")
+        objs = world.get("objects", [])
+        obj_names = [f"{o.get('color', '')} {o.get('label', '')}".strip() for o in objs[:4] if o.get("label")]
+        obj_str = f" | Objects: {', '.join(obj_names)}" if obj_names else ""
+        parts.append(f"• Visual Scene: {people} person(s) present | Scene: {scene}{obj_str}")
 
     return "[Real-Time Situation Telemetry Banner]:\n" + "\n".join(parts)
 
@@ -442,8 +446,17 @@ class ContextEngine:
         if tool_results:
             for tr in tool_results:
                 tool_id = tr.get("id", tr.get("tool_call_id", tr.get("name", "tool")))
-                raw_result = str(tr.get("result", tr.get("error", "")))
-                clean_result = strip_control_tokens(raw_result)
+                if "error" in tr and tr["error"]:
+                    err_str = str(tr["error"])
+                    if "Traceback" in err_str:
+                        # Extract the final error line to avoid polluting context with Python stack frames
+                        tb_lines = [ln.strip() for ln in err_str.strip().splitlines() if ln.strip()]
+                        clean_result = f"Error: {tb_lines[-1]}" if tb_lines else "Error: Operation failed"
+                    else:
+                        clean_result = f"Error: {err_str}"
+                else:
+                    raw_result = str(tr.get("result", ""))
+                    clean_result = strip_control_tokens(raw_result)
                 tool_parts.append(f"[{tool_id}]:\n{clean_result}")
             grounding_parts.append("[Tool Results & Grounded Intelligence — use these to answer]:\n" + "\n\n".join(tool_parts))
 
@@ -641,10 +654,11 @@ def _format_world_state(world_state: dict) -> str:
     lines.append(f"  people_present: {people_count}")
     if people:
         for idx, p in enumerate(people):
+            clothing_str = f" clothing={p['clothing_color']}" if p.get("clothing_color") else ""
             lines.append(
                 f"    - person_{idx+1}: pos={p.get('position', 'center')} "
                 f"distance={p.get('distance', 'medium')} "
-                f"attentive={p.get('looking_at_robot', True)}"
+                f"attentive={p.get('looking_at_robot', True)}{clothing_str}"
             )
 
     # Physical Objects (from continuous object detection & vision reasoning)
@@ -653,9 +667,21 @@ def _format_world_state(world_state: dict) -> str:
     lines.append(f"  objects_detected: {objects_count}")
     if objects:
         for obj in objects:
+            color_str = f" ({obj['color']})" if obj.get("color") else ""
             lines.append(
-                f"    - {obj.get('label')}: pos={obj.get('position', 'center')} "
+                f"    - {obj.get('label')}{color_str}: pos={obj.get('position', 'center')} "
                 f"conf={obj.get('confidence', 0.8)}"
+            )
+
+    # Tabletop Items
+    tabletop = world_state.get("tabletop_items", [])
+    if tabletop:
+        lines.append(f"  tabletop_items: {len(tabletop)}")
+        for item in tabletop[:6]:
+            col = f" ({item['color']})" if item.get("color") else ""
+            lines.append(
+                f"    - {item.get('object_name')}{col}: clock={item.get('position_clock', '12 o\'clock')} "
+                f"dist={item.get('estimated_distance', 'near')}"
             )
 
     lines.append(f"  motion_level: {world_state.get('motion', 'none')}")
@@ -680,13 +706,22 @@ def summarize_conversation_turns(turns: list[dict[str, Any]], max_tokens: int = 
 
     user_intents: list[str] = []
     assistant_actions: list[str] = []
+    executed_tools: list[str] = []
 
     for turn in turns:
         role = turn.get("role", "")
         content = str(turn.get("content") or "").strip()
         if not content:
             continue
+
+        # Detect tool invocations or results in historical turns
+        tool_matches = re.findall(r"\[Tool Result:\s*([a-zA-Z0-9_\.]+)", content)
+        for tm in tool_matches:
+            if tm not in executed_tools:
+                executed_tools.append(tm)
+
         first_line = content.split("\n")[0]
+        first_line = re.sub(r"\[Tool Result:[^\]]+\]\s*", "", first_line).strip()
         snippet = first_line[:90].strip()
         if len(first_line) > 90:
             snippet += "..."
@@ -697,6 +732,8 @@ def summarize_conversation_turns(turns: list[dict[str, Any]], max_tokens: int = 
             assistant_actions.append(snippet)
 
     summary_lines = []
+    if executed_tools:
+        summary_lines.append(f"• Prior executed tools: {', '.join(executed_tools[:6])}")
     if user_intents:
         samples = user_intents[:2]
         if len(user_intents) > 2:

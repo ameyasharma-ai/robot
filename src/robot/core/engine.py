@@ -150,6 +150,35 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     return cleaned, action_dict
 
 
+#: Regular expression to classify natural visual inquiries requiring camera feed reasoning.
+_VISUAL_QUERY_PATTERN: re.Pattern[str] = re.compile(
+    r"\b(?:"
+    r"what\s+(?:do\s+you|are\s+you|can\s+you)\s+(?:see|seeing|observe|observing)|"
+    r"what\s+are\s+you\s+looking\s+at|"
+    r"tell\s+me\s+what\s+you\s+(?:see|are\s+seeing)|"
+    r"describe\s+what\s+(?:you\s+see|you're\s+seeing|you\s+are\s+seeing|'s\s+in\s+the\s+camera\s+feed)|"
+    r"describe\s+the\s+(?:scene|view|room|table|camera)|"
+    r"what\s+color\s+(?:is|are)\b|"
+    r"what\s+(?:is\s+the\s+)?color\s+of\b|"
+    r"color\s+is\s+my\s+(?:shirt|clothes|t-shirt|top|hoodie)|"
+    r"what\s+am\s+i\s+(?:holding|wearing|showing)|"
+    r"what\s+(?:is\s+this|is\s+that|item\s+is\s+this|object\s+is\s+this)|"
+    r"look\s+at\s+(?:this|me|what\s+i)|"
+    r"what\s+is\s+in\s+front\s+of\s+(?:you|me)|"
+    r"what's\s+in\s+front\s+of\s+(?:you|me)|"
+    r"can\s+you\s+see\s+(?:me|this|that)|"
+    r"do\s+you\s+see\s+(?:me|this|that)|"
+    r"what\s+do\s+you\s+observe|"
+    r"read\s+(?:this|the\s+paper|the\s+text|the\s+document|the\s+label)|"
+    r"what\s+does\s+(?:this|it|that|the|this\s+\w+|the\s+\w+)?\s*say\b|"
+    r"through\s+(?:the|your)\s+camera|"
+    r"on\s+(?:the\s+)?camera\s+feed|"
+    r"in\s+(?:the\s+)?camera\s+feed"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def _detect_and_intercept_tool_monologue(
     text: str, known_tools: set[str]
 ) -> tuple[bool, dict[str, Any] | None]:
@@ -489,6 +518,12 @@ class RobotEngine:
         self.require_wake_word: bool = wake_cfg.get("require_wake_word", True)
         self.follow_up_timeout_s: float = float(wake_cfg.get("follow_up_timeout_s", 12.0))
         self._last_interaction_ts: float = 0.0
+
+        # Pipeline Auto-Recovery, Stuck Detection & Watchdog State
+        self._thinking_started_ts: float = 0.0
+        self._stuck_speaking_ts: float | None = None
+        self._core_tasks: dict[str, asyncio.Task] = {}
+        self._audio_input_queue: asyncio.Queue | None = None
 
         configured_wake_words = wake_cfg.get("wake_words") or audio_cfg.get("wake_words")
         self.wakeword = WakeWordDetector(
@@ -1189,11 +1224,17 @@ class RobotEngine:
             self.curiosity.start()
             await self.scheduler.start()
 
+            self._audio_input_queue = audio_queue
+            self._core_tasks = {
+                "mic_loop": asyncio.create_task(self._mic_loop(audio_queue), name="mic_loop"),
+                "response_loop": asyncio.create_task(self._response_loop(), name="response_loop"),
+                "tts_synthesizer": asyncio.create_task(self._tts_synthesizer_loop(), name="tts_synthesizer"),
+                "tts_player": asyncio.create_task(self._tts_player_loop(), name="tts_player"),
+                "pipeline_watchdog": asyncio.create_task(self._pipeline_watchdog_loop(), name="pipeline_watchdog"),
+            }
+
             tasks = [
-                asyncio.create_task(self._mic_loop(audio_queue)),
-                asyncio.create_task(self._response_loop()),
-                asyncio.create_task(self._tts_synthesizer_loop()),
-                asyncio.create_task(self._tts_player_loop()),
+                *self._core_tasks.values(),
                 asyncio.create_task(self.health.start()),
                 asyncio.create_task(self.lighting.start()),
             ]
@@ -1422,6 +1463,12 @@ class RobotEngine:
                 timeout_graceful_shutdown=API_GRACEFUL_TIMEOUT_S,
             )
             server = uvicorn.Server(config)
+            # Avoid signal conflict on Python 3.12 wakeup fd: __main__.py already manages SIGINT/SIGTERM.
+            import contextlib
+            @contextlib.contextmanager
+            def _no_signal_capture():
+                yield
+            server.capture_signals = _no_signal_capture
             self._api_server = server
             await server.serve()
         except Exception as e:
@@ -1434,7 +1481,7 @@ class RobotEngine:
         audio_cfg = self.config.get("audio", {})
         sample_rate = audio_cfg.get("sample_rate", 16000)
         silence_threshold = int(
-            sample_rate * audio_cfg.get("silence_threshold_ms", 500) / 1000
+            sample_rate * audio_cfg.get("silence_threshold_ms", 700) / 1000
             / audio_cfg.get("vad_frame_size", 512)
         )
         barge_in_enabled = audio_cfg.get("barge_in_enabled", False)
@@ -1444,17 +1491,19 @@ class RobotEngine:
 
         audio_buffer: list[float] = []
         is_speaking = False
+        self._user_speaking = False
         silence_frames = 0
         barge_in_consecutive = 0
         last_barge_in_time = 0.0
         was_barge_in = False
 
-        while True:
+        while self._running:
             frame = await audio_queue.get()
 
             # If voice interaction is disabled (e.g. text-only mode via UI toggle), discard mic audio
             if not self.voice_enabled:
                 is_speaking = False
+                self._user_speaking = False
                 audio_buffer = []
                 silence_frames = 0
                 barge_in_consecutive = 0
@@ -1474,6 +1523,7 @@ class RobotEngine:
             if getattr(self, "_entering_standby", False) or self.state.state.mode == RobotMode.STANDBY:
                 if self._is_speaking or self.player.is_playing:
                     is_speaking = False
+                    self._user_speaking = False
                     audio_buffer = []
                     silence_frames = 0
                     barge_in_consecutive = 0
@@ -1485,6 +1535,7 @@ class RobotEngine:
                 if not barge_in_enabled:
                     # Drop frame and reset capture buffer to avoid picking up bot's voice
                     is_speaking = False
+                    self._user_speaking = False
                     audio_buffer = []
                     silence_frames = 0
                     barge_in_consecutive = 0
@@ -1536,11 +1587,11 @@ class RobotEngine:
                     speech_age = time.time() - getattr(self, "_speech_started_ts", 0.0)
                     if speech_age < 0.45:
                         # Grace period: ignore acoustic onset bleed during the first 450ms of robot speech
-                        # Online acoustic transfer calibration clamped to physical hardware bounds (<= 0.45)
-                        if ref_rms > 0.04:
+                        # Online acoustic transfer calibration clamped to physical hardware bounds (<= 0.90)
+                        if ref_rms > 0.03:
                             ratio = rms / max(0.01, ref_rms)
                             if ratio > self.vad._learned_coupling:
-                                self.vad._learned_coupling = min(0.45, self.vad._learned_coupling * 0.85 + ratio * 0.15)
+                                self.vad._learned_coupling = min(0.90, max(0.20, self.vad._learned_coupling * 0.85 + ratio * 0.15))
                         barge_in_consecutive = 0
                     elif (time.time() - last_barge_in_time) < barge_in_cooldown:
                         barge_in_consecutive = 0
@@ -1552,6 +1603,7 @@ class RobotEngine:
                             self._interrupt_event.set()
                             self._is_speaking = False
                             self._speech_ended_ts = time.time()
+                            self._last_interaction_ts = time.time()
                             self.player.stop()
                             # Propagate cancellation to observability traces
                             self.observability.cancel_active_traces()
@@ -1560,13 +1612,26 @@ class RobotEngine:
                             barge_in_consecutive = 0
                             last_barge_in_time = time.time()
                             is_speaking = True
+                            self._user_speaking = True
                             was_barge_in = True
                             audio_buffer = list(self.capture.get_pre_roll())
                 else:
                     barge_in_consecutive = 0
                     if not is_speaking:
+                        # Interruption during deep reasoning: if robot is in THINKING mode,
+                        # any user speech acts as a barge-in that cancels the in-flight thought turn.
+                        if self.state.state.mode == RobotMode.THINKING:
+                            print("\n⚡ \033[1;33m[BARGE-IN]\033[0m Interrupted thinking process!")
+                            logger.info("barge_in_cancelled_thinking")
+                            self._interrupt_event.set()
+                            self.observability.cancel_active_traces()
+                            await self.events.emit("barge_in", barge_in=True)
+                            was_barge_in = True
+
                         is_speaking = True
-                        was_barge_in = False
+                        self._user_speaking = True
+                        if not was_barge_in:
+                            was_barge_in = False
                         pre_roll = list(self.capture.get_pre_roll())
                         audio_buffer = list(pre_roll)
                         self.streaming_stt.start()
@@ -1575,10 +1640,11 @@ class RobotEngine:
                             in_follow_up = (
                                 (time.time() - self._last_interaction_ts) < self.follow_up_timeout_s
                             )
-                            if in_follow_up or not self.require_wake_word or not self.wakeword.enabled:
+                            if in_follow_up or not self.require_wake_word or not self.wakeword.enabled or was_barge_in:
                                 await self.state.set_mode(RobotMode.LISTENING)
 
                 if is_speaking:
+                    self._user_speaking = True
                     audio_buffer.extend(frame.flatten().tolist())
                     silence_frames = 0
             else:
@@ -1590,6 +1656,7 @@ class RobotEngine:
                     if silence_frames >= silence_threshold:
                         end_time = time.time()
                         is_speaking = False
+                        self._user_speaking = False
                         silence_frames = 0
                         is_barge = was_barge_in
                         was_barge_in = False
@@ -1689,6 +1756,16 @@ class RobotEngine:
                                             self._last_interaction_ts = time.time()
                                             await self.state.set_mode(RobotMode.LISTENING)
                                             await self.events.emit(Events.WAKE_WORD_DETECTED, wake_word=matched_word, text=text)
+
+                                            # Auto-switch persona if an individual persona was directly addressed (e.g. 'hey luna', 'cypher')
+                                            target_pers = self._get_persona_for_wake_word(matched_word or "")
+                                            if target_pers and target_pers != self.state.state.active_personality:
+                                                try:
+                                                    print(f"🎭 \033[1;35m[PERSONA AUTO-SWITCH]\033[0m Switching to '{target_pers}' (addressed via '{matched_word}')")
+                                                    await self.switch_personality(target_pers)
+                                                except Exception as exc:
+                                                    logger.warning("wake_word_persona_switch_failed", target=target_pers, error=str(exc))
+
                                             if hasattr(self, "player") and self.player:
                                                 try:
                                                     self._spawn_bg_task(self.player.play_earcon("wake_detected", volume=0.55), "earcon_wake")
@@ -1705,10 +1782,10 @@ class RobotEngine:
                                         elif current_mode == RobotMode.STANDBY:
                                             print(f"💤 \033[90m[STANDBY IGNORED]\033[0m {text}")
                                             self.observability.finish_trace(status=SpanStatus.CANCELLED)
-                                        elif in_follow_up or (not self.require_wake_word or not self.wakeword.enabled):
+                                        elif is_barge or in_follow_up or (not self.require_wake_word or not self.wakeword.enabled):
                                             self._last_interaction_ts = time.time()
                                             await self.state.set_mode(RobotMode.LISTENING)
-                                            label = "[USER (FOLLOW-UP)]" if in_follow_up else "[USER]"
+                                            label = "[USER (BARGE-IN)]" if is_barge else ("[USER (FOLLOW-UP)]" if in_follow_up else "[USER]")
                                             print(f"\n💬 \033[1;36m{label}\033[0m {text}  \033[90m(stt: {stt_ms:.0f}ms)\033[0m")
                                             self.telemetry.record(
                                                 "STT_FINAL_LATENCY",
@@ -1728,54 +1805,277 @@ class RobotEngine:
 
                         audio_buffer = []
 
-    #: Control-utterance prefixes routed through _speech_queue by autonomy/scheduler.
+    #: Control-utterance prefixes routed through _speech_queue by autonomy/scheduler/wake-word.
     #: They are played verbatim via _stream_response's fast paths, so they skip the
     #: mic-turn side effects (mode churn, turn counter, trace, memory store).
-    _CONTROL_UTTERANCE_PREFIXES = ("[Proactive check-in]: ", "[Scheduler alert]: ")
+    _CONTROL_UTTERANCE_PREFIXES = (
+        "[Proactive check-in]: ",
+        "[Scheduler alert]: ",
+        "[Wake word acknowledge]",
+        "[Enter standby acknowledge]",
+    )
+
+    #: Hesitation fillers, dangling conjunctions/prepositions, and trailing punctuation
+    #: indicating the user paused or took a breath mid-thought ("umm...", "and...", "what is the...").
+    _HESITATION_PATTERNS = re.compile(
+        r"(?:\b(?:um|umm|uh|uhh|er|ah|like)\s*[,\.]*$)|"
+        r"(?:\b(?:and|or|but|so|because|that|which|to|for|with|about|of|in|on|at|the|a|an|is|are|was|were)\s*[,\.]*$)|"
+        r"(?:\.\.\.|\-\-|\-$)",
+        re.IGNORECASE,
+    )
+
+    async def _auto_recover_pipeline(self, reason: str = "unspecified") -> None:
+        """Auto-recover robot engine from hung or stalled states back to IDLE.
+
+        Flushes all in-flight queues, signals interruptions, halts audio playback,
+        resets mode and timestamps, and emits recovery events to keep UI and hardware in sync.
+
+        Args:
+            reason: Diagnostic explanation of what triggered the auto-recovery.
+        """
+        logger.warning("pipeline_auto_recovery_triggered", reason=reason)
+        print(f"\n🔄 \033[1;33m[PIPELINE AUTO-RECOVERY]\033[0m Resetting to IDLE (reason: {reason})")
+
+        # 1. Signal interruption to cancel any in-flight LLM/TTS generation
+        self._interrupt_event.set()
+        self._is_speaking = False
+        self._user_speaking = False
+
+        # 2. Stop audio playback immediately
+        if hasattr(self, "player") and self.player:
+            try:
+                self.player.stop()
+            except Exception as e:
+                logger.debug("auto_recover_player_stop_failed", error=str(e))
+
+        # 3. Drain all pipeline queues
+        for q_name, q in [
+            ("speech", self._speech_queue),
+            ("tts", self._tts_queue),
+            ("audio", self._audio_queue),
+        ]:
+            drained_count = 0
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                    drained_count += 1
+                except (asyncio.QueueEmpty, ValueError):
+                    break
+            if drained_count > 0:
+                logger.info("pipeline_queue_drained", queue=q_name, count=drained_count)
+
+        # 4. Cancel active observability traces
+        if hasattr(self, "observability") and self.observability:
+            try:
+                self.observability.cancel_active_traces()
+            except Exception:
+                pass
+
+        # 5. Reset state and timestamps
+        self._speech_ended_ts = time.time()
+        self._last_interaction_ts = time.time()
+        self._thinking_started_ts = 0.0
+        self._stuck_speaking_ts = None
+        self._entering_standby = False
+
+        # 6. Reset mode to IDLE (unless in STANDBY)
+        if hasattr(self, "state") and self.state:
+            curr_mode = self.state.state.mode
+            if curr_mode != RobotMode.STANDBY:
+                await self.state.set_mode(RobotMode.IDLE)
+            await self.events.emit("robot_speech_ended", mode=self.state.state.mode.value, recovered=True, reason=reason)
+            await self.events.emit("pipeline_recovered", reason=reason)
+
+    async def _pipeline_watchdog_loop(self) -> None:
+        """Periodic background supervisor monitoring pipeline health and auto-recovering hangs."""
+        logger.info("pipeline_watchdog_started")
+        while self._running:
+            try:
+                await asyncio.sleep(2.0)
+                if not self._running:
+                    break
+
+                # 1. Check thinking stall (> 45s without completing turn)
+                curr_mode = self.state.state.mode if hasattr(self, "state") and self.state else None
+                if curr_mode == RobotMode.THINKING:
+                    if self._thinking_started_ts == 0.0:
+                        self._thinking_started_ts = time.time()
+                    elif (time.time() - self._thinking_started_ts) > 45.0:
+                        stuck_dur = round(time.time() - self._thinking_started_ts, 1)
+                        logger.warning("watchdog_thinking_timeout", duration=stuck_dur)
+                        await self._auto_recover_pipeline(reason=f"stuck_thinking_{int(stuck_dur)}s")
+                        self._thinking_started_ts = 0.0
+                else:
+                    self._thinking_started_ts = 0.0
+
+                # 2. Check speaking stall without audio (> 5s in SPEAKING with no sound)
+                is_playing = bool(self.player.is_playing) if hasattr(self, "player") and self.player else False
+                if (curr_mode == RobotMode.SPEAKING or self._is_speaking) and not is_playing:
+                    if self._audio_queue.empty() and self._tts_queue.empty():
+                        if self._stuck_speaking_ts is None:
+                            self._stuck_speaking_ts = time.time()
+                        elif (time.time() - self._stuck_speaking_ts) > 5.0:
+                            logger.warning("watchdog_speaking_without_audio_timeout")
+                            self._is_speaking = False
+                            self._speech_ended_ts = time.time()
+                            if curr_mode != RobotMode.STANDBY:
+                                await self.state.set_mode(RobotMode.IDLE)
+                            await self.events.emit("robot_speech_ended", mode=self.state.state.mode.value)
+                            self._stuck_speaking_ts = None
+                    else:
+                        self._stuck_speaking_ts = None
+                else:
+                    self._stuck_speaking_ts = None
+
+                # 3. Supervise core background workers and revive any terminated tasks
+                for task_name, task in list(self._core_tasks.items()):
+                    if task_name == "pipeline_watchdog":
+                        continue
+                    if task.done() and self._running:
+                        exc = None
+                        try:
+                            exc = task.exception()
+                        except (asyncio.CancelledError, asyncio.InvalidStateError):
+                            pass
+                        logger.error("watchdog_core_task_died", task=task_name, error=str(exc))
+                        if task_name == "mic_loop" and self._audio_input_queue:
+                            self._core_tasks["mic_loop"] = asyncio.create_task(
+                                self._mic_loop(self._audio_input_queue), name="mic_loop"
+                            )
+                        elif task_name == "response_loop":
+                            self._core_tasks["response_loop"] = asyncio.create_task(
+                                self._response_loop(), name="response_loop"
+                            )
+                        elif task_name == "tts_synthesizer":
+                            self._core_tasks["tts_synthesizer"] = asyncio.create_task(
+                                self._tts_synthesizer_loop(), name="tts_synthesizer"
+                            )
+                        elif task_name == "tts_player":
+                            self._core_tasks["tts_player"] = asyncio.create_task(
+                                self._tts_player_loop(), name="tts_player"
+                            )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("pipeline_watchdog_error", error=str(exc))
+                await asyncio.sleep(1.0)
 
     async def _response_loop(self) -> None:
-        """Process transcribed speech and generate responses."""
-        while True:
-            user_text, end_of_speech_time = await self._speech_queue.get()
-            if not user_text:
-                continue
+        """Process transcribed speech and generate responses with conversational chunk coalescing."""
+        while self._running:
+            try:
+                user_text, end_of_speech_time = await self._speech_queue.get()
+                if not user_text:
+                    continue
 
-            if user_text.startswith(self._CONTROL_UTTERANCE_PREFIXES):
-                # Serialized proactive/scheduler playback on the shared intake path.
-                await self._stream_response(user_text, end_of_speech_time, asyncio.Event())
-                continue
+                if user_text.startswith(self._CONTROL_UTTERANCE_PREFIXES):
+                    # Serialized proactive/scheduler/wake-word playback on the shared intake path.
+                    try:
+                        await asyncio.wait_for(
+                            self._stream_response(user_text, end_of_speech_time, asyncio.Event()),
+                            timeout=30.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("control_utterance_timeout_30s", text=user_text[:50])
+                        await self._auto_recover_pipeline(reason="control_utterance_timeout")
+                    continue
 
-            logger.info("user_speech", text=user_text)
-            await self.state.set_mode(RobotMode.THINKING)
-            turn = await self.state.increment_turn()
+                # Conversational Utterance Coalescing:
+                # When users pause mid-sentence ("umm...", take a breath, or formulate a thought),
+                # VAD silence endpointing may segment speech into chunks. If the transcribed text
+                # ends on a hesitation marker, conjunction, or incomplete clause, or if the user has
+                # already resumed speaking in the microphone loop, coalesce the subsequent chunk(s)
+                # into a unified, complete prompt before dispatching to the LLM.
+                is_hesitation = bool(self._HESITATION_PATTERNS.search(user_text.strip()))
+                is_user_active = getattr(self, "_user_speaking", False)
+                if is_hesitation or is_user_active or not self._speech_queue.empty():
+                    coalesce_deadline = time.time() + (1.2 if is_hesitation else 0.6)
+                    while time.time() < coalesce_deadline:
+                        if getattr(self, "_user_speaking", False):
+                            coalesce_deadline = max(coalesce_deadline, time.time() + 0.8)
+                        try:
+                            timeout_left = max(0.05, coalesce_deadline - time.time())
+                            next_chunk, next_end_time = await asyncio.wait_for(
+                                self._speech_queue.get(), timeout=timeout_left
+                            )
+                            if next_chunk:
+                                if next_chunk.startswith(self._CONTROL_UTTERANCE_PREFIXES):
+                                    await self._stream_response(next_chunk, next_end_time, asyncio.Event())
+                                else:
+                                    clean_prev = user_text.rstrip(" .,-")
+                                    clean_next = next_chunk.lstrip()
+                                    user_text = f"{clean_prev} {clean_next}"
+                                    end_of_speech_time = next_end_time
+                                    if self._HESITATION_PATTERNS.search(user_text.strip()):
+                                        coalesce_deadline = time.time() + 1.0
+                                    else:
+                                        coalesce_deadline = time.time() + 0.4
+                        except asyncio.TimeoutError:
+                            break
 
-            # Create new interrupt event for this turn
-            self._interrupt_event = asyncio.Event()
+                logger.info("user_speech", text=user_text)
+                await self.state.set_mode(RobotMode.THINKING)
+                self._thinking_started_ts = time.time()
+                turn = await self.state.increment_turn()
 
-            # Stream LLM → TTS
-            full_response = await self._stream_response(
-                user_text, end_of_speech_time, self._interrupt_event
-            )
+                # Create new interrupt event for this turn
+                self._interrupt_event = asyncio.Event()
 
-            # Finish turn trace
-            self.observability.finish_trace()
+                # Stream LLM → TTS with 60s timeout guard to prevent hangs
+                full_response = ""
+                try:
+                    full_response = await asyncio.wait_for(
+                        self._stream_response(user_text, end_of_speech_time, self._interrupt_event),
+                        timeout=60.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("stream_response_timeout_60s", user_text=user_text[:50])
+                    print(f"\n⚠️ \033[1;31m[TIMEOUT]\033[0m Model turn exceeded 60s limit — auto-recovering pipeline.")
+                    await self._auto_recover_pipeline(reason="stream_response_timeout_60s")
+                    continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception as resp_err:
+                    logger.error("stream_response_error", error=str(resp_err), user_text=user_text[:50])
+                    await self._auto_recover_pipeline(reason=f"stream_response_error_{type(resp_err).__name__}")
+                    continue
+                finally:
+                    self._thinking_started_ts = 0.0
 
-            # Store in memory isolated by personality workspace
-            if full_response and self.memory:
-                active_pers = self.personalities.active
-                ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
-                await self._persist_turn(
-                    session_id=self._session_id,
-                    user_text=user_text,
-                    bot_text=full_response,
-                    personality=self.state.state.active_personality,
-                    turn_number=turn,
-                    namespace=ns,
-                    metadata={"provider": getattr(self, "llm_provider_type", "local")},
-                )
+                # Finish turn trace
+                self.observability.finish_trace()
 
-            if self.state.state.mode != RobotMode.STANDBY:
-                await self.state.set_mode(RobotMode.IDLE)
+                # Store in memory isolated by personality workspace
+                if full_response and self.memory:
+                    active_pers = self.personalities.active
+                    ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
+                    last_tool_name = None
+                    last_tool_result = None
+                    if hasattr(self, "tool_coordinator") and self.tool_coordinator:
+                        last_exec = getattr(self.tool_coordinator, "get_last_execution", lambda: None)()
+                        if last_exec:
+                            last_tool_name = last_exec.get("tool_name")
+                            last_tool_result = str(last_exec.get("tool_result") or "")[:500] if last_exec.get("tool_result") is not None else None
+                    await self._persist_turn(
+                        session_id=self._session_id,
+                        user_text=user_text,
+                        bot_text=full_response,
+                        personality=self.state.state.active_personality,
+                        turn_number=turn,
+                        namespace=ns,
+                        tool_name=last_tool_name,
+                        tool_result=last_tool_result,
+                        metadata={"provider": getattr(self, "llm_provider_type", "local")},
+                    )
+
+                if self.state.state.mode != RobotMode.STANDBY:
+                    await self.state.set_mode(RobotMode.IDLE)
+            except asyncio.CancelledError:
+                break
+            except Exception as loop_err:
+                logger.error("response_loop_unexpected_error", error=str(loop_err))
+                await self._auto_recover_pipeline(reason=f"response_loop_error_{type(loop_err).__name__}")
+                await asyncio.sleep(0.5)
 
     async def switch_personality(self, personality: str) -> dict[str, Any]:
         """Switch active personality, hot-swap memory to its isolated database, and apply default models.
@@ -1824,7 +2124,57 @@ class RobotEngine:
         # 3. Hot-swap per-persona model defaults
         applied_models: dict[str, Any] = {}
         if pers and pers.default_models:
-            # A. Default LLM
+            # A. Default TTS Engine & Voice (apply first so vocal output switches immediately)
+            tts_voice = pers.default_models.get("tts_voice") or pers.voice_model
+            tts_engine = pers.default_models.get("tts_engine")
+            if tts_voice or tts_engine:
+                try:
+                    from robot.tts import TTSManager
+                    tts = getattr(self, "tts", None)
+                    if isinstance(tts, TTSManager):
+                        target_engine = tts_engine
+                        if not target_engine and tts_voice:
+                            is_kokoro = any(
+                                tts_voice.startswith(p)
+                                for p in ("af_", "am_", "bf_", "bm_", "ef_", "em_", "ff_", "hf_", "hm_", "if_", "im_", "jf_", "jm_", "pf_", "pm_", "zf_", "zm_")
+                            )
+                            is_piper = "piper" in tts_voice.lower() or ".onnx" in tts_voice.lower()
+                            if is_kokoro:
+                                target_engine = "kokoro"
+                            elif is_piper:
+                                target_engine = "piper"
+                        res = await asyncio.to_thread(
+                            tts.switch_engine, target_engine or tts.get_active_engine_name(), tts_voice
+                        )
+                        applied_models["tts"] = res
+                    elif hasattr(self.tts, "set_active_voice") and tts_voice:
+                        await asyncio.to_thread(self.tts.set_active_voice, tts_voice)
+                        applied_models["tts"] = {"voice": tts_voice}
+                except Exception as e:
+                    logger.warning("tts_default_switch_failed", error=str(e))
+
+            # B. Default Whisper STT Model
+            stt_target = pers.default_models.get("stt")
+            if stt_target:
+                try:
+                    from robot.stt import WhisperServerManager
+                    await WhisperServerManager.switch_model(stt_target, engine=self)
+                    applied_models["stt"] = stt_target
+                except Exception as e:
+                    logger.warning("stt_default_switch_failed", model=stt_target, error=str(e))
+
+            # C. Default Image Model
+            img_target = pers.default_models.get("image")
+            if img_target:
+                self.default_image_model = img_target
+                applied_models["image"] = img_target
+
+            # D. Thinking Mode
+            if "thinking_mode" in pers.default_models:
+                self.thinking_mode = bool(pers.default_models["thinking_mode"])
+                applied_models["thinking_mode"] = self.thinking_mode
+
+            # E. Default LLM (blocking model switch runs after audio systems are updated)
             llm_target = pers.default_models.get("llm")
             if llm_target:
                 try:
@@ -1841,45 +2191,6 @@ class RobotEngine:
                         applied_models["llm"] = llm_target
                 except Exception as e:
                     logger.warning("llm_default_switch_failed", model=llm_target, error=str(e))
-
-            # B. Default TTS Engine & Voice
-            tts_voice = pers.default_models.get("tts_voice") or pers.voice_model
-            tts_engine = pers.default_models.get("tts_engine")
-            if tts_voice or tts_engine:
-                try:
-                    from robot.tts import TTSManager
-                    tts = getattr(self, "tts", None)
-                    if isinstance(tts, TTSManager):
-                        res = await asyncio.to_thread(
-                            tts.switch_engine, tts_engine or "kokoro", tts_voice
-                        )
-                        applied_models["tts"] = res
-                    elif hasattr(self.tts, "set_active_voice") and tts_voice:
-                        await asyncio.to_thread(self.tts.set_active_voice, tts_voice)
-                        applied_models["tts"] = {"voice": tts_voice}
-                except Exception as e:
-                    logger.warning("tts_default_switch_failed", error=str(e))
-
-            # C. Default Whisper STT Model
-            stt_target = pers.default_models.get("stt")
-            if stt_target:
-                try:
-                    from robot.stt import WhisperServerManager
-                    await WhisperServerManager.switch_model(stt_target, engine=self)
-                    applied_models["stt"] = stt_target
-                except Exception as e:
-                    logger.warning("stt_default_switch_failed", model=stt_target, error=str(e))
-
-            # D. Default Image Model
-            img_target = pers.default_models.get("image")
-            if img_target:
-                self.default_image_model = img_target
-                applied_models["image"] = img_target
-
-            # E. Thinking Mode
-            if "thinking_mode" in pers.default_models:
-                self.thinking_mode = bool(pers.default_models["thinking_mode"])
-                applied_models["thinking_mode"] = self.thinking_mode
 
         # 4. Emit events
         if hasattr(self, "events") and self.events:
@@ -1937,7 +2248,17 @@ class RobotEngine:
         """
         # Fast system acknowledgment triggers
         if user_text == "[Wake word acknowledge]":
-            ack = "I'm listening."
+            active_pers = (self.state.state.active_personality or "neo").lower()
+            if active_pers == "luna":
+                ack = "Hey there! I'm listening."
+            elif active_pers == "cypher":
+                ack = "Cypher online. Go ahead."
+            elif active_pers == "glados":
+                ack = "I'm listening. Try to make it interesting."
+            elif active_pers == "aria":
+                ack = "Aria here, what can I do for you?"
+            else:
+                ack = "I'm listening."
             self._enqueue_dropping_oldest(self._tts_queue, (ack, interrupt, None), "tts")
             self._enqueue_dropping_oldest(self._tts_queue, None, "tts")
             return ack
@@ -2109,8 +2430,30 @@ class RobotEngine:
             except Exception as e:
                 logger.debug("user_profile_fetch_failed", error=str(e))
 
-        # Visual query image snapshot (set only if explicit image data provided)
+        # Determine whether active LLM provider supports multimodal image inputs
+        llm_is_multimodal = (
+            is_gemini
+            or getattr(self, "llm_provider_type", "local") in ("gemini", "openai_compatible", "openai")
+            or bool(self.config.get("llm", {}).get("multimodal", False))
+        )
+
+        # Visual query image snapshot: capture current physical camera frame for visual reasoning
         image_data_url = None
+        if self._is_visual_query(user_text) and self.is_camera_enabled:
+            try:
+                cam = getattr(self.perception, "camera", None) if getattr(self, "perception", None) else None
+                if cam is not None:
+                    c_frame = cam.get_latest_frame()
+                    if c_frame is not None and getattr(c_frame, "size", 0) > 0:
+                        import base64
+                        import cv2
+                        success, enc_jpg = cv2.imencode(".jpg", c_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        if success:
+                            b64 = base64.b64encode(enc_jpg.tobytes()).decode("utf-8")
+                            image_data_url = f"data:image/jpeg;base64,{b64}"
+                            logger.info("visual_query_camera_frame_captured", size_bytes=len(enc_jpg))
+            except Exception as exc:
+                logger.debug("visual_query_camera_frame_capture_failed", error=str(exc))
 
         # ─── Autonomous LLM Tool Selection ──────────────────────────────────
         # Provide tools to the LLM so it can autonomously decide when and how
@@ -2143,7 +2486,7 @@ class RobotEngine:
                 all_facts=all_facts,
                 robot_state=self.state.state.to_compact(),
                 world_state=world_state_compact,
-                image_data_url=image_data_url,
+                image_data_url=image_data_url if llm_is_multimodal else None,
                 tool_results=tool_results if tool_results else None,
                 high_intelligence=is_gemini,
                 situation=situation,
@@ -2196,17 +2539,23 @@ class RobotEngine:
         # Tools are not called deterministically or via simple keyword regex logic.
         # Intelligence is routed through tools only when the LLM actively proposes a tool call.
 
-        # If we have an image and the LLM explicitly supports multimodal (mmproj loaded),
+        # If we have an image and the LLM explicitly supports multimodal,
         # convert the last user message to OpenAI vision content blocks
-        llm_is_multimodal = self.config.get("llm", {}).get("multimodal", False)
         if llm_is_multimodal and image_data_url and messages:
             for i in range(len(messages) - 1, -1, -1):
-                if messages[i].get("role") == "user" and isinstance(messages[i].get("content"), str):
-                    text_content = messages[i]["content"]
-                    messages[i]["content"] = [
-                        {"type": "text", "text": text_content},
-                        {"type": "image_url", "image_url": {"url": image_data_url}},
-                    ]
+                if messages[i].get("role") == "user":
+                    u_content = messages[i].get("content")
+                    if isinstance(u_content, str):
+                        messages[i]["content"] = [
+                            {"type": "text", "text": u_content},
+                            {"type": "image_url", "image_url": {"url": image_data_url}},
+                        ]
+                    elif isinstance(u_content, list):
+                        has_img = any(isinstance(p, dict) and p.get("type") == "image_url" for p in u_content)
+                        if not has_img:
+                            messages[i]["content"] = list(u_content) + [
+                                {"type": "image_url", "image_url": {"url": image_data_url}}
+                            ]
                     break
 
         # Stream LLM with eager first-clause release and background sentence chunking
@@ -2532,7 +2881,7 @@ class RobotEngine:
 
     async def _tts_synthesizer_loop(self) -> None:
         """Background pipeline worker: dequeue text phrases, synthesize with Piper, push to audio queue."""
-        while True:
+        while self._running:
             item = await self._tts_queue.get()
             if item is None:
                 await self._audio_queue.put(None)
@@ -2637,110 +2986,118 @@ class RobotEngine:
 
     async def _tts_player_loop(self) -> None:
         """Continuous gapless playback worker from pre-synthesized audio queue."""
-        while True:
-            item = await self._audio_queue.get()
+        while self._running:
+            try:
+                item = await self._audio_queue.get()
 
-            if item is None:
-                self._is_speaking = False
-                self._speech_ended_ts = time.time()
-                was_standby_transition = getattr(self, "_entering_standby", False)
-                self._entering_standby = False
+                if item is None:
+                    self._is_speaking = False
+                    self._speech_ended_ts = time.time()
+                    was_standby_transition = getattr(self, "_entering_standby", False)
+                    self._entering_standby = False
 
-                if was_standby_transition or self.state.state.mode == RobotMode.STANDBY:
-                    await self.state.set_mode(RobotMode.STANDBY)
-                    await self.events.emit("robot_speech_ended", mode=RobotMode.STANDBY.value)
+                    if was_standby_transition or self.state.state.mode == RobotMode.STANDBY:
+                        await self.state.set_mode(RobotMode.STANDBY)
+                        await self.events.emit("robot_speech_ended", mode=RobotMode.STANDBY.value)
+                        continue
+
+                    self._last_interaction_ts = time.time()
+                    # If an interruption occurred and switched state to LISTENING or STANDBY, don't clobber it to IDLE
+                    if self.state.state.mode not in (RobotMode.LISTENING, RobotMode.STANDBY):
+                        await self.state.set_mode(RobotMode.IDLE)
+                    await self.events.emit("robot_speech_ended", mode=self.state.state.mode.value)
                     continue
 
-                self._last_interaction_ts = time.time()
-                # If an interruption occurred and switched state to LISTENING or STANDBY, don't clobber it to IDLE
-                if self.state.state.mode not in (RobotMode.LISTENING, RobotMode.STANDBY):
-                    await self.state.set_mode(RobotMode.IDLE)
-                await self.events.emit("robot_speech_ended", mode=self.state.state.mode.value)
-                continue
+                if len(item) >= 8:
+                    audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms, emotion = item[:8]
+                else:
+                    audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms = item[:7]
+                    emotion = (motion_action or {}).get("emotion", "neutral")
 
-            if len(item) >= 8:
-                audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms, emotion = item[:8]
-            else:
-                audio, sr, phrase, interrupt, timing_ref, motion_action, synth_ms = item[:7]
-                emotion = (motion_action or {}).get("emotion", "neutral")
+                if interrupt.is_set():
+                    continue
 
-            if interrupt.is_set():
-                continue
+                self._is_speaking = True
+                if self._speech_started_ts == 0.0 or (time.time() - self._speech_ended_ts) > 1.0:
+                    self._speech_started_ts = time.time()
 
-            self._is_speaking = True
-            if self._speech_started_ts == 0.0 or (time.time() - self._speech_ended_ts) > 1.0:
-                self._speech_started_ts = time.time()
+                if not getattr(self, "_entering_standby", False) and self.state.state.mode != RobotMode.STANDBY:
+                    await self.state.set_mode(RobotMode.SPEAKING)
+                await self.events.emit("robot_phrase", robot_phrase=phrase, emotion=emotion)
 
-            if not getattr(self, "_entering_standby", False) and self.state.state.mode != RobotMode.STANDBY:
-                await self.state.set_mode(RobotMode.SPEAKING)
-            await self.events.emit("robot_phrase", robot_phrase=phrase, emotion=emotion)
-
-            if timing_ref:
-                t_start = timing_ref.get("t_tts_start", time.perf_counter() - synth_ms / 1000)
-                first_audio_ms = (time.perf_counter() - t_start) * 1000
-                e2e_ms = (time.time() - timing_ref["end_of_speech"]) * 1000
-                self.telemetry.record("TTS_FIRST_AUDIO_LATENCY", first_audio_ms)
-                self.telemetry.record("END_OF_SPEECH_TO_FIRST_AUDIO", e2e_ms)
-                self.observability.emit_event(
-                    event_type="tts.first_audio",
-                    component="TTS",
-                    operation="FIRST_AUDIO",
-                    duration_ms=first_audio_ms,
-                    metadata={"e2e_ms": round(e2e_ms, 1)},
-                )
-                logger.info(
-                    "tts_timing",
-                    synth_ms=round(synth_ms, 1),
-                    first_audio_ms=round(first_audio_ms, 1),
-                    e2e_ms=round(e2e_ms, 1),
-                )
-                print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")
-            else:
-                print(f"   \033[32m...\033[0m {phrase}")
-
-            # Trigger avatar motion tightly synchronized with speech playback
-            if motion_action and not interrupt.is_set():
-                try:
-                    from robot.motion.planner import MotionPlanner
-                    mp = MotionPlanner()
-                    plan = mp.plan_action(motion_action)
-                    avatar_span = self.observability.start_span(
-                        component="AVATAR",
-                        operation=motion_action.get("action", "motion").upper(),
+                if timing_ref:
+                    t_start = timing_ref.get("t_tts_start", time.perf_counter() - synth_ms / 1000)
+                    first_audio_ms = (time.perf_counter() - t_start) * 1000
+                    e2e_ms = (time.time() - timing_ref["end_of_speech"]) * 1000
+                    self.telemetry.record("TTS_FIRST_AUDIO_LATENCY", first_audio_ms)
+                    self.telemetry.record("END_OF_SPEECH_TO_FIRST_AUDIO", e2e_ms)
+                    self.observability.emit_event(
+                        event_type="tts.first_audio",
+                        component="TTS",
+                        operation="FIRST_AUDIO",
+                        duration_ms=first_audio_ms,
+                        metadata={"e2e_ms": round(e2e_ms, 1)},
                     )
-                    await self.events.emit(
-                        "character.action",
-                        action=motion_action,
-                        sequence=[a.to_dict() for a in plan],
+                    logger.info(
+                        "tts_timing",
+                        synth_ms=round(synth_ms, 1),
+                        first_audio_ms=round(first_audio_ms, 1),
+                        e2e_ms=round(e2e_ms, 1),
                     )
-                    self.observability.finish_span(avatar_span)
-                    logger.info("audio_synced_motion_dispatched", action=motion_action)
-                except Exception as e:
-                    logger.debug("audio_synced_motion_error", error=str(e))
+                    print(f"🤖 \033[1;32m[ROBOT]\033[0m {phrase}  \033[90m(first audio: {e2e_ms:.0f}ms)\033[0m")
+                else:
+                    print(f"   \033[32m...\033[0m {phrase}")
 
-            completed = await self.player.play(audio, sr, interrupt)
-            self._speech_ended_ts = time.time()
+                # Trigger avatar motion tightly synchronized with speech playback
+                if motion_action and not interrupt.is_set():
+                    try:
+                        from robot.motion.planner import MotionPlanner
+                        mp = MotionPlanner()
+                        plan = mp.plan_action(motion_action)
+                        avatar_span = self.observability.start_span(
+                            component="AVATAR",
+                            operation=motion_action.get("action", "motion").upper(),
+                        )
+                        await self.events.emit(
+                            "character.action",
+                            action=motion_action,
+                            sequence=[a.to_dict() for a in plan],
+                        )
+                        self.observability.finish_span(avatar_span)
+                        logger.info("audio_synced_motion_dispatched", action=motion_action)
+                    except Exception as e:
+                        logger.debug("audio_synced_motion_error", error=str(e))
 
-            if not completed:
-                # Interrupted — drain both audio and TTS queues
-                self._is_speaking = False
-                while not self._audio_queue.empty():
-                    try:
-                        self._audio_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                while not self._tts_queue.empty():
-                    try:
-                        self._tts_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                if getattr(self, "_entering_standby", False) or self.state.state.mode == RobotMode.STANDBY:
-                    self._entering_standby = False
-                    await self.state.set_mode(RobotMode.STANDBY)
-                    await self.events.emit("robot_speech_ended", mode=RobotMode.STANDBY.value)
-                elif self.state.state.mode != RobotMode.LISTENING:
-                    await self.state.set_mode(RobotMode.IDLE)
-                    await self.events.emit("robot_speech_ended", mode="idle")
+                completed = await self.player.play(audio, sr, interrupt)
+                self._speech_ended_ts = time.time()
+                if completed:
+                    self._last_interaction_ts = time.time()
+
+                if not completed:
+                    # Interrupted — drain both audio and TTS queues
+                    self._is_speaking = False
+                    while not self._audio_queue.empty():
+                        try:
+                            self._audio_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    while not self._tts_queue.empty():
+                        try:
+                            self._tts_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    if getattr(self, "_entering_standby", False) or self.state.state.mode == RobotMode.STANDBY:
+                        self._entering_standby = False
+                        await self.state.set_mode(RobotMode.STANDBY)
+                        await self.events.emit("robot_speech_ended", mode=RobotMode.STANDBY.value)
+                    elif self.state.state.mode != RobotMode.LISTENING:
+                        await self.state.set_mode(RobotMode.IDLE)
+                        await self.events.emit("robot_speech_ended", mode="idle")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("tts_player_loop_error", error=str(exc))
+                await asyncio.sleep(0.1)
 
     # ─── Echo Filter ─────────────────────────────────────────────────────
 
@@ -2758,7 +3115,13 @@ class RobotEngine:
         if is_barge_in:
             for phrase in self._last_bot_phrases[-3:]:
                 norm_bot = re.sub(r"[^\w\s]", "", phrase.lower()).strip()
-                if norm_user == norm_bot:
+                if not norm_bot:
+                    continue
+                if norm_user == norm_bot or norm_user in norm_bot:
+                    return True
+                u_words = set(norm_user.split())
+                b_words = set(norm_bot.split())
+                if len(u_words) >= 3 and len(u_words & b_words) / len(u_words) >= 0.75:
                     return True
             return False
 
@@ -2774,6 +3137,38 @@ class RobotEngine:
             if len(u_words) >= 3 and len(u_words & b_words) / len(u_words) >= 0.85:
                 return True
         return False
+
+    def _is_visual_query(self, text: str) -> bool:
+        """Determine whether an incoming user prompt is asking about the visual camera feed.
+
+        Identifies questions about what the robot sees, visual object identification,
+        colors, people, clothing, documents, and physical surroundings.
+
+        Args:
+            text: Raw or normalized user input text.
+
+        Returns:
+            bool: True if the query targets visual reasoning or physical camera view.
+        """
+        if not text or not isinstance(text, str):
+            return False
+        clean = text.strip().lower()
+        return bool(_VISUAL_QUERY_PATTERN.search(clean))
+
+    def _get_persona_for_wake_word(self, wake_word: str) -> str | None:
+        """Resolve target persona if wake word explicitly addresses one.
+
+        Args:
+            wake_word: Detected wake word or phrase.
+
+        Returns:
+            Matched persona identifier or None if generic.
+        """
+        clean = (wake_word or "").lower()
+        for persona_name in ("luna", "cypher", "glados", "aria", "neo"):
+            if persona_name in clean:
+                return persona_name
+        return None
 
     # ─── Text API ────────────────────────────────────────────────────────
 
@@ -2805,6 +3200,13 @@ class RobotEngine:
         if self.memory:
             active_pers = self.personalities.active
             ns = getattr(active_pers, "memory_namespace", self.state.state.active_personality)
+            last_tool_name = None
+            last_tool_result = None
+            if hasattr(self, "tool_coordinator") and self.tool_coordinator:
+                last_exec = getattr(self.tool_coordinator, "get_last_execution", lambda: None)()
+                if last_exec:
+                    last_tool_name = last_exec.get("tool_name")
+                    last_tool_result = str(last_exec.get("tool_result") or "")[:500] if last_exec.get("tool_result") is not None else None
             await self._persist_turn(
                 session_id=target_sid,
                 user_text=text,
@@ -2812,6 +3214,8 @@ class RobotEngine:
                 personality=self.state.state.active_personality,
                 turn_number=turn,
                 namespace=ns,
+                tool_name=last_tool_name,
+                tool_result=last_tool_result,
                 metadata={"provider": getattr(self, "llm_provider_type", "local")},
             )
 
@@ -2824,6 +3228,9 @@ class RobotEngine:
         or full memory database must degrade to a warning, never abort a voice
         turn or fail a chat request that already streamed its content.
         """
+        user_text = kwargs.get("user_text", "")
+        if user_text.startswith(("[Wake word acknowledge]", "[Enter standby acknowledge]", "[Proactive check-in]: ", "[Scheduler alert]: ")):
+            return
         if not self.memory:
             return
         try:
@@ -2948,6 +3355,31 @@ class RobotEngine:
             except Exception:
                 user_profile = None
 
+        # Determine whether active LLM provider supports multimodal image inputs
+        llm_is_multimodal = (
+            is_gemini
+            or getattr(self, "llm_provider_type", "local") in ("gemini", "openai_compatible", "openai")
+            or bool(self.config.get("llm", {}).get("multimodal", False))
+        )
+
+        # Visual query camera capture
+        image_data_url = None
+        if self._is_visual_query(text) and self.is_camera_enabled:
+            try:
+                cam = getattr(self.perception, "camera", None) if getattr(self, "perception", None) else None
+                if cam is not None:
+                    c_frame = cam.get_latest_frame()
+                    if c_frame is not None and getattr(c_frame, "size", 0) > 0:
+                        import base64
+                        import cv2
+                        success, enc_jpg = cv2.imencode(".jpg", c_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        if success:
+                            b64 = base64.b64encode(enc_jpg.tobytes()).decode("utf-8")
+                            image_data_url = f"data:image/jpeg;base64,{b64}"
+                            logger.info("chat_visual_query_camera_frame_captured", size_bytes=len(enc_jpg))
+            except Exception as exc:
+                logger.debug("chat_visual_query_camera_frame_capture_failed", error=str(exc))
+
         pers_prompt = (
             active_pers.system_prompt
             if active_pers and getattr(active_pers, "system_prompt", None)
@@ -2964,6 +3396,7 @@ class RobotEngine:
             situation=situation,
             high_intelligence=is_gemini,
             user_profile=user_profile,
+            image_data_url=image_data_url if llm_is_multimodal else None,
         )
 
         effective_thinking = self.thinking_enabled if thinking is None else thinking

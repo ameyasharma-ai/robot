@@ -230,3 +230,35 @@ async def test_tts_api_endpoints() -> None:
         assert wf.getsampwidth() == 2
         assert wf.getframerate() in (16000, 22050, 24000)
         assert wf.getnframes() > 100
+
+
+def test_piper_resolve_model_path_alien_voice_fallback() -> None:
+    """Verify PiperTTS._resolve_model_path falls back cleanly to default model on alien voices."""
+    from robot.tts import PiperTTS
+    with patch.object(PiperTTS, "_load_voice", return_value=MagicMock()):
+        piper = PiperTTS("models/tts/en-us-lessac-medium.onnx")
+        piper._default_model = "models/tts/en-us-lessac-medium.onnx"
+
+        # Calling with Kokoro voice 'af_heart' must fall back to default model
+        resolved = piper._resolve_model_path("af_heart")
+        assert resolved == "models/tts/en-us-lessac-medium.onnx"
+
+
+@pytest.mark.asyncio
+async def test_tts_manager_cross_engine_routing() -> None:
+    """Verify TTSManager.synthesize auto-routes Kokoro voices to Kokoro even when Piper is active."""
+    mgr = TTSManager({"tts": {"provider": "piper"}})
+    mock_piper = MagicMock()
+    mock_piper.synthesize = AsyncMock(return_value=(np.zeros(160, dtype=np.float32), 22050))
+    mock_kokoro = MagicMock()
+    mock_kokoro.synthesize = AsyncMock(return_value=(np.zeros(240, dtype=np.float32), 24000))
+
+    mgr._engines["piper"] = mock_piper
+    mgr._engines["kokoro"] = mock_kokoro
+    mgr._active_engine_name = "piper"
+
+    # Synthesize with Kokoro voice af_heart
+    samples, sr = await mgr.synthesize("Hello world", voice_model="af_heart")
+    assert sr == 24000
+    mock_kokoro.synthesize.assert_awaited_once()
+    mock_piper.synthesize.assert_not_called()

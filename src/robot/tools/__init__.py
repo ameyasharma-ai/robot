@@ -425,14 +425,28 @@ class ToolRouter:
             "equalizer", "equaliser", "eq", "preset", "sound profile", "audio profile", "robot preset", "bass boost", "spatial audio", "sub bass", "reverb preset",
             "generate music", "make music", "compose music", "create a song", "generate song", "generate a beat", "synthesize music", "synthwave", "lofi beat", "cyberpunk beat"
         ],
-        "image": ["generate image", "generate an image", "create image", "create an image", "draw an image", "paint an image", "illustration of", "render image", "generate picture"],
-        "motion": ["wave", "raise hand", "kick", "walk", "turn around", "point at", "dance", "gesture", "stop motion", "reset pose", "nod head"],
+        "image": [
+            "generate image", "generate an image", "create image", "create an image", "draw an image", "paint an image", "illustration of", "render image", "generate picture",
+            "make a picture", "make me a picture", "picture of", "photo of", "draw me a", "draw a", "make me a", "paint me a", "render a picture", "picture that you created", "image you created", "picture that you just created"
+        ],
+        "motion": [
+            "wave", "raise hand", "kick", "walk", "turn around", "point at", "dance", "gesture", "stop motion", "reset pose", "nod head",
+            "raise your hand", "raise your left hand", "raise your right hand", "raise left hand", "raise right hand",
+            "wave your hand", "wave left hand", "wave right hand", "wave your left hand", "wave your right hand",
+            "nod your head", "shake head", "shake your head", "clap", "bow", "cheer", "shrug"
+        ],
         "perception": [
-            "what do you see", "what do u see", "what are you seeing", "what is this", "what is that", "what's this", "what's that",
-            "look at this", "look around", "look at me", "who is here", "who is this", "can you see me", "do you see me",
-            "what am i holding", "what i am holding", "inspect scene", "check", "check this", "check that", "check what",
-            "inspect", "look", "see", "camera", "vision", "describe scene", "describe what you see",
-            "read this", "read paper", "read text", "read document", "what does this say", "analyze frame", "vlm", "vlm inspect", "analyze camera", "inspect tabletop"
+            "what do you see", "what do u see", "what are you seeing", "tell me what you see", "describe what you see", "describe what you're seeing",
+            "what is this", "what is that", "what's this", "what's that", "what is this object", "what is that object", "what item is this",
+            "look at this", "look around", "look at me", "who is here", "who is this", "can you see me", "do you see me", "can you see this", "do you see this",
+            "what am i holding", "what i am holding", "what am i showing", "look at what i", "holding", "inspect scene", "check", "check this", "check that", "check what",
+            "inspect", "look", "see", "camera", "vision", "describe scene", "video feed", "camera feed", "through the camera", "through your camera",
+            "what color is it", "what color is this", "what color is that", "what color are", "what color", "color of this", "color of that", "color of",
+            "what color is my shirt", "what am i wearing", "what color are my clothes", "shirt color",
+            "what is in front of you", "what is in front of me", "what's in front of you", "what's in front of me", "in front of you",
+            "what do you observe", "what do you notice", "how many people", "how many objects", "who do you see", "who is in front of you",
+            "read this", "read paper", "read text", "read document", "read what is written", "what does this say", "what does it say", "what is written", "read label",
+            "analyze frame", "vlm", "vlm inspect", "analyze camera", "inspect tabletop", "inspect desk", "check the table"
         ],
         "os": [
             "launch", "open", "start", "run", "start app", "open app", "launch app", "open vs code", "open spotify",
@@ -552,7 +566,7 @@ class ToolRouter:
         # add any families referenced in the chained sub-clauses without returning ALL tools blindly
         has_chaining = any(conj in text_lower for conj in self.CHAINING_CONJUNCTIONS)
         if has_chaining and selected_families:
-            if any(w in text_lower for w in ["look", "see", "camera", "inspect", "check"]):
+            if any(w in text_lower for w in ["look", "see", "camera", "inspect", "check", "color", "wear", "shirt", "holding", "showing", "view"]):
                 selected_families.add("perception")
             if any(w in text_lower for w in ["play", "song", "music", "volume", "sound", "track", "restart", "vol"]):
                 selected_families.add("music")

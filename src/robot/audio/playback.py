@@ -437,6 +437,15 @@ class AudioPlayer:
                             or (generation_id is not None and generation_id != self._generation_id)
                         ):
                             logger.info("playback_interrupted_or_generation_stale")
+                            # Quick 5ms cosine anti-pop taper to return speaker cone smoothly to neutral
+                            try:
+                                pop_len = min(int(sample_rate * 0.005), len(audio) - idx)
+                                if pop_len > 0 and stream is not None:
+                                    taper = (np.cos(np.linspace(0, np.pi / 2, pop_len)) ** 2).astype(np.float32)
+                                    taper_chunk = audio[idx : idx + pop_len] * self._volume * taper
+                                    stream.write(taper_chunk)
+                            except Exception:
+                                pass
                             return False
 
                         chunk = audio[idx : idx + block_len]

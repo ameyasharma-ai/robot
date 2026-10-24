@@ -35,11 +35,19 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ─── 1. Clean Hardware Mic Calibration & EasyEffects Daemon ───────────
-echo "[AUDIO] Calibrating clean hardware microphone capture (100% unity gain)..."
+# ─── 1. Clean Hardware Mic Calibration & Speaker Output Enforced ──────
+echo "[AUDIO] Ensuring laptop internal speaker volume is at 100%..."
+pactl set-sink-mute @DEFAULT_SINK@ 0 2>/dev/null || true
+pactl set-sink-volume @DEFAULT_SINK@ 100% 2>/dev/null || true
+pactl set-sink-mute alsa_output.pci-0000_05_00.6.analog-stereo 0 2>/dev/null || true
+pactl set-sink-volume alsa_output.pci-0000_05_00.6.analog-stereo 100% 2>/dev/null || true
+amixer -c 1 sset 'Master' 100% unmute 2>/dev/null || true
+amixer -c 1 sset 'Speaker' 100% unmute 2>/dev/null || true
+
+echo "[AUDIO] Calibrating clean hardware microphone capture..."
 pactl unload-module module-echo-cancel 2>/dev/null || true
 pactl set-source-mute alsa_input.pci-0000_05_00.6.analog-stereo 0 2>/dev/null || true
-pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 100% 2>/dev/null || true
+pactl set-source-volume alsa_input.pci-0000_05_00.6.analog-stereo 60% 2>/dev/null || true
 pactl set-default-source alsa_input.pci-0000_05_00.6.analog-stereo 2>/dev/null || true
 amixer -c 1 sset 'Internal Mic Boost' 0 2>/dev/null || true
 amixer -c 1 sset 'Capture' 35 cap 2>/dev/null || true
@@ -113,8 +121,8 @@ else
                     -ctv q4_0 \
                     -c 16384 \
                     -np 1 \
-                    -b 4096 \
-                    -ub 4096 \
+                    -b 2048 \
+                    -ub 1024 \
                     --host 127.0.0.1 \
                     --port 8080 > "$DIR/logs/llama-server.log" 2>&1 &
             fi
