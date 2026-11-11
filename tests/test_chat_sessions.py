@@ -588,6 +588,47 @@ async def test_transcribe_audio_empty():
     assert data["text"] == ""
 
 
+@pytest.mark.asyncio
+async def test_create_chat_session_active_persona_resolution(tmp_db):
+    """Verify create_chat_session correctly resolves active persona when not explicitly passed in body."""
+    from robot.core.state import StateManager
+
+    mem = MemoryManager({}, tmp_db)
+    await mem.history.initialize()
+
+    state_mgr = StateManager()
+    state_mgr.state.active_personality = "luna"
+
+    mock_engine = MagicMock()
+    mock_engine.memory = mem
+    mock_engine.state = state_mgr
+    mock_engine._session_id = "test-session-123"
+    mock_engine.player = MagicMock()
+    mock_engine.player.is_playing = False
+    mock_engine.capture = MagicMock()
+    mock_engine.telemetry = MagicMock()
+    mock_engine.telemetry.snapshot.return_value = {}
+
+    app = create_app(mock_engine)
+    client = TestClient(app)
+
+    # 1. Post new chat without personality
+    resp = client.post("/chat/sessions", json={"title": "New Conversation"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["personality"] == "luna"
+    sess_id = data["session_id"]
+
+    # 2. Get session - must not 404
+    resp_get = client.get(f"/chat/sessions/{sess_id}")
+    assert resp_get.status_code == 200
+    get_data = resp_get.json()
+    assert get_data["session_id"] == sess_id
+    assert get_data["personality"] == "luna"
+    assert get_data["title"] == "New Conversation"
+
+
+
 
 
 

@@ -1174,12 +1174,21 @@ class RobotUI {
         });
     }
 
+    /**
+     * Create a new isolated chat session, registering it in the backend database
+     * under the active personality, and switch the conversation viewport to it.
+     * @returns {Promise<void>}
+     */
     async createChatSession() {
         try {
+            const activePersona = this.personaSelect ? this.personaSelect.value : (localStorage.getItem("robot_active_personality") || undefined);
             const res = await this.apiFetch("/chat/sessions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ title: "New Conversation" })
+                body: JSON.stringify({
+                    title: "New Conversation",
+                    personality: activePersona
+                })
             });
             if (res.ok) {
                 const data = await res.json();

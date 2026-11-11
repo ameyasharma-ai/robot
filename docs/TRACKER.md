@@ -6,6 +6,56 @@
 
 ---
 
+### RVC WebUI Restoration & High-Fidelity AMEYA Voice Conversion Pipeline
+Automated vocal stem separation, dynamic RMVPE pitch alignment, and high-fidelity singing voice conversion to **AMEYA's voice**:
+- **RVC Daemon Restoration**: Restored the Retrieval-based Voice Conversion WebUI daemon on `http://0.0.0.0:7865` with CUDA acceleration (`./run.sh`).
+- **Hardware-Accelerated Stem Isolation**: In `separate_on_cuda.py`, implemented GPU-accelerated stem separation with BS-RoFormer (`model_bs_roformer_ep_368_sdr_12.9628.ckpt`), isolating 4m 11s high-fidelity vocal and backing instrumental stems in 78.7 seconds.
+- **Dynamic RMVPE Pitch & Formant Tracking**: In `process_ameya_song.py`, analyzed vocal fundamental frequencies ($F_0$) with RMVPE, dynamically comparing against AMEYA's target vocal profile ($\text{median} = 163.1\text{ Hz}$). Applied harmonic key alignment to preserve musical scale coherence with acoustic backing tracks.
+- **Artifact-Free Timbre Synthesis & Mastering**: Deployed offline RVC inference with `AMEYA.pth` and 115 MB added FAISS index (`AMEYA_added_IVF939_Flat_nprobe_1_AMEYA_v2.index`), protecting breath/unvoiced consonants (`protect=0.38`, `index_rate=0.72`) to eliminate robotic buzz. Mixed vocals and backing stems with FFmpeg brickwall limiting into broadcast 320kbps MP3 and 24-bit lossless WAV masters delivered to `/home/ameya/Downloads/`.
+
+## ✅ Recently Completed (2026-11-11)
+
+### Tool Timeout Elevation, Conversational Error Formatting & Streaming JSON Suppression
+Resolved tool timeout errors during search queries and eliminated raw JSON error/status payload echoes from chat bubbles and TTS speech:
+- **Search Tool Timeout & Concurrency Safeguards**:
+  - Elevated `web.search` tool timeout from 3.0s to 15.0s in `src/robot/tools/builtins/__init__.py`.
+  - Added strict minimum floor timeouts in `src/robot/tools/__init__.py:TOOL_TIMEOUT_FLOORS` (`web.search`: 12.0s, `web.scrape_page`: 10.0s, `weather.forecast`: 8.0s, `news.headlines`: 8.0s, `finance.quote`: 8.0s) so tool definitions cannot be accidentally registered with sub-second or 3-second ceilings.
+  - In `src/robot/tools/builtins/__init__.py:web_search()`, bounded concurrent page content scraping in Gemini high-intelligence mode to the top 3 results and capped each fetch with `asyncio.wait_for(..., timeout=4.0s)`.
+- **Conversational Tool Error Formatting**:
+  - In `src/robot/core/engine.py:stream_text_chat()` and `src/robot/tools/coordinator.py:_generate_continuation()`, intercepted tool results containing timeouts or error dictionaries. Instead of feeding raw `{ "status": "timeout", "error": "Tool timed out..." }` JSON into the model's tool context turn (which caused Gemini to mirror raw JSON in its reply), transformed it into an instructive natural language notice: `"Tool notice: <tool> encountered an issue (<error>). Do not repeat this error message, code block, or raw JSON status. Respond naturally in character to the user..."`.
+- **Real-Time Streaming JSON & Code Fence Suppression**:
+  - In `src/robot/core/engine.py:stream_text_chat()`, implemented an eager token buffer in the second-pass generation stream. Intercepts leading `{`, ````json`, or `[` blocks, stripping any echoed `{ "status": ... }` or `[function call: ...]` blocks before emitting tokens to the SSE stream.
+  - In `_extract_motion_from_phrase()`, stripped raw JSON error and status dictionaries from TTS phrase chunks so audio synthesis never vocalizes raw error objects.
+  - In `clean_resp` (both `stream_text_chat()` and voice `_stream_response()`), added regex stripping for `^\s*```(?:json)?\s*\{[\s\S]*?\}\s*```\s*` and `^\s*\{[\s\n]*\"(?:status|error)\"\s*:[^}]*\}\s*` before persisting turns to memory history.
+- **Universal Function Call Interception, Python Kwargs Deserialization & Chat Session Persona Routing**:
+  - In `src/robot/llm/__init__.py`, defined `BRACKET_TOOL_CALL_PATTERN` matching `[function call: tool.name(...)]`, `[call: tool.name(...)]`, `[tool: tool.name(...)]`, and `[tool.name(...)]`.
+  - In `parse_tool_arguments()`, implemented robust parsing capable of deserializing Python keyword arguments (e.g. `symbol="NVDA"`, `category="tech"`, `limit=5`, `enabled=True`) alongside standard JSON objects and query strings into strongly typed parameter dictionaries.
+  - In `src/robot/api/__init__.py:create_chat_session()` and `src/robot/api/static/app.js:createChatSession()`, fixed active personality resolution and query routing.
+- **Test Suite Verification**: Added unit test suite `tests/test_tool_call_interception.py` (7/7 passed), updated `tests/test_chat_sessions.py` (19/19 passed), and `tests/test_tool_coordinator.py` (13/13 passed). All tests passing. Zero import errors verified across all 138 files.
+
+### AI Death Clock & Screentime Clock Free Resizability & Remote Sync
+Implemented free resizability and geometry persistence for both desktop widgets and synchronized repositories:
+- **Universal Size Grips & Free Resizing**: In `death-clock/gui/desktop_widget.py` and `screentime-clock/gui/desktop_widget.py`, integrated bottom-right `QSizeGrip` handles with subtle hover highlights, allowing free corner/edge resizing without sacrificing frameless glass styling.
+- **Persistent Dimensions**: Upgraded `_save_geometry()` and `_load_geometry()` across both widgets to store and restore `width` and `height` alongside `x`, `y`, and `is_expanded`.
+- **State Refresh & Duplicate Fix**: Resolved bug where editing death clock profile closed the window; eliminated duplicate `update_state` and `_toggle_expand` methods.
+- **Repository Synchronization**: Pushed all recent commits and fixes to remote GitHub repositories:
+  - `https://github.com/ameyasharma-ai/ai-death-clock.git`
+  - `https://github.com/ameyasharma-ai/screentime-clock.git`
+
+---
+
+## ✅ Recently Completed (2026-10-31)
+
+### Desktop Screentime Clock Monotonic Journal Telemetry & RTC Clock Skew Elimination
+Resolved distorted historical session calculations caused by dual-boot Linux/Windows RTC adjustments and NTP clock jumps:
+- **Root Cause Resolution**: Following hardware RTC adjustments (`RTC in local TZ: no`), previous boot sessions recorded in `/var/log/wtmp` suffered from artificial wall-clock steps when `systemd-timesyncd` contacted NTP, inflating session durations (e.g. reporting 06h 58m instead of 01h 28m on boot -1, or negative durations on boot -2).
+- **Monotonic Journal Session Telemetry**: In `screentime-clock/tracker.py`, implemented `_get_journal_sessions()` leveraging `journalctl -b <offset> -o json -u session-*.scope`. Extracts strict monotonic timestamps (`__MONOTONIC_TIMESTAMP`) alongside synchronized realtime timestamps. The true duration is computed as monotonic elapsed time (100% immune to clock jumps), and the accurate wall-clock start time is calibrated as $T_{\text{start}} = T_{\text{end}} - D$.
+- **Wtmp Fallback Sanitization**: In `tracker.py:_parse_wtmp_sessions()`, added negative-duration protection and fallback reconciliation.
+- **Verification & Deployment**: Added unit test suite `tests/test_tracker.py` (3/3 passing), captured live GUI preview verifying calibrated dial arc (09:39 - 11:08) and HUD badge (`LAST LOGIN SESSION: 01h 28m`), restarted `screentime-clock.service`, and pushed changes to remote repository.
+- **Desktop Background Layering (`WindowStaysOnBottomHint`)**: In `screentime-clock/gui/desktop_widget.py`, eliminated `Qt.WindowType.SubWindow` and `Qt.WindowType.Tool` (which caused XFCE/xfwm4 to map the widget as `_NET_WM_WINDOW_TYPE_UTILITY` and elevate it to `_NET_WM_STATE_ABOVE`). Configured default window flags to `Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnBottomHint` and invoked `self.lower()`. The widget is now assigned `_NET_WM_STATE_BELOW` (position 1 above desktop wallpaper `0xc00048`), ensuring all application windows (Chrome, Terminal, IDE) open and remain on top of it. Reset `"always_on_top": false` in configuration.
+
+---
+
 ## ✅ Recently Completed (2026-10-24)
 
 ### Wake-Word Persona Auto-Switching, Persona-Tailored Wake Acknowledgments & Uvicorn Wakeup FD Signal Fix

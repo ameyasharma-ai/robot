@@ -479,7 +479,7 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=weather_forecast,
             permission_level=PermissionLevel.READ_ONLY,
             family="weather",
-            timeout_s=3.0,
+            timeout_s=8.0,
             is_idempotent=True,
             max_retries=1,
         )
@@ -520,7 +520,7 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=news_headlines,
             permission_level=PermissionLevel.READ_ONLY,
             family="news",
-            timeout_s=3.0,
+            timeout_s=8.0,
             is_idempotent=True,
             max_retries=1,
         )
@@ -549,7 +549,7 @@ def register_weather_news_tools(engine: "RobotEngine") -> None:
             handler=finance_quote,
             permission_level=PermissionLevel.READ_ONLY,
             family="finance",
-            timeout_s=3.0,
+            timeout_s=8.0,
             is_idempotent=True,
             max_retries=1,
         )

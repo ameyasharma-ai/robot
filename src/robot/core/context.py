@@ -24,6 +24,8 @@ logger = get_logger("context")
 import re
 import time
 
+from robot.llm import BRACKET_TOOL_CALL_PATTERN
+
 #: Per-entry cap for archived turns; one giant row must not evict the whole archive.
 MAX_ARCHIVE_ENTRY_CHARS = 4_000
 
@@ -796,7 +798,7 @@ def _trim_and_compact_conversation(
                     m["content"] = content.split("[User Input]:\n", 1)[1].strip()
             elif role == "assistant":
                 c = re.sub(r"<thought>.*?</thought>", "", content, flags=re.DOTALL)
-                c = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", c)
+                c = BRACKET_TOOL_CALL_PATTERN.sub("", c)
                 c = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", c, flags=re.IGNORECASE)
                 m["content"] = c.strip()
         clean_msgs.append(m)

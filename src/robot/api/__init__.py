@@ -2371,7 +2371,13 @@ def create_app(engine: "RobotEngine", auth_token: str | None = None) -> FastAPI:
     async def create_chat_session(req: CreateSessionRequest | None = None):
         """Create a new isolated chat session in the database."""
         sid = f"chat_{uuid.uuid4()}"
-        pers = (req and req.personality) or getattr(getattr(engine, "state", None), "active_personality", "neo")
+        active_pers = (
+            getattr(getattr(getattr(engine, "state", None), "state", None), "active_personality", None)
+            or getattr(engine, "active_personality_name", None)
+            or getattr(getattr(engine, "memory", None), "_personality", None)
+            or "neo"
+        )
+        pers = (req and req.personality) or active_pers
         title = (req and req.title) or "New Chat"
         if hasattr(engine, "memory") and engine.memory:
             sess = await engine.memory.create_session(sid, personality=pers, title=title)

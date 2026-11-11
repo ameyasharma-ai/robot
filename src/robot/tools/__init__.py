@@ -57,8 +57,13 @@ DEFAULT_TOOL_TIMEOUT_S: float = 30.0
 MAX_TOOL_TIMEOUT_S: float = 45.0
 TOOL_TIMEOUT_FLOORS: dict[str, float] = {
     # Headless navigation needs time for browser launch, JS hydration, and
-    # screenshot capture.  The legacy 3 s web-family cap made this impossible.
+    # screenshot capture.
     "web.browser_agent": 30.0,
+    "web.search": 12.0,
+    "web.scrape_page": 10.0,
+    "news.headlines": 8.0,
+    "weather.forecast": 8.0,
+    "finance.quote": 8.0,
 }
 
 # Search result fan-out bound.  Handlers (and their caches) must never be

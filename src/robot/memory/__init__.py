@@ -1340,37 +1340,75 @@ class ConversationHistory:
     async def get_session(
         self, session_id: str, personality: str | None = None
     ) -> dict | None:
-        """Get session metadata by ID, scoped to one persona."""
+        """Get session metadata by ID.
+
+        Args:
+            session_id: Unique session identifier.
+            personality: Optional personality filter. If omitted, returns the session
+                matching the ID regardless of persona.
+
+        Returns:
+            Dictionary with session metadata, or None if not found.
+        """
         if not self._conn:
             return None
-        persona = await self._persona_for(personality, session_id)
-        sess_clause, sess_variants = _clause_for(persona, "personality")
-        row = await asyncio.to_thread(
-            self._query_one,
-            f"""SELECT id, personality, started_at, updated_at, turn_count, title
-               FROM sessions
-               WHERE id = ? AND {sess_clause}""",
-            (session_id, *sess_variants),
-        )
-        if not row:
-            msg_clause, msg_variants = _clause_for(persona, "c.personality")
-            c_row = await asyncio.to_thread(
+        if personality:
+            persona = await self._persona_for(personality, session_id)
+            sess_clause, sess_variants = _clause_for(persona, "personality")
+            row = await asyncio.to_thread(
                 self._query_one,
-                f"""SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'),
-                           MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
-                          COALESCE(
-                            (SELECT SUBSTR(u.content, 1, 36)
-                             FROM conversations u
-                             WHERE u.session_id = c.session_id AND u.role = 'user'
-                               AND u.content NOT LIKE '[%'
-                             ORDER BY u.id ASC LIMIT 1),
-                            'Voice Chat'
-                          )
-                   FROM conversations c
-                   WHERE c.session_id = ? AND {msg_clause}
-                   GROUP BY c.session_id""",
-                (session_id, *msg_variants),
+                f"""SELECT id, personality, started_at, updated_at, turn_count, title
+                   FROM sessions
+                   WHERE id = ? AND {sess_clause}""",
+                (session_id, *sess_variants),
             )
+        else:
+            row = await asyncio.to_thread(
+                self._query_one,
+                """SELECT id, personality, started_at, updated_at, turn_count, title
+                   FROM sessions
+                   WHERE id = ?""",
+                (session_id,),
+            )
+        if not row:
+            if personality:
+                persona = await self._persona_for(personality, session_id)
+                msg_clause, msg_variants = _clause_for(persona, "c.personality")
+                c_row = await asyncio.to_thread(
+                    self._query_one,
+                    f"""SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'),
+                               MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
+                              COALESCE(
+                                (SELECT SUBSTR(u.content, 1, 36)
+                                 FROM conversations u
+                                 WHERE u.session_id = c.session_id AND u.role = 'user'
+                                   AND u.content NOT LIKE '[%'
+                                 ORDER BY u.id ASC LIMIT 1),
+                                'Voice Chat'
+                              )
+                       FROM conversations c
+                       WHERE c.session_id = ? AND {msg_clause}
+                       GROUP BY c.session_id""",
+                    (session_id, *msg_variants),
+                )
+            else:
+                c_row = await asyncio.to_thread(
+                    self._query_one,
+                    """SELECT c.session_id, COALESCE(MAX(c.personality), 'neo'),
+                               MIN(c.timestamp), MAX(c.timestamp), COUNT(*)/2,
+                              COALESCE(
+                                (SELECT SUBSTR(u.content, 1, 36)
+                                 FROM conversations u
+                                 WHERE u.session_id = c.session_id AND u.role = 'user'
+                                   AND u.content NOT LIKE '[%'
+                                 ORDER BY u.id ASC LIMIT 1),
+                                'Voice Chat'
+                              )
+                       FROM conversations c
+                       WHERE c.session_id = ?
+                       GROUP BY c.session_id""",
+                    (session_id,),
+                )
             if not c_row:
                 return None
             return {
@@ -1432,21 +1470,38 @@ class ConversationHistory:
     async def get_session_messages(
         self, session_id: str, limit: int = 200, personality: str | None = None
     ) -> list[dict]:
-        """Get all messages for an isolated session within one persona."""
+        """Get all messages for an isolated session.
+
+        Args:
+            session_id: Unique session identifier.
+            limit: Maximum count of messages to return.
+            personality: Optional personality filter. If omitted, returns all messages
+                for this session.
+
+        Returns:
+            List of message dictionaries.
+        """
         if not self._conn:
             return []
-        persona = await self._persona_for(personality, session_id)
-        clause, variants = _clause_for(persona)
-        rows = await asyncio.to_thread(
-            self._query_rows,
-            f"""SELECT id, role, content, personality, turn_number, tool_name,
-                       tool_result, timestamp, metadata
-               FROM conversations
-               WHERE session_id = ? AND {clause}
-               ORDER BY id ASC
-               LIMIT ?""",
-            (session_id, *variants, limit),
-        )
+        if personality:
+            persona = await self._persona_for(personality, session_id)
+            clause, variants = _clause_for(persona)
+            query_sql = f"""SELECT id, role, content, personality, turn_number, tool_name,
+                               tool_result, timestamp, metadata
+                        FROM conversations
+                        WHERE session_id = ? AND {clause}
+                        ORDER BY id ASC
+                        LIMIT ?"""
+            params = (session_id, *variants, limit)
+        else:
+            query_sql = """SELECT id, role, content, personality, turn_number, tool_name,
+                               tool_result, timestamp, metadata
+                        FROM conversations
+                        WHERE session_id = ?
+                        ORDER BY id ASC
+                        LIMIT ?"""
+            params = (session_id, limit)
+        rows = await asyncio.to_thread(self._query_rows, query_sql, params)
         msgs = []
         for r in rows:
             mid, role, content, pers, turn_num, t_name, t_res, ts, meta_raw = r
@@ -2023,7 +2078,7 @@ class MemoryManager:
 
         # Sanitize assistant response from leaked internal tags/brackets before archiving
         clean_bot_text = re.sub(r"<thought>.*?</thought>", "", bot_text, flags=re.DOTALL)
-        clean_bot_text = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_bot_text)
+        clean_bot_text = re.sub(r"\[\s*(?:(?:function\s+)?call\s*:\s*|(?:action|tool)\s*:\s*)?[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_bot_text, flags=re.IGNORECASE)
         clean_bot_text = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", clean_bot_text, flags=re.IGNORECASE)
         persisted_bot_text = clean_bot_text.strip() or bot_text.strip()
 

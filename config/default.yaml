@@ -46,7 +46,7 @@ tts:
 audio:
   sample_rate: 16000
   vad_frame_size: 512
-  silence_threshold_ms: 130
+  silence_threshold_ms: 700
   barge_in_enabled: true
   barge_in_frames: 3
   barge_in_confidence: 0.55

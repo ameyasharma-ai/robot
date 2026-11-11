@@ -31,7 +31,15 @@ from robot.core.state import RobotMode, StateManager
 from robot.config import load_system_config
 from robot.expression import AsusAuraLighting
 from robot.image import ImageGenerationService
-from robot.llm import ClauseChunker, LlamaServerLLM, GeminiLLM, OpenAICompatibleLLM, LlamaServerManager
+from robot.llm import (
+    BRACKET_TOOL_CALL_PATTERN,
+    ClauseChunker,
+    GeminiLLM,
+    LlamaServerLLM,
+    LlamaServerManager,
+    OpenAICompatibleLLM,
+    parse_tool_arguments,
+)
 from robot.memory import MemoryManager
 from robot.observability import ObservabilityHub
 from robot.observability.models import SpanStatus
@@ -125,6 +133,9 @@ def _extract_motion_from_phrase(text: str) -> tuple[str, dict | None]:
     cleaned = re.sub(r"<thought>.*?</thought>", "", text, flags=re.DOTALL | re.IGNORECASE)
     cleaned = re.sub(r"<thought>.*$", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
 
+    # Strip raw JSON error/status payloads if any slipped into phrase
+    cleaned = re.sub(r"\{[\s\n]*\"(?:status|error)\"\s*:[^}]*\}", "", cleaned, flags=re.DOTALL)
+
     # Clean out ALL stage directions, bracket tags (motions, emotions), and parentheses so TTS never speaks them
     cleaned = re.sub(r"\[[^\]]*\]", "", cleaned)
     # Strip any lingering unclosed or orphaned brackets e.g. [motion: or wave]
@@ -197,6 +208,22 @@ def _detect_and_intercept_tool_monologue(
     clean = text.strip()
     if not clean:
         return False, None
+
+    # Check for bracketed tool calls: [function call: tool.name(...)], [tool.name(...)]
+    m_bracket = BRACKET_TOOL_CALL_PATTERN.search(clean)
+    if m_bracket:
+        t_name = m_bracket.group(1).strip()
+        raw_args = (m_bracket.group(2) or m_bracket.group(3) or "").strip()
+        parsed_args = parse_tool_arguments(raw_args)
+        tool_call = {
+            "id": f"call_intercept_{int(time.time()*1000)}",
+            "type": "function",
+            "function": {
+                "name": t_name,
+                "arguments": parsed_args,
+            },
+        }
+        return True, tool_call if t_name in known_tools else None
 
     # Check for inline tag or JSON formats
     if any(marker in clean for marker in ["<tool_call>", "</tool_call>", "[TOOL_CALL", "[TOOL:", "```tool_call", "```json"]):
@@ -2704,10 +2731,27 @@ class RobotEngine:
                         except Exception:
                             pass
                 else:
+                    # Check for bracketed tool calls: [function call: tool.name(...)], [tool.name(...)]
+                    bracket_matches = list(BRACKET_TOOL_CALL_PATTERN.finditer(full_response))
+                    if bracket_matches:
+                        for b_match in bracket_matches:
+                            b_name = b_match.group(1).strip()
+                            raw_arg_str = (b_match.group(2) or b_match.group(3) or "").strip()
+                            if getattr(self, "tool_registry", None) and self.tool_registry.get(b_name):
+                                parsed_args = parse_tool_arguments(raw_arg_str)
+                                collected_tool_calls.append({
+                                    "id": f"call_inline_{int(time.time()*1000)}_{len(collected_tool_calls)}",
+                                    "type": "function",
+                                    "function": {"name": b_name, "arguments": parsed_args},
+                                })
+                                logger.info("bracket_tool_call_intercepted", tool=b_name, arguments=parsed_args)
+
                     # Fallback for plain syntax: tool.name(arg="val", ...)
                     known_tools = set(self.tool_registry.list_tools()) if getattr(self, "tool_registry", None) else set()
                     for t_name in known_tools:
-                        pat = rf"(?:\[)?\b{re.escape(t_name)}\s*\((.*?)\)(?:\])?"
+                        if any(tc.get("function", {}).get("name") == t_name for tc in collected_tool_calls):
+                            continue
+                        pat = rf"(?:\[\s*(?:(?:function\s+)?call\s*:\s*|(?:action|tool)\s*:\s*)?)?\b{re.escape(t_name)}\s*\((.*?)\)(?:\])?"
                         m = re.search(pat, full_response)
                         if m:
                             args_str = m.group(1).strip()
@@ -2874,7 +2918,9 @@ class RobotEngine:
 
         # Clean response from internal brackets, thoughts, and control lines before returning for storage
         clean_resp = re.sub(r"<thought>.*?</thought>", "", full_response, flags=re.DOTALL)
-        clean_resp = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_resp)
+        clean_resp = BRACKET_TOOL_CALL_PATTERN.sub("", clean_resp)
+        clean_resp = re.sub(r"^\s*```(?:json)?\s*\{[\s\S]*?\}\s*```\s*", "", clean_resp, flags=re.DOTALL)
+        clean_resp = re.sub(r"^\s*\{[\s\n]*\"(?:status|error)\"\s*:[^}]*\}\s*", "", clean_resp, flags=re.DOTALL)
         clean_resp = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
         clean_resp = re.sub(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", "", clean_resp, flags=re.MULTILINE)
         return clean_resp.strip() if clean_resp.strip() else full_response.strip()
@@ -3623,19 +3669,14 @@ class RobotEngine:
                     except Exception:
                         pass
 
-            # Check for bracketed tool calls e.g. [system.time], [perception.what_do_you_see]
+            # Check for bracketed tool calls e.g. [system.time], [function call: finance.quote(symbol="NVDA")]
             if not collected_tool_calls:
-                bracket_matches = re.findall(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", full_text)
-                for b_name, b_args1, b_args2 in bracket_matches:
+                bracket_matches = list(BRACKET_TOOL_CALL_PATTERN.finditer(full_text))
+                for m in bracket_matches:
+                    b_name = m.group(1).strip()
+                    raw_arg_str = (m.group(2) or m.group(3) or "").strip()
                     if hasattr(self, "tool_registry") and self.tool_registry and self.tool_registry.get(b_name):
-                        raw_arg_str = (b_args1 or b_args2 or "").strip()
-                        parsed_args = {}
-                        if raw_arg_str:
-                            try:
-                                import json as _json
-                                parsed_args = _json.loads(raw_arg_str) if raw_arg_str.startswith("{") else {"query": raw_arg_str}
-                            except Exception:
-                                parsed_args = {"query": raw_arg_str}
+                        parsed_args = parse_tool_arguments(raw_arg_str)
                         import json as _json
                         collected_tool_calls.append({
                             "id": f"call_{len(collected_tool_calls)}_{int(time.time()*1000)}",
@@ -3719,7 +3760,22 @@ class RobotEngine:
 
                 for tc, tool_info in zip(collected_tool_calls, tools_called):
                     res_raw = tool_info.get("result")
-                    res_str = _json.dumps(res_raw) if isinstance(res_raw, (dict, list)) else str(res_raw or "Executed")
+                    t_name = tool_info.get("name", "tool")
+                    if isinstance(res_raw, dict) and (res_raw.get("status") in ("timeout", "failure", "error") or "error" in res_raw):
+                        err_desc = res_raw.get("error") or res_raw.get("status") or "Tool timed out"
+                        res_str = (
+                            f"Tool notice: {t_name} encountered an issue ({err_desc}). "
+                            "Do not repeat this error message, code block, or raw JSON status. "
+                            "Respond naturally in character to the user and answer their request using your knowledge."
+                        )
+                    elif isinstance(res_raw, str) and ("timed out" in res_raw.lower() or "timeout" in res_raw.lower()):
+                        res_str = (
+                            f"Tool notice: {t_name} encountered an issue ({res_raw}). "
+                            "Do not repeat this error message, code block, or raw JSON status. "
+                            "Respond naturally in character to the user and answer their request using your knowledge."
+                        )
+                    else:
+                        res_str = _json.dumps(res_raw) if isinstance(res_raw, (dict, list)) else str(res_raw or "Executed")
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", f"call_{int(time.time()*1000)}"),
@@ -3727,6 +3783,9 @@ class RobotEngine:
                     })
 
                 second_pass_text = ""
+                stream_buffer = ""
+                discarding_leading_json: bool | None = None
+
                 async for chunk in _iterate_stream(_call_llm_stream(messages, tools=None)):
                     if chunk.startswith("__TOOL_CALL__"):
                         continue
@@ -3735,14 +3794,131 @@ class RobotEngine:
                         thought_text += raw_th
                         yield {"event": "thought", "token": raw_th}
                         continue
-                    token_count += 1
+
                     second_pass_text += chunk
+
+                    if discarding_leading_json is not False:
+                        stream_buffer += chunk
+                        trimmed = stream_buffer.lstrip()
+                        if not trimmed:
+                            continue
+
+                        # Check if candidate stream starts with JSON, markdown block, or bracket tool call
+                        if discarding_leading_json is None:
+                            if trimmed.startswith(("{", "```json", "```", "[")):
+                                discarding_leading_json = True
+                            else:
+                                discarding_leading_json = False
+                                token_count += 1
+                                elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                                tok_per_sec = round(token_count / elapsed, 1)
+                                yield {
+                                    "event": "token",
+                                    "token": stream_buffer,
+                                    "token_index": token_count,
+                                    "ttft_ms": round(ttft_ms or 0, 1),
+                                    "tok_per_sec": tok_per_sec,
+                                }
+                                stream_buffer = ""
+                                continue
+
+                        if discarding_leading_json is True:
+                            # Case A: Markdown code fence ```json ... ``` or bare ``` ... ```
+                            if trimmed.startswith("```") and "```" in trimmed[3:]:
+                                second_fence = trimmed.find("```", 3)
+                                remainder = trimmed[second_fence + 3:].lstrip()
+                                discarding_leading_json = False
+                                stream_buffer = ""
+                                if remainder:
+                                    token_count += 1
+                                    elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                                    tok_per_sec = round(token_count / elapsed, 1)
+                                    yield {
+                                        "event": "token",
+                                        "token": remainder,
+                                        "token_index": token_count,
+                                        "ttft_ms": round(ttft_ms or 0, 1),
+                                        "tok_per_sec": tok_per_sec,
+                                    }
+                                continue
+
+                            # Case B: JSON object { ... }
+                            if trimmed.startswith("{") and "}" in trimmed:
+                                closing_idx = trimmed.find("}")
+                                candidate = trimmed[:closing_idx + 1]
+                                if '"status"' in candidate or '"error"' in candidate:
+                                    remainder = trimmed[closing_idx + 1:].lstrip()
+                                    discarding_leading_json = False
+                                    stream_buffer = ""
+                                    if remainder:
+                                        token_count += 1
+                                        elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                                        tok_per_sec = round(token_count / elapsed, 1)
+                                        yield {
+                                            "event": "token",
+                                            "token": remainder,
+                                            "token_index": token_count,
+                                            "ttft_ms": round(ttft_ms or 0, 1),
+                                            "tok_per_sec": tok_per_sec,
+                                        }
+                                    continue
+
+                            # Case C: Bracket [function call: ...]
+                            if trimmed.startswith("[") and "]" in trimmed:
+                                closing_idx = trimmed.find("]")
+                                remainder = trimmed[closing_idx + 1:].lstrip()
+                                discarding_leading_json = False
+                                stream_buffer = ""
+                                if remainder:
+                                    token_count += 1
+                                    elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                                    tok_per_sec = round(token_count / elapsed, 1)
+                                    yield {
+                                        "event": "token",
+                                        "token": remainder,
+                                        "token_index": token_count,
+                                        "ttft_ms": round(ttft_ms or 0, 1),
+                                        "tok_per_sec": tok_per_sec,
+                                    }
+                                continue
+
+                            # Safety cap: if buffer grows past 600 chars without closing, flush to avoid deadlock
+                            if len(stream_buffer) > 600:
+                                discarding_leading_json = False
+                                token_count += 1
+                                elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                                tok_per_sec = round(token_count / elapsed, 1)
+                                yield {
+                                    "event": "token",
+                                    "token": stream_buffer,
+                                    "token_index": token_count,
+                                    "ttft_ms": round(ttft_ms or 0, 1),
+                                    "tok_per_sec": tok_per_sec,
+                                }
+                                stream_buffer = ""
+                                continue
+
+                            continue
+
+                    token_count += 1
                     elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
                     tok_per_sec = round(token_count / elapsed, 1)
 
                     yield {
                         "event": "token",
                         "token": chunk,
+                        "token_index": token_count,
+                        "ttft_ms": round(ttft_ms or 0, 1),
+                        "tok_per_sec": tok_per_sec,
+                    }
+
+                if stream_buffer and discarding_leading_json is not True:
+                    token_count += 1
+                    elapsed = max(0.001, time.perf_counter() - t_start - ((ttft_ms or 0) / 1000.0))
+                    tok_per_sec = round(token_count / elapsed, 1)
+                    yield {
+                        "event": "token",
+                        "token": stream_buffer,
                         "token_index": token_count,
                         "ttft_ms": round(ttft_ms or 0, 1),
                         "tok_per_sec": tok_per_sec,
@@ -3788,7 +3964,9 @@ class RobotEngine:
 
             # Clean full_text of any raw tool names, bracketed metadata, and thought tags
             clean_resp = full_text or ""
-            clean_resp = re.sub(r"\[\s*[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+(?:\([^\]]*\)|:[^\]]*|)\s*\]", "", clean_resp)
+            clean_resp = BRACKET_TOOL_CALL_PATTERN.sub("", clean_resp)
+            clean_resp = re.sub(r"^\s*```(?:json)?\s*\{[\s\S]*?\}\s*```\s*", "", clean_resp, flags=re.DOTALL)
+            clean_resp = re.sub(r"^\s*\{[\s\n]*\"(?:status|error)\"\s*:[^}]*\}\s*", "", clean_resp, flags=re.DOTALL)
             clean_resp = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)
             clean_resp = re.sub(r"^[A-Z_]+_HANDLING:\s*[^\n]*\n?", "", clean_resp, flags=re.MULTILINE)
             clean_resp = re.sub(r"\[\s*(?:motion|action|emotion|character\.)\s*:[^\]]*\]", "", clean_resp, flags=re.IGNORECASE)

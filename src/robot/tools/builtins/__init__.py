@@ -368,16 +368,19 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
                     return ""
 
                 fetch_tasks = []
-                for item in results[:5]:
+                for item in results[:3]:
                     if isinstance(item, dict) and item.get("url"):
                         fetch_tasks.append(_fetch_page_content(item["url"]))
                     else:
                         fetch_tasks.append(asyncio.sleep(0, result=""))
 
-                page_contents = await asyncio.gather(*fetch_tasks, return_exceptions=True)
-                for idx, content in enumerate(page_contents):
-                    if isinstance(content, str) and content and idx < len(results):
-                        results[idx]["content"] = content
+                try:
+                    page_contents = await asyncio.wait_for(asyncio.gather(*fetch_tasks, return_exceptions=True), timeout=4.0)
+                    for idx, content in enumerate(page_contents):
+                        if isinstance(content, str) and content and idx < len(results):
+                            results[idx]["content"] = content
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -405,7 +408,7 @@ def register_builtin_tools(engine: "RobotEngine") -> None:
             handler=web_search,
             permission_level=PermissionLevel.HARMLESS_LOCAL,
             family="web",
-            timeout_s=3.0,
+            timeout_s=15.0,
             is_idempotent=True,
             max_retries=1,
         )

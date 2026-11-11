@@ -730,7 +730,30 @@ class ToolConversationCoordinator:
         # Format tool result cleanly without bloated tracking URLs
         # In Gemini High-Intelligence mode (1M context), provide full extracted article contents and rich multi-source data.
         # In Local mode (4K context), keep compact 3-item snippets with 160-char truncation to preserve KV cache slot 0.
-        result_text = str(ctx.tool_result) if ctx.tool_result is not None else (ctx.tool_error or "No data available")
+        if isinstance(ctx.tool_result, dict) and (
+            ctx.tool_result.get("status") in ("timeout", "failure", "error")
+            or "error" in ctx.tool_result
+        ):
+            err_desc = ctx.tool_result.get("error") or ctx.tool_result.get("status") or "Tool timed out"
+            result_text = (
+                f"Tool notice: {ctx.tool_name} encountered an issue ({err_desc}). "
+                "Do not repeat this error message, code block, or raw JSON status. "
+                "Respond naturally in character to the user and answer their request using your knowledge."
+            )
+        elif ctx.tool_error:
+            result_text = (
+                f"Tool notice: {ctx.tool_name} encountered an issue ({ctx.tool_error}). "
+                "Do not repeat this error message, code block, or raw JSON status. "
+                "Respond naturally in character to the user and answer their request using your knowledge."
+            )
+        elif isinstance(ctx.tool_result, str) and ("timed out" in ctx.tool_result.lower() or "timeout" in ctx.tool_result.lower()):
+            result_text = (
+                f"Tool notice: {ctx.tool_name} encountered an issue ({ctx.tool_result}). "
+                "Do not repeat this error message, code block, or raw JSON status. "
+                "Respond naturally in character to the user and answer their request using your knowledge."
+            )
+        else:
+            result_text = str(ctx.tool_result) if ctx.tool_result is not None else "No data available"
         is_gemini = getattr(self.engine, "llm_provider_type", "local") == "gemini"
         if isinstance(ctx.tool_result, list):
             snippets = []
@@ -971,8 +994,13 @@ class ToolConversationCoordinator:
 
         # Combined conversational response (spoken holding + final continuation)
         self.engine.observability.set_pipeline_node("LLM", "COMPLETED")
-        combined_response = (spoken_prefix + " " + full_continuation).strip()
-        return combined_response or full_continuation.strip()
+        from robot.llm import BRACKET_TOOL_CALL_PATTERN
+        clean_cont = BRACKET_TOOL_CALL_PATTERN.sub("", full_continuation)
+        clean_cont = re.sub(r"^\s*```(?:json)?\s*\{[\s\S]*?\}\s*```\s*", "", clean_cont, flags=re.DOTALL)
+        clean_cont = re.sub(r"^\s*\{[\s\n]*\"(?:status|error)\"\s*:[^}]*\}\s*", "", clean_cont, flags=re.DOTALL)
+        clean_cont = re.sub(r"\[\s*(?:conversation|tools?|call|meta|internal|action|motion|emotion|character\.)\b[^\]]*\]", "", clean_cont, flags=re.IGNORECASE)
+        combined_response = (spoken_prefix + " " + clean_cont).strip()
+        return combined_response or clean_cont.strip()
 
     # ─── Direct Tool Fast-Path (Phase 24 & 25) ──────────────────────────────
 

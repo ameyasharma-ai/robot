@@ -180,6 +180,62 @@ class LLMProvider(ABC):
         ...
 
 
+BRACKET_TOOL_CALL_PATTERN: re.Pattern[str] = re.compile(
+    r"\[\s*(?:(?:function\s+)?call\s*:\s*|(?:action|tool)\s*:\s*)?([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_tool_arguments(raw_a: str) -> dict[str, Any]:
+    """Parse tool arguments from JSON strings, Python-style keyword arguments, or bare text.
+
+    Handles varied syntax emitted by local or fine-tuned LLMs including standard JSON
+    dictionaries (``{"symbol": "NVDA"}``), Python keyword arguments (``symbol="NVDA", limit=5``),
+    or plain query strings.
+
+    Args:
+        raw_a: Raw argument string extracted from tool invocation blocks or brackets.
+
+    Returns:
+        A dictionary containing parsed argument key-value pairs.
+    """
+    clean = (raw_a or "").strip()
+    if not clean:
+        return {}
+    if clean.startswith("{") and clean.endswith("}"):
+        try:
+            res = json.loads(clean)
+            if isinstance(res, dict):
+                return res
+        except Exception:
+            pass
+
+    # Extract key=value kwargs (e.g. symbol="NVDA", category='tech', limit=5, enabled=True)
+    kwarg_pattern = re.compile(
+        r'([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([0-9]+(?:\.[0-9]+)?)|(True|False|None)\b|([^,\s\)]+))'
+    )
+    matches = kwarg_pattern.findall(clean)
+    if matches:
+        args_dict: dict[str, Any] = {}
+        for k, v_dq, v_sq, v_num, v_bool, v_bare in matches:
+            if v_dq:
+                args_dict[k] = v_dq
+            elif v_sq:
+                args_dict[k] = v_sq
+            elif v_num:
+                args_dict[k] = float(v_num) if "." in v_num else int(v_num)
+            elif v_bool:
+                args_dict[k] = True if v_bool == "True" else (False if v_bool == "False" else None)
+            else:
+                args_dict[k] = v_bare
+        return args_dict
+
+    # Bare single string: remove outer quotes if present
+    if (clean.startswith('"') and clean.endswith('"')) or (clean.startswith("'") and clean.endswith("'")):
+        clean = clean[1:-1]
+    return {"query": clean}
+
+
 def parse_qwen_tool_call_block(block: str) -> list[dict]:
     """Parse Qwen-style XML or JSON tool calls from a <tool_call> or [tools] block."""
     content = re.sub(r"</?tool_call>", "", block).strip()
@@ -221,18 +277,13 @@ def parse_qwen_tool_call_block(block: str) -> list[dict]:
         except Exception:
             pass
 
-    # Check for bracketed tool calls e.g. [system.time], [perception.what_do_you_see]
-    bracket_calls = re.findall(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", content)
+    # Check for bracketed tool calls e.g. [system.time], [function call: finance.quote(symbol="NVDA")]
+    bracket_calls = BRACKET_TOOL_CALL_PATTERN.findall(content)
     if bracket_calls:
         parsed_calls = []
         for b_name, b_args1, b_args2 in bracket_calls:
             raw_arg = (b_args1 or b_args2 or "").strip()
-            args = {}
-            if raw_arg:
-                try:
-                    args = json.loads(raw_arg) if raw_arg.startswith("{") else {"query": raw_arg}
-                except Exception:
-                    args = {"query": raw_arg}
+            args = parse_tool_arguments(raw_arg)
             parsed_calls.append({
                 "id": f"call_{int(time.time()*1000)}_{len(parsed_calls)}",
                 "type": "function",
@@ -596,19 +647,14 @@ class LlamaServerLLM(LLMProvider):
                                                     pending_text_buf = pending_text_buf[safe_len:]
                                             else:
                                                 # Check if pending_text_buf contains bracketed tool calls to intercept
-                                                b_tool_match = re.search(r"\[\s*([a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)(?:\((.*?)\)|:\s*(.*?)|)\s*\]", pending_text_buf)
+                                                b_tool_match = BRACKET_TOOL_CALL_PATTERN.search(pending_text_buf)
                                                 if b_tool_match:
                                                     pre = pending_text_buf[:b_tool_match.start()]
                                                     if pre:
                                                         yield pre
                                                     t_name = b_tool_match.group(1).strip()
                                                     raw_a = (b_tool_match.group(2) or b_tool_match.group(3) or "").strip()
-                                                    parsed_a = {}
-                                                    if raw_a:
-                                                        try:
-                                                            parsed_a = json.loads(raw_a) if raw_a.startswith("{") else {"query": raw_a}
-                                                        except Exception:
-                                                            parsed_a = {"query": raw_a}
+                                                    parsed_a = parse_tool_arguments(raw_a)
                                                     tool_calls_acc[len(tool_calls_acc)] = {
                                                         "id": f"call_{int(time.time()*1000)}_{len(tool_calls_acc)}",
                                                         "type": "function",
@@ -645,7 +691,12 @@ class LlamaServerLLM(LLMProvider):
                             for p_tc in parsed:
                                 tool_calls_acc[len(tool_calls_acc)] = p_tc
 
-                        if pending_text_buf and not pending_text_buf.startswith("<") and not re.match(r"^\[(?:[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+|conversation|tools?)[^\]]*\]", pending_text_buf):
+                        if (
+                            pending_text_buf
+                            and not pending_text_buf.startswith("<")
+                            and not BRACKET_TOOL_CALL_PATTERN.match(pending_text_buf)
+                            and not re.match(r"^\[(?:conversation|tools?|call|meta|internal|action)\b[^\]]*\]", pending_text_buf, re.IGNORECASE)
+                        ):
                             yield pending_text_buf
 
                         if tool_calls_acc:
