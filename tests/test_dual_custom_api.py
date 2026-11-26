@@ -33,7 +33,7 @@ def test_engine() -> MagicMock:
             },
             "aicredits": {
                 "base_url": "https://aicredits.in/v1",
-                "api_key": "sk-live-test-456",
+                "api_key": "mock-aicredits-test-key-000",
                 "model": "aion-labs/aion-3.0",
             },
         }
