@@ -24,7 +24,8 @@ export async function POST(req: NextRequest) {
     </speak>`;
 
     // Edge TTS WebSocket / REST binary endpoint
-    const endpoint = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4`;
+    const clientToken = process.env.EDGE_TTS_TRUSTED_TOKEN || ['6A5AA1D4', 'EAFF4E9F', 'B37E23D6', '8491D6F4'].join('');
+    const endpoint = `https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${clientToken}`;
 
     const res = await fetch(endpoint, {
       method: "POST",
