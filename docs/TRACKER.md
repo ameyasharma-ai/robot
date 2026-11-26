@@ -1078,7 +1078,7 @@ Legend:
       4. All 71 unit tests pass (`.venv/bin/pytest tests/`).
 44. **Dashboard Local/Gemini Cloud Model Swapping, 3.4GB VRAM Release, 1M Context & Initial Word Skipping Fixes**:
     - *Symptoms*:
-      - User requested a dashboard toggle to swap the local Qwen model (`llama-server`) for the Google Gemini Cloud API using API key `[REDACTED_API_KEY]`.
+      - User requested a dashboard toggle to swap the local Qwen model (`llama-server`) for the Google Gemini Cloud API using the GEMINI_API_KEY environment variable.
       - On swapping to Gemini, the local model must be unloaded and `llama-server` killed to free 100% of GPU VRAM (3,388 MiB on RTX 3050); on swapping back, `llama-server` must re-spin and warm up.
       - In Gemini Cloud mode, context must scale into a High-Intelligence mode utilizing the 1M token context window.
       - User noted: *"why does the TTS seem to skip some words especially at the first."*

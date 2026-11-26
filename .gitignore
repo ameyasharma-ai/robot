@@ -50,6 +50,11 @@ local_spirv/
 
 # Environment
 .env
+.env.*
+*.key
+*.pem
+*service_account*.json
+*credentials*.json
 
 # OS
 .DS_Store

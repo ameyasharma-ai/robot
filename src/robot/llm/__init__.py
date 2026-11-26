@@ -823,8 +823,6 @@ class GeminiLLM(LLMProvider):
     Connects to the official Google Gemini OpenAI compatibility layer.
     """
 
-    DEFAULT_API_KEY = "[REDACTED_API_KEY]"
-
     def __init__(
         self,
         api_key: str | None = None,
@@ -832,7 +830,7 @@ class GeminiLLM(LLMProvider):
         model: str = "gemini-3.1-flash-lite",
         fallback_models: list[str] | None = None,
     ) -> None:
-        self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or self.DEFAULT_API_KEY
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.fallback_models = fallback_models if fallback_models is not None else [

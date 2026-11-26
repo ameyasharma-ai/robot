@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 logger = get_logger("tools.death_clock")
 
 # Default Google Gemini Cloud API Key fallback for cloud synthesis
-DEFAULT_GEMINI_KEY = "[REDACTED_API_KEY]"
+DEFAULT_GEMINI_KEY = ""
 
 # Actuarial baseline lifespans by country (WHO Global Health Observatory 2024 data)
 ACTUARIAL_COUNTRY_BASELINES: dict[str, dict[str, float]] = {
